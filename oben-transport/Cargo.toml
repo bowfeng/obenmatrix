@@ -15,3 +15,5 @@ tracing.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
+eventsource-stream = "0.2"
+futures-util = { version = "0.3", features = ["io"] }

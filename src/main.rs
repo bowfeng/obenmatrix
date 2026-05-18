@@ -12,6 +12,9 @@ struct Cli {
     /// Enable verbose/debug output
     #[arg(short, long)]
     verbose: bool,
+    /// Stream text output as it arrives
+    #[arg(short, long)]
+    stream: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -74,8 +77,8 @@ async fn main() -> Result<()> {
     oben_utils::logging::init(level);
 
     match cli.command {
-        Commands::Chat => run_chat().await,
-        Commands::Run { prompt } => run_one_shot(&prompt).await,
+        Commands::Chat => run_chat(cli.stream).await,
+        Commands::Run { prompt } => run_one_shot(&prompt, cli.stream).await,
         Commands::Setup => run_setup(),
         Commands::Config { action } => run_config(action).await,
         Commands::Tools => { list_tools(); Ok(()) }
@@ -86,7 +89,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_chat() -> Result<()> {
+async fn run_chat(stream: bool) -> Result<()> {
     info!("Starting interactive chat...");
 
     let config = oben_config::AppConfig::load()?;
@@ -138,7 +141,7 @@ async fn run_chat() -> Result<()> {
     Ok(())
 }
 
-async fn run_one_shot(prompt: &str) -> Result<()> {
+async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
     let mut memory = oben_memory::MemoryManager::new();
     memory.load()?;

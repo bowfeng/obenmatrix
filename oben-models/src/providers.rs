@@ -88,6 +88,29 @@ pub struct TransportToolCall {
     pub arguments: serde_json::Value,
 }
 
+/// Callback type invoked with each text delta during streaming.
+pub type StreamDeltaCallback = Box<dyn FnMut(&str) + Send>;
+
+/// Blanket impl: any `Arc<T: TransportProvider>` is also a `TransportProvider`.
+#[async_trait::async_trait]
+impl<T: TransportProvider + ?Sized + Send + Sync> TransportProvider for std::sync::Arc<T> {
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+
+    async fn chat(&self, messages: &[super::Message]) -> Result<TransportResponse> {
+        (**self).chat(messages).await
+    }
+
+    async fn stream_chat(&self, messages: &[super::Message], delta_callback: StreamDeltaCallback) -> Result<TransportResponse> {
+        (**self).stream_chat(messages, delta_callback).await
+    }
+
+    fn estimate_tokens(&self, messages: &[super::Message]) -> usize {
+        (**self).estimate_tokens(messages)
+    }
+}
+
 /// Trait for LLM transport implementations.
 #[async_trait::async_trait]
 pub trait TransportProvider: Send + Sync {
@@ -96,6 +119,12 @@ pub trait TransportProvider: Send + Sync {
 
     /// Send a chat completion request.
     async fn chat(&self, messages: &[super::Message]) -> Result<TransportResponse>;
+
+    /// Send a streaming chat completion request.
+    ///
+    /// Fires `delta_callback` with each text delta as it arrives.
+    /// Returns the accumulated response with full text and tool calls.
+    async fn stream_chat(&self, messages: &[super::Message], delta_callback: StreamDeltaCallback) -> Result<TransportResponse>;
 
     /// Optional: estimate tokens without full API call.
     fn estimate_tokens(&self, messages: &[super::Message]) -> usize {
