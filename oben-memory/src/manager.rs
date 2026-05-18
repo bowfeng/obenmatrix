@@ -27,6 +27,14 @@ impl MemoryManager {
         }
     }
 
+    pub fn new_with_path(storage_path: PathBuf) -> Self {
+        Self {
+            sessions: HashMap::new(),
+            storage_path,
+            active_session_id: None,
+        }
+    }
+
     /// Get or create a session.
     pub fn get_or_create_session(&mut self, name: &str) -> &mut Session {
         let key = self.find_session_key_by_name(name);
@@ -118,5 +126,98 @@ impl MemoryManager {
 impl Default for MemoryManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_dir() -> PathBuf {
+        let dir = tempfile::tempdir().unwrap();
+        dir.path().join("sessions")
+    }
+
+    #[test]
+    fn test_manager_creates_session() {
+        let path = make_test_dir();
+        let mut mgr = MemoryManager::new_with_path(path);
+        let session = mgr.new_session("test-session");
+        assert_eq!(session.name, "test-session");
+        assert!(!session.id.is_empty());
+        assert_eq!(mgr.session_count(), 1);
+    }
+
+    #[test]
+    fn test_manager_list_sessions() {
+        let path = make_test_dir();
+        let mut mgr = MemoryManager::new_with_path(path);
+        mgr.new_session("s1");
+        mgr.new_session("s2");
+        assert_eq!(mgr.list_sessions().len(), 2);
+    }
+
+    #[test]
+    fn test_manager_get_or_create_reuses_existing() {
+        let path = make_test_dir();
+        let mut mgr = MemoryManager::new_with_path(path);
+        let s1 = mgr.get_or_create_session("my-session");
+        s1.add_message(Message::user("first"));
+        let s2 = mgr.get_or_create_session("my-session");
+        assert_eq!(s2.name, "my-session");
+        assert_eq!(s2.message_count(), 1); // reused, not recreated
+    }
+
+    #[test]
+    fn test_save_and_load_roundtrip() {
+        let path = make_test_dir();
+        let mut mgr = MemoryManager::new_with_path(path.clone());
+        let session = mgr.new_session("persist-test");
+        session.add_message(Message::user("hello"));
+        session.add_message(Message::assistant("hi there"));
+        let count = mgr.session_count();
+
+        // Save in-memory state
+        mgr.save().unwrap();
+
+        // Create a fresh manager pointing to same path
+        let mut mgr2 = MemoryManager::new_with_path(path.clone());
+        mgr2.load().unwrap();
+
+        assert_eq!(mgr2.session_count(), count);
+        let loaded = mgr2.list_sessions().into_iter().next().unwrap();
+        assert_eq!(loaded.name, "persist-test");
+        assert_eq!(loaded.message_count(), 2);
+    }
+
+    #[test]
+    fn test_switch_session() {
+        let path = make_test_dir();
+        let mut mgr = MemoryManager::new_with_path(path);
+        let s1 = mgr.new_session("s1");
+        let s1_id = s1.id.clone();
+        let _s2 = mgr.new_session("s2");
+        assert!(mgr.active_session().unwrap().name == "s2");
+        let switched = mgr.switch_session(&s1_id).unwrap();
+        assert_eq!(switched.name, "s1");
+    }
+
+    #[test]
+    fn test_switch_to_nonexistent_session_fails() {
+        let path = make_test_dir();
+        let mut mgr = MemoryManager::new_with_path(path);
+        let err = mgr.switch_session("nonexistent-id").unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_load_empty_directory() {
+        let path = make_test_dir();
+        // Don't create any session files, just test loading empty dir
+        let mgr = MemoryManager::new_with_path(path.clone());
+        mgr.save().unwrap(); // Creates the directory
+        let mut mgr2 = MemoryManager::new_with_path(path.clone());
+        mgr2.load().unwrap();
+        assert_eq!(mgr2.session_count(), 0);
     }
 }
