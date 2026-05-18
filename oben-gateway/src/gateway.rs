@@ -51,3 +51,67 @@ impl Gateway {
         &self.tools
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::*;
+
+    #[tokio::test]
+    async fn test_handle_message_echo() {
+        let gateway = Gateway::new(MemoryManager::new(), oben_tools::ToolRegistry::new());
+        let msg = IncomingMessage {
+            platform: "telegram".to_string(),
+            user_id: "user-1".to_string(),
+            username: Some("alice".to_string()),
+            content: "hello there".to_string(),
+            thread_id: None,
+        };
+        let result = gateway.handle_message(msg).await.unwrap();
+        assert_eq!(result, "Echo: hello there");
+    }
+
+    #[tokio::test]
+    async fn test_handle_message_short_content() {
+        let gateway = Gateway::new(MemoryManager::new(), oben_tools::ToolRegistry::new());
+        let msg = IncomingMessage {
+            platform: "discord".to_string(),
+            user_id: "user-2".to_string(),
+            username: None,
+            content: "hi".to_string(),
+            thread_id: Some("thread-1".to_string()),
+        };
+        let result = gateway.handle_message(msg).await.unwrap();
+        assert_eq!(result, "Echo: hi");
+    }
+
+    #[tokio::test]
+    async fn test_handle_message_long_content_preview() {
+        let gateway = Gateway::new(MemoryManager::new(), oben_tools::ToolRegistry::new());
+        let long_content = "a".repeat(50);
+        let msg = IncomingMessage {
+            platform: "slack".to_string(),
+            user_id: "user-3".to_string(),
+            username: None,
+            content: long_content.clone(),
+            thread_id: None,
+        };
+        // Should not panic and should handle long content gracefully
+        let result = gateway.handle_message(msg).await.unwrap();
+        assert_eq!(result, format!("Echo: {}", long_content));
+    }
+
+    #[tokio::test]
+    async fn test_handle_message_empty_content() {
+        let gateway = Gateway::new(MemoryManager::new(), oben_tools::ToolRegistry::new());
+        let msg = IncomingMessage {
+            platform: "test".to_string(),
+            user_id: "user-0".to_string(),
+            username: None,
+            content: "".to_string(),
+            thread_id: None,
+        };
+        let result = gateway.handle_message(msg).await.unwrap();
+        assert_eq!(result, "Echo: ");
+    }
+}

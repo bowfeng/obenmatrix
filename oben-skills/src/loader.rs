@@ -121,3 +121,122 @@ pub fn builtin_skills() -> Vec<Skill> {
             .build(),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("oben_test_{}", name));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn test_skill_loader_new_is_empty() {
+        let loader = SkillLoader::new();
+        let skills = loader.load_all().unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_skill_loader_txt_file() {
+        let dir = temp_dir("txt_skill");
+        fs::write(dir.join("test-skill.txt"), "This is a skill description.").unwrap();
+
+        let mut loader = SkillLoader::new();
+        loader.add_dir(dir);
+        let skills = loader.load_all().unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "test-skill");
+        assert_eq!(skills[0].description, "This is a skill description.");
+        assert_eq!(skills[0].instructions, "This is a skill description.");
+    }
+
+    #[test]
+    fn test_skill_loader_md_file() {
+        let dir = temp_dir("md_skill");
+        fs::write(dir.join("test-skill.md"), "# Skill\nInstructions here.").unwrap();
+
+        let mut loader = SkillLoader::new();
+        loader.add_dir(dir);
+        let skills = loader.load_all().unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "test-skill");
+        assert!(skills[0].instructions.contains("# Skill"));
+    }
+
+    #[test]
+    fn test_skill_loader_txt_no_instructions() {
+        let dir = temp_dir("txt_no_inst");
+        fs::write(dir.join("test-skill.txt"), "").unwrap();
+
+        let mut loader = SkillLoader::new();
+        loader.add_dir(dir);
+        let skills = loader.load_all().unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "test-skill");
+        assert_eq!(skills[0].description, "");
+    }
+
+    #[test]
+    fn test_skill_loader_skips_non_skill_files() {
+        let dir = temp_dir("skip_files");
+        fs::write(dir.join("data.json"), "{}" ).unwrap();
+        fs::write(dir.join("readme.md"), "readme").unwrap();
+
+        let mut loader = SkillLoader::new();
+        loader.add_dir(dir);
+        let skills = loader.load_all().unwrap();
+        // Only .md file should be loaded
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "readme");
+    }
+
+    #[test]
+    fn test_skill_loader_loads_directories_as_skills() {
+        // Directories are also loaded as skills (via SKILL.md / SKILL.yaml / README.md)
+        let dir = temp_dir("load_dirs");
+        fs::create_dir(dir.join("subdir")).unwrap();
+        fs::write(dir.join("skill.md"), "instructions").unwrap();
+
+        let mut loader = SkillLoader::new();
+        loader.add_dir(dir);
+        let skills = loader.load_all().unwrap();
+        // skill.md -> "skill" skill, subdir directory -> "subdir" skill (no instructions)
+        assert_eq!(skills.len(), 2);
+    }
+
+    #[test]
+    fn test_skill_loader_loads_txt_with_long_content() {
+        let dir = temp_dir("txt_long");
+        let long_content = "First line.\nSecond line of instructions.";
+        fs::write(dir.join("long-skill.txt"), long_content).unwrap();
+
+        let mut loader = SkillLoader::new();
+        loader.add_dir(dir);
+        let skills = loader.load_all().unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "long-skill");
+        assert_eq!(skills[0].description, "First line.");
+        assert_eq!(skills[0].instructions, long_content);
+    }
+
+    #[test]
+    fn test_skill_loader_nonexistent_dir() {
+        let mut loader = SkillLoader::new();
+        loader.add_dir("/tmp/nonexistent_dir_12345");
+        let skills = loader.load_all().unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_builtin_skills_returns_one() {
+        let skills = builtin_skills();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "general");
+        assert_eq!(skills[0].category, "core");
+    }
+}

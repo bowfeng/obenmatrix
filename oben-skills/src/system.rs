@@ -83,3 +83,173 @@ impl Default for SkillManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::builtin_skills;
+    use super::*;
+
+    #[test]
+    fn test_skill_manager_new_is_empty() {
+        let mgr = SkillManager::new();
+        assert_eq!(mgr.count(), 0);
+        assert!(mgr.list_skills().is_empty());
+    }
+
+    #[test]
+    fn test_skill_manager_load_skills() {
+        let mut mgr = SkillManager::new();
+        let skills = vec![Skill::builder("test-skill")
+            .description("A test skill")
+            .category("testing")
+            .instructions("Do test things")
+            .enabled(true)
+            .auto_use(true)
+            .build()];
+        mgr.load_skills(skills);
+        assert_eq!(mgr.count(), 1);
+    }
+
+    #[test]
+    fn test_skill_manager_filters_disabled() {
+        let mut mgr = SkillManager::new();
+        mgr.load_skills(vec![
+            Skill::builder("enabled")
+                .description("enabled skill")
+                .category("test")
+                .instructions("do stuff")
+                .enabled(true)
+                .build(),
+            Skill::builder("disabled")
+                .description("disabled skill")
+                .category("test")
+                .instructions("do stuff")
+                .enabled(false)
+                .build(),
+        ]);
+        assert_eq!(mgr.count(), 1);
+        assert_eq!(mgr.list_skills()[0].name, "enabled");
+    }
+
+    #[test]
+    fn test_skill_manager_build_instructions() {
+        let mut mgr = SkillManager::new();
+        mgr.load_skills(vec![
+            Skill::builder("auto-skill")
+                .description("Auto-use skill")
+                .category("core")
+                .instructions("You must do this.")
+                .enabled(true)
+                .auto_use(true)
+                .build(),
+            Skill::builder("manual-skill")
+                .description("Manual skill")
+                .category("core")
+                .instructions("Use when needed.")
+                .enabled(true)
+                .auto_use(false)
+                .build(),
+        ]);
+        let instructions = mgr.build_skill_instructions();
+        assert!(instructions.contains("## Available Skills"));
+        assert!(instructions.contains("auto-skill"));
+        assert!(instructions.contains("You must do this."));
+        assert!(!instructions.contains("manual-skill"));
+    }
+
+    #[test]
+    fn test_skill_manager_enable_skill() {
+        let mut mgr = SkillManager::new();
+        // Load an enabled skill so it's in the list
+        mgr.load_skills(vec![Skill::builder("test-skill")
+            .description("Test")
+            .category("core")
+            .instructions("Instructions")
+            .enabled(true)
+            .build()]);
+        mgr.disable_skill("test-skill");
+        assert!(!mgr.list_skills()[0].enabled);
+        assert!(mgr.enable_skill("test-skill"));
+        assert!(mgr.list_skills()[0].enabled);
+    }
+
+    #[test]
+    fn test_skill_manager_disable_skill() {
+        let mut mgr = SkillManager::new();
+        mgr.load_skills(vec![Skill::builder("test-skill")
+            .description("Test")
+            .category("core")
+            .instructions("Instructions")
+            .enabled(true)
+            .build()]);
+        assert!(mgr.disable_skill("test-skill"));
+        assert!(!mgr.list_skills()[0].enabled);
+    }
+
+    #[test]
+    fn test_skill_manager_enable_unknown() {
+        let mut mgr = SkillManager::new();
+        assert!(!mgr.enable_skill("nonexistent"));
+    }
+
+    #[test]
+    fn test_skill_manager_auto_use_skills() {
+        let mut mgr = SkillManager::new();
+        mgr.load_skills(vec![
+            Skill::builder("auto")
+                .description("auto-use")
+                .category("core")
+                .instructions("Do auto.")
+                .enabled(true)
+                .auto_use(true)
+                .build(),
+            Skill::builder("manual")
+                .description("manual")
+                .category("core")
+                .instructions("Manual.")
+                .enabled(true)
+                .auto_use(false)
+                .build(),
+        ]);
+        let auto_skills = mgr.auto_use_skills();
+        assert_eq!(auto_skills.len(), 1);
+        assert_eq!(auto_skills[0].name, "auto");
+    }
+
+    #[test]
+    fn test_builtin_skills() {
+        let skills = builtin_skills();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "general");
+        assert_eq!(skills[0].category, "core");
+        assert!(skills[0].enabled);
+        assert!(skills[0].auto_use);
+    }
+
+    #[test]
+    fn test_skill_builder_defaults() {
+        let skill = Skill::builder("defaults-test").build();
+        assert_eq!(skill.name, "defaults-test");
+        assert!(skill.enabled);
+        assert!(!skill.auto_use);
+        assert_eq!(skill.description, "");
+        assert_eq!(skill.category, "");
+        assert_eq!(skill.instructions, "");
+    }
+
+    #[test]
+    fn test_skill_builder_full() {
+        let skill = Skill::builder("full-test")
+            .description("Full description")
+            .category("testing")
+            .instructions("Full instructions")
+            .enabled(false)
+            .auto_use(true)
+            .build();
+        assert_eq!(skill.description, "Full description");
+        assert_eq!(skill.category, "testing");
+        assert_eq!(skill.instructions, "Full instructions");
+        assert!(!skill.enabled);
+        assert!(skill.auto_use);
+    }
+}
