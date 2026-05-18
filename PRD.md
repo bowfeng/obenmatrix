@@ -177,6 +177,7 @@ obenagent/               # Root workspace (binary)
 - TUI with syntax highlighting, multiline editing, slash commands
 - Web dashboard
 - Multi-language (i18n)
+- Integration tests for full conversation loop
 
 ---
 
@@ -190,7 +191,7 @@ obenagent/               # Root workspace (binary)
 | Skill categories | 20+ | 1/20 (general) |
 | Platform adapters | 5+ | 0/5 (trait defined) |
 | CLI commands | 30+ | 8/30 |
-| Tests | 80%+ | 58/58 passing (5 crates) |
+| Tests | 80%+ | 114/114 passing (9/9 crates) |
 
 ---
 
