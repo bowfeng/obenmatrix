@@ -12,8 +12,8 @@
 
 | Metric | Status |
 |--------|--------|
-| Crates | 9/9 compiling |
-| Tests | 121/121 passing |
+| Crates | 10/10 compiling |
+| Tests | 212/212 passing |
 | CLI commands | 9 subcommands |
 | Provider transports | 1/7 (ChatCompletions) |
 | Built-in tools | 4/20+ |
@@ -48,6 +48,7 @@
 | **oben-tools** | ✅ | ToolRegistry (dynamic), shell, read_file, write_file, http_get, search (stub) |
 | **oben-memory** | ✅ | MemoryManager (session CRUD + JSON persistence), full-text search, skill curation |
 | **oben-skills** | ✅ | SkillLoader (YAML/TXT/MD from disk), SkillManager (enable/disable/auto-use/instruction assembly) |
+| **oben-goals** | ✅ | PlanNode (builder, sub-nodes, artifacts), PlanState (tree mgmt, markdown, save/load), judge verdict parser, GoalState (turn budget, auto-pause), plan markdown parser, node complete/failure message parser |
 | **oben-gateway** | ✅ | Gateway struct, PlatformAdapter trait, Incoming/OutgoingMessage, mock adapter support |
 | **CLI (obenagent)** | ✅ | 9 subcommands: chat, run, setup, config, tools, skills, sessions, info, models |
 | **Models** | ✅ | Discovery via /v1/models, table output, wizard auto-detects max_model_len |
@@ -90,7 +91,23 @@ Build a self-improving AI agent in Rust, porting the full functionality of Herme
 
 ---
 
-## Architecture
+| **oben-goals** | ✅ | PlanNode (tree with builder), PlanState (find/count/markdown/save/load), goal judge (JSON parse), GoalState (turn budget, verdict tracking, auto-pause), plan parser (markdown checklist → structured), node complete parser |
+
+### 🔴 Post-MVP (Out of Scope for MVP)
+
+> **MVP = core loop + 4 tools + 1 provider + CLI + streaming.** Everything else below is deferred to later milestones.
+
+| Component | Target Phase | Description |
+|-----------|-------------|-------------|
+| **Anthropic/Bedrock/Gemini** | Phase 2 | Native provider transports (OpenAI-compatible already works) |
+| **Platform adapters** | Phase 3 | Telegram, Discord, Slack |
+| **Browser/voice/image/tools** | Phase 4 | CUA-driver, STT/TTS, FLUX/DALL-E, cron, MCP |
+| **Skill categories** | Phase 4 | 20+ categories, self-improvement loop |
+| **TUI / dashboard / i18n** | Phase 5 | Rich terminal UI, web dashboard, multi-language |
+
+---
+
+## Vision
 
 ```
 obenagent/               # Root workspace (binary)
@@ -135,6 +152,7 @@ obenagent/               # Root workspace (binary)
 │   └── search.rs        # Web search (stub — configurable provider)
 │
 ├── oben-skills/         # Skill system
+├── oben-goals/          # Goal tracking, plan management, judge loop
 │   ├── loader.rs        # SkillLoader — reads YAML/TXT/MD from disk
 │   └── system.rs        # SkillManager — enable/disable, auto-use, instruction assembly
 │
