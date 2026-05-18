@@ -112,6 +112,7 @@ obenagent/               # Root workspace (binary)
 | Area | Priority | Hermes Equivalent | Description |
 |------|----------|-------------------|-------------|
 | **Provider integrations** | P0 | `agent/transports/` | Anthropic native, AWS Bedrock, Google Gemini, LMStudio |
+| **Transport: vLLM/Custom** | ✅ DONE | `hermes_cli/models.py` | Custom endpoint with base_url, local model support (qwen35-local verified) |
 | **Tool: Browser automation** | P1 | `tools/browser_dialog_tool.py` | CUA-driver integration for macOS GUI automation |
 | **Tool: Voice (STT/TTS)** | P1 | `tools/tts_tool.py`, `tools/transcription_tools.py` | Edge TTS, Whisper, ElevenLabs, OpenAI |
 | **Tool: Image generation** | P1 | `agent/image_gen_provider.py` | FLUX, DALL-E, Midjourney integration |
@@ -184,12 +185,12 @@ obenagent/               # Root workspace (binary)
 | Metric | Target | Current |
 |--------|--------|---------|
 | Workspace compiles | ✅ 100% | ✅ Passing |
-| Provider integrations | 6/7 | 1/7 (ChatCompletions) |
+| Provider integrations | 6/7 | 2/7 (ChatCompletions + Custom/vLLM) |
 | Built-in tools | 20+ | 4/20 |
 | Skill categories | 20+ | 1/20 (general) |
 | Platform adapters | 5+ | 0/5 (trait defined) |
 | CLI commands | 30+ | 8/30 |
-| Tests | 80%+ | 0% |
+| Tests | 80%+ | 58/58 passing (5 crates) |
 
 ---
 
