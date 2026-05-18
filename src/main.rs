@@ -12,9 +12,6 @@ struct Cli {
     /// Enable verbose/debug output
     #[arg(short, long)]
     verbose: bool,
-    /// Stream text output as it arrives
-    #[arg(short, long)]
-    stream: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -22,12 +19,19 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Start an interactive conversation
-    Chat,
+    Chat {
+        /// Stream text output as it arrives
+        #[arg(short, long)]
+        stream: bool,
+    },
     /// Run a one-shot prompt
     Run {
         /// The prompt/question
         #[arg(short, long)]
         prompt: String,
+        /// Stream text output as it arrives
+        #[arg(short, long)]
+        stream: bool,
     },
     /// Setup/configure the agent
     Setup,
@@ -77,8 +81,8 @@ async fn main() -> Result<()> {
     oben_utils::logging::init(level);
 
     match cli.command {
-        Commands::Chat => run_chat(cli.stream).await,
-        Commands::Run { prompt } => run_one_shot(&prompt, cli.stream).await,
+        Commands::Chat { stream } => run_chat(stream).await,
+        Commands::Run { prompt, stream } => run_one_shot(&prompt, stream).await,
         Commands::Setup => run_setup(),
         Commands::Config { action } => run_config(action).await,
         Commands::Tools => { list_tools(); Ok(()) }
@@ -131,8 +135,23 @@ async fn run_chat(stream: bool) -> Result<()> {
             continue;
         }
 
-        let response = conversation.run_turn(oben_models::Message::user(input)).await?;
-        println!("\n{}", response);
+        let response = if stream {
+            conversation.run_turn_with_streaming(
+                oben_models::Message::user(input),
+                Some(Box::new(|text: &str| {
+                    print!("{}", text);
+                    std::io::stdout().flush().ok();
+                })),
+            )
+            .await?
+        } else {
+            conversation.run_turn(oben_models::Message::user(input)).await?
+        };
+        if !stream {
+            println!("\n{}", response);
+        } else {
+            println!();
+        }
 
         // Save after each turn
         memory.save()?;
@@ -156,8 +175,21 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         config.context.max_messages.unwrap_or(100),
     );
 
-    let response = conversation.run_turn(oben_models::Message::user(prompt)).await?;
-    println!("{}", response);
+    let response = if stream {
+        conversation.run_turn_with_streaming(
+            oben_models::Message::user(prompt),
+            Some(Box::new(|text: &str| {
+                print!("{}", text);
+                std::io::stdout().flush().ok();
+            })),
+        )
+        .await?
+    } else {
+        conversation.run_turn(oben_models::Message::user(prompt)).await?
+    };
+    if !stream {
+        println!("{}", response);
+    }
 
     Ok(())
 }

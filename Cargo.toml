@@ -9,6 +9,7 @@ members = [
     "oben-gateway",
     "oben-config",
     "oben-utils",
+    "oben-goals",
 ]
 resolver = "2"
 

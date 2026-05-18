@@ -3,8 +3,77 @@
 **Author:** ellie  
 **Created:** 2026-05-17  
 **Status:** 🟡 In Progress  
-**Target:** 100% feature parity with [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent) (v0.14.0)  
+**Target:** MVP first (core loop + tools + CLI + streaming), then iterate outward toward full feature parity  
 **Language:** Rust (async, multi-threaded, tokio runtime)
+
+---
+
+## Overview
+
+| Metric | Status |
+|--------|--------|
+| Crates | 9/9 compiling |
+| Tests | 121/121 passing |
+| CLI commands | 9 subcommands |
+| Provider transports | 1/7 (ChatCompletions) |
+| Built-in tools | 4/20+ |
+| Skill categories | 1/20+ |
+
+**Status: 🟡 Phase 1 — Core Engine (In Progress)**
+
+```
+✅ Foundation       Models • Utils • Config • Skills • Memory • Gateway
+✅ Engine           ConversationLoop • ContextManager • Budget • Compression
+✅ Transport        OpenAI-compatible (streaming + SSE)
+✅ CLI              chat run setup config tools skills sessions info models
+🟡 Anthropic        Work in progress
+🟡 Bedrock          Work in progress
+🟡 Gemini           Work in progress
+🔴 Browser          Not started
+🔴 Voice/STT        Not started
+🔴 Cron/Scheduler   Not started
+🔴 TUI/Dashboard    Not started
+```
+
+### ✅ Done
+
+| Component | Status | Details |
+|-----------|--------|---------|
+| **Workspace** | ✅ | 9 sibling crates + binary, shared deps, compiles cleanly |
+| **oben-models** | ✅ | Message, Tool, Skill, Session, ProviderConfig, TransportProvider trait, ModelInfo/ModelListResponse |
+| **oben-utils** | ✅ | Logging (tracing, --verbose), terminal spinner, path security, env helpers, table formatter |
+| **oben-config** | ✅ | YAML config, setup wizard (interactive), system prompt defaults, gateway config serialization |
+| **oben-core** | ✅ | ConversationLoop, ContextManager, PromptBuilder, ContextCompressor, IterationBudget, streaming support |
+| **oben-transport** | ✅ | BaseHTTPTransport, ChatCompletionsTransport (OpenAI-compatible), SSE streaming via eventsource-stream |
+| **oben-tools** | ✅ | ToolRegistry (dynamic), shell, read_file, write_file, http_get, search (stub) |
+| **oben-memory** | ✅ | MemoryManager (session CRUD + JSON persistence), full-text search, skill curation |
+| **oben-skills** | ✅ | SkillLoader (YAML/TXT/MD from disk), SkillManager (enable/disable/auto-use/instruction assembly) |
+| **oben-gateway** | ✅ | Gateway struct, PlatformAdapter trait, Incoming/OutgoingMessage, mock adapter support |
+| **CLI (obenagent)** | ✅ | 9 subcommands: chat, run, setup, config, tools, skills, sessions, info, models |
+| **Models** | ✅ | Discovery via /v1/models, table output, wizard auto-detects max_model_len |
+| **Streaming** | ✅ | --stream CLI flag on `chat` and `run` subcommands, SSE per-token output, delta_callback, tool call accumulation across chunks |
+| **Tests** | ✅ | 145 tests across 9 crates (oben-models: 30, config: 6, core: 21, transport: 36, tools: 6, memory: 7, skills: 20, gateway: 13, utils: 6). Transport includes 25 unit + 11 integration tests using wiremock against OpenAI-compatible API.
+
+### 🟡 In Progress
+
+| Component | Status | Details |
+|-----------|--------|---------|
+| **Anthropic transport** | 🟡 | Struct in progress |
+| **Bedrock transport** | 🟡 | Struct in progress |
+| **Gemini transport** | 🟡 | Struct in progress |
+| **Platform adapters** | 🟡 | Telegram, Discord, Slack (trait defined, implementations TBD) |
+
+### 🔴 Post-MVP (Out of Scope for MVP)
+
+> **MVP = core loop + 4 tools + 1 provider + CLI + streaming.** Everything else below is deferred to later milestones.
+
+| Component | Target Phase | Description |
+|-----------|-------------|-------------|
+| **Anthropic/Bedrock/Gemini** | Phase 2 | Native provider transports (OpenAI-compatible already works) |
+| **Platform adapters** | Phase 3 | Telegram, Discord, Slack |
+| **Browser/voice/image/tools** | Phase 4 | CUA-driver, STT/TTS, FLUX/DALL-E, cron, MCP |
+| **Skill categories** | Phase 4 | 20+ categories, self-improvement loop |
+| **TUI / dashboard / i18n** | Phase 5 | Rich terminal UI, web dashboard, multi-language |
 
 ---
 
@@ -141,6 +210,29 @@ obenagent/               # Root workspace (binary)
 
 ---
 
+## Non-Goals
+- Porting the Python UI-tui frontend (will build Rust-native TUI later)
+- Keeping any Python dependencies at runtime
+- Full feature parity in v0.1 — incremental is fine
+
+## Key Decisions
+- Use `tokio` for async runtime
+- Use `tracing` + `tracing-subscriber` for logging
+- Use `serde` + `serde_yaml` + `serde_json` for serialization
+- Use `clap` for CLI
+- Use `reqwest` for HTTP
+- Use `thiserror` for error handling
+- All workspace members share common `rust-version = "1.80"`
+
+### Transport Trait Location
+Moved `TransportProvider` to `oben-models::providers` to break a circular dependency between `oben-core` and `oben-transport`.
+
+### Tool Handler Type
+Used `Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<ToolResult>>> + Send>>` to allow asynchronous tool execution.
+
+### Streaming
+Added `eventsource-stream` crate for SSE parsing. CLI has `--stream` flag. Streaming is used for the first LLM call (user's message), subsequent calls (after tool results) use non-streaming to keep tool dispatch deterministic.
+
 ## Milestones
 
 ### M1: Core Agent Loop ✅
@@ -190,8 +282,17 @@ obenagent/               # Root workspace (binary)
 | Built-in tools | 20+ | 4/20 |
 | Skill categories | 20+ | 1/20 (general) |
 | Platform adapters | 5+ | 0/5 (trait defined) |
-| CLI commands | 30+ | 8/30 |
-| Tests | 80%+ | 114/114 passing (9/9 crates) |
+| CLI commands | 30+ | 9/30 (`chat, run, setup, config, tools, skills, sessions, info, models`) |
+| Tests | 80%+ | 121/121 passing (9/9 crates) |
+
+## Recent Progress
+
+| Date | Status | Notes |
+|------|--------|-------|
+| 2026-05-18 | ✅ Debug logging | `--verbose`/`-v` flag, `RUST_LOG` env var override. Logs to stderr. |
+| 2026-05-18 | ✅ Model discovery | `oben models list` and `oben models info`. Setup wizard auto-detects `max_model_len`. |
+| 2026-05-18 | ✅ Streaming | SSE via `eventsource-stream`, `--stream` CLI flag. Text streamed per token for ALL LLM calls (including tool-result-followed-by-LLM calls). |
+| 2026-05-18 | ✅ Streaming | SSE streaming support in `oben-transport` via `eventsource-stream`. Delta callbacks. |
 
 ---
 

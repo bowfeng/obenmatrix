@@ -16,7 +16,7 @@ Single-context layout. See `docs/agents/domain.md`.
 
 ### PRD / Progress
 
-The project PRD and progress tracker lives at `docs/prd-hermes-rust-port.md`. Update the progress table as work advances.
+The project PRD and progress tracker lives at `docs/PRD.md`. Update the progress table as work advances.
 
 ### ADRs
 

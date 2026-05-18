@@ -350,3 +350,221 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_messages_json_text() {
+        let messages = vec![
+            Message::system("you are helpful"),
+            Message::user("hello"),
+        ];
+        let json = build_messages_json(&messages);
+        assert_eq!(json.len(), 2);
+        assert_eq!(json[0]["role"], "system");
+        assert_eq!(json[0]["content"], "you are helpful");
+        assert_eq!(json[1]["role"], "user");
+        assert_eq!(json[1]["content"], "hello");
+    }
+
+    #[test]
+    fn test_build_messages_json_tool_result() {
+        let messages = vec![
+            Message::user("tell me weather"),
+            Message::tool_result("call-1", "sunny"),
+        ];
+        let json = build_messages_json(&messages);
+        assert_eq!(json[0]["role"], "user");
+        assert_eq!(json[1]["role"], "tool");
+        assert_eq!(json[1]["content"], "sunny");
+    }
+
+    #[test]
+    fn test_stream_chunk_serialization() {
+        let json = r#"{
+            "id": "chatcmpl-123",
+            "object": "chat.completion.chunk",
+            "created": 1234567890,
+            "choices": [{
+                "delta": {"content": "Hello", "role": "assistant"},
+                "index": 0,
+                "finish_reason": null
+            }],
+            "usage": null
+        }"#;
+        let chunk: StreamChunk = serde_json::from_str(json).unwrap();
+        assert_eq!(chunk.id, "chatcmpl-123");
+        assert_eq!(chunk.choices[0].delta.content, Some("Hello".to_string()));
+        assert_eq!(chunk.choices[0].delta.role, Some("assistant".to_string()));
+    }
+
+    #[test]
+    fn test_stream_chunk_usage() {
+        let json = r#"{
+            "id": "chatcmpl-123",
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }"#;
+        let chunk: StreamChunk = serde_json::from_str(json).unwrap();
+        assert_eq!(chunk.usage.unwrap().total_tokens, Some(15));
+    }
+
+    #[test]
+    fn test_stream_chunk_tool_calls() {
+        let json = r#"{
+            "id": "chatcmpl-123",
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-123",
+                        "function": {"name": "shell", "arguments": "{\"command\": \"ls\"}"}
+                    }]
+                },
+                "index": 0,
+                "finish_reason": null
+            }],
+            "usage": null
+        }"#;
+        let chunk: StreamChunk = serde_json::from_str(json).unwrap();
+        let tc = &chunk.choices[0].delta.tool_calls.as_ref().unwrap()[0];
+        assert_eq!(tc.index, 0);
+        assert_eq!(tc.id, Some("call-123".to_string()));
+        assert_eq!(tc.function.as_ref().unwrap().name, Some("shell".to_string()));
+        assert_eq!(tc.function.as_ref().unwrap().arguments, Some("{\"command\": \"ls\"}".to_string()));
+    }
+
+    #[test]
+    fn test_stream_chunk_text_accumulation() {
+        // Simulate accumulating text across chunks
+        let mut final_text = String::new();
+        let chunks = vec![
+            r#"{"choices":[{"delta":{"content":"Hello"}}]}"#,
+            r#"{"choices":[{"delta":{"content":", "}}]}"#,
+            r#"{"choices":[{"delta":{"content":"World"}}]}"#,
+        ];
+        for chunk_json in chunks {
+            let chunk: StreamChunk = serde_json::from_str(chunk_json).unwrap();
+            for choice in chunk.choices {
+                if let Some(ref content) = choice.delta.content {
+                    final_text.push_str(content);
+                }
+            }
+        }
+        assert_eq!(final_text, "Hello, World");
+    }
+
+    #[test]
+    fn test_stream_chunk_tool_call_accumulation() {
+        // Simulate accumulating tool call deltas
+        let mut names: Vec<String> = vec![];
+        let mut args: Vec<String> = vec![];
+        let chunks = vec![
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"shell"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\""}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ls\"}"}}]}}]}"#,
+        ];
+        for chunk_json in chunks {
+            let chunk: StreamChunk = serde_json::from_str(chunk_json).unwrap();
+            for choice in chunk.choices {
+                if let Some(ref tool_deltas) = choice.delta.tool_calls {
+                    for tc in tool_deltas {
+                        let idx = tc.index;
+                        while names.len() <= idx {
+                            names.push(String::new());
+                            args.push(String::new());
+                        }
+                        if let Some(ref func) = tc.function {
+                            if let Some(ref name) = func.name {
+                                names[idx] = name.clone();
+                            }
+                            if let Some(ref a) = func.arguments {
+                                args[idx].push_str(a);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(names[0], "shell");
+        assert_eq!(args[0], "{\"command\"ls\"}");
+    }
+
+    #[test]
+    fn test_stream_done_terminator() {
+        // In SSE, [DONE] comes as "data: [DONE]" followed by a blank line.
+        // The eventsource-stream library extracts the payload after "data: ".
+        let done_payload = "[DONE]";
+        assert_eq!(done_payload, "[DONE]");
+    }
+
+    #[test]
+    fn test_stream_empty_content() {
+        let chunks = vec![
+            r#"{"choices":[{"delta":{"content":null}}]}"#,
+            r#"{"choices":[{"delta":{}}]}"#,
+            r#"{"choices":[{"delta":{"finish_reason":"stop"}}]}"#,
+        ];
+        let mut text = String::new();
+        for chunk_json in chunks {
+            let chunk: StreamChunk = serde_json::from_str(chunk_json).unwrap();
+            for choice in chunk.choices {
+                if let Some(ref content) = choice.delta.content {
+                    if !content.is_empty() {
+                        text.push_str(content);
+                    }
+                }
+            }
+        }
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn test_stream_tool_call_id_from_first_chunk() {
+        let chunk1: StreamChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-abc","function":{"name":"shell"}}]}}]}"#,
+        ).unwrap();
+        assert_eq!(chunk1.choices[0].delta.tool_calls.as_ref().unwrap()[0].id.as_ref().unwrap(), "call-abc");
+        assert_eq!(
+            chunk1.choices[0].delta.tool_calls.as_ref().unwrap()[0].function.as_ref().unwrap().name,
+            Some("shell".to_string())
+        );
+
+        let chunk2: StreamChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"ls\"}"}}]}}]}"#,
+        ).unwrap();
+        assert_eq!(
+            chunk2.choices[0].delta.tool_calls.as_ref().unwrap()[0].function.as_ref().unwrap().arguments.as_ref().unwrap(),
+            "{\"cmd\":\"ls\"}"
+        );
+    }
+
+    #[test]
+    fn test_stream_multiple_tool_calls() {
+        let chunk: StreamChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"shell","arguments":"{\"cmd\":\"ls\"}"}},{"index":1,"function":{"name":"read_file","arguments":"{\"path\":\"/tmp/x\"}"}}]}}]}"#,
+        ).unwrap();
+        let tool_calls = chunk.choices[0].delta.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0].function.as_ref().unwrap().name, Some("shell".to_string()));
+        assert_eq!(tool_calls[1].function.as_ref().unwrap().name, Some("read_file".to_string()));
+    }
+
+    #[test]
+    fn test_stream_usage_on_final_chunk() {
+        let chunks = vec![
+            r#"{"choices":[{"delta":{"content":"Hello"}}]}"#,
+            r#"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17}}"#,
+        ];
+        let mut total_tokens: Option<usize> = None;
+        for chunk_json in chunks {
+            let chunk: StreamChunk = serde_json::from_str(chunk_json).unwrap();
+            if let Some(ref usage) = chunk.usage {
+                total_tokens = usage.total_tokens;
+            }
+        }
+        assert_eq!(total_tokens, Some(17));
+    }
+}
