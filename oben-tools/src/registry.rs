@@ -7,7 +7,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use anyhow::Result;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tracing::{info, warn};
 use futures::future::BoxFuture;
 
@@ -89,5 +89,107 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_echo_handler() -> ToolHandler {
+        Arc::new(|args: Value| {
+            let msg = args.get("message").map(|v| v.as_str().unwrap_or("")).unwrap_or("no-msg").to_string();
+            Box::pin(async move {
+                Ok(ToolResult {
+                    call_id: "test-1".to_string(),
+                    output: format!("echo: {}", msg),
+                    error: None,
+                })
+            })
+        })
+    }
+
+    fn make_error_handler() -> ToolHandler {
+        Arc::new(|_args: Value| {
+            Box::pin(async move {
+                Ok(ToolResult {
+                    call_id: "test-2".to_string(),
+                    output: String::new(),
+                    error: Some("intentional failure".to_string()),
+                })
+            })
+        })
+    }
+
+    fn make_tool(name: &str) -> oben_models::Tool {
+        oben_models::Tool {
+            name: name.to_string(),
+            description: format!("Test tool: {}", name),
+            parameters: oben_models::ToolParameters::Flat(vec![
+                oben_models::ToolParameter {
+                    name: "message".to_string(),
+                    description: "Input message".to_string(),
+                    parameter_type: "string".to_string(),
+                    required: true,
+                },
+            ]),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_registry_empty() {
+        let registry = ToolRegistry::new();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_registry_register_and_list() {
+        let mut registry = ToolRegistry::new();
+        let tool = make_tool("echo");
+        registry.register(tool, make_echo_handler());
+        assert_eq!(registry.len(), 1);
+        assert!(registry.has_tool("echo"));
+        assert!(!registry.has_tool("missing"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_registered_tool() {
+        let mut registry = ToolRegistry::new();
+        let tool = make_tool("echo");
+        registry.register(tool, make_echo_handler());
+        let result = registry.execute("echo", &json!({"message": "hello"})).await;
+        assert!(result.error.is_none());
+        assert_eq!(result.output, "echo: hello");
+    }
+
+    #[tokio::test]
+    async fn test_execute_unknown_tool_returns_error() {
+        let registry = ToolRegistry::new();
+        let result = registry.execute("nonexistent", &json!({})).await;
+        assert!(result.error.is_some());
+        assert!(result.error.as_ref().unwrap().contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_with_handler_error() {
+        let mut registry = ToolRegistry::new();
+        let tool = make_tool("fail");
+        registry.register(tool, make_error_handler());
+        let result = registry.execute("fail", &json!({"call_id": "t2"})).await;
+        assert!(result.error.is_some());
+        assert_eq!(result.error.unwrap(), "intentional failure");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool("a"), make_echo_handler());
+        registry.register(make_tool("b"), make_error_handler());
+        assert_eq!(registry.len(), 2);
+        assert!(registry.has_tool("a"));
+        assert!(registry.has_tool("b"));
+        let result_a = registry.execute("a", &json!({"message": "hi"})).await;
+        assert_eq!(result_a.output, "echo: hi");
     }
 }
