@@ -72,3 +72,43 @@ where
     spinner.stop();
     result
 }
+
+/// Print a simple table from rows of string slices.
+pub fn print_table<W: Write>(headers: &[&str], rows: Vec<Vec<String>>, mut out: W) {
+    if rows.is_empty() {
+        return;
+    }
+    // Calculate column widths
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < widths.len() {
+                widths[i] = widths[i].max(cell.len());
+            }
+        }
+    }
+    // Print header
+    let header_line: Vec<String> = headers
+        .iter()
+        .enumerate()
+        .map(|(i, h)| format!("{:<width$}", h, width = widths[i]))
+        .collect();
+    let _ = writeln!(out, "{}", header_line.join(" | "));
+    // Print separator
+    let sep: Vec<String> = headers.iter().map(|_| "-".repeat(widths[0])).collect();
+    let _ = writeln!(out, "{}", sep.join("-"));
+    // Print rows
+    for row in rows {
+        let line: Vec<String> = row
+            .into_iter()
+            .enumerate()
+            .map(|(i, cell)| format!("{:<width$}", cell, width = widths[i]))
+            .collect();
+        let _ = writeln!(out, "{}", line.join(" | "));
+    }
+}
+
+/// Convenience wrapper that prints to stderr.
+pub fn print_table_stderr(headers: &[&str], rows: Vec<Vec<String>>) {
+    print_table(headers, rows, io::stderr());
+}

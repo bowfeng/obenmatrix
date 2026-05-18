@@ -63,6 +63,17 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
         config.model.api_key = Some(api_key);
     }
 
+    // Step 3.5: Auto-detect max_tokens from provider
+    println!("\n🔍 Discovering model capabilities...");
+    if let Some(max_tokens) = detect_max_tokens(&config.model) {
+        config.model.max_tokens = Some(max_tokens);
+        info!("Auto-detected max_tokens: {} from provider", max_tokens);
+        println!("✅ Found model (max tokens: {})", max_tokens);
+    } else {
+        println!("⚠️  Could not reach provider to auto-detect max_tokens.");
+        println!("   max_tokens will use default (8192). You can configure it manually later.");
+    }
+
     // Step 4: Max iterations
     let max_iter: usize = Input::new()
         .with_prompt("Max iterations per turn")
@@ -86,4 +97,17 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
     println!("You can re-run this wizard anytime with: `oben setup`\n");
 
     Ok(())
+}
+
+/// Detect max_tokens from the LLM provider and return it if found.
+fn detect_max_tokens(config: &oben_models::ProviderConfig) -> Option<usize> {
+    let rt = tokio::runtime::Runtime::new().ok()?;
+    let transport = oben_transport::ChatCompletionsTransport::from_config(config);
+    let result = rt.block_on(async { transport.find_model(&config.model).await });
+
+    match result {
+        Ok(Some(model_info)) => model_info.max_model_len,
+        Ok(None) => None,
+        Err(_) => None,
+    }
 }

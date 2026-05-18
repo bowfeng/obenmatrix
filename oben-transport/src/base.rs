@@ -138,6 +138,32 @@ pub struct BaseTransport {
 }
 
 impl BaseTransport {
+    /// Fetch model list from `/v1/models`.
+    pub async fn list_models(&self) -> Result<oben_models::ModelListResponse> {
+        let url = format!("{}/models", self.base_url.trim_end_matches('/'));
+        debug!("Fetching models from: {}", url);
+        let mut req = self.client.get(&url);
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+        let response = req.send().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await?;
+            return Err(anyhow!("API error {}: {}", status, body));
+        }
+        let resp: oben_models::ModelListResponse = response.json().await?;
+        Ok(resp)
+    }
+
+    /// Find a specific model by ID from the API.
+    pub async fn find_model(&self, model_id: &str) -> Result<Option<oben_models::ModelInfo>> {
+        let list = self.list_models().await?;
+        Ok(list.data.into_iter().find(|m| m.id == model_id))
+    }
+}
+
+impl BaseTransport {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))

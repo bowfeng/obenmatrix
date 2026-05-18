@@ -38,6 +38,11 @@ enum Commands {
     Sessions,
     /// Show agent info
     Info,
+    /// Discover models via LLM provider
+    Models {
+        #[command(subcommand)]
+        action: ModelsCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -46,6 +51,17 @@ enum ConfigCommand {
     Show,
     /// Edit config file
     Edit,
+}
+
+#[derive(Subcommand)]
+enum ModelsCommand {
+    /// List available models from the LLM provider
+    List,
+    /// Show details for a specific model
+    Info {
+        /// Model ID to look up
+        model: String,
+    },
 }
 
 #[tokio::main]
@@ -63,6 +79,7 @@ async fn main() -> Result<()> {
         Commands::Skills => { list_skills(); Ok(()) }
         Commands::Sessions => { list_sessions(); Ok(()) }
         Commands::Info => { show_info(); Ok(()) },
+        Commands::Models { action } => run_models(action).await,
     }
 }
 
@@ -209,7 +226,8 @@ fn show_info() {
     println!("  tools   — List available tools");
     println!("  skills  — List available skills");
     println!("  sessions — List sessions");
-    println!("  info    — Show agent info");
+    println!("  info     — Show agent info");
+    println!("  models   — Discover models from LLM provider");
 }
 
 /// Register all built-in tools into the registry.
@@ -250,4 +268,52 @@ fn register_builtin_tools(tools: &mut oben_tools::ToolRegistry) {
     tools.register(http_tool, std::sync::Arc::new(|args: serde_json::Value| {
         Box::pin(oben_tools::web::http_get(args))
     }));
+}
+
+async fn run_models(action: ModelsCommand) -> Result<()> {
+    let config = oben_config::AppConfig::load()?;
+    let transport = oben_transport::ChatCompletionsTransport::from_config(&config.model);
+
+    match action {
+        ModelsCommand::List => {
+            println!("Fetching models from provider...\n");
+            let models = transport.list_models().await?;
+            println!("Found {} model(s):\n", models.data.len());
+
+            let headers = &["ID", "Max Tokens", "Owned By"];
+            let rows: Vec<Vec<String>> = models
+                .data
+                .iter()
+                .map(|m| vec![
+                    m.id.clone(),
+                    m.max_model_len.map(|t| t.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    m.owned_by.clone(),
+                ])
+                .collect();
+            oben_utils::terminal::print_table_stderr(headers, rows);
+        }
+        ModelsCommand::Info { model } => {
+            println!("Looking up model: {}\n", model);
+            match transport.find_model(&model).await? {
+                Some(m) => {
+                    let headers = &["Field", "Value"];
+                    let rows = vec![
+                        vec!["ID".to_string(), m.id],
+                        vec!["Object".to_string(), m.object],
+                        vec!["Created".to_string(), chrono::DateTime::from_timestamp(m.created as i64, 0).map(|d| d.to_string()).unwrap_or("unknown".to_string())],
+                        vec!["Owned By".to_string(), m.owned_by],
+                        vec!["Max Model Length".to_string(), m.max_model_len.map(|t| t.to_string()).unwrap_or("N/A".to_string())],
+                        vec!["Root".to_string(), m.root.unwrap_or("N/A".to_string())],
+                        vec!["Parent".to_string(), m.parent.unwrap_or("N/A".to_string())],
+                    ];
+                    oben_utils::terminal::print_table_stderr(headers, rows);
+                }
+                None => {
+                    println!("Model '{}' not found.", model);
+                    println!("Run 'oben models list' to see available models.");
+                }
+            }
+        }
+    }
+    Ok(())
 }

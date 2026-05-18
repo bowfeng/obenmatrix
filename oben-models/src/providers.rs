@@ -13,6 +13,35 @@ pub enum ProviderKind {
     Custom,
 }
 
+/// A model returned from `/v1/models` API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    /// The model's unique identifier.
+    pub id: String,
+    /// Object type, typically "model".
+    pub object: String,
+    /// Unix timestamp when the model was created.
+    pub created: u64,
+    /// Organization that owns the model.
+    pub owned_by: String,
+    /// Max model context length (for OpenAI-compatible API).
+    #[serde(default)]
+    pub max_model_len: Option<usize>,
+    /// Root path for the model (vLLM-specific).
+    #[serde(default)]
+    pub root: Option<String>,
+    /// Parent model (for model groups).
+    #[serde(default)]
+    pub parent: Option<String>,
+}
+
+/// Response from `/v1/models` API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelListResponse {
+    pub object: String,
+    pub data: Vec<ModelInfo>,
+}
+
 /// Configuration for an LLM provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {

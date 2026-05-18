@@ -14,7 +14,9 @@ thiserror.workspace = true
 clap.workspace = true
 dialoguer.workspace = true
 tracing.workspace = true
+tokio.workspace = true
 oben-models = { path = "../oben-models" }
+oben-transport = { path = "../oben-transport" }
 
 [dev-dependencies]
 tempfile.workspace = true

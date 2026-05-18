@@ -34,6 +34,16 @@ impl ChatCompletionsTransport {
         let api_key = config.api_key.clone().unwrap_or_default();
         Self::new(base_url, api_key, &config.model)
     }
+
+    /// Fetch the list of available models from the provider.
+    pub async fn list_models(&self) -> Result<oben_models::ModelListResponse> {
+        self.base.list_models().await
+    }
+
+    /// Find a specific model by ID from the provider.
+    pub async fn find_model(&self, model_id: &str) -> Result<Option<oben_models::ModelInfo>> {
+        self.base.find_model(model_id).await
+    }
 }
 
 #[async_trait::async_trait]

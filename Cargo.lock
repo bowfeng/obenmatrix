@@ -950,11 +950,13 @@ dependencies = [
  "dialoguer",
  "dirs",
  "oben-models",
+ "oben-transport",
  "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
@@ -1075,6 +1077,7 @@ dependencies = [
  "anyhow",
  "dirs",
  "itertools",
+ "libc",
  "regex",
  "tracing",
  "tracing-subscriber",
