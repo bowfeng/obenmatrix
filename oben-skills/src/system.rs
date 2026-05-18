@@ -40,6 +40,20 @@ impl SkillManager {
         instructions
     }
 
+    /// Get instructions from all enabled skills (including manual ones).
+    pub fn build_all_skill_instructions(&self) -> String {
+        let mut instructions = String::from("\n## Available Skills\n");
+        for skill in &self.skills {
+            instructions.push_str(&format!(
+                "### {} ({})\n{}\n",
+                skill.name,
+                skill.category,
+                skill.instructions
+            ));
+        }
+        instructions
+    }
+
     /// Check if a skill should be auto-used.
     pub fn auto_use_skills(&self) -> Vec<&Skill> {
         self.skills.iter().filter(|s| s.auto_use).collect()
@@ -75,6 +89,20 @@ impl SkillManager {
     /// Skill count.
     pub fn count(&self) -> usize {
         self.skills.len()
+    }
+
+    /// List skill names for display.
+    pub fn list_skill_names(&self) -> Vec<String> {
+        self.skills.iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// List skills by category.
+    pub fn skills_by_category(&self) -> Vec<(&str, Vec<&Skill>)> {
+        let mut categories: std::collections::HashMap<&str, Vec<&Skill>> = std::collections::HashMap::new();
+        for skill in &self.skills {
+            categories.entry(&skill.category).or_default().push(skill);
+        }
+        categories.into_iter().collect()
     }
 }
 
@@ -155,6 +183,28 @@ mod tests {
         assert!(instructions.contains("auto-skill"));
         assert!(instructions.contains("You must do this."));
         assert!(!instructions.contains("manual-skill"));
+    }
+
+    #[test]
+    fn test_skill_manager_build_all_instructions() {
+        let mut mgr = SkillManager::new();
+        mgr.load_skills(vec![
+            Skill::builder("skill-a")
+                .description("Skill A")
+                .category("core")
+                .instructions("Do A.")
+                .enabled(true)
+                .build(),
+            Skill::builder("skill-b")
+                .description("Skill B")
+                .category("core")
+                .instructions("Do B.")
+                .enabled(true)
+                .build(),
+        ]);
+        let instructions = mgr.build_all_skill_instructions();
+        assert!(instructions.contains("skill-a"));
+        assert!(instructions.contains("skill-b"));
     }
 
     #[test]
@@ -251,5 +301,32 @@ mod tests {
         assert_eq!(skill.instructions, "Full instructions");
         assert!(!skill.enabled);
         assert!(skill.auto_use);
+    }
+
+    #[test]
+    fn test_skill_manager_list_skill_names() {
+        let mut mgr = SkillManager::new();
+        mgr.load_skills(vec![
+            Skill::builder("skill-a").description("A").build(),
+            Skill::builder("skill-b").description("B").build(),
+        ]);
+        let names = mgr.list_skill_names();
+        assert_eq!(names, vec!["skill-a", "skill-b"]);
+    }
+
+    #[test]
+    fn test_skill_manager_skills_by_category() {
+        let mut mgr = SkillManager::new();
+        mgr.load_skills(vec![
+            Skill::builder("skill-a").description("A").category("cat1").build(),
+            Skill::builder("skill-b").description("B").category("cat1").build(),
+            Skill::builder("skill-c").description("C").category("cat2").build(),
+        ]);
+        let categories = mgr.skills_by_category();
+        assert_eq!(categories.len(), 2);
+        let cat1 = categories.iter().find(|(name, _)| *name == "cat1").unwrap();
+        assert_eq!(cat1.1.len(), 2);
+        let cat2 = categories.iter().find(|(name, _)| *name == "cat2").unwrap();
+        assert_eq!(cat2.1.len(), 1);
     }
 }

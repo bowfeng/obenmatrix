@@ -17,7 +17,7 @@
 | CLI commands | 9 subcommands |
 | Provider transports | 1/7 (ChatCompletions) |
 | Built-in tools | 4/20+ |
-| Skill categories | 1/20+ |
+| Skill categories | 20+/20+ |
 
 **Status: 🟡 Phase 1 — Core Engine (In Progress)**
 
@@ -47,7 +47,7 @@
 | **oben-transport** | ✅ | BaseHTTPTransport, ChatCompletionsTransport (OpenAI-compatible), SSE streaming via eventsource-stream |
 | **oben-tools** | ✅ | ToolRegistry (dynamic), shell, read_file, write_file, http_get, search (stub) |
 | **oben-memory** | ✅ | MemoryManager (session CRUD + JSON persistence), full-text search, skill curation |
-| **oben-skills** | ✅ | SkillLoader (YAML/TXT/MD from disk), SkillManager (enable/disable/auto-use/instruction assembly) |
+| **oben-skills** | ✅ | SkillLoader (YAML/TXT/MD from disk), SkillManager (enable/disable/auto-use/instruction assembly), 20+ built-in skill categories (general, github, devops, software-development, data-science, research, productivity, smart-home, mcp, media, email, note-taking, creative, gaming, social-media, red-teaming, dogfood, diagramming, mlops, apple, autonomous-ai-agents, inference-sh, gifs, domain, yuanbao) |
 | **oben-goals** | ✅ | PlanNode (builder, sub-nodes, artifacts), PlanState (tree mgmt, markdown, save/load), judge verdict parser, GoalState (turn budget, auto-pause), plan markdown parser, node complete/failure message parser |
 | **oben-gateway** | ✅ | Gateway struct, PlatformAdapter trait, Incoming/OutgoingMessage, mock adapter support |
 | **CLI (obenagent)** | ✅ | 9 subcommands: chat, run, setup, config, tools, skills, sessions, info, models |

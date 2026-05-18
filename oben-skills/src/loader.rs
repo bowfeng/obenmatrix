@@ -2,7 +2,6 @@
 /// Maps to how Hermes loads skill files from the `skills/` directory.
 
 use anyhow::Result;
-use oben_models::{Skill, Tool, ToolParameters, ToolParameter};
 use std::path::{Path, PathBuf};
 use tracing::{info, debug};
 
@@ -24,7 +23,7 @@ impl SkillLoader {
     }
 
     /// Load all skills from configured directories.
-    pub fn load_all(&self) -> Result<Vec<Skill>> {
+    pub fn load_all(&self) -> Result<Vec<oben_models::Skill>> {
         let mut skills = Vec::new();
 
         for dir in &self.skill_dirs {
@@ -55,7 +54,7 @@ impl SkillLoader {
         Ok(skills)
     }
 
-    fn load_from_dir(&self, dir: &Path) -> Option<Skill> {
+    fn load_from_dir(&self, dir: &Path) -> Option<oben_models::Skill> {
         let name = dir.file_name()?.to_str()?;
         let skill_dir = dir;
 
@@ -65,7 +64,7 @@ impl SkillLoader {
 
         if skill_file.exists() {
             let content = std::fs::read_to_string(&skill_file).ok()?;
-            Some(Skill::builder(name)
+            Some(oben_models::Skill::builder(name)
                 .description(format!("Skill: {}", name))
                 .category(dir.parent()?.file_name()?.to_str()?.to_string())
                 .instructions(content)
@@ -78,13 +77,13 @@ impl SkillLoader {
             let readme = skill_dir.join("README.md");
             if readme.exists() {
                 let content = std::fs::read_to_string(&readme).ok()?;
-                Some(Skill::builder(name)
+                Some(oben_models::Skill::builder(name)
                     .description(format!("Skill: {}", name))
                     .category(dir.parent()?.file_name()?.to_str()?.to_string())
                     .instructions(content)
                     .build())
             } else {
-                Some(Skill::builder(name)
+                Some(oben_models::Skill::builder(name)
                     .description(format!("Skill: {}", name))
                     .category(dir.parent()?.file_name()?.to_str()?.to_string())
                     .instructions("(no instructions found)")
@@ -93,7 +92,7 @@ impl SkillLoader {
         }
     }
 
-    fn load_file(&self, path: &Path) -> Option<Skill> {
+    fn load_file(&self, path: &Path) -> Option<oben_models::Skill> {
         let content = std::fs::read_to_string(path).ok()?;
         let name = path.file_stem()?.to_str()?;
 
@@ -101,7 +100,7 @@ impl SkillLoader {
         if path.extension().map(|e| e == "yaml" || e == "yml").unwrap_or(false) {
             serde_yaml::from_str(&content).ok()
         } else {
-            Some(Skill::builder(name)
+            Some(oben_models::Skill::builder(name)
                 .description(content.lines().next().unwrap_or("").to_string())
                 .instructions(content)
                 .build())
@@ -110,9 +109,9 @@ impl SkillLoader {
 }
 
 /// Default skills that come with the system.
-pub fn builtin_skills() -> Vec<Skill> {
+pub fn builtin_skills() -> Vec<oben_models::Skill> {
     vec![
-        Skill::builder("general")
+        oben_models::Skill::builder("general")
             .description("General-purpose conversation and task assistance")
             .category("core")
             .instructions("You are a helpful AI assistant. Help the user accomplish their goals efficiently and accurately.")
