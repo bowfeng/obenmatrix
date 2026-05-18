@@ -91,6 +91,95 @@ impl Default for AppConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use crate::defaults;
+    use oben_models::ProviderKind;
+
+    #[test]
+    fn test_default_model_is_openrouter_qwen() {
+        let config = AppConfig::default();
+        assert_eq!(config.model.kind, ProviderKind::OpenRouter);
+        assert_eq!(config.model.model, "qwen/qwen3-235b:free");
+        assert_eq!(config.model.default_model, "qwen/qwen3-235b:free");
+        assert!(config.model.api_key.is_none());
+    }
+
+    #[test]
+    fn test_default_settings() {
+        let config = AppConfig::default();
+        assert_eq!(config.temperature, Some(0.7));
+        assert_eq!(config.max_tokens, Some(8192));
+        assert_eq!(config.max_iterations, Some(50));
+        assert!(config.tools.auto_detect);
+        assert_eq!(config.display.theme, "dark");
+        assert_eq!(config.context.compression, "summary");
+        assert_eq!(config.context.max_messages, Some(100));
+    }
+
+    #[test]
+    fn test_default_system_prompt_not_empty() {
+        let prompt = defaults::default_system_prompt();
+        assert!(!prompt.trim().is_empty());
+        assert!(prompt.contains("AI agent"));
+        assert!(prompt.contains("tools"));
+    }
+
+    #[test]
+    fn test_config_yaml_roundtrip() {
+        let config = AppConfig::default();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+        // Compare core fields
+        assert_eq!(restored.model.kind, config.model.kind);
+        assert_eq!(restored.model.model, config.model.model);
+        assert_eq!(restored.temperature, config.temperature);
+        assert_eq!(restored.max_tokens, config.max_tokens);
+        assert_eq!(restored.max_iterations, config.max_iterations);
+        assert_eq!(restored.tools.auto_detect, config.tools.auto_detect);
+        assert_eq!(restored.display.theme, config.display.theme);
+        assert_eq!(restored.context.compression, config.context.compression);
+    }
+
+    #[test]
+    fn test_config_yaml_roundtrip_with_gateway() {
+        let mut config = AppConfig::default();
+        config.gateway = Some(GatewayConfig {
+            telegram: Some(PlatformConfig {
+                enabled: true,
+                token: Some("tg-secret-token".to_string()),
+            }),
+            discord: None,
+            slack: None,
+            whatsapp: None,
+        });
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert!(restored.gateway.is_some());
+        let gw = restored.gateway.unwrap();
+        let tg = gw.telegram.unwrap();
+        assert!(tg.enabled);
+        assert_eq!(tg.token, Some("tg-secret-token".to_string()));
+    }
+
+    #[test]
+    fn test_save_load_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+
+        let config = AppConfig::default();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        fs::write(&config_path, &yaml).unwrap();
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&content).unwrap();
+        assert_eq!(restored.model.kind, config.model.kind);
+        assert_eq!(restored.temperature, config.temperature);
+    }
+}
+
 impl AppConfig {
     pub fn config_dir() -> PathBuf {
         dirs::config_dir()
