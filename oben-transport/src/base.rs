@@ -19,7 +19,6 @@ pub struct ChatRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    #[serde(flatten)]
     pub content: MessageContent,
 }
 
@@ -140,8 +139,12 @@ pub struct BaseTransport {
 
 impl BaseTransport {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("Failed to build HTTP client");
         Self {
-            client: reqwest::Client::new(),
+            client,
             base_url: base_url.into(),
             api_key: api_key.into(),
             model: model.into(),
@@ -153,13 +156,11 @@ impl BaseTransport {
 
         debug!("Requesting {}: model={}, messages={}", url, request.model, request.messages.len());
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&request)
-            .send()
-            .await?;
+        let mut req = self.client.post(&url).json(&request);
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+        let response = req.send().await?;
 
         if !response.status().is_success() {
             let status = response.status();

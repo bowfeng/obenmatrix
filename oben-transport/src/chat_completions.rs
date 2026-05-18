@@ -2,10 +2,11 @@
 /// Maps to `agent/transports/chat_completions.py`.
 
 use anyhow::Result;
-use oben_models::{Message, MessageRole, ProviderKind, TransportResponse, TransportToolCall};
+use serde_json::json;
 use tracing::debug;
+use oben_models::{Message, MessageRole, ProviderKind, TransportResponse, TransportToolCall};
 
-use super::base::{BaseTransport, ChatRequest, ChatTool, ToolFunction};
+use super::base::{BaseTransport, ChatResponse};
 
 /// Transport that talks to any OpenAI-compatible API.
 pub struct ChatCompletionsTransport {
@@ -21,15 +22,14 @@ impl ChatCompletionsTransport {
 
     /// Create from a ProviderConfig.
     pub fn from_config(config: &oben_models::ProviderConfig) -> Self {
-        let kind = &config.kind;
-        let base_url = match kind {
+        let base_url = match config.kind {
             ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
             ProviderKind::OpenAI => "https://api.openai.com/v1".to_string(),
             ProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
             ProviderKind::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
             ProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1".to_string(),
             ProviderKind::LMStudio => "http://localhost:1234/v1".to_string(),
-            ProviderKind::Custom { base_url } => base_url.clone(),
+            ProviderKind::Custom => config.base_url.clone().unwrap_or_default(),
         };
         let api_key = config.api_key.clone().unwrap_or_default();
         Self::new(base_url, api_key, &config.model)
@@ -43,75 +43,84 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
     }
 
     async fn chat(&self, messages: &[Message]) -> Result<TransportResponse> {
-        let chat_messages: Vec<super::base::ChatMessage> = messages
+        // Build request as raw JSON to avoid serde serialization issues
+        let messages_json: Vec<serde_json::Value> = messages
             .iter()
             .map(|m| {
                 let role = match m.role {
-                    MessageRole::System => "system".to_string(),
-                    MessageRole::User => "user".to_string(),
-                    MessageRole::Assistant => "assistant".to_string(),
-                    MessageRole::Tool => "tool".to_string(),
+                    MessageRole::System => "system",
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    MessageRole::Tool => "tool",
                 };
-                let content = match &m.content {
+                match &m.content {
                     oben_models::MessageContent::Text(t) => {
-                        super::base::MessageContent::text(t)
+                        json!({"role": role, "content": t})
                     }
                     oben_models::MessageContent::Image { url, detail } => {
-                        let parts = vec![
-                            super::base::ChatMessagePart {
-                                part_type: "text".to_string(),
-                                text: Some("I see an image. Let me analyze it.".to_string()),
-                                image_url: None,
-                            },
-                            super::base::ChatMessagePart {
-                                part_type: "image_url".to_string(),
-                                text: None,
-                                image_url: Some(super::base::ImageUrl {
-                                    url: url.clone(),
-                                    detail: detail.clone(),
-                                }),
-                            },
-                        ];
-                        super::base::MessageContent::parts(parts)
+                        let mut img = json!({
+                            "type": "image_url",
+                            "image_url": { "url": url }
+                        });
+                        if let Some(d) = detail {
+                            img["image_url"]["detail"] = json!(d);
+                        }
+                        json!({
+                            "role": role,
+                            "content": [
+                                { "type": "text", "text": "I see an image. Let me analyze it." },
+                                img
+                            ]
+                        })
                     }
                     oben_models::MessageContent::Parts(parts) => {
-                        let chat_parts: Vec<super::base::ChatMessagePart> = parts
+                        let parts_json: Vec<serde_json::Value> = parts
                             .iter()
                             .map(|p| match p {
-                                oben_models::MessagePart::Text(t) => super::base::ChatMessagePart {
-                                    part_type: "text".to_string(),
-                                    text: Some(t.clone()),
-                                    image_url: None,
-                                },
-                                oben_models::MessagePart::Image { url, detail } => super::base::ChatMessagePart {
-                                    part_type: "image_url".to_string(),
-                                    text: None,
-                                    image_url: Some(super::base::ImageUrl {
-                                        url: url.clone(),
-                                        detail: detail.clone(),
-                                    }),
-                                },
+                                oben_models::MessagePart::Text(t) => {
+                                    json!({"type": "text", "text": t})
+                                }
+                                oben_models::MessagePart::Image { url, detail } => {
+                                    let mut img = json!({"type": "image_url", "image_url": {"url": url}});
+                                    if let Some(d) = detail {
+                                        img["image_url"]["detail"] = json!(d);
+                                    }
+                                    img
+                                }
                             })
                             .collect();
-                        super::base::MessageContent::parts(chat_parts)
+                        json!({"role": role, "content": parts_json})
                     }
-                };
-                super::base::ChatMessage { role, content }
+                }
             })
             .collect();
 
-        let request = ChatRequest {
-            model: self.base.model.clone(),
-            messages: chat_messages,
-            temperature: Some(0.7),
-            max_tokens: Some(8192),
-            tools: None,
-            stream: None,
-        };
+        let request = json!({
+            "model": self.base.model,
+            "messages": messages_json,
+            "temperature": 0.7,
+            "max_tokens": 8192,
+        });
 
-        let response = self.base.send_request(request).await?;
+        let url = format!("{}/chat/completions", self.base.base_url);
 
-        let choice = response.choices.first().ok_or_else(|| anyhow::anyhow!("No response choices"))?;
+        debug!("Requesting {}: model={}, messages={}", url, self.base.model, messages.len());
+
+        let mut req = self.base.client.post(&url).json(&request);
+        if !self.base.api_key.is_empty() {
+            req = req.bearer_auth(&self.base.api_key);
+        }
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await?;
+            return Err(anyhow::anyhow!("API error {}: {}", status, body));
+        }
+
+        let resp: ChatResponse = response.json().await?;
+
+        let choice = resp.choices.first().ok_or_else(|| anyhow::anyhow!("No response choices"))?;
         let text = choice.message.content.clone().unwrap_or_default();
         let tool_calls: Vec<TransportToolCall> = choice
             .message
@@ -128,7 +137,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         Ok(TransportResponse {
             text,
             tool_calls,
-            tokens_used: response.usage.and_then(|u| u.total_tokens),
+            tokens_used: resp.usage.and_then(|u| u.total_tokens),
         })
     }
 }

@@ -10,7 +10,7 @@ pub enum ProviderKind {
     Bedrock,
     Gemini,
     LMStudio,
-    Custom { base_url: String },
+    Custom,
 }
 
 /// Configuration for an LLM provider.

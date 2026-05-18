@@ -76,11 +76,11 @@ async fn run_chat() -> Result<()> {
     let mut tools = oben_tools::ToolRegistry::new();
     register_builtin_tools(&mut tools);
 
-    // Build system prompt with skill instructions
-    let system_prompt = oben_config::defaults::default_system_prompt();
+    // Build system prompt with skill instructions (reserved for future use)
+    let _system_prompt = oben_config::defaults::default_system_prompt();
 
-    // Start a new session
-    let session = memory.new_session(&format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")));
+    // Start a new session (reserved for future use)
+    let _session = memory.new_session(&format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")));
 
     println!("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
 

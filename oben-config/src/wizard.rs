@@ -31,15 +31,17 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
         2 => oben_models::ProviderKind::Anthropic,
         3 => oben_models::ProviderKind::Bedrock,
         4 => oben_models::ProviderKind::Gemini,
-        5 => oben_models::ProviderKind::Custom {
-            base_url: "http://localhost:1234/v1".to_string(),
-        },
+        5 => {
+            config.model.base_url = Some("http://localhost:1234/v1".to_string());
+            oben_models::ProviderKind::Custom
+        }
         6 => {
             let url: String = Input::new()
                 .with_prompt("Custom API base URL")
                 .default("http://localhost:1234/v1".to_string())
                 .interact()?;
-            oben_models::ProviderKind::Custom { base_url: url }
+            config.model.base_url = Some(url);
+            oben_models::ProviderKind::Custom
         }
         _ => unreachable!(),
     };
