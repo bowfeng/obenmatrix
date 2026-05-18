@@ -64,3 +64,83 @@ fn token_estimate(msg: &Message) -> usize {
     };
     text.len() / 4 + 5 // per-message overhead
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_context_starts_empty() {
+        let ctx = ContextManager::new(100);
+        assert!(ctx.is_empty());
+        assert_eq!(ctx.len(), 0);
+    }
+
+    #[test]
+    fn test_add_message_increments_count() {
+        let mut ctx = ContextManager::new(100);
+        ctx.add_message(Message::user("hello"));
+        assert_eq!(ctx.len(), 1);
+        assert!(!ctx.is_empty());
+    }
+
+    #[test]
+    fn test_needs_compression_false_under_limit() {
+        let ctx = ContextManager::new(100);
+        assert!(!ctx.needs_compression());
+    }
+
+    #[test]
+    fn test_needs_compression_true_over_limit() {
+        let mut ctx = ContextManager::new(2);
+        ctx.add_message(Message::user("a"));
+        ctx.add_message(Message::user("b"));
+        assert!(!ctx.needs_compression()); // exactly at limit
+        ctx.add_message(Message::user("c"));
+        assert!(ctx.needs_compression()); // over limit
+    }
+
+    #[test]
+    fn test_clear_messages() {
+        let mut ctx = ContextManager::new(100);
+        ctx.add_message(Message::user("a"));
+        ctx.add_message(Message::user("b"));
+        ctx.clear_messages();
+        assert!(ctx.is_empty());
+        assert_eq!(ctx.len(), 0);
+        assert!(!ctx.needs_compression());
+    }
+
+    #[test]
+    fn test_estimate_tokens_text() {
+        let mut ctx = ContextManager::new(100);
+        ctx.add_message(Message::user("a".repeat(400))); // 400 chars ~ 105 tokens
+        let tokens = ctx.estimate_tokens();
+        // Should be 100 (text) + 5 (overhead)
+        assert_eq!(tokens, 105);
+    }
+
+    #[test]
+    fn test_estimate_tokens_image() {
+        let mut ctx = ContextManager::new(100);
+        ctx.add_message(Message {
+            role: oben_models::MessageRole::User,
+            content: oben_models::MessageContent::Image {
+                url: "https://example.com/img.jpg".to_string(),
+                detail: None,
+            },
+            id: None,
+            tool_call_ids: vec![],
+        });
+        assert_eq!(ctx.estimate_tokens(), 500);
+    }
+
+    #[test]
+    fn test_messages_returns_reference() {
+        let mut ctx = ContextManager::new(100);
+        ctx.add_message(Message::user("test"));
+        let msgs = ctx.messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, oben_models::MessageRole::User);
+    }
+}
