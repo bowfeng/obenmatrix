@@ -9,6 +9,9 @@ use tracing::info;
 #[derive(Parser)]
 #[command(name = "oben", version, about = "The self-improving AI agent — Rust port of Hermes Agent")]
 struct Cli {
+    /// Enable verbose/debug output
+    #[arg(short, long)]
+    verbose: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -66,9 +69,9 @@ enum ModelsCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    oben_utils::logging::init();
-
     let cli = Cli::parse();
+    let level = if cli.verbose { tracing::Level::DEBUG } else { tracing::Level::INFO };
+    oben_utils::logging::init(level);
 
     match cli.command {
         Commands::Chat => run_chat().await,

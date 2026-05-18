@@ -2,18 +2,19 @@
 
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-pub fn init() {
+/// Initialize the tracing subscriber with the given log level.
+/// The `RUST_LOG` environment variable overrides the level argument.
+pub fn init(level: tracing::Level) {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_ansi(true);
 
-    let env_layer = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new("info"))
-        .unwrap();
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(format!("oben={level}")));
 
     tracing_subscriber::registry()
         .with(fmt_layer)
-        .with(env_layer)
+        .with(env_filter)
         .init();
 }
 
