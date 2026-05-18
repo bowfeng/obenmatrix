@@ -1057,6 +1057,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "oben-curator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "oben-gateway"
 version = "0.1.0"
 dependencies = [
