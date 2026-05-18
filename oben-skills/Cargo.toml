@@ -1,0 +1,14 @@
+[package]
+name = "oben-skills"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+oben-models = { path = "../oben-models" }
+
+anyhow.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+tracing.workspace = true
+itertools.workspace = true

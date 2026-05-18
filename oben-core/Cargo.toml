@@ -1,0 +1,20 @@
+[package]
+name = "oben-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+oben-models = { path = "../oben-models" }
+oben-config = { path = "../oben-config" }
+oben-tools = { path = "../oben-tools" }
+oben-skills = { path = "../oben-skills" }
+oben-memory = { path = "../oben-memory" }
+
+anyhow.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+itertools.workspace = true
+regex.workspace = true

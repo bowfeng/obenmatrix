@@ -1,0 +1,20 @@
+[package]
+name = "oben-gateway"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+oben-core = { path = "../oben-core" }
+oben-config = { path = "../oben-config" }
+oben-models = { path = "../oben-models" }
+oben-memory = { path = "../oben-memory" }
+oben-tools = { path = "../oben-tools" }
+
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+futures.workspace = true

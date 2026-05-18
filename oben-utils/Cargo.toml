@@ -1,0 +1,13 @@
+[package]
+name = "oben-utils"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true
+regex.workspace = true
+itertools.workspace = true

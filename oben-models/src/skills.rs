@@ -1,0 +1,73 @@
+use serde::{Deserialize, Serialize};
+
+/// A skill definition — instructions the agent loads to extend behavior.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    pub instructions: String,
+    pub enabled: bool,
+    pub auto_use: bool,
+}
+
+impl Skill {
+    pub fn builder(name: impl Into<String>) -> SkillBuilder {
+        SkillBuilder {
+            name: name.into(),
+            description: String::new(),
+            category: String::new(),
+            instructions: String::new(),
+            enabled: true,
+            auto_use: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillBuilder {
+    name: String,
+    description: String,
+    category: String,
+    instructions: String,
+    enabled: bool,
+    auto_use: bool,
+}
+
+impl SkillBuilder {
+    pub fn description(mut self, desc: impl Into<String>) -> Self {
+        self.description = desc.into();
+        self
+    }
+
+    pub fn category(mut self, cat: impl Into<String>) -> Self {
+        self.category = cat.into();
+        self
+    }
+
+    pub fn instructions(mut self, inst: impl Into<String>) -> Self {
+        self.instructions = inst.into();
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn auto_use(mut self, auto: bool) -> Self {
+        self.auto_use = auto;
+        self
+    }
+
+    pub fn build(self) -> Skill {
+        Skill {
+            name: self.name,
+            description: self.description,
+            category: self.category,
+            instructions: self.instructions,
+            enabled: self.enabled,
+            auto_use: self.auto_use,
+        }
+    }
+}
