@@ -42,6 +42,8 @@ clap = { version = "4", features = ["derive"] }
 dialoguer = "0.11"
 indicatif = "0.17"
 textwrap = "0.16"
+tempfile = "3"
+ctor = "0.2"
 
 [package]
 name = "obenagent"
