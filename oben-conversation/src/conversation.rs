@@ -2,7 +2,7 @@
 /// Maps to `agent/conversation_loop.py::run_conversation`.
 
 use anyhow::Result;
-use oben_models::{Message, TransportProvider};
+use oben_models::{Message, MessageRole, TransportProvider};
 use std::path::PathBuf;
 use tracing::info;
 
@@ -184,6 +184,22 @@ impl ConversationLoop {
             messages.push(assistant_msg);
 
             if tool_calls.is_empty() {
+                // When text is empty after tool results, return the tool
+                // results instead of empty string (LLMs sometimes return
+                // empty text after tool calls).
+                if text.trim().is_empty() {
+                    if let Some(last_tool_result) = messages.last().and_then(|m| {
+                        if m.role == MessageRole::Tool {
+                            Some(m.content.to_text())
+                        } else {
+                            None
+                        }
+                    }) {
+                        if !last_tool_result.is_empty() {
+                            return Ok(last_tool_result);
+                        }
+                    }
+                }
                 return Ok(text.trim().to_string());
             }
 
@@ -265,6 +281,22 @@ impl ConversationLoop {
             messages.push(assistant_msg);
 
             if tool_calls.is_empty() {
+                // When text is empty after tool results, return the tool
+                // results instead of empty string (LLMs sometimes return
+                // empty text after tool calls).
+                if text.trim().is_empty() {
+                    if let Some(last_tool_result) = messages.last().and_then(|m| {
+                        if m.role == MessageRole::Tool {
+                            Some(m.content.to_text())
+                        } else {
+                            None
+                        }
+                    }) {
+                        if !last_tool_result.is_empty() {
+                            return Ok(last_tool_result);
+                        }
+                    }
+                }
                 return Ok(text.trim().to_string());
             }
 

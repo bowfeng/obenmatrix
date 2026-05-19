@@ -30,6 +30,16 @@ pub enum MessageContent {
     Parts(Vec<MessagePart>),
 }
 
+impl MessageContent {
+    /// Get the text content if this is a Text variant.
+    pub fn to_text(&self) -> String {
+        match self {
+            MessageContent::Text(t) => t.clone(),
+            _ => String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessagePart {
     Text(String),
