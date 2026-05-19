@@ -7,7 +7,7 @@ use std::io::Write;
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "oben", version, about = "The self-improving AI agent — Rust port of Hermes Agent")]
+#[command(name = "oben", version, about = "The self-improving AI agent)]
 struct Cli {
     /// Enable verbose/debug output
     #[arg(short, long)]
@@ -306,7 +306,7 @@ fn list_sessions() {
 
 fn show_info() {
     println!("ObenAgent v{}", env!("CARGO_PKG_VERSION"));
-    println!("Rust port of Hermes Agent by Nous Research");
+    println!("self-improving AI agent");
     println!("\nUsage: oben <command>");
     println!("\nCommands:");
     println!("  chat    — Start an interactive conversation");

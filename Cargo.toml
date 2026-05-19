@@ -55,7 +55,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The self-improving AI agent — Rust port of Hermes Agent"
+description = "The self-improving AI agent"
 
 [dependencies]
 oben-conversation = { path = "oben-conversation" }
