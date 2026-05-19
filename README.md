@@ -18,16 +18,16 @@
 | 💬 **Interactive Chat** | ✅ Streaming + non-streaming modes |
 | 🔄 **Session Memory** | ✅ JSON persistence, LLM-based compaction |
 | 🧠 **Autonomous Goals** | ✅ Plan parsing, judge verdict, turn budgets |
-| 📦 **Skill System** | ✅ 25 built-in categories, YAML/TXT/MD support |
 | 🔧 **Tool Registry** | ✅ Shell, file I/O, HTTP, dynamic dispatch |
 | 🧹 **Skill Curator** | ✅ Usage tracking, lifecycle (active→stale→archived) |
-| 🚀 **Model Discovery** | ✅ Auto-detect providers, list/fetch models |
-| 🛠️ **Setup Wizard** | ✅ Interactive config generation |
 
 ### In Progress
 
 | Feature | Status |
 |---------|--------|
+| 🛠️ **Skills** | 🟡 25 skill definitions present, under active development |
+| 🔧 **Setup Wizard** | 🟡 Interactive config, needs polish |
+| 🔍 **Model Discovery** | 🟡 Provider listing implemented, needs refinement |
 | 🤖 **More Providers** | 🟡 OpenAI-compatible ✅ · Anthropic/Bedrock/Gemini planned |
 | 📱 **Platform Adapters** | 🟡 Telegram/Discord/Slack trait defined |
 | 🌐 **Advanced Tools** | 🔴 Search, Browser, Voice, Image, MCP, Cron |
@@ -55,16 +55,6 @@ cargo build --release
 cargo install --path .
 ```
 
-### Setup
-
-Run the interactive setup wizard:
-
-```bash
-obenagent setup
-```
-
-This creates `~/.oben/config.yaml` with your API endpoint, model, and other defaults.
-
 ### Usage
 
 ```bash
@@ -80,10 +70,10 @@ obenagent run -p "Explain quantum computing" --stream
 # List available tools
 obenagent tools
 
-# List skills
+# List skills (work in progress)
 obenagent skills
 
-# Discover models from your provider
+# Discover models from your provider (experimental)
 obenagent models list
 
 # Manage sessions
@@ -143,7 +133,7 @@ context:
 max_iterations: 50
 ```
 
-Or use the interactive wizard: `obenagent setup`
+Or edit `~/.oben/config.yaml` manually (setup wizard is coming soon)
 
 ---
 
@@ -151,11 +141,7 @@ Or use the interactive wizard: `obenagent setup`
 
 ObenAgent ships with **25 built-in skill categories** covering development, analysis, automation, and more. Skills are defined as YAML, TXT, or MD files — you can also drop your own into the `skills/` directory.
 
-View all skills:
-
-```bash
-obenagent skills
-```
+*(Skill system under active development)*
 
 ---
 
