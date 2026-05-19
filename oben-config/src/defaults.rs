@@ -1,4 +1,4 @@
-use crate::AppConfig;
+
 
 /// The default system prompt that gives the agent its base personality.
 pub const DEFAULT_SYSTEM_PROMPT: &str = r#"You are an AI agent that helps users accomplish complex tasks.

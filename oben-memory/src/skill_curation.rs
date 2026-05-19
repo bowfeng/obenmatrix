@@ -37,7 +37,7 @@ impl SkillCurator {
     /// Record a completed workflow that could become a skill.
     /// In a full implementation, this would call the LLM to extract a skill
     /// from the conversation history.
-    pub fn review_conversation(&mut self, conversation_id: &str, tool_usage: &[String]) -> Option<Skill> {
+    pub fn review_conversation(&mut self, _conversation_id: &str, _tool_usage: &[String]) -> Option<Skill> {
         // Simple heuristic: if a tool was used 3+ times, suggest creating a skill
         for (tool_name, &count) in &self.tool_usage {
             if count >= 3 {

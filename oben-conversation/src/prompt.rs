@@ -3,8 +3,6 @@
 use anyhow::Result;
 use oben_models::Message;
 
-use crate::context::ContextManager;
-
 pub struct PromptBuilder {
     system_prompt: String,
 }
@@ -21,11 +19,11 @@ impl PromptBuilder {
         self.system_prompt = prompt.into();
     }
 
-    /// Build the messages array for the LLM API.
-    pub fn build_api_messages(&self, context: &ContextManager) -> Result<Vec<Message>> {
-        let mut messages = vec![Message::system(self.system_prompt.clone())];
-        messages.extend(context.messages().iter().cloned());
-        Ok(messages)
+    /// Build the messages array for the LLM API from a slice of messages.
+    pub fn build_api_messages(&self, messages: &[Message]) -> Result<Vec<Message>> {
+        let mut api_messages = vec![Message::system(self.system_prompt.clone())];
+        api_messages.extend(messages.iter().cloned());
+        Ok(api_messages)
     }
 
     /// Get current system prompt.

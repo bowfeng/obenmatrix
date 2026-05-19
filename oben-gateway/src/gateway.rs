@@ -4,9 +4,9 @@
 use anyhow::Result;
 use oben_memory::MemoryManager;
 use oben_tools::ToolRegistry;
-use tracing::{info, warn};
+use tracing::info;
 
-use crate::platform::{IncomingMessage, MessageHandler, OutgoingMessage, PlatformAdapter};
+use crate::platform::IncomingMessage;
 
 /// The gateway process — listens on multiple platforms and routes to the agent.
 pub struct Gateway {

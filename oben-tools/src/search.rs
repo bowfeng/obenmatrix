@@ -11,7 +11,7 @@ pub async fn web_search(args: serde_json::Value) -> Result<ToolResult> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
 
-    let max_results = args.get("max_results")
+    let _max_results = args.get("max_results")
         .and_then(|v| v.as_u64())
         .unwrap_or(5);
 

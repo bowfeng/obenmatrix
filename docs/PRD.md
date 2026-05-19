@@ -13,7 +13,7 @@
 | Metric | Status |
 |--------|--------|
 | Crates | 11/11 compiling |
-| Tests | 244/244 passing |
+| Tests | 275/275 passing |
 | CLI subcommands | 9 |
 | Provider transports | 1/7 (OpenAI-compatible ChatCompletions) |
 | Built-in tools | 4 |
@@ -23,7 +23,8 @@
 
 ```
 ✅ Foundation       Models • Utils • Config • Skills • Memory • Gateway • Curator
-✅ Engine           ConversationLoop • ContextManager • Budget • Compression
+✅ Engine           ConversationLoop • ContextEngine • Budget • Compression (merged)
+✅ Sessions         ober-session: lifecycle + LLM compaction algorithm
 ✅ Transport        OpenAI-compatible (streaming + SSE)
 ✅ CLI              chat run setup config tools skills sessions info models
 ✅ Goals            Autonomous loop with plan parsing, judge verdict, state machine
@@ -36,6 +37,12 @@
 
 ---
 
+## Recent Progress
+
+| Date | Status | Notes |
+|------|--------|-------|
+| 2026-05-18 | ✅ LLM-based summarization | `generate_summary()` no longer a stub — actually calls LLM via `reqwest` with structured prompt template (Active Task, Goal, Constraints, Completed Actions, etc.), iterative updates, and focus topic support. Falls back to static placeholder on LLM failure. CLI: `oben sessions compact [-s SESSION] [-f FOCUS]` |
+
 ## Done ✅
 
 | Crate | Tests | Status | Details |
@@ -43,7 +50,7 @@
 | **oben-models** | 34 | ✅ | Message, Tool, Skill, Session, ProviderConfig, TransportProvider trait, ModelInfo, ModelListResponse |
 | **oben-utils** | 6 | ✅ | Logging (tracing + `--verbose`/`RUST_LOG`), terminal spinner, path security, env helpers, table formatter |
 | **oben-config** | 6 | ✅ | YAML config, setup wizard (interactive), system prompt defaults, gateway config serialization, model discovery |
-| **oben-core** | 21 | ✅ | ConversationLoop, ContextManager, PromptBuilder, ContextCompressor, IterationBudget, streaming + non-streaming turns |
+| **oben_conversation** | 27 | ✅ | ConversationLoop, ContextEngine (buffer + token tracking + compression trigger), full compaction algorithm (compact_session_messages, config_from_app, CompressionConfig/Result), PromptBuilder, streaming + non-streaming turns |
 | **oben-transport** | 64 | ✅ | BaseHTTPTransport, ChatCompletionsTransport (OpenAI-compatible), SSE streaming via `eventsource-stream`, 53 unit + 11 integration tests with wiremock |
 | **oben-tools** | 34 | ✅ | ToolRegistry (dynamic dispatch), shell exec, read_file, write_file, http_get, search stub, 28 unit + 6 integration tests |
 | **oben-memory** | 7 | ✅ | MemoryManager (session CRUD + JSON persistence), full-text search, skill curation |
@@ -52,7 +59,7 @@
 | **oben-gateway** | 13 | ✅ | Gateway struct, PlatformAdapter trait, Incoming/OutgoingMessage, mock adapter support |
 | **oben-curator** | 17 | ✅ | Usage tracking (use/view/patch counts), lifecycle states (active→stale→archived), scheduler (pause/resume), report generation (text + JSON) |
 
-**Total: 244 tests passing across 11 crates**
+**Total: 275 tests passing across 11 crates**
 
 ---
 
@@ -82,11 +89,11 @@ obenagent/               # Root workspace (binary)
 │   ├── defaults.rs      # Default system prompt, provider defaults
 │   └── wizard.rs        # Interactive setup wizard (clap + dialoguer)
 │
-├── oben-core/           # Agent engine
+├── oben_conversation/           # Agent engine
 │   ├── conversation.rs  # ConversationLoop — main turn cycle (streaming + non-streaming)
-│   ├── context.rs       # ContextManager — message tracking + token estimation
+│   ├── context.rs       # ContextEngine — unified: buffer, real token tracking, should_compress(), compress()
 │   ├── prompt.rs        # PromptBuilder — system prompt + message assembly
-│   ├── compression.rs   # ContextCompressor — summary/ttoken_count strategies
+│   ├── compression.rs   # Full compaction: compact_session_messages(), config_from_app(), CompressionConfig/Result/Stats
 │   ├── budget.rs        # IterationBudget — turn limits per conversation
 │   └── transport.rs     # Re-exports TransportProvider from oben-models
 │
@@ -151,13 +158,13 @@ Build a self-improving AI agent in Rust, porting the full functionality of Herme
 ## Key Decisions
 
 ### Transport Trait Location
-Moved `TransportProvider` to `oben-models::providers` to break a circular dependency between `oben-core` and `oben-transport`.
+Moved `TransportProvider` to `oben-models::providers` to break a circular dependency between `oben_conversation` and `oben-transport`.
 
 ### Tool Handler Type
 Used `Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<ToolResult>>> + Send>>` to allow asynchronous tool execution.
 
 ### Goal Loop Closure Pattern
-`run_goal_loop` takes a generic async closure `F: FnMut(&str) -> Fut` for maximum flexibility, avoiding a crate dependency on `oben-core`.
+`run_goal_loop` takes a generic async closure `F: FnMut(&str) -> Fut` for maximum flexibility, avoiding a crate dependency on `oben_conversation`.
 
 ### Streaming Crate
 Chose `eventsource-stream` for native `reqwest` compatibility. CLI has `--stream` flag.
@@ -244,7 +251,7 @@ Used `Arc<Mutex<F>>` in `run_turn_with_streaming` to share callbacks across stre
 | Metric | Target | Current |
 |--------|--------|---------|
 | Workspace compiles | ✅ 100% | ✅ 11/11 crates |
-| Tests | 80%+ | ✅ 244/244 passing (11 crates) |
+| Tests | 80%+ | ✅ 275/275 passing (11 crates) |
 | Provider transports | 6+ | 1/7 (ChatCompletions) |
 | Built-in tools | 20+ | 4 (shell, read, write, http_get) |
 | Skill categories | 20+ | ✅ 25/25 implemented |

@@ -1,13 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+use super::ToolCall;
+
 /// A single message in a conversation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: MessageRole,
     pub content: MessageContent,
     pub id: Option<String>,
-    /// Tool call IDs this message references (for responses).
+    /// Tool call IDs this message references (for tool results).
     pub tool_call_ids: Vec<String>,
+    /// Tool calls made by the assistant in this message.
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +43,7 @@ impl Message {
             content: MessageContent::Text(text.into()),
             id: None,
             tool_call_ids: vec![],
+            tool_calls: None,
         }
     }
 
@@ -48,6 +53,7 @@ impl Message {
             content: MessageContent::Text(text.into()),
             id: None,
             tool_call_ids: vec![],
+            tool_calls: None,
         }
     }
 
@@ -57,6 +63,7 @@ impl Message {
             content: MessageContent::Text(text.into()),
             id: None,
             tool_call_ids: vec![],
+            tool_calls: None,
         }
     }
 
@@ -66,6 +73,7 @@ impl Message {
             content: MessageContent::Text(output.into()),
             id: None,
             tool_call_ids: vec![tool_call_id.into()],
+            tool_calls: None,
         }
     }
 }

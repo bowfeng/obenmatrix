@@ -1,5 +1,5 @@
 [package]
-name = "oben-core"
+name = "oben-conversation"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -14,7 +14,12 @@ oben-memory = { path = "../oben-memory" }
 anyhow.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
+chrono.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 tracing.workspace = true
 itertools.workspace = true
 regex.workspace = true
+reqwest.workspace = true
+dirs.workspace = true
+futures.workspace = true

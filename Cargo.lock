@@ -1039,11 +1039,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "oben-core"
+name = "oben-conversation"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
+ "dirs",
+ "futures",
  "itertools",
  "oben-config",
  "oben-memory",
@@ -1051,6 +1054,8 @@ dependencies = [
  "oben-skills",
  "oben-tools",
  "regex",
+ "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -1079,7 +1084,7 @@ dependencies = [
  "async-trait",
  "futures",
  "oben-config",
- "oben-core",
+ "oben-conversation",
  "oben-memory",
  "oben-models",
  "oben-tools",
@@ -1096,7 +1101,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "oben-core",
+ "oben-conversation",
  "serde",
  "serde_json",
  "tempfile",
@@ -1204,7 +1209,7 @@ dependencies = [
  "clap",
  "futures",
  "oben-config",
- "oben-core",
+ "oben-conversation",
  "oben-gateway",
  "oben-memory",
  "oben-models",

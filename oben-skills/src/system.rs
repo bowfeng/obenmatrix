@@ -1,7 +1,6 @@
 /// Skill system — integration of skills into the agent's behavior.
 /// Maps to `agent/skill_utils.py`, `agent/skill_preprocessing.py`.
 
-use anyhow::Result;
 use oben_models::Skill;
 use tracing::info;
 

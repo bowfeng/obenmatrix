@@ -21,3 +21,7 @@ The project PRD and progress tracker lives at `docs/PRD.md`. Update the progress
 ### ADRs
 
 Architectural decisions are tracked in `docs/adr/`.
+
+### compute and memory effficiency
+
+Coding should take time and space complexity to reduce them. 

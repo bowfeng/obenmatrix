@@ -1,10 +1,7 @@
 /// Full-text session search.
 /// Maps to `tools/session_search_tool.py` and the FTS5 search in Hermes.
 
-use anyhow::Result;
 use oben_models::Session;
-use regex::Regex;
-use tracing::debug;
 
 /// Search across sessions for relevant content.
 pub fn search_sessions(sessions: &[&Session], query: &str, limit: usize) -> Vec<SearchResult> {

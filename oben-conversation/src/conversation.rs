@@ -7,23 +7,18 @@ use tracing::info;
 
 use crate::{
     budget::IterationBudget,
-    compression::ContextCompressor,
-    context::ContextManager,
-    prompt::PromptBuilder,
+    context::{ContextEngine, ContextEngineConfig},
 };
 
 /// The main agent loop — one user turn.
 ///
-/// 1. User message arrives
-/// 2. Build system prompt + context
-/// 3. Call LLM
-/// 4. If tool calls: dispatch → collect results → loop
-/// 5. If text response: return to user
-/// 6. Post-turn hooks (memory, skill improvement)
+/// 1. User message arrives (passed in via `messages` vec)
+/// 2. Call LLM (transport handles incremental JSON building internally)
+/// 3. If tool calls: dispatch → collect results → loop
+/// 4. If text response: return to user
+/// 5. Post-turn hooks (memory, skill improvement)
 pub struct ConversationLoop {
-    prompt_builder: PromptBuilder,
-    context_manager: ContextManager,
-    compressor: ContextCompressor,
+    context_engine: ContextEngine,
     budget: IterationBudget,
     transport: Box<dyn TransportProvider>,
     tools: std::sync::Arc<oben_tools::ToolRegistry>,
@@ -36,10 +31,24 @@ impl ConversationLoop {
         max_iterations: usize,
         max_messages: usize,
     ) -> Self {
+        Self::with_config(
+            transport,
+            tools,
+            max_iterations,
+            max_messages,
+            ContextEngineConfig::default(),
+        )
+    }
+
+    pub fn with_config(
+        transport: impl TransportProvider + 'static,
+        tools: std::sync::Arc<oben_tools::ToolRegistry>,
+        max_iterations: usize,
+        _max_messages: usize,
+        engine_config: ContextEngineConfig,
+    ) -> Self {
         Self {
-            prompt_builder: PromptBuilder::new(),
-            context_manager: ContextManager::new(max_messages),
-            compressor: ContextCompressor::new(),
+            context_engine: ContextEngine::with_config(engine_config),
             budget: IterationBudget::new(max_iterations),
             transport: Box::new(transport),
             tools,
@@ -47,28 +56,41 @@ impl ConversationLoop {
     }
 
     /// Run one conversation turn: user sends a message, agent responds.
-    pub async fn run_turn(&mut self, user_message: Message) -> Result<String> {
-        // Add user message to context
-        self.context_manager.add_message(user_message);
+    ///
+    /// `messages` is the session's message buffer — all mutations (new messages,
+    /// compression) happen in-place so there's no sync step needed.
+    /// `session_id` is passed to the transport so it can target the correct
+    /// per-session JSON cache for incremental building.
+    pub async fn run_turn(
+        &mut self,
+        messages: &mut Vec<oben_models::Message>,
+        user_message: Message,
+        session_id: &str,
+    ) -> Result<String> {
+        // Add user message to session
+        messages.push(user_message);
 
-        // Build messages for API
-        let mut messages = self.prompt_builder.build_api_messages(&self.context_manager)?;
-
+        // Fresh call: tells transport to build all messages for this session.
         info!("Calling LLM... ({} messages in context)", messages.len());
 
-        let mut final_text = String::new();
+
+        let mut call_mode = oben_models::CallMode::Fresh(session_id.to_string());
 
         // Core loop with tool dispatch
         loop {
             self.budget.check()?;
 
-            // Get LLM response
-            let response = self.transport.chat(&messages).await?;
+            // Get LLM response — transport uses internal cache + incremental append.
+            let response = self.transport.chat(messages, call_mode).await?;
             let tool_calls = &response.tool_calls;
             let text = &response.text;
-            final_text = text.clone();
 
-            // Add assistant response to context
+            // Update token tracking from API response
+            if let Some(tokens) = response.tokens_used {
+                self.context_engine.update_from_response(tokens, 0, tokens);
+            }
+
+            // Add assistant response to session
             let assistant_text = if !tool_calls.is_empty() {
                 tool_calls
                     .iter()
@@ -78,74 +100,78 @@ impl ConversationLoop {
             } else {
                 text.clone()
             };
-            self.context_manager.add_message(Message::assistant(assistant_text));
+            messages.push(Message::assistant(assistant_text));
 
             if tool_calls.is_empty() {
-                break;
+                return Ok(text.clone());
             }
 
             // Dispatch tool calls
             for call in tool_calls {
                 let result = self.tools.execute(&call.tool_name, &call.arguments).await;
-                self.context_manager
-                    .add_message(Message::tool_result(&call.id, &result.output));
+                messages
+                    .push(Message::tool_result(&call.id, &result.output));
             }
 
-            // Rebuild messages with tool results
-            messages.clear();
-            messages.extend(self.prompt_builder.build_api_messages(&self.context_manager)?);
+            // Incremental: only pass the newly added messages to the transport.
+            // The transport merges them into its cached JSON state.
+            call_mode = oben_models::CallMode::Incremental(session_id.to_string());
         }
 
-        Ok(final_text)
+
+
     }
 
-    /// Run one conversation turn with optional streaming.
     ///
     /// If `delta_callback` is provided, text tokens from *every* LLM call
     /// (including tool-result-followed-by-LLM calls) are streamed to it.
     pub async fn run_turn_with_streaming<F>(
         &mut self,
+        messages: &mut Vec<oben_models::Message>,
         user_message: Message,
+        session_id: &str,
         delta_callback: Option<F>,
     ) -> Result<String>
     where
         F: FnMut(&str) + Send + 'static,
     {
-        // Add user message to context
-        self.context_manager.add_message(user_message);
+        // Add user message to session
+        messages.push(user_message);
 
-        // Build messages for API
-        let mut messages = self.prompt_builder.build_api_messages(&self.context_manager)?;
-
+        // Fresh call: tells transport to build all messages for this session.
         info!("Calling LLM... ({} messages in context)", messages.len());
 
-        let mut final_text = String::new();
+
+        let mut call_mode = oben_models::CallMode::Fresh(session_id.to_string());
 
         // Core loop with tool dispatch
-        // If streaming is enabled, wrap the callback in Arc<Mutex> so it can be
-        // shared across multiple stream_chat calls within this conversation turn.
         let shared: Option<std::sync::Arc<std::sync::Mutex<F>>> =
             delta_callback.map(|cb| std::sync::Arc::new(std::sync::Mutex::new(cb)));
 
         loop {
             self.budget.check()?;
 
-            // Get LLM response (streaming or non-streaming)
+            // Get LLM response (streaming or non-streaming).
+            // First call: Fresh triggers full build; subsequent: Incremental appends.
             let response = if let Some(ref shared) = shared {
                 let shared_clone = shared.clone();
                 let wrapper: oben_models::StreamDeltaCallback =
                     Box::new(move |text: &str| {
                         shared_clone.lock().unwrap()(text);
                     });
-                self.transport.stream_chat(&messages, wrapper).await?
+                self.transport.stream_chat(messages, call_mode, wrapper).await?
             } else {
-                self.transport.chat(&messages).await?
+                self.transport.chat(messages, call_mode).await?
             };
             let tool_calls = &response.tool_calls;
             let text = &response.text;
-            final_text = text.clone();
 
-            // Add assistant response to context
+            // Update token tracking from API response
+            if let Some(tokens) = response.tokens_used {
+                self.context_engine.update_from_response(tokens, 0, tokens);
+            }
+
+            // Add assistant response to session
             let assistant_text = if !tool_calls.is_empty() {
                 tool_calls
                     .iter()
@@ -155,40 +181,38 @@ impl ConversationLoop {
             } else {
                 text.clone()
             };
-            self.context_manager.add_message(Message::assistant(assistant_text));
+            messages.push(Message::assistant(assistant_text));
 
             if tool_calls.is_empty() {
-                break;
+                return Ok(text.clone());
             }
 
-            // Dispatch tool calls
+            // Incremental: only pass the newly added messages to the transport.
+            // The transport merges them into its cached JSON state.
             for call in tool_calls {
                 let result = self.tools.execute(&call.tool_name, &call.arguments).await;
-                self.context_manager
-                    .add_message(Message::tool_result(&call.id, &result.output));
+                messages
+                    .push(Message::tool_result(&call.id, &result.output));
             }
 
-            // Rebuild messages with tool results
-            messages.clear();
-            messages.extend(self.prompt_builder.build_api_messages(&self.context_manager)?);
+            call_mode = oben_models::CallMode::Incremental(session_id.to_string());
         }
 
-        Ok(final_text)
     }
 
     /// Compress context if needed.
-    pub fn maybe_compress(&mut self) -> Result<()> {
-        if self.context_manager.needs_compression() {
-            let compressed = self.compressor.summarize_context(&self.context_manager)?;
-            self.context_manager.clear_messages();
-            self.context_manager
-                .add_message(Message::system(compressed));
-        }
+    ///
+    /// This is the unified compression path — ContextEngine operates on the
+    /// message buffer passed in (which is owned by the Session).
+    pub async fn maybe_compress(&mut self, messages: &mut Vec<Message>) -> Result<()> {
+        self.context_engine
+            .compress(messages, Some(&*self.transport), None)
+            .await?;
         Ok(())
     }
 
-    pub fn message_count(&self) -> usize {
-        self.context_manager.len()
+    pub fn message_count(&self, messages: &[Message]) -> usize {
+        messages.len()
     }
 }
 
@@ -196,8 +220,7 @@ impl ConversationLoop {
 mod tests {
     use super::*;
     use oben_models::{
-        Message, MessageContent, MessageRole, TransportProvider, TransportResponse,
-        TransportToolCall,
+        Message, TransportProvider, TransportResponse, TransportToolCall,
     };
 
     // Mock transport for testing
@@ -212,7 +235,7 @@ mod tests {
             "mock"
         }
 
-        async fn chat(&self, _messages: &[Message]) -> Result<TransportResponse> {
+        async fn chat(&self, _messages: &[Message], _mode: oben_models::CallMode) -> Result<TransportResponse> {
             let mut count = self.call_count.lock().unwrap();
             *count += 1;
             let idx = (*count - 1).min(self.responses.len() - 1);
@@ -222,6 +245,7 @@ mod tests {
         async fn stream_chat(
             &self,
             _messages: &[Message],
+            _mode: oben_models::CallMode,
             mut _cb: oben_models::StreamDeltaCallback,
         ) -> Result<TransportResponse> {
             let mut count = self.call_count.lock().unwrap();
@@ -252,9 +276,11 @@ mod tests {
             10,
             100,
         );
+        let mut messages = Vec::new();
 
-        let result = loop_.run_turn(Message::user("Hi")).await.unwrap();
+        let result = loop_.run_turn(&mut messages, Message::user("Hi"), "test-session").await.unwrap();
         assert_eq!(result, "Hello!");
+        assert_eq!(messages.len(), 2); // user + assistant
     }
 
     #[tokio::test]
@@ -285,9 +311,11 @@ mod tests {
             10,
             100,
         );
+        let mut messages = Vec::new();
 
-        let result = loop_.run_turn(Message::user("list files")).await.unwrap();
+        let result = loop_.run_turn(&mut messages, Message::user("list files"), "test-session").await.unwrap();
         assert_eq!(result, "Done!");
+        assert_eq!(messages.len(), 4); // user + assistant + tool_call + tool_result
     }
 
     #[tokio::test]
@@ -307,9 +335,11 @@ mod tests {
             10,
             100,
         );
+        let mut messages = Vec::new();
 
-        let result = loop_.run_turn(Message::user("Hi")).await.unwrap();
+        let result = loop_.run_turn(&mut messages, Message::user("Hi"), "test-session").await.unwrap();
         assert_eq!(result, "");
+        assert_eq!(messages.len(), 2); // user + assistant
     }
 
     #[tokio::test]
@@ -333,8 +363,9 @@ mod tests {
             2, // max_iterations
             100,
         );
+        let mut messages = Vec::new();
 
-        let result = loop_.run_turn(Message::user("Hi")).await;
+        let result = loop_.run_turn(&mut messages, Message::user("Hi"), "test-session").await;
         assert!(result.is_err());
     }
 
@@ -355,13 +386,14 @@ mod tests {
             10,
             100,
         );
+        let mut messages = Vec::new();
 
-        assert_eq!(loop_.message_count(), 0);
+        assert_eq!(loop_.message_count(&messages), 0);
         loop_
-            .run_turn(Message::user("Hello"))
+            .run_turn(&mut messages, Message::user("Hello"), "test-session")
             .await
             .unwrap();
-        assert_eq!(loop_.message_count(), 2); // user + assistant
+        assert_eq!(messages.len(), 2); // user + assistant
     }
 
     #[tokio::test]
@@ -381,6 +413,7 @@ mod tests {
             10,
             100,
         );
+        let mut messages = Vec::new();
 
         let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let output_clone = output.clone();
@@ -388,10 +421,11 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = loop_
-            .run_turn_with_streaming(Message::user("Hi"), Some(cb))
+            .run_turn_with_streaming(&mut messages, Message::user("Hi"), "test-session", Some(cb))
             .await
             .unwrap();
         assert_eq!(result, "Hello from stream!");
+        assert_eq!(messages.len(), 2); // user + assistant
         assert_eq!(*output.lock().unwrap(), "Hello from stream!");
     }
 
@@ -423,6 +457,7 @@ mod tests {
             10,
             100,
         );
+        let mut messages = Vec::new();
 
         let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let output_clone = output.clone();
@@ -430,11 +465,12 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = loop_
-            .run_turn_with_streaming(Message::user("list files"), Some(cb))
+            .run_turn_with_streaming(&mut messages, Message::user("list files"), "test-session", Some(cb))
             .await
             .unwrap();
         assert_eq!(result, "All done!");
         assert_eq!(*output.lock().unwrap(), "Let me check.All done!");
+        assert_eq!(messages.len(), 4); // user + assistant + tool_call + tool_result
     }
 
     #[tokio::test]
@@ -454,6 +490,7 @@ mod tests {
             10,
             100,
         );
+        let mut messages = Vec::new();
 
         let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let output_clone = output.clone();
@@ -461,10 +498,11 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = loop_
-            .run_turn_with_streaming(Message::user("Hi"), Some(cb))
+            .run_turn_with_streaming(&mut messages, Message::user("Hi"), "test-session", Some(cb))
             .await
             .unwrap();
         assert_eq!(result, "Hello!");
+        assert_eq!(messages.len(), 2); // user + assistant
         assert_eq!(*output.lock().unwrap(), "Hello!");
     }
 }

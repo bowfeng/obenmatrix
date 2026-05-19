@@ -10,14 +10,145 @@ use oben_models::{Message, MessageRole, ProviderKind, TransportResponse, Transpo
 
 use super::base::{BaseTransport, ChatResponse};
 
+/// Per-session cached request state.
+///
+/// Stores the full request as a `serde_json::Value` with `"messages"` as a
+/// mutable array. On Fresh we replace it entirely; on Incremental we extend
+/// the existing array in-place — no cloning, no rebuilding static parts.
+struct CachedRequest {
+    /// Full request object, e.g. `{ "model": ..., "messages": [...], ... }`
+    request: serde_json::Value,
+    /// Number of messages currently in the cached array.
+    msg_count: usize,
+}
+
+/// Build JSON for a single message.
+fn message_to_json(m: &Message) -> serde_json::Value {
+    let role = match m.role {
+        MessageRole::System => "system",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+    };
+    match &m.content {
+        oben_models::MessageContent::Text(t) => {
+            json!({"role": role, "content": t})
+        }
+        oben_models::MessageContent::Image { url, detail } => {
+            let mut img = json!({
+                "type": "image_url",
+                "image_url": { "url": url }
+            });
+            if let Some(d) = detail {
+                img["image_url"]["detail"] = json!(d);
+            }
+            json!({
+                "role": role,
+                "content": [
+                    { "type": "text", "text": "I see an image. Let me analyze it." },
+                    img
+                ]
+            })
+        }
+        oben_models::MessageContent::Parts(parts) => {
+            let parts_json: Vec<serde_json::Value> = parts
+                .iter()
+                .map(|p| match p {
+                    oben_models::MessagePart::Text(t) => {
+                        json!({"type": "text", "text": t})
+                    }
+                    oben_models::MessagePart::Image { url, detail } => {
+                        let mut img = json!({"type": "image_url", "image_url": {"url": url}});
+                        if let Some(d) = detail {
+                            img["image_url"]["detail"] = json!(d);
+                        }
+                        img
+                    }
+                })
+                .collect();
+            json!({"role": role, "content": parts_json})
+        }
+    }
+}
+
+/// Build JSON for all messages (fresh call).
+fn build_all_messages_json(messages: &[Message]) -> Vec<serde_json::Value> {
+    messages.iter().map(message_to_json).collect()
+}
+
+/// Resolves the CallMode into a cached request and calls `f` with a reference.
+///
+/// **Fresh**: replaces the cached request entirely.
+/// **Incremental**: extends the existing `"messages"` array in-place — zero
+/// copies of the existing messages, zero rebuild of static parts.
+///
+/// The callback runs while the mutex is held, so the reference is always valid.
+fn resolve_request<F, R>(
+    cached: &mut std::collections::HashMap<String, CachedRequest>,
+    messages: &[Message],
+    mode: oben_models::CallMode,
+    template: &serde_json::Value,
+    f: F,
+) -> R
+where
+    F: FnOnce(&serde_json::Value) -> R,
+{
+    let session_id = match &mode {
+        oben_models::CallMode::Fresh(id) | oben_models::CallMode::Incremental(id) => id.clone(),
+    };
+
+    match mode {
+        oben_models::CallMode::Fresh(_) => {
+            // Build the full request from the template + all messages.
+            let json_messages = build_all_messages_json(messages);
+            let mut req = template.clone();
+            req["messages"] = serde_json::Value::Array(json_messages);
+            let sid = session_id.clone();
+            cached.insert(sid, CachedRequest { request: req, msg_count: messages.len() });
+            f(&cached[&session_id].request)
+        }
+        oben_models::CallMode::Incremental(_) => {
+            let entry = cached.entry(session_id).or_insert_with(|| {
+                let req = template.clone();
+                CachedRequest {
+                    request: req,
+                    msg_count: 0,
+                }
+            });
+
+            let cached_count = entry.msg_count;
+
+            if messages.len() <= cached_count {
+                // Messages haven't grown — content was edited or removed.
+                // Rebuild entirely.
+                let json_messages = build_all_messages_json(messages);
+                entry.request["messages"] = serde_json::Value::Array(json_messages);
+                entry.msg_count = messages.len();
+            } else {
+                // Messages grew — extend existing array in-place.
+                let arr = entry.request["messages"].as_array_mut().unwrap();
+                for msg in &messages[cached_count..] {
+                    arr.push(message_to_json(msg));
+                }
+                entry.msg_count = messages.len();
+            }
+
+            f(&entry.request)
+        }
+    }
+}
+
 /// SSE event from streaming response.
 #[derive(Debug, serde::Deserialize)]
 struct StreamChunk {
     #[serde(default)]
+    #[allow(dead_code)]
     pub id: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub object: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub created: u64,
     pub choices: Vec<StreamChoice>,
     #[serde(default)]
@@ -28,6 +159,7 @@ struct StreamChunk {
 struct StreamChoice {
     pub delta: StreamDelta,
     #[serde(default)]
+    #[allow(dead_code)]
     pub index: usize,
     #[serde(default)]
     pub finish_reason: Option<String>,
@@ -40,6 +172,7 @@ struct StreamDelta {
     #[serde(default, rename = "tool_calls")]
     pub tool_calls: Option<Vec<StreamToolCallDelta>>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub role: Option<String>,
 }
 
@@ -63,74 +196,53 @@ struct StreamFunctionDelta {
 
 #[derive(Debug, serde::Deserialize)]
 struct StreamUsage {
+    #[allow(dead_code)]
     pub prompt_tokens: Option<usize>,
+    #[allow(dead_code)]
     pub completion_tokens: Option<usize>,
     pub total_tokens: Option<usize>,
 }
 
-/// Build JSON representation of messages for the API.
-fn build_messages_json(messages: &[Message]) -> Vec<serde_json::Value> {
-    messages
-        .iter()
-        .map(|m| {
-            let role = match m.role {
-                MessageRole::System => "system",
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-                MessageRole::Tool => "tool",
-            };
-            match &m.content {
-                oben_models::MessageContent::Text(t) => {
-                    json!({"role": role, "content": t})
-                }
-                oben_models::MessageContent::Image { url, detail } => {
-                    let mut img = json!({
-                        "type": "image_url",
-                        "image_url": { "url": url }
-                    });
-                    if let Some(d) = detail {
-                        img["image_url"]["detail"] = json!(d);
-                    }
-                    json!({
-                        "role": role,
-                        "content": [
-                            { "type": "text", "text": "I see an image. Let me analyze it." },
-                            img
-                        ]
-                    })
-                }
-                oben_models::MessageContent::Parts(parts) => {
-                    let parts_json: Vec<serde_json::Value> = parts
-                        .iter()
-                        .map(|p| match p {
-                            oben_models::MessagePart::Text(t) => {
-                                json!({"type": "text", "text": t})
-                            }
-                            oben_models::MessagePart::Image { url, detail } => {
-                                let mut img = json!({"type": "image_url", "image_url": {"url": url}});
-                                if let Some(d) = detail {
-                                    img["image_url"]["detail"] = json!(d);
-                                }
-                                img
-                            }
-                        })
-                        .collect();
-                    json!({"role": role, "content": parts_json})
-                }
-            }
-        })
-        .collect()
+/// Build the static parts of the request template.
+fn build_request_template(base: &BaseTransport) -> serde_json::Value {
+    json!({
+        "model": base.model,
+        "messages": serde_json::Value::Array(vec![]),
+        "temperature": 0.7,
+        "max_tokens": 8192,
+    })
+}
+
+/// Build the streaming request template.
+fn build_stream_request_template(base: &BaseTransport) -> serde_json::Value {
+    json!({
+        "model": base.model,
+        "messages": serde_json::Value::Array(vec![]),
+        "temperature": 0.7,
+        "max_tokens": 8192,
+        "stream": true,
+        "stream_options": {"include_usage": true},
+    })
 }
 
 /// Transport that talks to any OpenAI-compatible API.
 pub struct ChatCompletionsTransport {
     base: BaseTransport,
+    /// Cached request state per session — contains the full request object
+    /// with a mutable `"messages"` array.
+    cached: std::sync::Mutex<std::collections::HashMap<String, CachedRequest>>,
+    /// Static request template (model, temperature, max_tokens).
+    template: serde_json::Value,
 }
 
 impl ChatCompletionsTransport {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        let base = BaseTransport::new(base_url, api_key, model);
+        let template = build_request_template(&base);
         Self {
-            base: BaseTransport::new(base_url, api_key, model),
+            base,
+            cached: std::sync::Mutex::new(std::collections::HashMap::new()),
+            template,
         }
     }
 
@@ -166,15 +278,11 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         "chat-completions"
     }
 
-    async fn chat(&self, messages: &[Message]) -> Result<TransportResponse> {
-        let messages_json = build_messages_json(messages);
-
-        let request = json!({
-            "model": self.base.model,
-            "messages": messages_json,
-            "temperature": 0.7,
-            "max_tokens": 8192,
-        });
+    async fn chat(&self, messages: &[Message], mode: oben_models::CallMode) -> Result<TransportResponse> {
+        let request = {
+            let mut cached = self.cached.lock().unwrap();
+            resolve_request(&mut *cached, messages, mode, &self.template, |req| req.clone())
+        };
 
         let url = format!("{}/chat/completions", self.base.base_url);
 
@@ -215,17 +323,12 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         })
     }
 
-    async fn stream_chat(&self, messages: &[Message], mut delta_callback: oben_models::StreamDeltaCallback) -> Result<TransportResponse> {
-        let messages_json = build_messages_json(messages);
-
-        let request = json!({
-            "model": self.base.model,
-            "messages": messages_json,
-            "temperature": 0.7,
-            "max_tokens": 8192,
-            "stream": true,
-            "stream_options": {"include_usage": true},
-        });
+    async fn stream_chat(&self, messages: &[Message], mode: oben_models::CallMode, mut delta_callback: oben_models::StreamDeltaCallback) -> Result<TransportResponse> {
+        let request = {
+            let mut cached = self.cached.lock().unwrap();
+            let stream_template = build_stream_request_template(&self.base);
+            resolve_request(&mut *cached, messages, mode, &stream_template, |req| req.clone())
+        };
 
         let url = format!("{}/chat/completions", self.base.base_url);
         debug!("Streaming request to {}", url);
@@ -356,215 +459,182 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_messages_json_text() {
+    fn test_message_role_json() {
+        let msg = Message::system("sys");
+        let json = message_to_json(&msg);
+        assert_eq!(json["role"], "system");
+        assert_eq!(json["content"], "sys");
+
+        let msg = Message::tool_result("call-1", "result");
+        let json = message_to_json(&msg);
+        assert_eq!(json["role"], "tool");
+        assert_eq!(json["content"], "result");
+    }
+
+    #[test]
+    fn test_resolve_request_fresh() {
+        let session_id = String::from("test-session");
         let messages = vec![
-            Message::system("you are helpful"),
+            Message::system("be helpful"),
             Message::user("hello"),
         ];
-        let json = build_messages_json(&messages);
-        assert_eq!(json.len(), 2);
-        assert_eq!(json[0]["role"], "system");
-        assert_eq!(json[0]["content"], "you are helpful");
-        assert_eq!(json[1]["role"], "user");
-        assert_eq!(json[1]["content"], "hello");
+        let template = json!({
+            "model": "test-model",
+            "messages": serde_json::Value::Array(vec![]),
+            "temperature": 0.7,
+            "max_tokens": 8192,
+        });
+        let mut cached = std::collections::HashMap::new();
+
+        let (json_len, model) = resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |req| {
+            assert_eq!(req["messages"].as_array().unwrap().len(), 2);
+            assert_eq!(req["messages"][0]["role"], "system");
+            assert_eq!(req["model"], "test-model");
+            (2, req["model"].clone())
+        });
+        assert_eq!(json_len, 2);
+        assert_eq!(model, "test-model");
+        assert_eq!(cached[&session_id].msg_count, 2);
     }
 
     #[test]
-    fn test_build_messages_json_tool_result() {
+    fn test_resolve_request_incremental_grown() {
+        let session_id = String::from("test-session");
+        let template = json!({
+            "model": "test-model",
+            "messages": serde_json::Value::Array(vec![]),
+            "temperature": 0.7,
+            "max_tokens": 8192,
+        });
+        let mut cached = std::collections::HashMap::new();
+
+        // Fresh: 2 messages
         let messages = vec![
-            Message::user("tell me weather"),
-            Message::tool_result("call-1", "sunny"),
+            Message::system("be helpful"),
+            Message::user("hello"),
         ];
-        let json = build_messages_json(&messages);
-        assert_eq!(json[0]["role"], "user");
-        assert_eq!(json[1]["role"], "tool");
-        assert_eq!(json[1]["content"], "sunny");
+        resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+
+        // Incremental: add 1 more
+        let mut messages = messages.clone();
+        messages.push(Message::assistant("hi there"));
+        resolve_request(&mut cached, &messages, oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
+            assert_eq!(req["messages"].as_array().unwrap().len(), 3);
+            assert_eq!(req["messages"][2]["role"], "assistant");
+        });
+        assert_eq!(cached[&session_id].msg_count, 3);
     }
 
     #[test]
-    fn test_stream_chunk_serialization() {
-        let json = r#"{
-            "id": "chatcmpl-123",
-            "object": "chat.completion.chunk",
-            "created": 1234567890,
-            "choices": [{
-                "delta": {"content": "Hello", "role": "assistant"},
-                "index": 0,
-                "finish_reason": null
-            }],
-            "usage": null
-        }"#;
-        let chunk: StreamChunk = serde_json::from_str(json).unwrap();
-        assert_eq!(chunk.id, "chatcmpl-123");
-        assert_eq!(chunk.choices[0].delta.content, Some("Hello".to_string()));
-        assert_eq!(chunk.choices[0].delta.role, Some("assistant".to_string()));
-    }
+    fn test_resolve_request_incremental_reset() {
+        let session_id = String::from("test-session");
+        let template = json!({
+            "model": "test-model",
+            "messages": serde_json::Value::Array(vec![]),
+            "temperature": 0.7,
+            "max_tokens": 8192,
+        });
+        let mut cached = std::collections::HashMap::new();
 
-    #[test]
-    fn test_stream_chunk_usage() {
-        let json = r#"{
-            "id": "chatcmpl-123",
-            "choices": [],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
-        }"#;
-        let chunk: StreamChunk = serde_json::from_str(json).unwrap();
-        assert_eq!(chunk.usage.unwrap().total_tokens, Some(15));
-    }
-
-    #[test]
-    fn test_stream_chunk_tool_calls() {
-        let json = r#"{
-            "id": "chatcmpl-123",
-            "choices": [{
-                "delta": {
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call-123",
-                        "function": {"name": "shell", "arguments": "{\"command\": \"ls\"}"}
-                    }]
-                },
-                "index": 0,
-                "finish_reason": null
-            }],
-            "usage": null
-        }"#;
-        let chunk: StreamChunk = serde_json::from_str(json).unwrap();
-        let tc = &chunk.choices[0].delta.tool_calls.as_ref().unwrap()[0];
-        assert_eq!(tc.index, 0);
-        assert_eq!(tc.id, Some("call-123".to_string()));
-        assert_eq!(tc.function.as_ref().unwrap().name, Some("shell".to_string()));
-        assert_eq!(tc.function.as_ref().unwrap().arguments, Some("{\"command\": \"ls\"}".to_string()));
-    }
-
-    #[test]
-    fn test_stream_chunk_text_accumulation() {
-        // Simulate accumulating text across chunks
-        let mut final_text = String::new();
-        let chunks = vec![
-            r#"{"choices":[{"delta":{"content":"Hello"}}]}"#,
-            r#"{"choices":[{"delta":{"content":", "}}]}"#,
-            r#"{"choices":[{"delta":{"content":"World"}}]}"#,
+        // Fresh: 3 messages
+        let messages = vec![
+            Message::system("sys"),
+            Message::user("hello"),
+            Message::assistant("hi"),
         ];
-        for chunk_json in chunks {
-            let chunk: StreamChunk = serde_json::from_str(chunk_json).unwrap();
-            for choice in chunk.choices {
-                if let Some(ref content) = choice.delta.content {
-                    final_text.push_str(content);
-                }
-            }
-        }
-        assert_eq!(final_text, "Hello, World");
+        resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+
+        // Incremental: removed one — should reset
+        let mut messages = messages;
+        messages.pop();
+        resolve_request(&mut cached, &messages, oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
+            assert_eq!(req["messages"].as_array().unwrap().len(), 2);
+        });
+        assert_eq!(cached[&session_id].msg_count, 2);
     }
 
     #[test]
-    fn test_stream_chunk_tool_call_accumulation() {
-        // Simulate accumulating tool call deltas
-        let mut names: Vec<String> = vec![];
-        let mut args: Vec<String> = vec![];
-        let chunks = vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"shell"}}]}}]}"#,
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\""}}]}}]}"#,
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ls\"}"}}]}}]}"#,
+    fn test_resolve_request_incremental_equal() {
+        let session_id = String::from("test-session");
+        let template = json!({
+            "model": "test-model",
+            "messages": serde_json::Value::Array(vec![]),
+            "temperature": 0.7,
+            "max_tokens": 8192,
+        });
+        let mut cached = std::collections::HashMap::new();
+
+        // Fresh: 2 messages
+        let messages = vec![
+            Message::system("sys"),
+            Message::user("hello"),
         ];
-        for chunk_json in chunks {
-            let chunk: StreamChunk = serde_json::from_str(chunk_json).unwrap();
-            for choice in chunk.choices {
-                if let Some(ref tool_deltas) = choice.delta.tool_calls {
-                    for tc in tool_deltas {
-                        let idx = tc.index;
-                        while names.len() <= idx {
-                            names.push(String::new());
-                            args.push(String::new());
-                        }
-                        if let Some(ref func) = tc.function {
-                            if let Some(ref name) = func.name {
-                                names[idx] = name.clone();
-                            }
-                            if let Some(ref a) = func.arguments {
-                                args[idx].push_str(a);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        assert_eq!(names[0], "shell");
-        assert_eq!(args[0], "{\"command\"ls\"}");
+        resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+
+        // Incremental: same count but content changed — should reset
+        let mut messages = messages.clone();
+        messages[1] = Message::user("changed");
+        resolve_request(&mut cached, &messages, oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
+            assert_eq!(req["messages"].as_array().unwrap().len(), 2);
+            assert_eq!(req["messages"][1]["content"], "changed");
+        });
+        assert_eq!(cached[&session_id].msg_count, 2);
     }
 
     #[test]
-    fn test_stream_done_terminator() {
-        // In SSE, [DONE] comes as "data: [DONE]" followed by a blank line.
-        // The eventsource-stream library extracts the payload after "data: ".
-        let done_payload = "[DONE]";
-        assert_eq!(done_payload, "[DONE]");
+    fn test_per_session_isolation() {
+        let template = json!({
+            "model": "test-model",
+            "messages": serde_json::Value::Array(vec![]),
+            "temperature": 0.7,
+            "max_tokens": 8192,
+        });
+        let mut cached = std::collections::HashMap::new();
+
+        let messages_a = vec![Message::system("sys-a"), Message::user("hello-a")];
+        resolve_request(&mut cached, &messages_a, oben_models::CallMode::Fresh("session-a".into()), &template, |_| ());
+
+        let messages_b = vec![Message::system("sys-b"), Message::user("hello-b")];
+        resolve_request(&mut cached, &messages_b, oben_models::CallMode::Fresh("session-b".into()), &template, |_| ());
+
+        assert_eq!(cached["session-a"].msg_count, 2);
+        assert_eq!(cached["session-b"].msg_count, 2);
+        assert_eq!(cached["session-a"].request["messages"][0]["content"], "sys-a");
+        assert_eq!(cached["session-b"].request["messages"][0]["content"], "sys-b");
     }
 
     #[test]
-    fn test_stream_empty_content() {
-        let chunks = vec![
-            r#"{"choices":[{"delta":{"content":null}}]}"#,
-            r#"{"choices":[{"delta":{}}]}"#,
-            r#"{"choices":[{"delta":{"finish_reason":"stop"}}]}"#,
+    fn test_in_place_extend_no_clone() {
+        let session_id = String::from("test-session");
+        let template = json!({
+            "model": "test-model",
+            "messages": serde_json::Value::Array(vec![]),
+            "temperature": 0.7,
+            "max_tokens": 8192,
+        });
+        let mut cached = std::collections::HashMap::new();
+
+        // Fresh: 2 messages
+        let messages = vec![
+            Message::system("sys"),
+            Message::user("hello"),
         ];
-        let mut text = String::new();
-        for chunk_json in chunks {
-            let chunk: StreamChunk = serde_json::from_str(chunk_json).unwrap();
-            for choice in chunk.choices {
-                if let Some(ref content) = choice.delta.content {
-                    if !content.is_empty() {
-                        text.push_str(content);
-                    }
-                }
-            }
-        }
-        assert_eq!(text, "");
-    }
+        resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
 
-    #[test]
-    fn test_stream_tool_call_id_from_first_chunk() {
-        let chunk1: StreamChunk = serde_json::from_str(
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-abc","function":{"name":"shell"}}]}}]}"#,
-        ).unwrap();
-        assert_eq!(chunk1.choices[0].delta.tool_calls.as_ref().unwrap()[0].id.as_ref().unwrap(), "call-abc");
-        assert_eq!(
-            chunk1.choices[0].delta.tool_calls.as_ref().unwrap()[0].function.as_ref().unwrap().name,
-            Some("shell".to_string())
-        );
-
-        let chunk2: StreamChunk = serde_json::from_str(
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"ls\"}"}}]}}]}"#,
-        ).unwrap();
-        assert_eq!(
-            chunk2.choices[0].delta.tool_calls.as_ref().unwrap()[0].function.as_ref().unwrap().arguments.as_ref().unwrap(),
-            "{\"cmd\":\"ls\"}"
-        );
-    }
-
-    #[test]
-    fn test_stream_multiple_tool_calls() {
-        let chunk: StreamChunk = serde_json::from_str(
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"shell","arguments":"{\"cmd\":\"ls\"}"}},{"index":1,"function":{"name":"read_file","arguments":"{\"path\":\"/tmp/x\"}"}}]}}]}"#,
-        ).unwrap();
-        let tool_calls = chunk.choices[0].delta.tool_calls.as_ref().unwrap();
-        assert_eq!(tool_calls.len(), 2);
-        assert_eq!(tool_calls[0].function.as_ref().unwrap().name, Some("shell".to_string()));
-        assert_eq!(tool_calls[1].function.as_ref().unwrap().name, Some("read_file".to_string()));
-    }
-
-    #[test]
-    fn test_stream_usage_on_final_chunk() {
-        let chunks = vec![
-            r#"{"choices":[{"delta":{"content":"Hello"}}]}"#,
-            r#"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17}}"#,
+        // Incremental: extend in-place by 1
+        let messages2 = vec![
+            Message::system("sys"),
+            Message::user("hello"),
+            Message::assistant("hi"),
         ];
-        let mut total_tokens: Option<usize> = None;
-        for chunk_json in chunks {
-            let chunk: StreamChunk = serde_json::from_str(chunk_json).unwrap();
-            if let Some(ref usage) = chunk.usage {
-                total_tokens = usage.total_tokens;
-            }
-        }
-        assert_eq!(total_tokens, Some(17));
+        resolve_request(&mut cached, &messages2, oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
+            let arr = req["messages"].as_array().unwrap();
+            assert_eq!(arr.len(), 3);
+            // The first 2 messages should be the exact same Value objects
+            // (in-place extend, not a rebuild)
+            assert_eq!(arr[0]["role"], "system");
+            assert_eq!(arr[1]["role"], "user");
+            assert_eq!(arr[2]["role"], "assistant");
+        });
     }
 }

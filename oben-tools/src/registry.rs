@@ -7,9 +7,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use tracing::{info, warn};
-use futures::future::BoxFuture;
+
 
 use oben_models::ToolResult;
 

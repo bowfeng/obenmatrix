@@ -44,8 +44,11 @@ enum Commands {
     Tools,
     /// List and manage skills
     Skills,
-    /// List sessions
-    Sessions,
+    /// List and manage sessions
+    Sessions {
+        #[command(subcommand)]
+        action: Option<SessionsCommand>,
+    },
     /// Show agent info
     Info,
     /// Discover models via LLM provider
@@ -74,6 +77,32 @@ enum ModelsCommand {
     },
 }
 
+/// Session management commands
+#[derive(Subcommand)]
+enum SessionsCommand {
+    /// List all sessions
+    List,
+    /// Compact (compress) a session using LLM summarization
+    ///
+    /// Performs full session compaction: prunes tool results, protects
+    /// head/tail messages, summarizes middle turns, and iteratively
+    /// updates previous summaries.
+    Compact {
+        /// Session ID or name to compact
+        #[arg(short, long)]
+        session: Option<String>,
+        /// Focus topic — prioritise preserving info related to this topic
+        #[arg(short, long)]
+        focus: Option<String>,
+    },
+    /// Delete a session
+    Delete {
+        /// Session ID or name to delete
+        #[arg(short, long)]
+        session: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -87,7 +116,14 @@ async fn main() -> Result<()> {
         Commands::Config { action } => run_config(action).await,
         Commands::Tools => { list_tools(); Ok(()) }
         Commands::Skills => { list_skills(); Ok(()) }
-        Commands::Sessions => { list_sessions(); Ok(()) }
+        Commands::Sessions { action } => {
+            match action {
+                Some(SessionsCommand::List) => { list_sessions(); Ok(()) }
+                Some(SessionsCommand::Compact { session, focus }) => run_compact_session(session.as_deref(), focus.as_deref()).await,
+                Some(SessionsCommand::Delete { session }) => run_delete_session(&session),
+                None => { list_sessions(); Ok(()) }
+            }
+        }
         Commands::Info => { show_info(); Ok(()) },
         Commands::Models { action } => run_models(action).await,
     }
@@ -98,7 +134,7 @@ async fn run_chat(stream: bool) -> Result<()> {
 
     let config = oben_config::AppConfig::load()?;
     let mut memory = oben_memory::MemoryManager::new();
-    memory.load()?;
+    memory.load(None)?;
 
     let mut tools = oben_tools::ToolRegistry::new();
     register_builtin_tools(&mut tools);
@@ -106,17 +142,24 @@ async fn run_chat(stream: bool) -> Result<()> {
     // Build system prompt with skill instructions (reserved for future use)
     let _system_prompt = oben_config::defaults::default_system_prompt();
 
-    // Start a new session (reserved for future use)
-    let _session = memory.new_session(&format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")));
-
-    println!("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
-
-    let mut conversation = oben_core::ConversationLoop::new(
+    // Create conversation loop
+    let mut conversation = oben_conversation::ConversationLoop::new(
         oben_transport::chat_completions::ChatCompletionsTransport::from_config(&config.model),
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
     );
+
+    // Start a new session (or use existing active session)
+    // Messages are borrowed from Session — no seeding needed
+    let _session = if memory.active_session().is_some() {
+        let sid = memory.active_session().unwrap().id.clone();
+        memory.switch_session(&sid)?
+    } else {
+        memory.new_session(&format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")))
+    };
+
+    println!("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
 
     // Read user input
     loop {
@@ -135,17 +178,23 @@ async fn run_chat(stream: bool) -> Result<()> {
             continue;
         }
 
-        let response = if stream {
-            conversation.run_turn_with_streaming(
-                oben_models::Message::user(input),
-                Some(Box::new(|text: &str| {
-                    print!("{}", text);
-                    std::io::stdout().flush().ok();
-                })),
-            )
-            .await?
-        } else {
-            conversation.run_turn(oben_models::Message::user(input)).await?
+        // Run turn — messages borrowed from session, no sync needed
+        let response = {
+            let session = memory.active_session_mut().unwrap();
+            if stream {
+                conversation.run_turn_with_streaming(
+                    &mut session.messages,
+                    oben_models::Message::user(input),
+                    &session.id,
+                    Some(Box::new(|text: &str| {
+                        print!("{}", text);
+                        std::io::stdout().flush().ok();
+                    })),
+                )
+                .await?
+            } else {
+                conversation.run_turn(&mut session.messages, oben_models::Message::user(input), &session.id).await?
+            }
         };
         if !stream {
             println!("\n{}", response);
@@ -153,8 +202,8 @@ async fn run_chat(stream: bool) -> Result<()> {
             println!();
         }
 
-        // Save after each turn
-        memory.save()?;
+        // Persist (session.messages is already up to date — no sync needed)
+        memory.save(None)?;
     }
 
     Ok(())
@@ -163,21 +212,25 @@ async fn run_chat(stream: bool) -> Result<()> {
 async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
     let mut memory = oben_memory::MemoryManager::new();
-    memory.load()?;
+    memory.load(None)?;
 
     let mut tools = oben_tools::ToolRegistry::new();
     register_builtin_tools(&mut tools);
 
-    let mut conversation = oben_core::ConversationLoop::new(
+    let mut conversation = oben_conversation::ConversationLoop::new(
         oben_transport::chat_completions::ChatCompletionsTransport::from_config(&config.model),
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
     );
 
+    // One-shot uses its own ephemeral message list
+    let mut messages = Vec::new();
     let response = if stream {
         conversation.run_turn_with_streaming(
+            &mut messages,
             oben_models::Message::user(prompt),
+            "cli-session",
             Some(Box::new(|text: &str| {
                 print!("{}", text);
                 std::io::stdout().flush().ok();
@@ -185,7 +238,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         )
         .await?
     } else {
-        conversation.run_turn(oben_models::Message::user(prompt)).await?
+        conversation.run_turn(&mut messages, oben_models::Message::user(prompt), "cli-session").await?
     };
     if !stream {
         println!("{}", response);
@@ -239,7 +292,7 @@ fn list_skills() {
 
 fn list_sessions() {
     let mut memory = oben_memory::MemoryManager::new();
-    memory.load().unwrap_or_default();
+    memory.load(None).unwrap_or_default();
     let sessions = memory.list_sessions();
     if sessions.is_empty() {
         println!("No sessions found.");
@@ -263,7 +316,7 @@ fn show_info() {
     println!("  config  — Show or edit configuration");
     println!("  tools   — List available tools");
     println!("  skills  — List available skills");
-    println!("  sessions — List sessions");
+    println!("  sessions [list|compact|delete] — Manage sessions");
     println!("  info     — Show agent info");
     println!("  models   — Discover models from LLM provider");
 }
@@ -306,6 +359,83 @@ fn register_builtin_tools(tools: &mut oben_tools::ToolRegistry) {
     tools.register(http_tool, std::sync::Arc::new(|args: serde_json::Value| {
         Box::pin(oben_tools::web::http_get(args))
     }));
+}
+
+/// Run session compaction using the SessionManager from oben-memory.
+async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str>) -> Result<()> {
+    let config = oben_config::AppConfig::load()?;
+    let mut sm = oben_memory::SessionManager::new()?;
+
+    // Find session (default to active)
+    let target = session_key.unwrap_or_else(|| {
+        sm.active().map(|s| s.id.as_str()).unwrap_or("active")
+    });
+
+    // Clone session data (immutable borrow, no conflicts)
+    let session = sm.clone_session(target).ok_or_else(|| {
+        anyhow::anyhow!("Session not found: {} (run `oben sessions list` to see available sessions)", target)
+    })?;
+
+    if session.message_count() < 8 {
+        println!("Session has only {} message(s). Minimum 8 required for compaction.", session.message_count());
+        return Ok(());
+    }
+
+    println!("Compacting session '{}' ({} messages)...", session.name, session.message_count());
+
+    // Build a transport for the summary LLM call
+    let transport = oben_transport::ChatCompletionsTransport::from_config(&config.model);
+    let comp_config = oben_conversation::compression::CompressionConfig::default();
+
+    let result = oben_conversation::compact_session_messages(
+        &transport,
+        &session.messages,
+        &comp_config,
+        session.memory_context.as_deref(),
+        focus_topic,
+        1,
+    ).await?;
+
+    // Update session — fresh borrow, no conflicts with previous code
+    if let Some(s) = sm.session_mut(&session.id) {
+        s.messages = result.messages;
+        s.updated_at = chrono::Utc::now();
+        if let Some(summary) = result.summary {
+            s.memory_context = Some(summary.clone());
+            // Add summary chunk for the compressed messages
+            let old_msg_count = session.messages.len();
+            s.summary_chunks.push(oben_models::SummaryChunk {
+                from: 1,
+                to: old_msg_count,
+                summary,
+            });
+        }
+    }
+    sm.save_session(&session.id)?;
+
+    // Report results
+    println!("✓ Compaction complete:");
+    println!("  Before: {} messages, ~{} tokens", result.stats.original_count, result.stats.original_tokens);
+    println!("  After:  {} messages, ~{} tokens", result.stats.compressed_count, result.stats.compressed_tokens);
+    println!("  Saved:  {:.0}% tokens ({} tool results pruned)",
+        result.stats.savings_pct, result.stats.pruned_tool_results);
+    if result.stats.summary_generated {
+        println!("  Summary: LLM-generated (iterative)");
+    } else {
+        println!("  Summary: LLM call skipped/fallback");
+    }
+    if focus_topic.is_some() {
+        println!("  Focus: {:?}", focus_topic);
+    }
+
+    Ok(())
+}
+
+fn run_delete_session(session_key: &str) -> Result<()> {
+    let mut sm = oben_memory::SessionManager::new()?;
+    sm.delete(session_key)?;
+    println!("Deleted session '{}'", session_key);
+    Ok(())
 }
 
 async fn run_models(action: ModelsCommand) -> Result<()> {

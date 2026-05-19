@@ -1,6 +1,19 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+/// Controls how the transport builds the message JSON for a call.
+///
+/// The transport maintains a per-session cache. Each CallMode carries a
+/// session_id so different sessions don't share caches.
+#[derive(Debug, Clone)]
+pub enum CallMode {
+    /// Rebuild all message JSON from scratch (new turn or session).
+    Fresh(String),
+    /// Append messages starting from cache.len() (continuation of current turn).
+    /// If messages.len() <= cached.len(), the cache resets.
+    Incremental(String),
+}
+
 /// LLM provider backend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ProviderKind {
@@ -98,12 +111,12 @@ impl<T: TransportProvider + ?Sized + Send + Sync> TransportProvider for std::syn
         (**self).name()
     }
 
-    async fn chat(&self, messages: &[super::Message]) -> Result<TransportResponse> {
-        (**self).chat(messages).await
+    async fn chat(&self, messages: &[super::Message], mode: super::CallMode) -> Result<TransportResponse> {
+        (**self).chat(messages, mode).await
     }
 
-    async fn stream_chat(&self, messages: &[super::Message], delta_callback: StreamDeltaCallback) -> Result<TransportResponse> {
-        (**self).stream_chat(messages, delta_callback).await
+    async fn stream_chat(&self, messages: &[super::Message], mode: super::CallMode, delta_callback: StreamDeltaCallback) -> Result<TransportResponse> {
+        (**self).stream_chat(messages, mode, delta_callback).await
     }
 
     fn estimate_tokens(&self, messages: &[super::Message]) -> usize {
@@ -118,13 +131,15 @@ pub trait TransportProvider: Send + Sync {
     fn name(&self) -> &str;
 
     /// Send a chat completion request.
-    async fn chat(&self, messages: &[super::Message]) -> Result<TransportResponse>;
+    ///
+    /// See [`CallMode`] for semantics.
+    async fn chat(&self, messages: &[super::Message], mode: super::CallMode) -> Result<TransportResponse>;
 
     /// Send a streaming chat completion request.
     ///
     /// Fires `delta_callback` with each text delta as it arrives.
     /// Returns the accumulated response with full text and tool calls.
-    async fn stream_chat(&self, messages: &[super::Message], delta_callback: StreamDeltaCallback) -> Result<TransportResponse>;
+    async fn stream_chat(&self, messages: &[super::Message], mode: super::CallMode, delta_callback: StreamDeltaCallback) -> Result<TransportResponse>;
 
     /// Optional: estimate tokens without full API call.
     fn estimate_tokens(&self, messages: &[super::Message]) -> usize {

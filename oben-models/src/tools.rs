@@ -27,7 +27,7 @@ pub struct ToolParameter {
 }
 
 /// An invocation of a tool by the agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub tool_name: String,

@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "oben-core",
+    "oben-conversation",
     "oben-transport",
     "oben-models",
     "oben-tools",
@@ -58,7 +58,7 @@ repository.workspace = true
 description = "The self-improving AI agent — Rust port of Hermes Agent"
 
 [dependencies]
-oben-core = { path = "oben-core" }
+oben-conversation = { path = "oben-conversation" }
 oben-config = { path = "oben-config" }
 oben-models = { path = "oben-models" }
 oben-tools = { path = "oben-tools" }

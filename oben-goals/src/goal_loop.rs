@@ -325,7 +325,7 @@ impl<T: serde::Serialize> SaveToDisk for T {
 }
 
 #[cfg(test)]
-    use crate::{PlanNode, plan::NodeStatus};
+    use crate::PlanNode;
 mod tests {
     use super::*;
 
