@@ -94,6 +94,37 @@ impl Default for ToolRegistry {
     }
 }
 
+/// Trait for tool modules that can self-register into a registry.
+///
+/// Implement this to add a new tool. The module calls
+/// `registry.register(Self::tool(), Self::handler())` in its
+/// `register_self` method.
+pub trait SelfRegisteringTool {
+    /// The tool definition (name, description, parameters).
+    fn tool() -> oben_models::Tool;
+    /// The handler that executes the tool.
+    fn handler() -> ToolHandler;
+    /// Register this tool into the given registry.
+    fn register_self(registry: &mut ToolRegistry) {
+        registry.register(Self::tool(), Self::handler());
+    }
+}
+
+/// Discover and register all built-in tool modules.
+///
+/// Each tool module implements `SelfRegisteringTool` and is registered
+/// here. Add a new line to register additional tools.
+pub fn discover_builtin_tools(registry: &mut ToolRegistry) {
+    // Shell tool
+    crate::shell::ShellTool::register_self(registry);
+    // File tools (read + write)
+    crate::read_write::register_file_tools(registry);
+    // Web tools
+    crate::web::WebTools::register_self(registry);
+    // Search tool
+    crate::search::SearchTool::register_self(registry);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

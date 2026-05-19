@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_skills_index_empty() {
-        let result = build_skills_index(&[PathBuf::from("/nonexistent")], &[]);
+        let result = build_skills_index(&[PathBuf::from("/nonexistent")]);
         assert!(result.is_empty());
     }
 }

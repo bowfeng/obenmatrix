@@ -1,71 +1,159 @@
 /// File read/write tools.
 ///
-/// Maps to `tools/read_write.py` / built-in file tools.
+/// Self-registers via `SelfRegisteringTool` trait.
 
-use anyhow::Result;
-use oben_models::ToolResult;
-use oben_utils::path_security::is_path_safe;
 use std::path::PathBuf;
+use std::sync::Arc;
+use anyhow::Result;
+use serde_json::Value;
+use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-/// Read a file's contents.
-pub async fn read_file(args: serde_json::Value) -> Result<ToolResult> {
-    let path = args.get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+use super::registry::{ToolHandler, SelfRegisteringTool};
+use oben_utils::path_security::is_path_safe;
 
-    // Security: ensure path is within allowed directories
-    if !is_path_safe(std::path::Path::new(path)) {
-        return Ok(ToolResult {
-            call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            output: String::new(),
-            error: Some("Unsafe file path".to_string()),
-        });
+// ---------------------------------------------------------------------------
+// Tool definitions
+// ---------------------------------------------------------------------------
+
+fn make_read_file_tool() -> Tool {
+    let params = vec![
+        ToolParameter {
+            name: "path".into(),
+            description: "Path to the file".into(),
+            parameter_type: "string".into(),
+            required: true,
+        },
+    ];
+    Tool {
+        name: "read_file".into(),
+        description: "Read the contents of a file".into(),
+        parameters: ToolParameters::Flat(params),
     }
+}
 
-    let content = tokio::fs::read_to_string(path).await.map_err(|e| {
-        anyhow::anyhow!("Failed to read {}: {}", path, e)
-    })?;
+fn make_write_file_tool() -> Tool {
+    let params = vec![
+        ToolParameter {
+            name: "path".into(),
+            description: "Path to write to".into(),
+            parameter_type: "string".into(),
+            required: true,
+        },
+        ToolParameter {
+            name: "content".into(),
+            description: "Content to write".into(),
+            parameter_type: "string".into(),
+            required: true,
+        },
+    ];
+    Tool {
+        name: "write_file".into(),
+        description: "Write content to a file".into(),
+        parameters: ToolParameters::Flat(params),
+    }
+}
 
-    // Truncate very long files
-    let content = if content.len() > 100_000 {
-        format!("{}... (truncated, {} chars total)", &content[..100_000], content.len())
-    } else {
-        content
-    };
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
 
-    Ok(ToolResult {
-        call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        output: content,
-        error: None,
+fn make_read_file_handler() -> ToolHandler {
+    Arc::new(|args: Value| {
+        Box::pin(async move {
+            let path = args.get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+
+            if !is_path_safe(std::path::Path::new(path)) {
+                return Ok(ToolResult {
+                    call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    output: String::new(),
+                    error: Some("Unsafe file path".to_string()),
+                });
+            }
+
+            let content = tokio::fs::read_to_string(path).await.map_err(|e| {
+                anyhow::anyhow!("Failed to read {}: {}", path, e)
+            })?;
+
+            let content = if content.len() > 100_000 {
+                format!("{}... (truncated, {} chars total)", &content[..100_000], content.len())
+            } else {
+                content
+            };
+
+            Ok(ToolResult {
+                call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                output: content,
+                error: None,
+            })
+        })
     })
 }
 
-/// Write content to a file.
-pub async fn write_file(args: serde_json::Value) -> Result<ToolResult> {
-    let path = args.get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+fn make_write_file_handler() -> ToolHandler {
+    Arc::new(|args: Value| {
+        Box::pin(async move {
+            let path = args.get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
 
-    let content = args.get("content")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
+            let content = args.get("content")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
 
-    if !is_path_safe(std::path::Path::new(path)) {
-        return Ok(ToolResult {
-            call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            output: String::new(),
-            error: Some("Unsafe file path".to_string()),
-        });
+            if !is_path_safe(std::path::Path::new(path)) {
+                return Ok(ToolResult {
+                    call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    output: String::new(),
+                    error: Some("Unsafe file path".to_string()),
+                });
+            }
+
+            let path_buf = PathBuf::from(path);
+            let dir = path_buf.parent().unwrap_or(std::path::Path::new("."));
+            tokio::fs::create_dir_all(dir).await?;
+            tokio::fs::write(path, content).await?;
+
+            Ok(ToolResult {
+                call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                output: format!("Wrote {} bytes to {}", content.len(), path),
+                error: None,
+            })
+        })
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Self-registration
+// ---------------------------------------------------------------------------
+
+pub struct FileTools;
+
+impl SelfRegisteringTool for FileTools {
+    fn tool() -> Tool {
+        // Return a combined representation — we'll register both tools
+        // under different names. For this trait we return read_file as
+        // the primary tool and register write_file separately.
+        make_read_file_tool()
     }
 
-    let path_buf = PathBuf::from(path);
-    let dir = path_buf.parent().unwrap_or(std::path::Path::new("."));
-    tokio::fs::create_dir_all(dir).await?;
-    tokio::fs::write(path, content).await?;
+    fn handler() -> ToolHandler {
+        make_read_file_handler()
+    }
+}
 
-    Ok(ToolResult {
-        call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        output: format!("Wrote {} bytes to {}", content.len(), path),
-        error: None,
-    })
+/// Manually register all file-related tools.
+pub fn register_file_tools(registry: &mut super::ToolRegistry) {
+    registry.register(make_read_file_tool(), make_read_file_handler());
+    registry.register(make_write_file_tool(), make_write_file_handler());
+}
+
+// Legacy async fns for backward compat
+pub async fn read_file(args: Value) -> Result<ToolResult> {
+    make_read_file_handler()(args).await
+}
+
+pub async fn write_file(args: Value) -> Result<ToolResult> {
+    make_write_file_handler()(args).await
 }
