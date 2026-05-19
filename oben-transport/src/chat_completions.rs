@@ -287,6 +287,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         let url = format!("{}/chat/completions", self.base.base_url);
 
         debug!("Requesting {}: model={}, messages={}", url, self.base.model, messages.len());
+        debug!("Prompt: {}", serde_json::to_string(&request).unwrap_or_default());
 
         let mut req = self.base.client.post(&url).json(&request);
         if !self.base.api_key.is_empty() {
@@ -332,6 +333,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
 
         let url = format!("{}/chat/completions", self.base.base_url);
         debug!("Streaming request to {}", url);
+        debug!("Prompt: {}", serde_json::to_string(&request).unwrap_or_default());
 
         let mut req = self.base.client.post(&url).json(&request);
         if !self.base.api_key.is_empty() {
