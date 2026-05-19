@@ -178,7 +178,7 @@ async fn run_chat(stream: bool) -> Result<()> {
     // Create conversation loop with 3-tier system prompt.
     let system_prompt = assembled.prompt.clone();
     let mut conversation = oben_conversation::ConversationLoop::new(
-        create_transport(&config, system_prompt.clone(), collect_tool_defs(&tools)),
+        create_transport(&config, &system_prompt, collect_tool_defs(&tools)),
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
@@ -222,7 +222,7 @@ async fn run_chat(stream: bool) -> Result<()> {
                 conversation.run_turn_with_streaming(
                     &mut session.messages,
                     oben_models::Message::user(input),
-                    call_mode.clone(),
+                    &call_mode,
                     Some(Box::new(|text: &str| {
                         print!("{}", text);
                         std::io::stdout().flush().ok();
@@ -230,7 +230,7 @@ async fn run_chat(stream: bool) -> Result<()> {
                 )
                 .await?
             } else {
-                conversation.run_turn(&mut session.messages, oben_models::Message::user(input), oben_models::CallMode::Fresh(session.id.clone())).await?
+                conversation.run_turn(&mut session.messages, oben_models::Message::user(input), &call_mode).await?
             };
             let turn_dur = turn_start.elapsed();
             debug!("Raw response: {:?}", result);
@@ -260,24 +260,22 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     let mut tools = oben_tools::ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut tools);
 
-    // let tool_names: Vec<String> = tools.list_tools().iter()
-    //     .map(|t| t.name.clone())
-    //     .collect();
 
     let system_prompt = oben_config::defaults::default_system_prompt();
     let mut conversation = oben_conversation::ConversationLoop::new(
-        create_transport(&config, system_prompt.clone(), collect_tool_defs(&tools)),
+        create_transport(&config, &system_prompt, collect_tool_defs(&tools)),
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
     );
 
     let mut messages = Vec::new();
+    let call_mode = oben_models::CallMode::Fresh("cli-session".to_string());
     let response = if stream {
         conversation.run_turn_with_streaming(
             &mut messages,
             oben_models::Message::user(prompt),
-            oben_models::CallMode::Fresh("cli-session".to_string()),
+            &call_mode,
             Some(Box::new(|text: &str| {
                 print!("{}", text);
                 std::io::stdout().flush().ok();
@@ -285,7 +283,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         )
         .await?
     } else {
-        conversation.run_turn(&mut messages, oben_models::Message::user(prompt), oben_models::CallMode::Fresh("cli-session".to_string())).await?
+        conversation.run_turn(&mut messages, oben_models::Message::user(prompt), &call_mode).await?
     };
     debug!("Raw response: {:?}", response);
     if !stream {
@@ -378,7 +376,7 @@ fn collect_tool_defs(registry: &oben_tools::ToolRegistry) -> Vec<oben_models::To
 /// Create a ChatCompletionsTransport with tools for structured tool calling.
 fn create_transport(
     config: &oben_config::AppConfig,
-    system_prompt: String,
+    system_prompt: &str,
     tools: Vec<oben_models::Tool>,
 ) -> oben_transport::ChatCompletionsTransport {
     oben_transport::ChatCompletionsTransport::from_config_with_tools(
@@ -411,7 +409,7 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
     println!("Compacting session '{}' ({} messages)...", session.name, session.message_count());
 
     // Build a transport for the summary LLM call (no tools needed for compaction)
-    let transport = create_transport(&config, String::new(), Vec::new());
+    let transport = create_transport(&config, "", Vec::new());
     let comp_config = oben_conversation::compression::CompressionConfig::default();
 
     let result = oben_conversation::compact_session_messages(
@@ -467,7 +465,7 @@ fn run_delete_session(session_key: &str) -> Result<()> {
 
 async fn run_models(action: ModelsCommand) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
-    let transport = create_transport(&config, String::new(), Vec::new());
+    let transport = create_transport(&config, "", Vec::new());
 
     match action {
         ModelsCommand::List => {

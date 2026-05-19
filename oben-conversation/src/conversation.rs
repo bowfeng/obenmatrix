@@ -144,7 +144,7 @@ impl ConversationLoop {
         &mut self,
         messages: &mut Vec<oben_models::Message>,
         user_message: Message,
-        call_mode: oben_models::CallMode,
+        call_mode: &oben_models::CallMode,
     ) -> Result<String> {
         // Add user message to session
         messages.push(user_message);
@@ -157,7 +157,8 @@ impl ConversationLoop {
             self.budget.check()?;
 
             // Get LLM response — transport uses internal cache + incremental append.
-            let response = self.transport.chat(messages, call_mode.clone()).await?;
+            // &call_mode: zero-copy — the loop never mutates call_mode.
+            let response = self.transport.chat(messages, &call_mode).await?;
             let tool_calls = &response.tool_calls;
             let text = &response.text;
 
@@ -223,7 +224,7 @@ impl ConversationLoop {
         &mut self,
         messages: &mut Vec<oben_models::Message>,
         user_message: Message,
-        call_mode: oben_models::CallMode,
+        call_mode: &oben_models::CallMode,
         delta_callback: Option<F>,
     ) -> Result<String>
     where
@@ -270,6 +271,7 @@ impl ConversationLoop {
 
             // Get LLM response (streaming or non-streaming).
             // First call: Fresh triggers full build; subsequent: Incremental appends.
+            // &call_mode: zero-copy — the loop never mutates call_mode, so we borrow.
             let response = if callback_handle.is_some() {
                 let tx_clone = tx.clone();
                 let wrapper: oben_models::StreamDeltaCallback =
@@ -277,9 +279,9 @@ impl ConversationLoop {
                         // try_send avoids blocking the stream if the channel is full
                         let _ = tx_clone.try_send(text.to_string());
                     });
-                self.transport.stream_chat(messages, call_mode.clone(), wrapper).await?
+                self.transport.stream_chat(messages, &call_mode, wrapper).await?
             } else {
-                self.transport.chat(messages, call_mode.clone()).await?
+                self.transport.chat(messages, &call_mode).await?
             };
             let tool_calls = &response.tool_calls;
             let text = &response.text;
@@ -383,7 +385,7 @@ mod tests {
             "mock"
         }
 
-        async fn chat(&self, _messages: &[Message], _mode: oben_models::CallMode) -> Result<TransportResponse> {
+        async fn chat(&self, _messages: &[Message], _mode: &oben_models::CallMode) -> Result<TransportResponse> {
             let mut count = self.call_count.lock().unwrap();
             *count += 1;
             let idx = (*count - 1).min(self.responses.len() - 1);
@@ -393,7 +395,7 @@ mod tests {
         async fn stream_chat(
             &self,
             _messages: &[Message],
-            _mode: oben_models::CallMode,
+            _mode: &oben_models::CallMode,
             mut _cb: oben_models::StreamDeltaCallback,
         ) -> Result<TransportResponse> {
             let mut count = self.call_count.lock().unwrap();

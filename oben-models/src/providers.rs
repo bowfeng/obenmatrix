@@ -111,11 +111,11 @@ impl<T: TransportProvider + ?Sized + Send + Sync> TransportProvider for std::syn
         (**self).name()
     }
 
-    async fn chat(&self, messages: &[super::Message], mode: super::CallMode) -> Result<TransportResponse> {
+    async fn chat(&self, messages: &[super::Message], mode: &super::CallMode) -> Result<TransportResponse> {
         (**self).chat(messages, mode).await
     }
 
-    async fn stream_chat(&self, messages: &[super::Message], mode: super::CallMode, delta_callback: StreamDeltaCallback) -> Result<TransportResponse> {
+    async fn stream_chat(&self, messages: &[super::Message], mode: &super::CallMode, delta_callback: StreamDeltaCallback) -> Result<TransportResponse> {
         (**self).stream_chat(messages, mode, delta_callback).await
     }
 
@@ -132,14 +132,15 @@ pub trait TransportProvider: Send + Sync {
 
     /// Send a chat completion request.
     ///
-    /// See [`CallMode`] for semantics.
-    async fn chat(&self, messages: &[super::Message], mode: super::CallMode) -> Result<TransportResponse>;
+    /// See [`CallMode`] for semantics. `mode` is borrowed to avoid
+    /// cloning the session ID in hot paths (e.g. multi-tool loops).
+    async fn chat(&self, messages: &[super::Message], mode: &super::CallMode) -> Result<TransportResponse>;
 
     /// Send a streaming chat completion request.
     ///
     /// Fires `delta_callback` with each text delta as it arrives.
     /// Returns the accumulated response with full text and tool calls.
-    async fn stream_chat(&self, messages: &[super::Message], mode: super::CallMode, delta_callback: StreamDeltaCallback) -> Result<TransportResponse>;
+    async fn stream_chat(&self, messages: &[super::Message], mode: &super::CallMode, delta_callback: StreamDeltaCallback) -> Result<TransportResponse>;
 
     /// Optional: estimate tokens without full API call.
     fn estimate_tokens(&self, messages: &[super::Message]) -> usize {

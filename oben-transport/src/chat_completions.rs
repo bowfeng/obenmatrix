@@ -158,14 +158,14 @@ fn build_all_messages_json(messages: &[Message]) -> Vec<serde_json::Value> {
 fn resolve_request<F, R>(
     cached: &mut std::collections::HashMap<String, CachedRequest>,
     messages: &[Message],
-    mode: oben_models::CallMode,
+    mode: &oben_models::CallMode,
     template: &std::sync::Arc<serde_json::Value>,
     f: F,
 ) -> R
 where
     F: FnOnce(&serde_json::Value) -> R,
 {
-    let session_id = match &mode {
+    let session_id = match mode {
         oben_models::CallMode::Fresh(id) | oben_models::CallMode::Incremental(id) => id.clone(),
     };
 
@@ -440,7 +440,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         "chat-completions"
     }
 
-    async fn chat(&self, messages: &[Message], mode: oben_models::CallMode) -> Result<TransportResponse> {
+    async fn chat(&self, messages: &[Message], mode: &oben_models::CallMode) -> Result<TransportResponse> {
         let request = {
             let mut cached = self.cached.lock().unwrap();
             // system_prompt is already in messages[0] from build_and_prepend —
@@ -488,7 +488,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         })
     }
 
-    async fn stream_chat(&self, messages: &[Message], mode: oben_models::CallMode, mut delta_callback: oben_models::StreamDeltaCallback) -> Result<TransportResponse> {
+    async fn stream_chat(&self, messages: &[Message], mode: &oben_models::CallMode, mut delta_callback: oben_models::StreamDeltaCallback) -> Result<TransportResponse> {
         let request = {
             let mut cached = self.cached.lock().unwrap();
             resolve_request(&mut *cached, messages, mode, &self.stream_template, |req| req.clone())
@@ -651,7 +651,7 @@ mod tests {
         }));
         let mut cached = std::collections::HashMap::new();
 
-        let (json_len, model) = resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |req| {
+        let (json_len, model) = resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |req| {
             assert_eq!(req["messages"].as_array().unwrap().len(), 2);
             assert_eq!(req["messages"][0]["role"], "system");
             assert_eq!(req["model"], "test-model");
@@ -678,12 +678,12 @@ mod tests {
             Message::system("be helpful"),
             Message::user("hello"),
         ];
-        resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+        resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
 
         // Incremental: add 1 more
         let mut messages = messages.clone();
         messages.push(Message::assistant("hi there"));
-        resolve_request(&mut cached, &messages, oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
+        resolve_request(&mut cached, &messages, &oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
             assert_eq!(req["messages"].as_array().unwrap().len(), 3);
             assert_eq!(req["messages"][2]["role"], "assistant");
         });
@@ -707,12 +707,12 @@ mod tests {
             Message::user("hello"),
             Message::assistant("hi"),
         ];
-        resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+        resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
 
         // Incremental: removed one — should reset
         let mut messages = messages;
         messages.pop();
-        resolve_request(&mut cached, &messages, oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
+        resolve_request(&mut cached, &messages, &oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
             assert_eq!(req["messages"].as_array().unwrap().len(), 2);
         });
         assert_eq!(cached[&session_id].msg_count, 2);
@@ -734,12 +734,12 @@ mod tests {
             Message::system("sys"),
             Message::user("hello"),
         ];
-        resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+        resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
 
         // Incremental: same count but content changed — should reset
         let mut messages = messages.clone();
         messages[1] = Message::user("changed");
-        resolve_request(&mut cached, &messages, oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
+        resolve_request(&mut cached, &messages, &oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
             assert_eq!(req["messages"].as_array().unwrap().len(), 2);
             assert_eq!(req["messages"][1]["content"], "changed");
         });
@@ -757,10 +757,10 @@ mod tests {
         let mut cached = std::collections::HashMap::new();
 
         let messages_a = vec![Message::system("sys-a"), Message::user("hello-a")];
-        resolve_request(&mut cached, &messages_a, oben_models::CallMode::Fresh("session-a".into()), &template, |_| ());
+        resolve_request(&mut cached, &messages_a, &oben_models::CallMode::Fresh("session-a".into()), &template, |_| ());
 
         let messages_b = vec![Message::system("sys-b"), Message::user("hello-b")];
-        resolve_request(&mut cached, &messages_b, oben_models::CallMode::Fresh("session-b".into()), &template, |_| ());
+        resolve_request(&mut cached, &messages_b, &oben_models::CallMode::Fresh("session-b".into()), &template, |_| ());
 
         assert_eq!(cached["session-a"].msg_count, 2);
         assert_eq!(cached["session-b"].msg_count, 2);
@@ -784,7 +784,7 @@ mod tests {
             Message::system("sys"),
             Message::user("hello"),
         ];
-        resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+        resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
 
         // Incremental: extend in-place by 1
         let messages2 = vec![
@@ -792,7 +792,7 @@ mod tests {
             Message::user("hello"),
             Message::assistant("hi"),
         ];
-        resolve_request(&mut cached, &messages2, oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
+        resolve_request(&mut cached, &messages2, &oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
             let arr = req["messages"].as_array().unwrap();
             assert_eq!(arr.len(), 3);
             // The first 2 messages should be the exact same Value objects

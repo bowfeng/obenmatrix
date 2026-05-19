@@ -314,7 +314,7 @@ async fn generate_summary(
             tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
         }
 
-        match transport.chat(&[summary_msg.clone()], oben_models::CallMode::Fresh(String::new())).await {
+        match transport.chat(&[summary_msg.clone()], &oben_models::CallMode::Fresh(String::new())).await {
             Ok(response) => {
                 let summary = response.text.trim().to_string();
                 let prefix = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. Respond ONLY to the latest user message that appears AFTER this summary. The current session state (files, config, etc.) may reflect work described here — avoid repeating it";

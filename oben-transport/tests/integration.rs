@@ -80,7 +80,7 @@ async fn test_chat_completions_text_response() -> Result<()> {
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("Hi there")];
-    let resp = transport.chat(&messages, CallMode::Fresh("test-session".to_string())).await?;
+    let resp = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await?;
 
     assert_eq!(resp.text, "Hello, how can I help you?");
     assert_eq!(resp.tool_calls.len(), 0);
@@ -102,7 +102,7 @@ async fn test_chat_completions_empty_content() -> Result<()> {
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("test")];
-    let resp = transport.chat(&messages, CallMode::Fresh("test-session".to_string())).await?;
+    let resp = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await?;
 
     assert_eq!(resp.text, "");
     Ok(())
@@ -125,7 +125,7 @@ async fn test_chat_completions_tool_calls() -> Result<()> {
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("list files")];
-    let resp = transport.chat(&messages, CallMode::Fresh("test-session".to_string())).await?;
+    let resp = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await?;
 
     assert_eq!(resp.tool_calls.len(), 1);
     assert_eq!(resp.tool_calls[0].id, "call-tool-1");
@@ -148,7 +148,7 @@ async fn test_chat_completions_api_error() -> Result<()> {
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("test")];
-    let result = transport.chat(&messages, CallMode::Fresh("test-session".to_string())).await;
+    let result = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await;
 
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -171,7 +171,7 @@ async fn test_chat_completions_no_choices() -> Result<()> {
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("test")];
-    let result = transport.chat(&messages, CallMode::Fresh("test-session".to_string())).await;
+    let result = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await;
 
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No response choices"));
@@ -204,7 +204,7 @@ async fn test_stream_chat_text_response() -> Result<()> {
         Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&[Message::user("Hi")], CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(&[Message::user("Hi")], &CallMode::Fresh("test-session".to_string()), cb)
         .await?;
 
     assert_eq!(resp.text, "Streamed hello");
@@ -235,7 +235,7 @@ async fn test_stream_chat_with_usage() -> Result<()> {
         Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&[Message::user("test")], CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(&[Message::user("test")], &CallMode::Fresh("test-session".to_string()), cb)
         .await?;
 
     assert_eq!(resp.text, "Done");
@@ -267,7 +267,7 @@ async fn test_stream_chat_tool_calls() -> Result<()> {
     let cb: oben_models::StreamDeltaCallback = Box::new(|_text: &str| {});
 
     let resp = transport
-        .stream_chat(&[Message::user("run command")], CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(&[Message::user("run command")], &CallMode::Fresh("test-session".to_string()), cb)
         .await?;
 
     assert_eq!(resp.tool_calls.len(), 1);
@@ -302,7 +302,7 @@ async fn test_stream_chat_empty_content() -> Result<()> {
         Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&[Message::user("test")], CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(&[Message::user("test")], &CallMode::Fresh("test-session".to_string()), cb)
         .await?;
 
     assert_eq!(resp.text, "");
@@ -326,7 +326,7 @@ async fn test_stream_chat_api_error() -> Result<()> {
     let cb: oben_models::StreamDeltaCallback = Box::new(|_text: &str| {});
 
     let result = transport
-        .stream_chat(&[Message::user("test")], CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(&[Message::user("test")], &CallMode::Fresh("test-session".to_string()), cb)
         .await;
 
     assert!(result.is_err());
@@ -366,7 +366,7 @@ async fn test_stream_chat_separate_instances() -> Result<()> {
         Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&[Message::user("test")], CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(&[Message::user("test")], &CallMode::Fresh("test-session".to_string()), cb)
         .await?;
 
     assert_eq!(resp.text, "Captured text");
