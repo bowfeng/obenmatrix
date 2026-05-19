@@ -21,7 +21,7 @@ pub struct MemoryManager {
 
 impl MemoryManager {
     pub fn new() -> Self {
-        let storage_path = dirs::data_dir()
+        let storage_path = dirs::home_dir()
                 .map(|d| d.join(".oben").join("memory"))
                 .unwrap_or_else(|| PathBuf::from("~/.oben"));
         Self::new_with_path(storage_path)
