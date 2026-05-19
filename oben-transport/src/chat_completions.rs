@@ -187,7 +187,7 @@ where
             
             let arr = req["messages"].as_array_mut().unwrap();
             // Pre-allocate capacity to avoid reallocations.
-            arr.reserve(json_messages.len());
+            arr.reserve(json_messages.len() + 1);// pre-allocate to avoid reallocations including system prompt
             // Move JSON values into the array (avoids per-element clone).
             arr.append(&mut json_messages);
             let sid = session_id.clone();
@@ -212,7 +212,7 @@ where
                 let arr = entry.request["messages"].as_array_mut().unwrap();
                 arr.clear();
                 let len = json_messages.len();
-                arr.reserve(len);
+                arr.reserve(len + 1); // pre-allocate to avoid reallocations including system prompt
                 arr.append(&mut json_messages);
                 entry.msg_count = messages.len();
             } else {
