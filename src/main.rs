@@ -107,8 +107,12 @@ enum SessionsCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let level = if cli.verbose { tracing::Level::DEBUG } else { tracing::Level::INFO };
-    oben_utils::logging::init(level);
+    // --verbose sets RUST_LOG only if not already configured, so explicit
+    // env vars take precedence for fine-grained filtering.
+    if cli.verbose && std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "oben=debug");
+    }
+    oben_utils::logging::init(tracing::Level::INFO);
 
     match cli.command {
         Commands::Chat { no_stream } => run_chat(!no_stream).await,
