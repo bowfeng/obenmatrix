@@ -238,7 +238,9 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         conversation.run_turn(&mut messages, oben_models::Message::user(prompt), "cli-session").await?
     };
     if !stream {
-        println!("{}", response);
+        println!("\n{}", response);
+    } else {
+        println!();
     }
 
     Ok(())
