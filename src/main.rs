@@ -141,7 +141,8 @@ async fn run_chat(stream: bool) -> Result<()> {
     register_builtin_tools(&mut tools);
 
     // Build system prompt with skill instructions (reserved for future use)
-    let _system_prompt = oben_config::defaults::default_system_prompt();
+    let system_prompt = oben_config::defaults::default_system_prompt();
+    debug!("System prompt: {}", system_prompt);
 
     // Create conversation loop
     let mut conversation = oben_conversation::ConversationLoop::new(
