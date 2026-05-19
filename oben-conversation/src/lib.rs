@@ -20,9 +20,11 @@ pub mod compression;
 pub mod context;
 pub mod conversation;
 pub mod prompt;
+pub mod system_prompt;
 
 pub use budget::*;
 pub use compression::*;
 pub use context::*;
 pub use conversation::*;
 pub use prompt::*;
+pub use system_prompt::*;

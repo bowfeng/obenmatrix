@@ -102,7 +102,7 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
 /// Detect max_tokens from the LLM provider and return it if found.
 fn detect_max_tokens(config: &oben_models::ProviderConfig) -> Option<usize> {
     let rt = tokio::runtime::Runtime::new().ok()?;
-    let transport = oben_transport::ChatCompletionsTransport::from_config(config);
+    let transport = oben_transport::ChatCompletionsTransport::from_config(config, "");
     let result = rt.block_on(async { transport.find_model(&config.model).await });
 
     match result {

@@ -4,6 +4,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::io::Write;
+use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, info};
 
@@ -139,32 +140,60 @@ async fn run_chat(stream: bool) -> Result<()> {
 
     let config = oben_config::AppConfig::load()?;
     let mut memory = oben_memory::MemoryManager::new();
-    memory.load(None)?;
 
     let mut tools = oben_tools::ToolRegistry::new();
     register_builtin_tools(&mut tools);
 
-    // Build system prompt with skill instructions (reserved for future use)
-    let system_prompt = oben_config::defaults::default_system_prompt();
-    debug!("System prompt: {}", system_prompt);
+    // Collect available tool names for conditional guidance.
+    let tool_names: Vec<String> = tools.list_tools().iter()
+        .map(|t| t.name.clone())
+        .collect();
 
-    // Create conversation loop with system prompt
+    // Build the 3-tier system prompt:
+    //   Stable: identity (from config or default) + tool guidance + skills
+    //   Context: cwd-dependent files (.oben.md, AGENTS.md, etc.)
+    //   Volatile: memory context, timestamp (built per-turn)
+    let identity = oben_config::defaults::default_system_prompt();
+    let skills_dirs = vec![
+        PathBuf::from("skills"),
+    ];
+    let context_cwd = std::env::current_dir().ok();
+
+    // Build the full system prompt for debug logging.
+    let volatile = oben_conversation::system_prompt::build_volatile_block(
+        None, // memory_context — built per-turn
+        None, // session_id — not known yet
+        Some(&config.model.model),
+    );
+    let assembled = oben_conversation::system_prompt::build_system_prompt(
+        &identity,
+        &tool_names,
+        &skills_dirs,
+        context_cwd.as_deref(),
+        None,
+        Some(&volatile),
+    );
+    debug!("System prompt ({} chars): {}...", assembled.prompt.len(), &assembled.prompt.chars().take(100).collect::<String>());
+
+    // Create conversation loop with 3-tier system prompt.
+    let system_prompt = assembled.prompt.clone();
     let mut conversation = oben_conversation::ConversationLoop::new(
-        oben_transport::chat_completions::ChatCompletionsTransport::from_config(&config.model),
+        oben_transport::chat_completions::ChatCompletionsTransport::from_config(&config.model, system_prompt.clone()),
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
-        system_prompt,
     );
 
     // Start a new session (or use existing active session)
-    // Messages are borrowed from Session — no seeding needed
-    let _session = if memory.active_session().is_some() {
-        let sid = memory.active_session().unwrap().id.clone();
-        memory.switch_session(&sid)?
+    let session_id = if let Some(sid) = memory.active_session().map(|s| s.id.clone()) {
+        memory.switch_session(&sid)?.id.clone()
     } else {
-        memory.new_session(&format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")))
+        memory.new_session(&format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"))).id.clone()
     };
+
+    memory.load(Some(session_id.as_str()))?;
+
+    let mut call_mode = oben_models::CallMode::Fresh(session_id.clone());
 
     println!("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
 
@@ -193,7 +222,7 @@ async fn run_chat(stream: bool) -> Result<()> {
                 conversation.run_turn_with_streaming(
                     &mut session.messages,
                     oben_models::Message::user(input),
-                    &session.id,
+                    call_mode.clone(),
                     Some(Box::new(|text: &str| {
                         print!("{}", text);
                         std::io::stdout().flush().ok();
@@ -201,7 +230,7 @@ async fn run_chat(stream: bool) -> Result<()> {
                 )
                 .await?
             } else {
-                conversation.run_turn(&mut session.messages, oben_models::Message::user(input), &session.id).await?
+                conversation.run_turn(&mut session.messages, oben_models::Message::user(input), oben_models::CallMode::Fresh(session.id.clone())).await?
             };
             let turn_dur = turn_start.elapsed();
             debug!("Raw response: {:?}", result);
@@ -219,6 +248,7 @@ async fn run_chat(stream: bool) -> Result<()> {
         memory.save(None)?;
         let save_dur = save_start.elapsed();
         info!("Save completed in {:.2}s", save_dur.as_secs_f64());
+        call_mode = oben_models::CallMode::Incremental(session_id.clone());
     }
 
     Ok(())
@@ -230,12 +260,16 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     let mut tools = oben_tools::ToolRegistry::new();
     register_builtin_tools(&mut tools);
 
+    let tool_names: Vec<String> = tools.list_tools().iter()
+        .map(|t| t.name.clone())
+        .collect();
+
+    let system_prompt = oben_config::defaults::default_system_prompt();
     let mut conversation = oben_conversation::ConversationLoop::new(
-        oben_transport::chat_completions::ChatCompletionsTransport::from_config(&config.model),
+        oben_transport::chat_completions::ChatCompletionsTransport::from_config(&config.model, system_prompt.clone()),
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
-        None::<String>,
     );
 
     let mut messages = Vec::new();
@@ -243,7 +277,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         conversation.run_turn_with_streaming(
             &mut messages,
             oben_models::Message::user(prompt),
-            "cli-session",
+            oben_models::CallMode::Fresh("cli-session".to_string()),
             Some(Box::new(|text: &str| {
                 print!("{}", text);
                 std::io::stdout().flush().ok();
@@ -251,7 +285,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         )
         .await?
     } else {
-        conversation.run_turn(&mut messages, oben_models::Message::user(prompt), "cli-session").await?
+        conversation.run_turn(&mut messages, oben_models::Message::user(prompt), oben_models::CallMode::Fresh("cli-session".to_string())).await?
     };
     debug!("Raw response: {:?}", response);
     if !stream {
@@ -307,8 +341,7 @@ fn list_skills() {
 }
 
 fn list_sessions() {
-    let mut memory = oben_memory::MemoryManager::new();
-    memory.load(None).unwrap_or_default();
+    let memory = oben_memory::MemoryManager::new();
     let sessions = memory.list_sessions();
     if sessions.is_empty() {
         println!("No sessions found.");
@@ -400,7 +433,7 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
     println!("Compacting session '{}' ({} messages)...", session.name, session.message_count());
 
     // Build a transport for the summary LLM call
-    let transport = oben_transport::ChatCompletionsTransport::from_config(&config.model);
+    let transport = oben_transport::ChatCompletionsTransport::from_config(&config.model, String::new());
     let comp_config = oben_conversation::compression::CompressionConfig::default();
 
     let result = oben_conversation::compact_session_messages(
@@ -456,7 +489,7 @@ fn run_delete_session(session_key: &str) -> Result<()> {
 
 async fn run_models(action: ModelsCommand) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
-    let transport = oben_transport::ChatCompletionsTransport::from_config(&config.model);
+    let transport = oben_transport::ChatCompletionsTransport::from_config(&config.model, String::new());
 
     match action {
         ModelsCommand::List => {

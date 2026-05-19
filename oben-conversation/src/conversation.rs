@@ -3,12 +3,91 @@
 
 use anyhow::Result;
 use oben_models::{Message, TransportProvider};
+use std::path::PathBuf;
 use tracing::info;
 
 use crate::{
     budget::IterationBudget,
     context::{ContextEngine, ContextEngineConfig},
 };
+use crate::system_prompt;
+
+/// Configuration for building the 3-tier system prompt.
+///
+/// Holds all inputs needed by the system prompt builder. The actual prompt
+/// assembly happens per-turn (via `build_system_messages`) so that volatile
+/// components (memory context, timestamp) stay fresh each call.
+pub struct SystemPromptConfig {
+    /// Identity text — from SOUL.md or DEFAULT_IDENTITY.
+    identity: String,
+    /// List of tool names available to the agent.
+    tools_list: Vec<String>,
+    /// Directories to scan for skills.
+    skills_dirs: Vec<PathBuf>,
+    /// Working directory for context file discovery.
+    context_cwd: Option<PathBuf>,
+    /// Custom system message override (optional).
+    custom_message: Option<String>,
+    /// Volatile memory context — changed per session.
+    memory_context: Option<String>,
+}
+
+impl SystemPromptConfig {
+    /// Create a simple config from a plain-string prompt (legacy compat).
+    pub fn simple(prompt: Option<String>) -> Self {
+        Self {
+            identity: prompt.unwrap_or_default(),
+            tools_list: Vec::new(),
+            skills_dirs: Vec::new(),
+            context_cwd: None,
+            custom_message: None,
+            memory_context: None,
+        }
+    }
+
+    /// Create a full 3-tier config.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        identity: String,
+        tools_list: Vec<String>,
+        skills_dirs: Vec<PathBuf>,
+        context_cwd: Option<PathBuf>,
+        custom_message: Option<String>,
+        memory_context: Option<String>,
+    ) -> Self {
+        Self {
+            identity,
+            tools_list,
+            skills_dirs,
+            context_cwd,
+            custom_message,
+            memory_context,
+        }
+    }
+
+    /// Build and prepend the system prompt to the messages array.
+    ///
+    /// This is called at the top of each turn so volatile components (memory,
+    /// timestamp) are always fresh while stable components are cached.
+    pub fn build_system_prompt(&self, session_id: &str, model_name: &str) -> String {
+        // Build the full prompt with volatile components
+        let volatile = system_prompt::build_volatile_block(
+            self.memory_context.as_deref(),
+            Some(session_id),
+            if model_name.is_empty() { None } else { Some(model_name) },
+        );
+
+        let assembled = system_prompt::build_system_prompt(
+            &self.identity,
+            &self.tools_list,
+            &self.skills_dirs,
+            self.context_cwd.as_deref(),
+            self.custom_message.as_deref(),
+            if volatile.is_empty() { None } else { Some(&volatile) },
+        );
+        assembled.prompt
+    }
+}
 
 /// The main agent loop — one user turn.
 ///
@@ -22,8 +101,6 @@ pub struct ConversationLoop {
     budget: IterationBudget,
     transport: Box<dyn TransportProvider>,
     tools: std::sync::Arc<oben_tools::ToolRegistry>,
-    /// Optional system prompt prepended to every request.
-    system_prompt: Option<String>,
 }
 
 impl ConversationLoop {
@@ -32,14 +109,12 @@ impl ConversationLoop {
         tools: std::sync::Arc<oben_tools::ToolRegistry>,
         max_iterations: usize,
         max_messages: usize,
-        system_prompt: impl Into<Option<String>>,
     ) -> Self {
         Self::with_config(
             transport,
             tools,
             max_iterations,
             max_messages,
-            system_prompt,
             ContextEngineConfig::default(),
         )
     }
@@ -49,7 +124,6 @@ impl ConversationLoop {
         tools: std::sync::Arc<oben_tools::ToolRegistry>,
         max_iterations: usize,
         _max_messages: usize,
-        system_prompt: impl Into<Option<String>>,
         engine_config: ContextEngineConfig,
     ) -> Self {
         Self {
@@ -57,7 +131,6 @@ impl ConversationLoop {
             budget: IterationBudget::new(max_iterations),
             transport: Box::new(transport),
             tools,
-            system_prompt: system_prompt.into(),
         }
     }
 
@@ -71,28 +144,20 @@ impl ConversationLoop {
         &mut self,
         messages: &mut Vec<oben_models::Message>,
         user_message: Message,
-        session_id: &str,
+        call_mode: oben_models::CallMode,
     ) -> Result<String> {
-        // Prepend system prompt if present
-        if let Some(ref prompt) = self.system_prompt {
-            messages.insert(0, Message::system(prompt));
-        }
-
         // Add user message to session
         messages.push(user_message);
 
         // Fresh call: tells transport to build all messages for this session.
         info!("Calling LLM... ({} messages in context)", messages.len());
 
-
-        let mut call_mode = oben_models::CallMode::Fresh(session_id.to_string());
-
         // Core loop with tool dispatch
         loop {
             self.budget.check()?;
 
             // Get LLM response — transport uses internal cache + incremental append.
-            let response = self.transport.chat(messages, call_mode).await?;
+            let response = self.transport.chat(messages, call_mode.clone()).await?;
             let tool_calls = &response.tool_calls;
             let text = &response.text;
 
@@ -127,11 +192,8 @@ impl ConversationLoop {
 
             // Incremental: only pass the newly added messages to the transport.
             // The transport merges them into its cached JSON state.
-            call_mode = oben_models::CallMode::Incremental(session_id.to_string());
+            //call_mode = oben_models::CallMode::Incremental(session_id.to_string());
         }
-
-
-
     }
 
     ///
@@ -141,25 +203,18 @@ impl ConversationLoop {
         &mut self,
         messages: &mut Vec<oben_models::Message>,
         user_message: Message,
-        session_id: &str,
+        call_mode: oben_models::CallMode,
         delta_callback: Option<F>,
     ) -> Result<String>
     where
         F: FnMut(&str) + Send + 'static,
     {
-        // Prepend system prompt if present
-        if let Some(ref prompt) = self.system_prompt {
-            messages.insert(0, Message::system(prompt));
-        }
 
         // Add user message to session
         messages.push(user_message);
 
         // Fresh call: tells transport to build all messages for this session.
         info!("Calling LLM... ({} messages in context)", messages.len());
-
-
-        let mut call_mode = oben_models::CallMode::Fresh(session_id.to_string());
 
         // Core loop with tool dispatch
         let shared: Option<std::sync::Arc<std::sync::Mutex<F>>> =
@@ -176,9 +231,9 @@ impl ConversationLoop {
                     Box::new(move |text: &str| {
                         shared_clone.lock().unwrap()(text);
                     });
-                self.transport.stream_chat(messages, call_mode, wrapper).await?
+                self.transport.stream_chat(messages, call_mode.clone(), wrapper).await?
             } else {
-                self.transport.chat(messages, call_mode).await?
+                self.transport.chat(messages, call_mode.clone()).await?
             };
             let tool_calls = &response.tool_calls;
             let text = &response.text;
@@ -213,9 +268,8 @@ impl ConversationLoop {
                     .push(Message::tool_result(&call.id, &result.output));
             }
 
-            call_mode = oben_models::CallMode::Incremental(session_id.to_string());
+            //call_mode = oben_models::CallMode::Incremental(session_id.to_string());
         }
-
     }
 
     /// Compress context if needed.
@@ -293,11 +347,10 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
-            None::<String>,
         );
         let mut messages = Vec::new();
 
-        let result = loop_.run_turn(&mut messages, Message::user("Hi"), "test-session").await.unwrap();
+        let result = loop_.run_turn(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string())).await.unwrap();
         assert_eq!(result, "Hello!");
         assert_eq!(messages.len(), 2); // user + assistant
     }
@@ -329,11 +382,10 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
-            None::<String>,
         );
         let mut messages = Vec::new();
 
-        let result = loop_.run_turn(&mut messages, Message::user("list files"), "test-session").await.unwrap();
+        let result = loop_.run_turn(&mut messages, Message::user("list files"), oben_models::CallMode::Fresh("test-session".to_string())).await.unwrap();
         assert_eq!(result, "Done!");
         assert_eq!(messages.len(), 4); // user + assistant + tool_call + tool_result
     }
@@ -354,11 +406,10 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
-            None::<String>,
         );
         let mut messages = Vec::new();
 
-        let result = loop_.run_turn(&mut messages, Message::user("Hi"), "test-session").await.unwrap();
+        let result = loop_.run_turn(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string())).await.unwrap();
         assert_eq!(result, "");
         assert_eq!(messages.len(), 2); // user + assistant
     }
@@ -383,11 +434,10 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             2, // max_iterations
             100,
-            None::<String>,
         );
         let mut messages = Vec::new();
 
-        let result = loop_.run_turn(&mut messages, Message::user("Hi"), "test-session").await;
+        let result = loop_.run_turn(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string())).await;
         assert!(result.is_err());
     }
 
@@ -407,13 +457,12 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
-            None::<String>,
         );
         let mut messages = Vec::new();
 
         assert_eq!(loop_.message_count(&messages), 0);
         loop_
-            .run_turn(&mut messages, Message::user("Hello"), "test-session")
+            .run_turn(&mut messages, Message::user("Hello"), oben_models::CallMode::Fresh("test-session".to_string()))
             .await
             .unwrap();
         assert_eq!(messages.len(), 2); // user + assistant
@@ -435,7 +484,6 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
-            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -445,7 +493,7 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = loop_
-            .run_turn_with_streaming(&mut messages, Message::user("Hi"), "test-session", Some(cb))
+            .run_turn_with_streaming(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string()), Some(cb))
             .await
             .unwrap();
         assert_eq!(result, "Hello from stream!");
@@ -480,7 +528,6 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
-            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -490,7 +537,7 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = loop_
-            .run_turn_with_streaming(&mut messages, Message::user("list files"), "test-session", Some(cb))
+            .run_turn_with_streaming(&mut messages, Message::user("list files"), oben_models::CallMode::Fresh("test-session".to_string()), Some(cb))
             .await
             .unwrap();
         assert_eq!(result, "All done!");
@@ -514,7 +561,6 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
-            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -524,7 +570,7 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = loop_
-            .run_turn_with_streaming(&mut messages, Message::user("Hi"), "test-session", Some(cb))
+            .run_turn_with_streaming(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string()), Some(cb))
             .await
             .unwrap();
         assert_eq!(result, "Hello!");

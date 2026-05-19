@@ -102,9 +102,13 @@ where
             // Build the full request from the template + all messages.
             let json_messages = build_all_messages_json(messages);
             let mut req = template.clone();
-            req["messages"] = serde_json::Value::Array(json_messages);
+            
+            let arr = req["messages"].as_array_mut().unwrap();
+            for msg in &json_messages{
+                arr.push(msg.clone());
+            }
             let sid = session_id.clone();
-            cached.insert(sid, CachedRequest { request: req, msg_count: messages.len() });
+            cached.insert(sid, CachedRequest { request: req, msg_count: messages.len() + 1 });
             f(&cached[&session_id].request)
         }
         oben_models::CallMode::Incremental(_) => {
@@ -115,22 +119,24 @@ where
                     msg_count: 0,
                 }
             });
-
             let cached_count = entry.msg_count;
 
             if messages.len() <= cached_count {
                 // Messages haven't grown — content was edited or removed.
                 // Rebuild entirely.
                 let json_messages = build_all_messages_json(messages);
-                entry.request["messages"] = serde_json::Value::Array(json_messages);
-                entry.msg_count = messages.len();
+                let arr = entry.request["messages"].as_array_mut().unwrap();
+                for msg in &json_messages{
+                    arr.push(msg.clone());
+                }
+                entry.msg_count = messages.len() + 1;
             } else {
                 // Messages grew — extend existing array in-place.
                 let arr = entry.request["messages"].as_array_mut().unwrap();
-                for msg in &messages[cached_count..] {
+                for msg in &messages[(cached_count-1)..] {
                     arr.push(message_to_json(msg));
                 }
-                entry.msg_count = messages.len();
+                entry.msg_count = messages.len() - cached_count + 1;
             }
 
             f(&entry.request)
@@ -203,21 +209,31 @@ struct StreamUsage {
     pub total_tokens: Option<usize>,
 }
 
-/// Build the static parts of the request template.
-fn build_request_template(base: &BaseTransport) -> serde_json::Value {
+/// Build the static parts of the request template (non-streaming).
+/// The system prompt is NOT embedded here — it must be in messages[0]
+/// (prepended by `SystemPromptConfig::build_and_prepend`).
+fn build_request_template(base: &BaseTransport, system_prompt: impl Into<String>) -> serde_json::Value {
     json!({
         "model": base.model,
-        "messages": serde_json::Value::Array(vec![]),
+        "messages": serde_json::Value::Array(vec![json!({
+            "role": "system",
+            "content": system_prompt.into(),
+        })]),
         "temperature": 0.7,
         "max_tokens": 8192,
     })
 }
 
 /// Build the streaming request template.
-fn build_stream_request_template(base: &BaseTransport) -> serde_json::Value {
+/// The system prompt is NOT embedded here — it must be in messages[0]
+/// (prepended by `SystemPromptConfig::build_and_prepend`).
+fn build_stream_request_template(base: &BaseTransport, system_prompt: impl Into<String>) -> serde_json::Value {
     json!({
         "model": base.model,
-        "messages": serde_json::Value::Array(vec![]),
+        "messages": serde_json::Value::Array(vec![json!({
+            "role": "system",
+            "content": system_prompt.into(),
+        })]),
         "temperature": 0.7,
         "max_tokens": 8192,
         "stream": true,
@@ -231,23 +247,29 @@ pub struct ChatCompletionsTransport {
     /// Cached request state per session — contains the full request object
     /// with a mutable `"messages"` array.
     cached: std::sync::Mutex<std::collections::HashMap<String, CachedRequest>>,
-    /// Static request template (model, temperature, max_tokens).
+    /// Static non-streaming request template (model, temperature, max_tokens).
+    /// The system prompt is NOT embedded here — it must be in messages[0].
     template: serde_json::Value,
+    /// Static streaming request template (same as above + stream: true).
+    stream_template: serde_json::Value,
 }
 
 impl ChatCompletionsTransport {
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>, system_prompt: impl Into<String>) -> Self {
         let base = BaseTransport::new(base_url, api_key, model);
-        let template = build_request_template(&base);
+        let system_prompt = system_prompt.into();
+        let template = build_request_template(&base, system_prompt.clone());
+        let stream_template = build_stream_request_template(&base, system_prompt.clone());
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
             template,
+            stream_template,
         }
     }
 
     /// Create from a ProviderConfig.
-    pub fn from_config(config: &oben_models::ProviderConfig) -> Self {
+    pub fn from_config(config: &oben_models::ProviderConfig, system_prompt: impl Into<String>) -> Self {
         let base_url = match config.kind {
             ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
             ProviderKind::OpenAI => "https://api.openai.com/v1".to_string(),
@@ -258,7 +280,7 @@ impl ChatCompletionsTransport {
             ProviderKind::Custom => config.base_url.clone().unwrap_or_default(),
         };
         let api_key = config.api_key.clone().unwrap_or_default();
-        Self::new(base_url, api_key, &config.model)
+        Self::new(base_url, api_key, &config.model, system_prompt)
     }
 
     /// Fetch the list of available models from the provider.
@@ -281,6 +303,8 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
     async fn chat(&self, messages: &[Message], mode: oben_models::CallMode) -> Result<TransportResponse> {
         let request = {
             let mut cached = self.cached.lock().unwrap();
+            // system_prompt is already in messages[0] from build_and_prepend —
+            // the parameter is kept for API compatibility but not re-embedded.
             resolve_request(&mut *cached, messages, mode, &self.template, |req| req.clone())
         };
 
@@ -327,8 +351,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
     async fn stream_chat(&self, messages: &[Message], mode: oben_models::CallMode, mut delta_callback: oben_models::StreamDeltaCallback) -> Result<TransportResponse> {
         let request = {
             let mut cached = self.cached.lock().unwrap();
-            let stream_template = build_stream_request_template(&self.base);
-            resolve_request(&mut *cached, messages, mode, &stream_template, |req| req.clone())
+            resolve_request(&mut *cached, messages, mode, &self.stream_template, |req| req.clone())
         };
 
         let url = format!("{}/chat/completions", self.base.base_url);
