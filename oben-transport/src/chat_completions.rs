@@ -54,6 +54,11 @@ fn tool_to_openai(tool: &Tool) -> serde_json::Value {
 /// Stores the full request as a `serde_json::Value` with `"messages"` as a
 /// mutable array. On Fresh we replace it entirely; on Incremental we extend
 /// the existing array in-place — no cloning, no rebuilding static parts.
+///
+/// The `template` field holds the static request shape (model, temperature,
+/// max_tokens, system prompt, tools) wrapped in an `Arc` so that cloning
+/// a `CachedRequest` for a new incremental call is a single pointer copy
+/// instead of a deep clone of the entire static JSON.
 struct CachedRequest {
     /// Full request object, e.g. `{ "model": ..., "messages": [...], ... }`
     request: serde_json::Value,
@@ -154,7 +159,7 @@ fn resolve_request<F, R>(
     cached: &mut std::collections::HashMap<String, CachedRequest>,
     messages: &[Message],
     mode: oben_models::CallMode,
-    template: &serde_json::Value,
+    template: &std::sync::Arc<serde_json::Value>,
     f: F,
 ) -> R
 where
@@ -167,8 +172,10 @@ where
     match mode {
         oben_models::CallMode::Fresh(_) => {
             // Build the full request from the template + all messages.
+            // Arc::clone is a pointer copy — the template (system prompt, tools,
+            // static config) is shared, so we clone only the messages part.
             let json_messages = build_all_messages_json(messages);
-            let mut req = template.clone();
+            let mut req = (**template).clone();
             
             let arr = req["messages"].as_array_mut().unwrap();
             for msg in &json_messages{
@@ -180,7 +187,8 @@ where
         }
         oben_models::CallMode::Incremental(_) => {
             let entry = cached.entry(session_id).or_insert_with(|| {
-                let req = template.clone();
+                // Arc clone = single pointer copy, not deep clone
+                let req = (**template).clone();
                 CachedRequest {
                     request: req,
                     msg_count: 0,
@@ -333,11 +341,13 @@ pub struct ChatCompletionsTransport {
     /// Cached request state per session — contains the full request object
     /// with a mutable `"messages"` array.
     cached: std::sync::Mutex<std::collections::HashMap<String, CachedRequest>>,
-    /// Static non-streaming request template (model, temperature, max_tokens, tools).
-    /// The system prompt is NOT embedded here — it must be in messages[0].
-    template: serde_json::Value,
+    /// Static non-streaming request template (model, temperature, max_tokens, tools,
+    /// system prompt). Wrapped in `Arc` so incremental calls clone only a pointer
+    /// instead of deep-cloning the entire static JSON (often 100KB+ of system prompt
+    /// + tool definitions).
+    template: std::sync::Arc<serde_json::Value>,
     /// Static streaming request template (same as above + stream: true).
-    stream_template: serde_json::Value,
+    stream_template: std::sync::Arc<serde_json::Value>,
 }
 
 impl ChatCompletionsTransport {
@@ -353,8 +363,8 @@ impl ChatCompletionsTransport {
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
-            template,
-            stream_template,
+            template: std::sync::Arc::new(template),
+            stream_template: std::sync::Arc::new(stream_template),
         }
     }
 
@@ -374,8 +384,8 @@ impl ChatCompletionsTransport {
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
-            template,
-            stream_template,
+            template: std::sync::Arc::new(template),
+            stream_template: std::sync::Arc::new(stream_template),
         }
     }
 
@@ -633,12 +643,12 @@ mod tests {
             Message::system("be helpful"),
             Message::user("hello"),
         ];
-        let template = json!({
+        let template = std::sync::Arc::new(json!({
             "model": "test-model",
             "messages": serde_json::Value::Array(vec![]),
             "temperature": 0.7,
             "max_tokens": 8192,
-        });
+        }));
         let mut cached = std::collections::HashMap::new();
 
         let (json_len, model) = resolve_request(&mut cached, &messages, oben_models::CallMode::Fresh(session_id.clone()), &template, |req| {
@@ -655,12 +665,12 @@ mod tests {
     #[test]
     fn test_resolve_request_incremental_grown() {
         let session_id = String::from("test-session");
-        let template = json!({
+        let template = std::sync::Arc::new(json!({
             "model": "test-model",
             "messages": serde_json::Value::Array(vec![]),
             "temperature": 0.7,
             "max_tokens": 8192,
-        });
+        }));
         let mut cached = std::collections::HashMap::new();
 
         // Fresh: 2 messages
@@ -683,12 +693,12 @@ mod tests {
     #[test]
     fn test_resolve_request_incremental_reset() {
         let session_id = String::from("test-session");
-        let template = json!({
+        let template = std::sync::Arc::new(json!({
             "model": "test-model",
             "messages": serde_json::Value::Array(vec![]),
             "temperature": 0.7,
             "max_tokens": 8192,
-        });
+        }));
         let mut cached = std::collections::HashMap::new();
 
         // Fresh: 3 messages
@@ -711,12 +721,12 @@ mod tests {
     #[test]
     fn test_resolve_request_incremental_equal() {
         let session_id = String::from("test-session");
-        let template = json!({
+        let template = std::sync::Arc::new(json!({
             "model": "test-model",
             "messages": serde_json::Value::Array(vec![]),
             "temperature": 0.7,
             "max_tokens": 8192,
-        });
+        }));
         let mut cached = std::collections::HashMap::new();
 
         // Fresh: 2 messages
@@ -738,12 +748,12 @@ mod tests {
 
     #[test]
     fn test_per_session_isolation() {
-        let template = json!({
+        let template = std::sync::Arc::new(json!({
             "model": "test-model",
             "messages": serde_json::Value::Array(vec![]),
             "temperature": 0.7,
             "max_tokens": 8192,
-        });
+        }));
         let mut cached = std::collections::HashMap::new();
 
         let messages_a = vec![Message::system("sys-a"), Message::user("hello-a")];
@@ -761,12 +771,12 @@ mod tests {
     #[test]
     fn test_in_place_extend_no_clone() {
         let session_id = String::from("test-session");
-        let template = json!({
+        let template = std::sync::Arc::new(json!({
             "model": "test-model",
             "messages": serde_json::Value::Array(vec![]),
             "temperature": 0.7,
             "max_tokens": 8192,
-        });
+        }));
         let mut cached = std::collections::HashMap::new();
 
         // Fresh: 2 messages

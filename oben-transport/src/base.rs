@@ -166,8 +166,16 @@ impl BaseTransport {
 
 impl BaseTransport {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        // Optimized HTTP client: connection pooling, keep-alive, Nagle disabled
+        // for lower-latency small-message workloads (LLM API calls).
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
+            .pool_max_idle_per_host(20)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .tcp_nodelay(true)
+            .http2_keep_alive_interval(std::time::Duration::from_secs(30))
+            .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true)
             .build()
             .expect("Failed to build HTTP client");
         Self {

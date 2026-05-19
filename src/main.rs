@@ -105,7 +105,7 @@ enum SessionsCommand {
     },
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     // --verbose sets RUST_LOG only if not already configured, so explicit

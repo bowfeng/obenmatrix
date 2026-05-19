@@ -237,19 +237,45 @@ impl ConversationLoop {
         info!("Calling LLM... ({} messages in context)", messages.len());
 
         // Core loop with tool dispatch
-        let shared: Option<std::sync::Arc<std::sync::Mutex<F>>> =
-            delta_callback.map(|cb| std::sync::Arc::new(std::sync::Mutex::new(cb)));
+        //
+        // Performance note: the callback fires once per token (thousands of times
+        // for long LLM responses). Locking a Mutex per token is expensive.
+        // We route all tokens through a lock-free mpsc channel to a single drain
+        // task that batches output and acquires the callback mutex only once per
+        // ~512 bytes instead of once per token.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(128);
+        let mut callback_handle: Option<tokio::task::JoinHandle<()>> = None;
+
+        if let Some(cb) = delta_callback {
+            let cb = std::sync::Arc::new(std::sync::Mutex::new(cb));
+            callback_handle = Some(tokio::task::spawn(async move {
+                let mut buf = String::new();
+                const FLUSH_THRESHOLD: usize = 512;
+                while let Some(chunk) = rx.recv().await {
+                    buf.push_str(&chunk);
+                    if buf.len() >= FLUSH_THRESHOLD {
+                        let text = std::mem::take(&mut buf);
+                        cb.lock().unwrap()(&text);
+                    }
+                }
+                // Channel closed — flush remaining output
+                if !buf.is_empty() {
+                    cb.lock().unwrap()(&buf);
+                }
+            }));
+        }
 
         loop {
             self.budget.check()?;
 
             // Get LLM response (streaming or non-streaming).
             // First call: Fresh triggers full build; subsequent: Incremental appends.
-            let response = if let Some(ref shared) = shared {
-                let shared_clone = shared.clone();
+            let response = if callback_handle.is_some() {
+                let tx_clone = tx.clone();
                 let wrapper: oben_models::StreamDeltaCallback =
                     Box::new(move |text: &str| {
-                        shared_clone.lock().unwrap()(text);
+                        // try_send avoids blocking the stream if the channel is full
+                        let _ = tx_clone.try_send(text.to_string());
                     });
                 self.transport.stream_chat(messages, call_mode.clone(), wrapper).await?
             } else {
@@ -293,9 +319,19 @@ impl ConversationLoop {
                         }
                     }) {
                         if !last_tool_result.is_empty() {
+                            // Flush remaining buffered output before returning
+                            drop(tx); // close channel
+                            if let Some(handle) = callback_handle.take() {
+                                let _ = handle.await;
+                            }
                             return Ok(last_tool_result);
                         }
                     }
+                }
+                // Flush remaining buffered output before returning
+                drop(tx); // close channel
+                if let Some(handle) = callback_handle.take() {
+                    let _ = handle.await;
                 }
                 return Ok(text.trim().to_string());
             }

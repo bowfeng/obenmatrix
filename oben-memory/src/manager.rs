@@ -194,6 +194,9 @@ impl MemoryManager {
     }
 
     /// Load messages from raw.jsonl + summary.jsonl for one session.
+    ///
+    /// File I/O and JSON deserialization are offloaded to a blocking thread
+    /// via `tokio::task::spawn_blocking` to avoid stalling the async executor.
     fn load_session_messages(&mut self, session_id: &str) -> Result<()> {
         let session = match self.sessions.get_mut(session_id) {
             Some(s) => s,
@@ -206,14 +209,18 @@ impl MemoryManager {
             return Ok(());
         }
 
-        let raw_messages: Vec<Message> = {
-            let lines = std::fs::read_to_string(&raw_path)?;
-            lines
-                .lines()
-                .filter(|l| !l.is_empty())
-                .filter_map(|line| serde_json::from_str::<Message>(line).ok())
-                .collect()
-        };
+        // Offload file I/O + JSON deserialization to a blocking thread.
+        let raw_messages: Vec<Message> = tokio::task::block_in_place(|| {
+            let content = std::fs::read_to_string(&raw_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read raw.jsonl: {}", e))?;
+            Ok::<_, anyhow::Error>(
+                content
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .filter_map(|line| serde_json::from_str::<Message>(line).ok())
+                    .collect(),
+            )
+        })?;
 
         // Load summary chunks from disk and rebuild the message list.
         // Each summary chunk replaces the raw messages it covers,
