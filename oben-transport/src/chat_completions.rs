@@ -71,15 +71,35 @@ fn message_to_json(m: &Message) -> serde_json::Value {
     };
     match &m.content {
         oben_models::MessageContent::Text(t) => {
-            let mut obj = json!({"role": role, "content": t});
-            if m.role == MessageRole::Tool {
-                // OpenAI API requires tool_call_id on tool-result messages
-                // so it knows which tool call this result belongs to.
-                if let Some(call_id) = m.tool_call_ids.first() {
-                    obj["tool_call_id"] = json!(call_id);
+            // Assistant with tool_calls: content=null, emit tool_calls array
+            if m.role == MessageRole::Assistant {
+                if let Some(tcs) = &m.tool_calls {
+                    let calls: Vec<serde_json::Value> = tcs
+                        .iter()
+                        .map(|tc| {
+                            json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.tool_name,
+                                    "arguments": tc.arguments.to_string()
+                                }
+                            })
+                        })
+                        .collect();
+                    return json!({"role": role, "content": null, "tool_calls": calls});
                 }
             }
-            obj
+            // Tool message: include tool_call_id
+            if m.role == MessageRole::Tool {
+                let call_id = m.tool_call_ids
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".into());
+                json!({"role": role, "content": t, "tool_call_id": call_id})
+            } else {
+                json!({"role": role, "content": t})
+            }
         }
         oben_models::MessageContent::Image { url, detail } => {
             let mut img = json!({

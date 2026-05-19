@@ -57,6 +57,16 @@ impl Message {
         }
     }
 
+    pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: MessageContent::Text(String::new()),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: Some(tool_calls),
+        }
+    }
+
     pub fn system(text: impl Into<String>) -> Self {
         Self {
             role: MessageRole::System,

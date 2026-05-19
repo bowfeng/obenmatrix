@@ -167,17 +167,21 @@ impl ConversationLoop {
             }
 
             // Add assistant response to session
-            // Trim leading/trailing whitespace from response text
-            let assistant_text = if !tool_calls.is_empty() {
-                tool_calls
+            let assistant_msg = if !tool_calls.is_empty() {
+                // Create message with tool_calls (required by API)
+                let tool_call_data: Vec<oben_models::ToolCall> = tool_calls
                     .iter()
-                    .map(|tc| format!("[Calling {}]", tc.tool_name))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                    .map(|tc| oben_models::ToolCall {
+                        id: tc.id.clone(),
+                        tool_name: tc.tool_name.clone(),
+                        arguments: tc.arguments.clone(),
+                    })
+                    .collect();
+                Message::assistant_tool_calls(tool_call_data)
             } else {
-                text.trim().to_string()
+                Message::assistant(text.trim().to_string())
             };
-            messages.push(Message::assistant(assistant_text));
+            messages.push(assistant_msg);
 
             if tool_calls.is_empty() {
                 return Ok(text.trim().to_string());
@@ -244,17 +248,21 @@ impl ConversationLoop {
             }
 
             // Add assistant response to session
-            // Trim leading/trailing whitespace from response text
-            let assistant_text = if !tool_calls.is_empty() {
-                tool_calls
+            let assistant_msg = if !tool_calls.is_empty() {
+                // Create message with tool_calls (required by API)
+                let tool_call_data: Vec<oben_models::ToolCall> = tool_calls
                     .iter()
-                    .map(|tc| format!("[Calling {}]", tc.tool_name))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                    .map(|tc| oben_models::ToolCall {
+                        id: tc.id.clone(),
+                        tool_name: tc.tool_name.clone(),
+                        arguments: tc.arguments.clone(),
+                    })
+                    .collect();
+                Message::assistant_tool_calls(tool_call_data)
             } else {
-                text.trim().to_string()
+                Message::assistant(text.trim().to_string())
             };
-            messages.push(Message::assistant(assistant_text));
+            messages.push(assistant_msg);
 
             if tool_calls.is_empty() {
                 return Ok(text.trim().to_string());
