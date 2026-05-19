@@ -211,8 +211,6 @@ async fn run_chat(stream: bool) -> Result<()> {
 
 async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
-    let mut memory = oben_memory::MemoryManager::new();
-    memory.load(None)?;
 
     let mut tools = oben_tools::ToolRegistry::new();
     register_builtin_tools(&mut tools);
@@ -224,7 +222,6 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         config.context.max_messages.unwrap_or(100),
     );
 
-    // One-shot uses its own ephemeral message list
     let mut messages = Vec::new();
     let response = if stream {
         conversation.run_turn_with_streaming(
