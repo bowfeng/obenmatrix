@@ -172,7 +172,6 @@ impl MemoryManager {
         if let Some(s) = self.sessions.get_mut(&sid) {
             s.persisted_message_count = new_count;
         }
-        info!("Saved session '{}'", sid);
         Ok(())
     }
 

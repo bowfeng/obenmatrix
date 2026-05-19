@@ -316,7 +316,7 @@ mod tests {
             threshold_percent: 0.75,
             ..Default::default()
         };
-        let mut ctx = ContextEngine::with_config(config);
+        let ctx = ContextEngine::with_config(config);
         // estimate_tokens uses len/4 for Text content, threshold = 7500
         // So we need ~30000 chars total. 10 messages of ~3200 chars each.
         let long_content = "The quick brown fox jumps over the lazy dog. ".repeat(80);

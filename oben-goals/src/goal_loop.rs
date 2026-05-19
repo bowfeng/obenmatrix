@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn test_create_plan_from_goal_parses_markdown() {
         // Simulate LLM creating a plan
-        let mock_llm = || async {
+        let _mock_llm = || async {
             Ok::<String, anyhow::Error>("## Plan: build a scraper\n- [ ] research existing codebase\n- [ ] implement fetcher\n  - [ ] write request handler\n- [ ] integration test".to_string())
         };
 

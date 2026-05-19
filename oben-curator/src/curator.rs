@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_curator_state_should_run_never_run() {
-        let mut state = CuratorState::new();
+        let state = CuratorState::new();
         assert!(state.should_run(200.0)); // Should run if never run (idle > 168h default)
     }
 

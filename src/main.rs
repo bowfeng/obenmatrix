@@ -4,6 +4,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::io::Write;
+use std::time::Instant;
 use tracing::info;
 
 #[derive(Parser)]
@@ -181,7 +182,8 @@ async fn run_chat(stream: bool) -> Result<()> {
         // Run turn — messages borrowed from session, no sync needed
         let response = {
             let session = memory.active_session_mut().unwrap();
-            if stream {
+            let turn_start = Instant::now();
+            let result = if stream {
                 conversation.run_turn_with_streaming(
                     &mut session.messages,
                     oben_models::Message::user(input),
@@ -194,7 +196,10 @@ async fn run_chat(stream: bool) -> Result<()> {
                 .await?
             } else {
                 conversation.run_turn(&mut session.messages, oben_models::Message::user(input), &session.id).await?
-            }
+            };
+            let turn_dur = turn_start.elapsed();
+            info!("Turn completed in {:.2}s", turn_dur.as_secs_f64());
+            result
         };
         if !stream {
             println!("\n{}", response);
@@ -203,7 +208,10 @@ async fn run_chat(stream: bool) -> Result<()> {
         }
 
         // Persist (session.messages is already up to date — no sync needed)
+        let save_start = Instant::now();
         memory.save(None)?;
+        let save_dur = save_start.elapsed();
+        info!("Save completed in {:.2}s", save_dur.as_secs_f64());
     }
 
     Ok(())
