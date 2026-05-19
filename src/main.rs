@@ -7,7 +7,7 @@ use std::io::Write;
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "oben", version, about = "The self-improving AI agent)]
+#[command(name = "oben", version, about = "The self-improving AI agent")]
 struct Cli {
     /// Enable verbose/debug output
     #[arg(short, long)]
@@ -20,9 +20,9 @@ struct Cli {
 enum Commands {
     /// Start an interactive conversation
     Chat {
-        /// Stream text output as it arrives
-        #[arg(short, long)]
-        stream: bool,
+        /// Disable streaming
+        #[arg(long)]
+        no_stream: bool,
     },
     /// Run a one-shot prompt
     Run {
@@ -30,7 +30,7 @@ enum Commands {
         #[arg(short, long)]
         prompt: String,
         /// Stream text output as it arrives
-        #[arg(short, long)]
+        #[arg(long)]
         stream: bool,
     },
     /// Setup/configure the agent
@@ -110,7 +110,7 @@ async fn main() -> Result<()> {
     oben_utils::logging::init(level);
 
     match cli.command {
-        Commands::Chat { stream } => run_chat(stream).await,
+        Commands::Chat { no_stream } => run_chat(!no_stream).await,
         Commands::Run { prompt, stream } => run_one_shot(&prompt, stream).await,
         Commands::Setup => run_setup(),
         Commands::Config { action } => run_config(action).await,
