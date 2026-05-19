@@ -148,12 +148,13 @@ async fn run_chat(stream: bool) -> Result<()> {
     let system_prompt = oben_config::defaults::default_system_prompt();
     debug!("System prompt: {}", system_prompt);
 
-    // Create conversation loop
+    // Create conversation loop with system prompt
     let mut conversation = oben_conversation::ConversationLoop::new(
         oben_transport::chat_completions::ChatCompletionsTransport::from_config(&config.model),
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
+        system_prompt,
     );
 
     // Start a new session (or use existing active session)
@@ -234,6 +235,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
+        None::<String>,
     );
 
     let mut messages = Vec::new();

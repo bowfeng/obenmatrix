@@ -22,6 +22,8 @@ pub struct ConversationLoop {
     budget: IterationBudget,
     transport: Box<dyn TransportProvider>,
     tools: std::sync::Arc<oben_tools::ToolRegistry>,
+    /// Optional system prompt prepended to every request.
+    system_prompt: Option<String>,
 }
 
 impl ConversationLoop {
@@ -30,12 +32,14 @@ impl ConversationLoop {
         tools: std::sync::Arc<oben_tools::ToolRegistry>,
         max_iterations: usize,
         max_messages: usize,
+        system_prompt: impl Into<Option<String>>,
     ) -> Self {
         Self::with_config(
             transport,
             tools,
             max_iterations,
             max_messages,
+            system_prompt,
             ContextEngineConfig::default(),
         )
     }
@@ -45,6 +49,7 @@ impl ConversationLoop {
         tools: std::sync::Arc<oben_tools::ToolRegistry>,
         max_iterations: usize,
         _max_messages: usize,
+        system_prompt: impl Into<Option<String>>,
         engine_config: ContextEngineConfig,
     ) -> Self {
         Self {
@@ -52,6 +57,7 @@ impl ConversationLoop {
             budget: IterationBudget::new(max_iterations),
             transport: Box::new(transport),
             tools,
+            system_prompt: system_prompt.into(),
         }
     }
 
@@ -67,6 +73,11 @@ impl ConversationLoop {
         user_message: Message,
         session_id: &str,
     ) -> Result<String> {
+        // Prepend system prompt if present
+        if let Some(ref prompt) = self.system_prompt {
+            messages.insert(0, Message::system(prompt));
+        }
+
         // Add user message to session
         messages.push(user_message);
 
@@ -91,6 +102,7 @@ impl ConversationLoop {
             }
 
             // Add assistant response to session
+            // Trim leading/trailing whitespace from response text
             let assistant_text = if !tool_calls.is_empty() {
                 tool_calls
                     .iter()
@@ -98,12 +110,12 @@ impl ConversationLoop {
                     .collect::<Vec<_>>()
                     .join(", ")
             } else {
-                text.clone()
+                text.trim().to_string()
             };
             messages.push(Message::assistant(assistant_text));
 
             if tool_calls.is_empty() {
-                return Ok(text.clone());
+                return Ok(text.trim().to_string());
             }
 
             // Dispatch tool calls
@@ -135,6 +147,11 @@ impl ConversationLoop {
     where
         F: FnMut(&str) + Send + 'static,
     {
+        // Prepend system prompt if present
+        if let Some(ref prompt) = self.system_prompt {
+            messages.insert(0, Message::system(prompt));
+        }
+
         // Add user message to session
         messages.push(user_message);
 
@@ -172,6 +189,7 @@ impl ConversationLoop {
             }
 
             // Add assistant response to session
+            // Trim leading/trailing whitespace from response text
             let assistant_text = if !tool_calls.is_empty() {
                 tool_calls
                     .iter()
@@ -179,12 +197,12 @@ impl ConversationLoop {
                     .collect::<Vec<_>>()
                     .join(", ")
             } else {
-                text.clone()
+                text.trim().to_string()
             };
             messages.push(Message::assistant(assistant_text));
 
             if tool_calls.is_empty() {
-                return Ok(text.clone());
+                return Ok(text.trim().to_string());
             }
 
             // Incremental: only pass the newly added messages to the transport.
@@ -275,6 +293,7 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
+            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -310,6 +329,7 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
+            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -334,6 +354,7 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
+            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -362,6 +383,7 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             2, // max_iterations
             100,
+            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -385,6 +407,7 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
+            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -412,6 +435,7 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
+            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -456,6 +480,7 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
+            None::<String>,
         );
         let mut messages = Vec::new();
 
@@ -489,6 +514,7 @@ mod tests {
             std::sync::Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
+            None::<String>,
         );
         let mut messages = Vec::new();
 
