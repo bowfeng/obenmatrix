@@ -170,8 +170,7 @@ fn discover_context_file(start: &Path) -> Option<(PathBuf, String)> {
 /// Scans the skills directory and produces a structured listing the model can
 /// use to know what skills are available.
 pub fn build_skills_index(
-    skills_dirs: &[PathBuf],
-    available_tools: &[String],
+    skills_dirs: &[PathBuf]
 ) -> String {
     if skills_dirs.is_empty() {
         return String::new();
@@ -358,7 +357,7 @@ pub fn build_system_prompt(
     );
 
     // ── 4. Skills index ────────────────────────────────────────────
-    let skills_index = build_skills_index(skills_dirs, tools);
+    let skills_index = build_skills_index(skills_dirs);
     if !skills_index.is_empty() {
         parts.push(skills_index);
     }
@@ -424,7 +423,7 @@ fn build_stable_only(
         parts.push(tool_guidance.join("\n"));
     }
 
-    let skills_index = build_skills_index(skills_dirs, tools);
+    let skills_index = build_skills_index(skills_dirs);
     if !skills_index.is_empty() {
         parts.push(skills_index);
     }

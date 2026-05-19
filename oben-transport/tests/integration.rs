@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 /// Build a transport pointing at a wiremock server.
 fn make_transport(base_url: &str, model: &str) -> ChatCompletionsTransport {
-    ChatCompletionsTransport::new(base_url, "", model)
+    ChatCompletionsTransport::new(base_url, "", model, "")
 }
 
 fn simple_sse_response(text: &str) -> String {

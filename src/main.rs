@@ -142,7 +142,7 @@ async fn run_chat(stream: bool) -> Result<()> {
     let mut memory = oben_memory::MemoryManager::new();
 
     let mut tools = oben_tools::ToolRegistry::new();
-    register_builtin_tools(&mut tools);
+    let tool_defs = register_builtin_tools(&mut tools);
 
     // Collect available tool names for conditional guidance.
     let tool_names: Vec<String> = tools.list_tools().iter()
@@ -178,7 +178,7 @@ async fn run_chat(stream: bool) -> Result<()> {
     // Create conversation loop with 3-tier system prompt.
     let system_prompt = assembled.prompt.clone();
     let mut conversation = oben_conversation::ConversationLoop::new(
-        oben_transport::chat_completions::ChatCompletionsTransport::from_config(&config.model, system_prompt.clone()),
+        create_transport(&config, system_prompt.clone(), tool_defs.clone()),
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
@@ -258,15 +258,15 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
 
     let mut tools = oben_tools::ToolRegistry::new();
-    register_builtin_tools(&mut tools);
+    let tool_defs = register_builtin_tools(&mut tools);
 
-    let tool_names: Vec<String> = tools.list_tools().iter()
-        .map(|t| t.name.clone())
-        .collect();
+    // let tool_names: Vec<String> = tools.list_tools().iter()
+    //     .map(|t| t.name.clone())
+    //     .collect();
 
     let system_prompt = oben_config::defaults::default_system_prompt();
     let mut conversation = oben_conversation::ConversationLoop::new(
-        oben_transport::chat_completions::ChatCompletionsTransport::from_config(&config.model, system_prompt.clone()),
+        create_transport(&config, system_prompt.clone(), tool_defs.clone()),
         std::sync::Arc::new(tools),
         config.max_iterations.unwrap_or(50),
         config.context.max_messages.unwrap_or(100),
@@ -371,7 +371,11 @@ fn show_info() {
 }
 
 /// Register all built-in tools into the registry.
-fn register_builtin_tools(tools: &mut oben_tools::ToolRegistry) {
+/// Register all built-in tools into the registry and return them as a Vec
+/// for structured tool calling to the LLM.
+fn register_builtin_tools(
+    tools: &mut oben_tools::ToolRegistry,
+) -> Vec<oben_models::Tool> {
     use oben_models::Tool;
 
     // Shell tool
@@ -380,7 +384,7 @@ fn register_builtin_tools(tools: &mut oben_tools::ToolRegistry) {
         .param("cwd", "Working directory", "string", false)
         .param("timeout", "Timeout in seconds", "number", false)
         .build();
-    tools.register(shell_tool, std::sync::Arc::new(|args: serde_json::Value| {
+    tools.register(shell_tool.clone(), std::sync::Arc::new(|args: serde_json::Value| {
         Box::pin(oben_tools::shell::execute_shell(args))
     }));
 
@@ -388,7 +392,7 @@ fn register_builtin_tools(tools: &mut oben_tools::ToolRegistry) {
     let read_tool = Tool::builder("read_file", "Read the contents of a file")
         .param("path", "Path to the file", "string", true)
         .build();
-    tools.register(read_tool, std::sync::Arc::new(|args: serde_json::Value| {
+    tools.register(read_tool.clone(), std::sync::Arc::new(|args: serde_json::Value| {
         Box::pin(oben_tools::read_write::read_file(args))
     }));
 
@@ -397,7 +401,7 @@ fn register_builtin_tools(tools: &mut oben_tools::ToolRegistry) {
         .param("path", "Path to write to", "string", true)
         .param("content", "Content to write", "string", true)
         .build();
-    tools.register(write_tool, std::sync::Arc::new(|args: serde_json::Value| {
+    tools.register(write_tool.clone(), std::sync::Arc::new(|args: serde_json::Value| {
         Box::pin(oben_tools::read_write::write_file(args))
     }));
 
@@ -405,9 +409,24 @@ fn register_builtin_tools(tools: &mut oben_tools::ToolRegistry) {
     let http_tool = Tool::builder("http_get", "Make an HTTP GET request")
         .param("url", "URL to fetch", "string", true)
         .build();
-    tools.register(http_tool, std::sync::Arc::new(|args: serde_json::Value| {
+    tools.register(http_tool.clone(), std::sync::Arc::new(|args: serde_json::Value| {
         Box::pin(oben_tools::web::http_get(args))
     }));
+
+    vec![shell_tool, read_tool, write_tool, http_tool]
+}
+
+/// Create a ChatCompletionsTransport with tools for structured tool calling.
+fn create_transport(
+    config: &oben_config::AppConfig,
+    system_prompt: String,
+    tool_defs: Vec<oben_models::Tool>,
+) -> oben_transport::ChatCompletionsTransport {
+    oben_transport::ChatCompletionsTransport::from_config_with_tools(
+        &config.model,
+        system_prompt,
+        tool_defs,
+    )
 }
 
 /// Run session compaction using the SessionManager from oben-memory.
@@ -432,8 +451,8 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
 
     println!("Compacting session '{}' ({} messages)...", session.name, session.message_count());
 
-    // Build a transport for the summary LLM call
-    let transport = oben_transport::ChatCompletionsTransport::from_config(&config.model, String::new());
+    // Build a transport for the summary LLM call (no tools needed for compaction)
+    let transport = create_transport(&config, String::new(), Vec::new());
     let comp_config = oben_conversation::compression::CompressionConfig::default();
 
     let result = oben_conversation::compact_session_messages(
@@ -489,7 +508,7 @@ fn run_delete_session(session_key: &str) -> Result<()> {
 
 async fn run_models(action: ModelsCommand) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
-    let transport = oben_transport::ChatCompletionsTransport::from_config(&config.model, String::new());
+    let transport = create_transport(&config, String::new(), Vec::new());
 
     match action {
         ModelsCommand::List => {

@@ -6,9 +6,48 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use serde_json::json;
 use tracing::debug;
-use oben_models::{Message, MessageRole, ProviderKind, TransportResponse, TransportToolCall};
+use oben_models::{Message, MessageRole, ProviderKind, Tool, TransportResponse, TransportToolCall};
 
 use super::base::{BaseTransport, ChatResponse};
+
+/// Convert an `oben_models::Tool` into OpenAI API tool format:
+/// `{ "type": "function", "function": { "name": ..., "description": ..., "parameters": ... } }`
+fn tool_to_openai(tool: &Tool) -> serde_json::Value {
+    let parameters = match &tool.parameters {
+        oben_models::ToolParameters::JsonSchema { schema } => schema.clone(),
+        oben_models::ToolParameters::Flat(params) => {
+            // Build a JSON Schema object from flat parameter list
+            let properties: serde_json::Map<String, serde_json::Value> = params
+                .iter()
+                .map(|p| {
+                    let mut prop = serde_json::Map::new();
+                    prop.insert("type".into(), json!(p.parameter_type));
+                    prop.insert("description".into(), json!(p.description));
+                    (p.name.clone(), json!(prop))
+                })
+                .collect();
+
+            let required: Vec<String> = params.iter().filter(|p| p.required).map(|p| p.name.clone()).collect();
+
+            let mut schema = serde_json::Map::new();
+            schema.insert("type".into(), json!("object"));
+            schema.insert("properties".into(), json!(properties));
+            if !required.is_empty() {
+                schema.insert("required".into(), json!(required));
+            }
+            json!(schema)
+        }
+    };
+
+    json!({
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": parameters,
+        }
+    })
+}
 
 /// Per-session cached request state.
 ///
@@ -108,7 +147,7 @@ where
                 arr.push(msg.clone());
             }
             let sid = session_id.clone();
-            cached.insert(sid, CachedRequest { request: req, msg_count: messages.len() + 1 });
+            cached.insert(sid, CachedRequest { request: req, msg_count: messages.len() });
             f(&cached[&session_id].request)
         }
         oben_models::CallMode::Incremental(_) => {
@@ -123,20 +162,21 @@ where
 
             if messages.len() <= cached_count {
                 // Messages haven't grown — content was edited or removed.
-                // Rebuild entirely.
+                // Rebuild entirely: clear old messages and push new ones.
                 let json_messages = build_all_messages_json(messages);
                 let arr = entry.request["messages"].as_array_mut().unwrap();
+                arr.clear();
                 for msg in &json_messages{
                     arr.push(msg.clone());
                 }
-                entry.msg_count = messages.len() + 1;
+                entry.msg_count = messages.len();
             } else {
                 // Messages grew — extend existing array in-place.
                 let arr = entry.request["messages"].as_array_mut().unwrap();
-                for msg in &messages[(cached_count-1)..] {
+                for msg in &messages[cached_count..] {
                     arr.push(message_to_json(msg));
                 }
-                entry.msg_count = messages.len() - cached_count + 1;
+                entry.msg_count = messages.len();
             }
 
             f(&entry.request)
@@ -212,8 +252,12 @@ struct StreamUsage {
 /// Build the static parts of the request template (non-streaming).
 /// The system prompt is NOT embedded here — it must be in messages[0]
 /// (prepended by `SystemPromptConfig::build_and_prepend`).
-fn build_request_template(base: &BaseTransport, system_prompt: impl Into<String>) -> serde_json::Value {
-    json!({
+fn build_request_template(
+    base: &BaseTransport,
+    system_prompt: impl Into<String>,
+    tools: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut req = json!({
         "model": base.model,
         "messages": serde_json::Value::Array(vec![json!({
             "role": "system",
@@ -221,14 +265,23 @@ fn build_request_template(base: &BaseTransport, system_prompt: impl Into<String>
         })]),
         "temperature": 0.7,
         "max_tokens": 8192,
-    })
+    });
+
+    if !tools.is_empty() {
+        req["tools"] = serde_json::Value::Array(tools);
+    }
+    req
 }
 
 /// Build the streaming request template.
 /// The system prompt is NOT embedded here — it must be in messages[0]
 /// (prepended by `SystemPromptConfig::build_and_prepend`).
-fn build_stream_request_template(base: &BaseTransport, system_prompt: impl Into<String>) -> serde_json::Value {
-    json!({
+fn build_stream_request_template(
+    base: &BaseTransport,
+    system_prompt: impl Into<String>,
+    tools: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut req = json!({
         "model": base.model,
         "messages": serde_json::Value::Array(vec![json!({
             "role": "system",
@@ -238,7 +291,12 @@ fn build_stream_request_template(base: &BaseTransport, system_prompt: impl Into<
         "max_tokens": 8192,
         "stream": true,
         "stream_options": {"include_usage": true},
-    })
+    });
+
+    if !tools.is_empty() {
+        req["tools"] = serde_json::Value::Array(tools);
+    }
+    req
 }
 
 /// Transport that talks to any OpenAI-compatible API.
@@ -247,7 +305,7 @@ pub struct ChatCompletionsTransport {
     /// Cached request state per session — contains the full request object
     /// with a mutable `"messages"` array.
     cached: std::sync::Mutex<std::collections::HashMap<String, CachedRequest>>,
-    /// Static non-streaming request template (model, temperature, max_tokens).
+    /// Static non-streaming request template (model, temperature, max_tokens, tools).
     /// The system prompt is NOT embedded here — it must be in messages[0].
     template: serde_json::Value,
     /// Static streaming request template (same as above + stream: true).
@@ -258,8 +316,12 @@ impl ChatCompletionsTransport {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>, system_prompt: impl Into<String>) -> Self {
         let base = BaseTransport::new(base_url, api_key, model);
         let system_prompt = system_prompt.into();
-        let template = build_request_template(&base, system_prompt.clone());
-        let stream_template = build_stream_request_template(&base, system_prompt.clone());
+        // No tools passed — empty list. The transport supports tools but
+        // this legacy constructor keeps the simple API for callers that
+        // don't have a tool registry (e.g. wizard, CLI one-shot).
+        let tools: Vec<serde_json::Value> = Vec::new();
+        let template = build_request_template(&base, system_prompt.clone(), tools.clone());
+        let stream_template = build_stream_request_template(&base, system_prompt.clone(), tools);
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -268,7 +330,47 @@ impl ChatCompletionsTransport {
         }
     }
 
-    /// Create from a ProviderConfig.
+    /// Create from a ProviderConfig, with tools for structured tool calling.
+    pub fn with_tools(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        system_prompt: impl Into<String>,
+        tools: Vec<Tool>,
+    ) -> Self {
+        let base = BaseTransport::new(base_url, api_key, model);
+        let system_prompt = system_prompt.into();
+        let tool_defs: Vec<serde_json::Value> = tools.iter().map(tool_to_openai).collect();
+        let template = build_request_template(&base, system_prompt.clone(), tool_defs.clone());
+        let stream_template = build_stream_request_template(&base, system_prompt.clone(), tool_defs);
+        Self {
+            base,
+            cached: std::sync::Mutex::new(std::collections::HashMap::new()),
+            template,
+            stream_template,
+        }
+    }
+
+    /// Create from a ProviderConfig, with tools for structured tool calling.
+    pub fn from_config_with_tools(
+        config: &oben_models::ProviderConfig,
+        system_prompt: impl Into<String>,
+        tools: Vec<Tool>,
+    ) -> Self {
+        let base_url = match config.kind {
+            ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
+            ProviderKind::OpenAI => "https://api.openai.com/v1".to_string(),
+            ProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
+            ProviderKind::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
+            ProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1".to_string(),
+            ProviderKind::LMStudio => "http://localhost:1234/v1".to_string(),
+            ProviderKind::Custom => config.base_url.clone().unwrap_or_default(),
+        };
+        let api_key = config.api_key.clone().unwrap_or_default();
+        Self::with_tools(base_url, api_key, &config.model, system_prompt, tools)
+    }
+
+    /// Create from a ProviderConfig (legacy: no tools).
     pub fn from_config(config: &oben_models::ProviderConfig, system_prompt: impl Into<String>) -> Self {
         let base_url = match config.kind {
             ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
