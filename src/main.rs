@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::time::Instant;
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Parser)]
 #[command(name = "oben", version, about = "The self-improving AI agent")]
@@ -198,6 +198,7 @@ async fn run_chat(stream: bool) -> Result<()> {
                 conversation.run_turn(&mut session.messages, oben_models::Message::user(input), &session.id).await?
             };
             let turn_dur = turn_start.elapsed();
+            debug!("Raw response: {:?}", result);
             info!("Turn completed in {:.2}s", turn_dur.as_secs_f64());
             result
         };
@@ -245,6 +246,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     } else {
         conversation.run_turn(&mut messages, oben_models::Message::user(prompt), "cli-session").await?
     };
+    debug!("Raw response: {:?}", response);
     if !stream {
         println!("\n{}", response);
     } else {
