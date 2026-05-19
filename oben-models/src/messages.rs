@@ -38,6 +38,14 @@ impl MessageContent {
             _ => String::new(),
         }
     }
+
+    /// Get the text content if this is a Text variant (zero-copy).
+    pub fn to_text_ref(&self) -> Option<&str> {
+        match self {
+            MessageContent::Text(t) => Some(t.as_str()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

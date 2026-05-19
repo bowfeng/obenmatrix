@@ -169,14 +169,11 @@ impl ConversationLoop {
 
             // Add assistant response to session
             let assistant_msg = if !tool_calls.is_empty() {
-                // Create message with tool_calls (required by API)
-                let tool_call_data: Vec<oben_models::ToolCall> = tool_calls
+                // Create message with tool_calls (required by API).
+                // Use ToolCall::from_transport for a single allocation path.
+                let tool_call_data = tool_calls
                     .iter()
-                    .map(|tc| oben_models::ToolCall {
-                        id: tc.id.clone(),
-                        tool_name: tc.tool_name.clone(),
-                        arguments: tc.arguments.clone(),
-                    })
+                    .map(oben_models::ToolCall::from_transport)
                     .collect();
                 Message::assistant_tool_calls(tool_call_data)
             } else {
@@ -191,13 +188,13 @@ impl ConversationLoop {
                 if text.trim().is_empty() {
                     if let Some(last_tool_result) = messages.last().and_then(|m| {
                         if m.role == MessageRole::Tool {
-                            Some(m.content.to_text())
+                            m.content.to_text_ref()
                         } else {
                             None
                         }
                     }) {
                         if !last_tool_result.is_empty() {
-                            return Ok(last_tool_result);
+                            return Ok(last_tool_result.to_string());
                         }
                     }
                 }
@@ -244,7 +241,7 @@ impl ConversationLoop {
         // We route all tokens through a lock-free mpsc channel to a single drain
         // task that batches output and acquires the callback mutex only once per
         // ~512 bytes instead of once per token.
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(128);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4096);
         let mut callback_handle: Option<tokio::task::JoinHandle<()>> = None;
 
         if let Some(cb) = delta_callback {
@@ -276,7 +273,10 @@ impl ConversationLoop {
                 let tx_clone = tx.clone();
                 let wrapper: oben_models::StreamDeltaCallback =
                     Box::new(move |text: &str| {
-                        // try_send avoids blocking the stream if the channel is full
+                        // Channel buffer of 4096 tokens is far larger than
+                        // any single LLM response delta, making overflow
+                        // practically impossible. try_send is non-blocking
+                        // and avoids holding the callback mutex per token.
                         let _ = tx_clone.try_send(text.to_string());
                     });
                 self.transport.stream_chat(messages, &call_mode, wrapper).await?
@@ -293,14 +293,10 @@ impl ConversationLoop {
 
             // Add assistant response to session
             let assistant_msg = if !tool_calls.is_empty() {
-                // Create message with tool_calls (required by API)
-                let tool_call_data: Vec<oben_models::ToolCall> = tool_calls
+                // Use ToolCall::from_transport for a single allocation path.
+                let tool_call_data = tool_calls
                     .iter()
-                    .map(|tc| oben_models::ToolCall {
-                        id: tc.id.clone(),
-                        tool_name: tc.tool_name.clone(),
-                        arguments: tc.arguments.clone(),
-                    })
+                    .map(oben_models::ToolCall::from_transport)
                     .collect();
                 Message::assistant_tool_calls(tool_call_data)
             } else {
@@ -315,7 +311,7 @@ impl ConversationLoop {
                 if text.trim().is_empty() {
                     if let Some(last_tool_result) = messages.last().and_then(|m| {
                         if m.role == MessageRole::Tool {
-                            Some(m.content.to_text())
+                            m.content.to_text_ref()
                         } else {
                             None
                         }
@@ -326,7 +322,7 @@ impl ConversationLoop {
                             if let Some(handle) = callback_handle.take() {
                                 let _ = handle.await;
                             }
-                            return Ok(last_tool_result);
+                            return Ok(last_tool_result.to_string());
                         }
                     }
                 }
@@ -428,7 +424,7 @@ mod tests {
         );
         let mut messages = Vec::new();
 
-        let result = loop_.run_turn(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string())).await.unwrap();
+        let result = loop_.run_turn(&mut messages, Message::user("Hi"), &oben_models::CallMode::Fresh("test-session".to_string())).await.unwrap();
         assert_eq!(result, "Hello!");
         assert_eq!(messages.len(), 2); // user + assistant
     }
@@ -463,7 +459,7 @@ mod tests {
         );
         let mut messages = Vec::new();
 
-        let result = loop_.run_turn(&mut messages, Message::user("list files"), oben_models::CallMode::Fresh("test-session".to_string())).await.unwrap();
+        let result = loop_.run_turn(&mut messages, Message::user("list files"), &oben_models::CallMode::Fresh("test-session".to_string())).await.unwrap();
         assert_eq!(result, "Done!");
         assert_eq!(messages.len(), 4); // user + assistant + tool_call + tool_result
     }
@@ -487,7 +483,7 @@ mod tests {
         );
         let mut messages = Vec::new();
 
-        let result = loop_.run_turn(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string())).await.unwrap();
+        let result = loop_.run_turn(&mut messages, Message::user("Hi"), &oben_models::CallMode::Fresh("test-session".to_string())).await.unwrap();
         assert_eq!(result, "");
         assert_eq!(messages.len(), 2); // user + assistant
     }
@@ -515,7 +511,7 @@ mod tests {
         );
         let mut messages = Vec::new();
 
-        let result = loop_.run_turn(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string())).await;
+        let result = loop_.run_turn(&mut messages, Message::user("Hi"), &oben_models::CallMode::Fresh("test-session".to_string())).await;
         assert!(result.is_err());
     }
 
@@ -540,7 +536,7 @@ mod tests {
 
         assert_eq!(loop_.message_count(&messages), 0);
         loop_
-            .run_turn(&mut messages, Message::user("Hello"), oben_models::CallMode::Fresh("test-session".to_string()))
+            .run_turn(&mut messages, Message::user("Hello"), &oben_models::CallMode::Fresh("test-session".to_string()))
             .await
             .unwrap();
         assert_eq!(messages.len(), 2); // user + assistant
@@ -571,7 +567,7 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = loop_
-            .run_turn_with_streaming(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string()), Some(cb))
+            .run_turn_with_streaming(&mut messages, Message::user("Hi"), &oben_models::CallMode::Fresh("test-session".to_string()), Some(cb))
             .await
             .unwrap();
         assert_eq!(result, "Hello from stream!");
@@ -615,7 +611,7 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = loop_
-            .run_turn_with_streaming(&mut messages, Message::user("list files"), oben_models::CallMode::Fresh("test-session".to_string()), Some(cb))
+            .run_turn_with_streaming(&mut messages, Message::user("list files"), &oben_models::CallMode::Fresh("test-session".to_string()), Some(cb))
             .await
             .unwrap();
         assert_eq!(result, "All done!");
@@ -648,7 +644,7 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = loop_
-            .run_turn_with_streaming(&mut messages, Message::user("Hi"), oben_models::CallMode::Fresh("test-session".to_string()), Some(cb))
+            .run_turn_with_streaming(&mut messages, Message::user("Hi"), &oben_models::CallMode::Fresh("test-session".to_string()), Some(cb))
             .await
             .unwrap();
         assert_eq!(result, "Hello!");

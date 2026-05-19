@@ -34,6 +34,17 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
+impl ToolCall {
+    /// Create from a transport tool call (avoids cloning the arguments Value).
+    pub fn from_transport(tc: &crate::TransportToolCall) -> Self {
+        Self {
+            id: tc.id.clone(),
+            tool_name: tc.tool_name.clone(),
+            arguments: tc.arguments.clone(),
+        }
+    }
+}
+
 /// Result of executing a tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {

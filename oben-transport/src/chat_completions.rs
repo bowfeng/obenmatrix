@@ -6,7 +6,7 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use serde_json::json;
 use tracing::debug;
-use oben_models::{Message, MessageRole, ProviderKind, Tool, TransportResponse, TransportToolCall};
+use oben_models::{Message, MessageRole, Tool, TransportResponse, TransportToolCall};
 
 use super::base::{BaseTransport, ChatResponse};
 
@@ -99,8 +99,8 @@ fn message_to_json(m: &Message) -> serde_json::Value {
             if m.role == MessageRole::Tool {
                 let call_id = m.tool_call_ids
                     .first()
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".into());
+                    .map(|s| s.as_str())
+                    .unwrap_or("unknown");
                 json!({"role": role, "content": t, "tool_call_id": call_id})
             } else {
                 json!({"role": role, "content": t})
@@ -143,9 +143,17 @@ fn message_to_json(m: &Message) -> serde_json::Value {
     }
 }
 
-/// Build JSON for all messages (fresh call).
+/// Build JSON for all messages (fresh call). Returns Vec in place.
 fn build_all_messages_json(messages: &[Message]) -> Vec<serde_json::Value> {
     messages.iter().map(message_to_json).collect()
+}
+
+/// Push new messages into an existing JSON array (incremental extend).
+/// Returns the number of messages added.
+fn extend_messages_json(arr: &mut Vec<serde_json::Value>, messages: &[Message], from: usize) {
+    for msg in &messages[from..] {
+        arr.push(message_to_json(msg));
+    }
 }
 
 /// Resolves the CallMode into a cached request and calls `f` with a reference.
@@ -174,13 +182,14 @@ where
             // Build the full request from the template + all messages.
             // Arc::clone is a pointer copy — the template (system prompt, tools,
             // static config) is shared, so we clone only the messages part.
-            let json_messages = build_all_messages_json(messages);
             let mut req = (**template).clone();
+            let mut json_messages = build_all_messages_json(messages);
             
             let arr = req["messages"].as_array_mut().unwrap();
-            for msg in &json_messages{
-                arr.push(msg.clone());
-            }
+            // Pre-allocate capacity to avoid reallocations.
+            arr.reserve(json_messages.len());
+            // Move JSON values into the array (avoids per-element clone).
+            arr.append(&mut json_messages);
             let sid = session_id.clone();
             cached.insert(sid, CachedRequest { request: req, msg_count: messages.len() });
             f(&cached[&session_id].request)
@@ -199,19 +208,17 @@ where
             if messages.len() <= cached_count {
                 // Messages haven't grown — content was edited or removed.
                 // Rebuild entirely: clear old messages and push new ones.
-                let json_messages = build_all_messages_json(messages);
+                let mut json_messages = build_all_messages_json(messages);
                 let arr = entry.request["messages"].as_array_mut().unwrap();
                 arr.clear();
-                for msg in &json_messages{
-                    arr.push(msg.clone());
-                }
+                let len = json_messages.len();
+                arr.reserve(len);
+                arr.append(&mut json_messages);
                 entry.msg_count = messages.len();
             } else {
                 // Messages grew — extend existing array in-place.
                 let arr = entry.request["messages"].as_array_mut().unwrap();
-                for msg in &messages[cached_count..] {
-                    arr.push(message_to_json(msg));
-                }
+                extend_messages_json(arr, messages, cached_count);
                 entry.msg_count = messages.len();
             }
 
@@ -389,36 +396,33 @@ impl ChatCompletionsTransport {
         }
     }
 
+    /// Resolve the base URL for a provider config (cached).
+    fn resolve_base_url(config: &oben_models::ProviderConfig) -> String {
+        match config.kind {
+            oben_models::ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
+            oben_models::ProviderKind::OpenAI => "https://api.openai.com/v1".to_string(),
+            oben_models::ProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
+            oben_models::ProviderKind::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
+            oben_models::ProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1".to_string(),
+            oben_models::ProviderKind::LMStudio => "http://localhost:1234/v1".to_string(),
+            oben_models::ProviderKind::Custom => config.base_url.clone().unwrap_or_default(),
+        }
+    }
+
     /// Create from a ProviderConfig, with tools for structured tool calling.
     pub fn from_config_with_tools(
         config: &oben_models::ProviderConfig,
         system_prompt: impl Into<String>,
         tools: Vec<Tool>,
     ) -> Self {
-        let base_url = match config.kind {
-            ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
-            ProviderKind::OpenAI => "https://api.openai.com/v1".to_string(),
-            ProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
-            ProviderKind::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
-            ProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1".to_string(),
-            ProviderKind::LMStudio => "http://localhost:1234/v1".to_string(),
-            ProviderKind::Custom => config.base_url.clone().unwrap_or_default(),
-        };
+        let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();
         Self::with_tools(base_url, api_key, &config.model, system_prompt, tools)
     }
 
     /// Create from a ProviderConfig (legacy: no tools).
     pub fn from_config(config: &oben_models::ProviderConfig, system_prompt: impl Into<String>) -> Self {
-        let base_url = match config.kind {
-            ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
-            ProviderKind::OpenAI => "https://api.openai.com/v1".to_string(),
-            ProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
-            ProviderKind::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
-            ProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1".to_string(),
-            ProviderKind::LMStudio => "http://localhost:1234/v1".to_string(),
-            ProviderKind::Custom => config.base_url.clone().unwrap_or_default(),
-        };
+        let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();
         Self::new(base_url, api_key, &config.model, system_prompt)
     }

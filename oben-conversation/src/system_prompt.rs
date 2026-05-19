@@ -298,6 +298,25 @@ pub struct AssembledPrompt {
     pub stable: String,
 }
 
+/// Split an assembled prompt into (stable, volatile) portions.
+///
+/// This is used to inject a fresh volatile block (timestamp, memory context)
+/// into a pre-built stable prompt without rebuilding the expensive stable
+/// portion (context file I/O, skills scan, tool guidance) on every turn.
+pub fn inject_volatile(prompt: &str, stable: &str, volatile: &str) -> String {
+    if prompt.len() <= stable.len() + volatile.len() {
+        // Fallback: full rebuild if sizes don't match (shouldn't happen normally)
+        return prompt.to_string();
+    }
+    // Build fresh from stable + new volatile block.
+    let mut result = stable.to_string();
+    if !volatile.is_empty() {
+        result.push_str("\n\n");
+        result.push_str(volatile);
+    }
+    result
+}
+
 /// Build the full system prompt from all components.
 ///
 /// Returns `(stable, volatile)` so the caller can cache the stable part and
@@ -444,7 +463,10 @@ fn build_stable_only(
     parts.join("\n\n")
 }
 
-/// Build the volatile per-turn block (memory, timestamp).
+/// Build a volatile-per-turn system prompt injection.
+///
+/// Returns just the volatile block string that can be injected into a
+/// pre-built stable prompt via `inject_volatile()`.
 pub fn build_volatile_block(
     memory_context: Option<&str>,
     session_id: Option<&str>,

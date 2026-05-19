@@ -159,10 +159,9 @@ async fn run_chat(stream: bool) -> Result<()> {
     ];
     let context_cwd = std::env::current_dir().ok();
 
-    // Build the full system prompt for debug logging.
     let volatile = oben_conversation::system_prompt::build_volatile_block(
-        None, // memory_context — built per-turn
-        None, // session_id — not known yet
+        None,
+        None,
         Some(&config.model.model),
     );
     let assembled = oben_conversation::system_prompt::build_system_prompt(
