@@ -4,7 +4,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use anyhow::Result;
 use serde_json::Value;
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
@@ -147,13 +146,4 @@ impl SelfRegisteringTool for FileTools {
 pub fn register_file_tools(registry: &mut super::ToolRegistry) {
     registry.register(make_read_file_tool(), make_read_file_handler());
     registry.register(make_write_file_tool(), make_write_file_handler());
-}
-
-// Legacy async fns for backward compat
-pub async fn read_file(args: Value) -> Result<ToolResult> {
-    make_read_file_handler()(args).await
-}
-
-pub async fn write_file(args: Value) -> Result<ToolResult> {
-    make_write_file_handler()(args).await
 }

@@ -71,7 +71,15 @@ fn message_to_json(m: &Message) -> serde_json::Value {
     };
     match &m.content {
         oben_models::MessageContent::Text(t) => {
-            json!({"role": role, "content": t})
+            let mut obj = json!({"role": role, "content": t});
+            if m.role == MessageRole::Tool {
+                // OpenAI API requires tool_call_id on tool-result messages
+                // so it knows which tool call this result belongs to.
+                if let Some(call_id) = m.tool_call_ids.first() {
+                    obj["tool_call_id"] = json!(call_id);
+                }
+            }
+            obj
         }
         oben_models::MessageContent::Image { url, detail } => {
             let mut img = json!({

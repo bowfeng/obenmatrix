@@ -3,7 +3,6 @@
 /// Self-registers via `SelfRegisteringTool` trait.
 
 use std::sync::Arc;
-use anyhow::Result;
 use serde_json::Value;
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
@@ -77,9 +76,4 @@ impl SelfRegisteringTool for WebTools {
     fn handler() -> ToolHandler {
         make_http_get_handler()
     }
-}
-
-// Legacy async fn for backward compat
-pub async fn http_get(args: Value) -> Result<ToolResult> {
-    make_http_get_handler()(args).await
 }

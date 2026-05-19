@@ -3,7 +3,6 @@
 /// Self-registers via `SelfRegisteringTool` trait.
 
 use std::sync::Arc;
-use anyhow::Result;
 use serde_json::Value;
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
@@ -104,9 +103,4 @@ impl SelfRegisteringTool for ShellTool {
     fn handler() -> ToolHandler {
         make_shell_handler()
     }
-}
-
-// Legacy async fn for backward compat
-pub async fn execute_shell(args: Value) -> Result<ToolResult> {
-    make_shell_handler()(args).await
 }
