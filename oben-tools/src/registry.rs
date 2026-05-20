@@ -1,6 +1,11 @@
 /// Tool registry — stores and dispatches tool calls.
 ///
 /// Maps to `tools/registry.py`.
+///
+/// The `Tool` trait is the deep interface at the tool seam. Callers create
+/// structs that implement the trait, and the registry stores them as `Box<dyn
+/// Tool>`. Universal pre-checks (validation before dispatch) apply across all
+/// tools in `execute()`.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -8,59 +13,108 @@ use std::pin::Pin;
 use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value;
-#[cfg(test)]
-use serde_json::json;
 use tracing::{info, warn};
-
-
 use oben_models::ToolResult;
 
-/// A tool handler function.
+// ---------------------------------------------------------------------------
+// Tool trait — deep interface at the tool seam
+// ---------------------------------------------------------------------------
+
+/// A deep tool module. The interface is small (4 methods) but hides
+/// the full implementation (parsing, validation, execution, error handling).
+#[async_trait::async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn validate(&self, _args: &Value) -> Result<()> { Ok(()) }
+    async fn execute(&self, args: &Value) -> ToolResult;
+}
+
+// ---------------------------------------------------------------------------
+// SelfRegisteringTool — backward compat, now delegates to SelfRegisteringToolAdapter
+// ---------------------------------------------------------------------------
+
+/// Closure-based handler type alias (used by all existing tool modules).
 pub type ToolHandler = Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send>> + Send + Sync>;
 
-/// The global tool registry.
+/// Trait for tools that register via (tool_def, handler) pair.
+/// The impl block below converts this to a Tool.
+pub trait SelfRegisteringTool {
+    fn tool() -> oben_models::Tool;
+    fn handler() -> ToolHandler;
+    fn register_self(registry: &mut ToolRegistry) {
+        registry.register(Box::new(SelfRegisteringToolAdapter::new(Self::tool(), Self::handler())));
+    }
+}
+
+/// Adapter that satisfies Tool from a (oben_models::Tool, ToolHandler) pair.
+pub(crate) struct SelfRegisteringToolAdapter {
+    tool_def: oben_models::Tool,
+    handler: ToolHandler,
+}
+
+impl SelfRegisteringToolAdapter {
+    pub(crate) fn new(tool_def: oben_models::Tool, handler: ToolHandler) -> Self {
+        Self { tool_def, handler }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for SelfRegisteringToolAdapter {
+    fn name(&self) -> &str { &self.tool_def.name }
+    fn description(&self) -> &str { &self.tool_def.description }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        (self.handler)(args.clone()).await.unwrap_or_else(|e| ToolResult {
+            call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ToolRegistry
+// ---------------------------------------------------------------------------
+
 pub struct ToolRegistry {
-    tools: HashMap<String, (oben_models::Tool, ToolHandler)>,
+    tools: HashMap<String, Box<dyn Tool>>,
 }
 
 impl ToolRegistry {
-    pub fn new() -> Self {
-        Self {
-            tools: HashMap::new(),
-        }
+    pub fn new() -> Self { Self { tools: HashMap::new() } }
+
+    pub fn register(&mut self, tool: Box<dyn Tool>) {
+        info!("Registering tool: {}", tool.name());
+        self.tools.insert(tool.name().to_string(), tool);
     }
 
-    /// Register a tool with its handler.
-    pub fn register(&mut self, tool: oben_models::Tool, handler: ToolHandler) {
-        info!("Registering tool: {}", tool.name);
-        self.tools.insert(tool.name.clone(), (tool, handler));
+    pub fn list_tools(&self) -> Vec<oben_models::Tool> {
+        self.tools.values().map(|t| oben_models::Tool {
+            name: t.name().to_string(),
+            description: t.description().to_string(),
+            parameters: oben_models::ToolParameters::Flat(vec![]),
+        }).collect()
     }
 
-    /// Get a list of available tools.
-    pub fn list_tools(&self) -> Vec<&oben_models::Tool> {
-        self.tools.values().map(|(tool, _)| tool).collect()
-    }
-
-    /// Execute a tool by name with arguments.
     pub async fn execute(&self, tool_name: &str, arguments: &Value) -> ToolResult {
         info!("Executing tool: {} with args...", tool_name);
-
         match self.tools.get(tool_name) {
-            Some((_tool, handler)) => {
-                match handler(arguments.clone()).await {
-                    Ok(result) => {
-                        info!("Tool {} succeeded", tool_name);
-                        result
-                    }
-                    Err(e) => {
-                        warn!("Tool {} failed: {}", tool_name, e);
-                        ToolResult {
-                            call_id: arguments.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            output: String::new(),
-                            error: Some(e.to_string()),
-                        }
-                    }
+            Some(tool) => {
+                if let Err(e) = tool.validate(arguments) {
+                    warn!("Tool {} validation failed: {}", tool_name, e);
+                    return ToolResult {
+                        call_id: arguments.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        output: String::new(),
+                        error: Some(format!("Validation: {}", e)),
+                    };
                 }
+                let result = tool.execute(arguments).await;
+                if result.error.is_none() {
+                    info!("Tool {} succeeded", tool_name);
+                } else {
+                    warn!("Tool {} failed: {:?}", tool_name, result.error);
+                }
+                result
             }
             None => {
                 warn!("Unknown tool: {}", tool_name);
@@ -73,163 +127,117 @@ impl ToolRegistry {
         }
     }
 
-    /// Check if a tool is registered.
-    pub fn has_tool(&self, name: &str) -> bool {
-        self.tools.contains_key(name)
-    }
-
-    /// Get tool count.
-    pub fn len(&self) -> usize {
-        self.tools.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
-    }
+    pub fn has_tool(&self, name: &str) -> bool { self.tools.contains_key(name) }
+    pub fn len(&self) -> usize { self.tools.len() }
+    pub fn is_empty(&self) -> bool { self.tools.is_empty() }
 }
 
-impl Default for ToolRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+impl Default for ToolRegistry { fn default() -> Self { Self::new() } }
 
-/// Trait for tool modules that can self-register into a registry.
-///
-/// Implement this to add a new tool. Add your module to the `ALL_TOOLS`
-/// array in `lib.rs` — `discover_builtin_tools` will auto-discover and
-/// register it.
-pub trait SelfRegisteringTool {
-    /// The tool definition (name, description, parameters).
-    fn tool() -> oben_models::Tool;
-    /// The handler that executes the tool.
-    fn handler() -> ToolHandler;
-    /// Register this tool into the given registry.
-    fn register_self(registry: &mut ToolRegistry) {
-        registry.register(Self::tool(), Self::handler());
-    }
-}
-
-/// Trait for modules that register themselves into a registry.
-///
-/// Add implementations to `ALL_TOOLS` in `lib.rs` for automatic
-/// discovery. Each implementation is a function pointer that calls
-/// the module's `register_self` method.
-pub trait ToolModule {
-    /// Register this module into the given registry.
-    fn register(registry: &mut ToolRegistry);
-}
-
-/// Discover and register all built-in tool modules.
-///
-/// Each tool module implements `ToolModule` and is registered here.
-/// **To add a new tool:** just implement `ToolModule` on a struct
-/// and add it to the `ALL_TOOLS` list in `lib.rs`. No changes here.
 pub fn discover_builtin_tools(registry: &mut ToolRegistry) {
-    // Auto-register all modules in the order defined in `ALL_TOOLS`
-    for module_fn in super::ALL_TOOLS {
-        module_fn(registry);
-    }
+    for module_fn in super::ALL_TOOLS { module_fn(registry); }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_echo_handler() -> ToolHandler {
-        Arc::new(|args: Value| {
-            let msg = args.get("message").map(|v| v.as_str().unwrap_or("")).unwrap_or("no-msg").to_string();
-            Box::pin(async move {
-                Ok(ToolResult {
-                    call_id: "test-1".to_string(),
-                    output: format!("echo: {}", msg),
-                    error: None,
-                })
-            })
-        })
+    struct EchoTool;
+    impl SelfRegisteringTool for EchoTool {
+        fn tool() -> oben_models::Tool {
+            oben_models::Tool { name: "echo-test".into(), description: "Test echo".into(), parameters: oben_models::ToolParameters::Flat(vec![]) }
+        }
+        fn handler() -> ToolHandler {
+            Arc::new(|args: Value| Box::pin(async move {
+                let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("no-msg");
+                Ok(ToolResult { call_id: "t1".into(), output: format!("echo: {}", msg), error: None })
+            }))
+        }
     }
 
-    fn make_error_handler() -> ToolHandler {
-        Arc::new(|_args: Value| {
-            Box::pin(async move {
-                Ok(ToolResult {
-                    call_id: "test-2".to_string(),
-                    output: String::new(),
-                    error: Some("intentional failure".to_string()),
-                })
-            })
-        })
+    struct FailTool;
+    impl SelfRegisteringTool for FailTool {
+        fn tool() -> oben_models::Tool {
+            oben_models::Tool { name: "fail-test".into(), description: "Test fail".into(), parameters: oben_models::ToolParameters::Flat(vec![]) }
+        }
+        fn handler() -> ToolHandler {
+            Arc::new(|_args: Value| Box::pin(async move {
+                Ok(ToolResult { call_id: "t2".into(), output: String::new(), error: Some("boom".into()) })
+            }))
+        }
     }
 
-    fn make_tool(name: &str) -> oben_models::Tool {
-        oben_models::Tool {
-            name: name.to_string(),
-            description: format!("Test tool: {}", name),
-            parameters: oben_models::ToolParameters::Flat(vec![
-                oben_models::ToolParameter {
-                    name: "message".to_string(),
-                    description: "Input message".to_string(),
-                    parameter_type: "string".to_string(),
-                    required: true,
-                },
-            ]),
+    struct ValidatingTool;
+    #[async_trait::async_trait]
+    impl Tool for ValidatingTool {
+        fn name(&self) -> &str { "val-tool" }
+        fn description(&self) -> &str { "Validates args" }
+        fn validate(&self, args: &Value) -> Result<()> {
+            if args.get("block").and_then(|v| v.as_bool()) == Some(true) {
+                Err(anyhow::anyhow!("Blocked by validation"))
+            } else { Ok(()) }
+        }
+        async fn execute(&self, _args: &Value) -> ToolResult {
+            ToolResult { call_id: "".into(), output: "ok".into(), error: None }
         }
     }
 
     #[tokio::test]
-    async fn test_registry_empty() {
-        let registry = ToolRegistry::new();
-        assert!(registry.is_empty());
-        assert_eq!(registry.len(), 0);
+    async fn test_empty() {
+        let r = ToolRegistry::new();
+        assert!(r.is_empty());
+        assert_eq!(r.len(), 0);
     }
 
     #[tokio::test]
-    async fn test_registry_register_and_list() {
-        let mut registry = ToolRegistry::new();
-        let tool = make_tool("echo");
-        registry.register(tool, make_echo_handler());
-        assert_eq!(registry.len(), 1);
-        assert!(registry.has_tool("echo"));
-        assert!(!registry.has_tool("missing"));
+    async fn test_register_list_has() {
+        let mut r = ToolRegistry::new();
+        r.register(Box::new(SelfRegisteringToolAdapter::new(
+            oben_models::Tool { name: "x".into(), description: "x".into(), parameters: oben_models::ToolParameters::Flat(vec![]) },
+            Arc::new(|_| Box::pin(async { Ok(ToolResult { call_id: "c".into(), output: "ok".into(), error: None }) })),
+        )));
+        assert_eq!(r.len(), 1);
+        assert!(r.has_tool("x"));
     }
 
     #[tokio::test]
-    async fn test_execute_registered_tool() {
-        let mut registry = ToolRegistry::new();
-        let tool = make_tool("echo");
-        registry.register(tool, make_echo_handler());
-        let result = registry.execute("echo", &json!({"message": "hello"})).await;
-        assert!(result.error.is_none());
-        assert_eq!(result.output, "echo: hello");
+    async fn test_register_self_adaptor() {
+        let mut r = ToolRegistry::new();
+        EchoTool::register_self(&mut r);
+        assert_eq!(r.len(), 1);
+        let res = r.execute("echo-test", &serde_json::json!({"message": "hi"})).await;
+        assert_eq!(res.output, "echo: hi");
     }
 
     #[tokio::test]
-    async fn test_execute_unknown_tool_returns_error() {
-        let registry = ToolRegistry::new();
-        let result = registry.execute("nonexistent", &json!({})).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Unknown tool"));
+    async fn test_unknown_tool() {
+        let r = ToolRegistry::new();
+        let res = r.execute("nope", &serde_json::json!({})).await;
+        assert!(res.error.is_some());
+        assert!(res.error.unwrap().contains("Unknown tool"));
     }
 
     #[tokio::test]
-    async fn test_execute_tool_with_handler_error() {
-        let mut registry = ToolRegistry::new();
-        let tool = make_tool("fail");
-        registry.register(tool, make_error_handler());
-        let result = registry.execute("fail", &json!({"call_id": "t2"})).await;
-        assert!(result.error.is_some());
-        assert_eq!(result.error.unwrap(), "intentional failure");
+    async fn test_handler_error() {
+        let mut r = ToolRegistry::new();
+        r.register(Box::new(SelfRegisteringToolAdapter::new(
+            oben_models::Tool { name: "fail".into(), description: "fail".into(), parameters: oben_models::ToolParameters::Flat(vec![]) },
+            Arc::new(|_| Box::pin(async { Ok(ToolResult { call_id: "c".into(), output: String::new(), error: Some("boom".into()) }) })),
+        )));
+        let res = r.execute("fail", &serde_json::json!({"call_id":"x"})).await;
+        assert_eq!(res.error.as_ref().unwrap(), "boom");
     }
 
     #[tokio::test]
-    async fn test_multiple_tools() {
-        let mut registry = ToolRegistry::new();
-        registry.register(make_tool("a"), make_echo_handler());
-        registry.register(make_tool("b"), make_error_handler());
-        assert_eq!(registry.len(), 2);
-        assert!(registry.has_tool("a"));
-        assert!(registry.has_tool("b"));
-        let result_a = registry.execute("a", &json!({"message": "hi"})).await;
-        assert_eq!(result_a.output, "echo: hi");
+    async fn test_validation_blocks() {
+        let mut r = ToolRegistry::new();
+        r.register(Box::new(ValidatingTool));
+        let res = r.execute("val-tool", &serde_json::json!({"block": true})).await;
+        assert!(res.error.is_some());
+        assert!(res.error.unwrap().contains("Validation"));
     }
 }

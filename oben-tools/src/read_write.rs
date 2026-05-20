@@ -144,6 +144,6 @@ impl SelfRegisteringTool for FileTools {
 
 /// Manually register all file-related tools.
 pub fn register_file_tools(registry: &mut super::ToolRegistry) {
-    registry.register(make_read_file_tool(), make_read_file_handler());
-    registry.register(make_write_file_tool(), make_write_file_handler());
+    registry.register(Box::new(super::registry::SelfRegisteringToolAdapter::new(make_read_file_tool(), make_read_file_handler())));
+    registry.register(Box::new(super::registry::SelfRegisteringToolAdapter::new(make_write_file_tool(), make_write_file_handler())));
 }
