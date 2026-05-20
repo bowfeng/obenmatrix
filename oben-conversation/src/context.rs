@@ -291,6 +291,28 @@ impl ContextEngine {
         self.consecutive_effective_compressions = 0;
         self._previous_summary = None;
     }
+
+    // -- Status introspection -----------------------------------------------
+
+    /// Return a status dict for display/logging.
+    pub fn get_status(&self) -> serde_json::Value {
+        let usage_pct = if self.config.context_length > 0 {
+            ((self.last_total_tokens as f64 / self.config.context_length as f64) * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+
+        serde_json::json!({
+            "last_prompt_tokens": self.last_prompt_tokens,
+            "last_completion_tokens": self.last_completion_tokens,
+            "last_total_tokens": self.last_total_tokens,
+            "context_length": self.config.context_length,
+            "threshold_tokens": self.config.threshold_tokens(),
+            "usage_percent": usage_pct,
+            "compression_count": self.compression_count,
+            "active": self.active,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -458,5 +480,58 @@ mod tests {
     fn test_previous_summary_initialized_none() {
         let ctx = ContextEngine::new();
         assert!(ctx._previous_summary.is_none());
+    }
+
+    #[test]
+    fn test_get_status_returns_all_fields() {
+        let config = ContextEngineConfig {
+            context_length: 100_000,
+            threshold_percent: 0.75,
+            ..Default::default()
+        };
+        let mut ctx = ContextEngine::with_config(config);
+        ctx.update_from_response(1000, 500, 1500);
+        ctx.compression_count = 5;
+        ctx.active = false;
+
+        let status = ctx.get_status();
+
+        assert_eq!(status["last_prompt_tokens"], 1000);
+        assert_eq!(status["last_completion_tokens"], 500);
+        assert_eq!(status["last_total_tokens"], 1500);
+        assert_eq!(status["context_length"], 100_000);
+        assert_eq!(status["threshold_tokens"], 75_000);
+        assert!((status["usage_percent"].as_f64().unwrap() - 1.5).abs() < f64::EPSILON); // 1500/100000 * 100
+        assert_eq!(status["compression_count"], 5);
+        assert_eq!(status["active"], false);
+    }
+
+    #[test]
+    fn test_get_status_usage_capped_at_100() {
+        let config = ContextEngineConfig {
+            context_length: 1000,
+            threshold_percent: 0.75,
+            ..Default::default()
+        };
+        let mut ctx = ContextEngine::with_config(config);
+        ctx.update_from_response(800, 400, 1200); // over context_length
+
+        let status = ctx.get_status();
+        assert!((status["usage_percent"].as_f64().unwrap() - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_get_status_default_values() {
+        let ctx = ContextEngine::new();
+        let status = ctx.get_status();
+
+        assert_eq!(status["last_prompt_tokens"], 0);
+        assert_eq!(status["last_completion_tokens"], 0);
+        assert_eq!(status["last_total_tokens"], 0);
+        assert_eq!(status["context_length"], 128_000);
+        assert_eq!(status["threshold_tokens"], 96_000);
+        assert_eq!(status["usage_percent"], 0.0);
+        assert_eq!(status["compression_count"], 0);
+        assert_eq!(status["active"], true);
     }
 }
