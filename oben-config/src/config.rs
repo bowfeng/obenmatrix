@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use oben_models::ProviderConfig;
 
-/// All application settings, stored in ~/.oben/config.yaml.
+/// All application settings, stored in ~/.obenagent/config.yaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub model: ProviderConfig,
@@ -184,7 +184,7 @@ impl AppConfig {
     pub fn config_dir() -> PathBuf {
         dirs::config_dir()
             .map(|d| d.join("oben"))
-            .unwrap_or_else(|| PathBuf::from("~/.oben"))
+            .unwrap_or_else(|| PathBuf::from("~/.obenagent"))
     }
 
     pub fn config_path() -> PathBuf {

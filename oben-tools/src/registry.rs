@@ -43,7 +43,7 @@ impl ToolRegistry {
 
     /// Execute a tool by name with arguments.
     pub async fn execute(&self, tool_name: &str, arguments: &Value) -> ToolResult {
-        info!("Executing tool: {} with args", tool_name);
+        info!("Executing tool: {} with args...", tool_name);
 
         match self.tools.get(tool_name) {
             Some((_tool, handler)) => {
