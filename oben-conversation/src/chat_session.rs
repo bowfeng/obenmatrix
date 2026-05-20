@@ -149,6 +149,13 @@ impl ChatSession {
             }
         });
 
+        // ── Notify context engine of session start ─────────────────
+        self.conversation.on_session_start(
+            sid,
+            "default", // model_name — can be updated via update_model
+            None,      // context_length — uses config default
+        );
+
         // ── Load & set call mode ─────────────────────────────────
         self.memory.load(Some(sid))?;
 
@@ -217,7 +224,26 @@ impl ChatSession {
         self.call_mode = Some(CallMode::Fresh(sid.clone()));
 
         let name = self.memory.active_session().map(|s| s.name.clone()).unwrap_or(key.to_string());
+        // Notify context engine of new session start
+        self.conversation.on_session_start(
+            &sid,
+            "default",
+            None,
+        );
         Ok(name)
+    }
+
+    /// Reset the current session: clear messages and reset the context engine.
+    pub fn reset(&mut self) -> Result<()> {
+        // Reset context engine state
+        self.conversation.on_session_reset();
+
+        // Clear current session messages
+        if let Some(session) = self.memory.active_session_mut() {
+            session.messages.clear();
+        }
+
+        Ok(())
     }
 
     /// Access the underlying conversation loop (for compaction, etc.).

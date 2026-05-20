@@ -389,6 +389,78 @@ impl ContextEngine {
         );
     }
 
+    /// Lifecycle hook: session start.
+    ///
+    /// Called when a new session is created or an existing one is loaded.
+    /// Resets anti-thrashing counters, sets model context length, and
+    /// clears error state. The `session_id` is recorded for logging.
+    pub fn on_session_start(
+        &mut self,
+        session_id: &str,
+        model_name: &str,
+        context_length: Option<usize>,
+    ) {
+        // Reset anti-thrashing counters for fresh session
+        self.ineffective_compression_count = 0;
+        self.consecutive_effective_compressions = 0;
+        self.last_compression_savings_pct = 0.0;
+
+        // Update model context if provided
+        if let Some(ctx_len) = context_length {
+            self.config.context_length = ctx_len;
+        }
+
+        // Clear error state
+        self._last_summary_error = None;
+        self._last_aux_model_failure_model = None;
+
+        // Update previous_summary from config if it stores per-session data
+        tracing::info!(
+            "ContextEngine::on_session_start: session={} model={} context_length={}",
+            session_id,
+            model_name,
+            self.config.context_length
+        );
+    }
+
+    /// Lifecycle hook: session reset.
+    ///
+    /// Called when a session is reset (e.g., user sends /reset or /clear).
+    /// Resets compression count, clears token tracking, and clears the
+    /// previous summary.
+    pub fn on_session_reset(&mut self) {
+        self.compression_count = 0;
+        self.last_prompt_tokens = 0;
+        self.last_completion_tokens = 0;
+        self.last_total_tokens = 0;
+        self._previous_summary = None;
+        self._last_summary_error = None;
+        self._last_aux_model_failure_model = None;
+
+        tracing::info!(
+            "ContextEngine::on_session_reset: compression_count={}",
+            self.compression_count
+        );
+    }
+
+    /// Lifecycle hook: session end.
+    ///
+    /// Called when a session is deleted or archived.
+    /// Logs current engine state for potential persistence.
+    /// The engine should not hold references to session data after this call.
+    pub fn on_session_end(&mut self, session_id: &str) {
+        tracing::info!(
+            "ContextEngine::on_session_end: session={} compression_count={} last_error={:?}",
+            session_id,
+            self.compression_count,
+            self._last_summary_error
+        );
+
+        // Clear error state after session ends
+        self._last_summary_error = None;
+        self._last_aux_model_failure_model = None;
+    }
+
     /// Preflight check: compress messages if already over threshold.
     ///
     /// Used when loading an existing session or switching models to avoid
@@ -708,5 +780,66 @@ mod tests {
         // the config was updated correctly
         assert_eq!(context_length, 128_000);
         assert_eq!(threshold_tokens, 96_000);
+    }
+
+    #[test]
+    fn test_on_session_start_resets_state() {
+        let mut engine = ContextEngine::new();
+
+        // Set some state
+        engine.compression_count = 5;
+        engine.ineffective_compression_count = 3;
+        engine.consecutive_effective_compressions = 2;
+        engine._last_summary_error = Some("test error".to_string());
+        engine._last_aux_model_failure_model = Some("old-model".to_string());
+
+        // Simulate session start with custom context length
+        engine.on_session_start("session-123", "gpt-4", Some(8192));
+
+        // Anti-thrashing counters should be reset
+        assert_eq!(engine.ineffective_compression_count, 0);
+        assert_eq!(engine.consecutive_effective_compressions, 0);
+        assert_eq!(engine.last_compression_savings_pct, 0.0);
+
+        // Error state should be cleared
+        assert!(engine._last_summary_error.is_none());
+        assert!(engine._last_aux_model_failure_model.is_none());
+
+        // Context length should be updated
+        assert_eq!(engine.config.context_length, 8192);
+    }
+
+    #[test]
+    fn test_on_session_reset_clears_state() {
+        let mut engine = ContextEngine::new();
+
+        // Set some state
+        engine.compression_count = 10;
+        engine.last_prompt_tokens = 500;
+        engine.last_completion_tokens = 200;
+        engine.last_total_tokens = 700;
+        engine._previous_summary = Some("old summary".to_string());
+        engine._last_summary_error = Some("error".to_string());
+
+        engine.on_session_reset();
+
+        assert_eq!(engine.compression_count, 0);
+        assert_eq!(engine.last_prompt_tokens, 0);
+        assert_eq!(engine.last_completion_tokens, 0);
+        assert_eq!(engine.last_total_tokens, 0);
+        assert!(engine._previous_summary.is_none());
+        assert!(engine._last_summary_error.is_none());
+    }
+
+    #[test]
+    fn test_on_session_end_clears_error_state() {
+        let mut engine = ContextEngine::new();
+        engine._last_summary_error = Some("session ended".to_string());
+        engine._last_aux_model_failure_model = Some("model-x".to_string());
+
+        engine.on_session_end("session-456");
+
+        assert!(engine._last_summary_error.is_none());
+        assert!(engine._last_aux_model_failure_model.is_none());
     }
 }

@@ -376,6 +376,35 @@ impl ConversationLoop {
             .await
     }
 
+    // ── Session lifecycle hooks ──────────────────────────────────────────
+
+    /// Notify the context engine that a new session has started.
+    ///
+    /// Called when `ConversationLoop` is first used for a session.
+    /// Resets anti-thrashing counters and sets the model context length.
+    pub fn on_session_start(
+        &mut self,
+        session_id: &str,
+        model_name: &str,
+        context_length: Option<usize>,
+    ) {
+        self.context_engine.on_session_start(session_id, model_name, context_length);
+    }
+
+    /// Notify the context engine that a session has been reset.
+    ///
+    /// Called when the user sends /reset or /clear.
+    pub fn on_session_reset(&mut self) {
+        self.context_engine.on_session_reset();
+    }
+
+    /// Notify the context engine that a session is ending.
+    ///
+    /// Called when a session is deleted or archived.
+    pub fn on_session_end(&mut self, session_id: &str) {
+        self.context_engine.on_session_end(session_id);
+    }
+
     pub fn message_count(&self, messages: &[Message]) -> usize {
         messages.len()
     }
