@@ -279,6 +279,7 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
 
 fn run_delete_session(session_key: &str) -> Result<()> {
     let mut sm = oben_sessions::SessionManager::new()?;
+    sm.init()?;
     sm.delete(session_key)?;
     println!("Deleted session '{}'", session_key);
     Ok(())
