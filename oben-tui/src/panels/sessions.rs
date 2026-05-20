@@ -60,35 +60,31 @@ impl SessionsPanel {
     fn compact_selected(&self, app: &mut App) {
         if self.filtered.is_empty() { return; }
         let session = &self.sessions[self.filtered[self.selected]];
-        app.session_id = Some(session.id.clone());
-        app.session_manager.load(Some(&session.id)).ok();
+        app.chat.as_mut().unwrap().session_manager_mut().load(Some(&session.id)).ok();
         app.status = format!("Compacting session: {}", session.name);
     }
 
     fn delete_selected(&mut self, app: &mut App) {
         if self.filtered.is_empty() { return; }
         let session_id = self.sessions[self.filtered[self.selected]].id.clone();
-        if let Err(e) = app.session_manager.delete(&session_id) {
+        let chat = app.chat.as_mut().unwrap();
+        if let Err(e) = chat.session_manager_mut().delete(&session_id) {
             app.status = format!("Delete failed: {}", e);
             return;
         }
         self.sessions.retain(|s| s.id != session_id);
         self.apply_filter();
-        app.session_manager.load(None).ok();
-        app.session_id = app.session_manager.active_session().map(|s| s.id.clone());
-        if self.selected >= self.filtered.len() {
-            self.selected = self.filtered.len().saturating_sub(1);
-        }
+        chat.session_manager_mut().load(None).ok();
+        self.selected = self.filtered.len().saturating_sub(1);
         app.status = format!("Deleted session: {}", session_id);
     }
 
     fn new_session(&mut self, app: &mut App) {
         let name = format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
-        let session = app.session_manager.new_session(&name);
+        let session = app.chat.as_mut().unwrap().session_manager_mut().new_session(&name);
         self.sessions.push(session.clone());
         self.apply_filter();
         self.selected = self.filtered.len() - 1;
-        app.session_id = Some(session.id.clone());
         app.status = format!("Created session: {}", session.name);
     }
 }
@@ -205,8 +201,8 @@ impl Panel for SessionsPanel {
                 if self.selected < self.filtered.len() {
                     let idx = self.filtered[self.selected];
                     let session = &self.sessions[idx];
-                    app.session_id = Some(session.id.clone());
-                    if let Err(e) = app.session_manager.load(Some(&session.id)) {
+                    let chat = app.chat.as_mut().unwrap();
+                    if let Err(e) = chat.session_manager_mut().load(Some(&session.id)) {
                         app.status = format!("Load error: {}", e);
                     } else {
                         app.status = format!("Switched to: {}", session.name);

@@ -32,9 +32,8 @@ use panels::sessions::SessionsPanel;
 use panels::{Panel, PanelId};
 
 use oben_config::AppConfig;
-use oben_conversation::ConversationLoop;
+use oben_conversation::{ChatSession, ChatSessionConfig};
 use oben_models::Message;
-use oben_sessions::SessionManager;
 use oben_tools::ToolRegistry;
 use crossterm::Command;
 
@@ -66,8 +65,7 @@ pub struct App {
     pub panels: HashMap<PanelId, Box<dyn Panel>>,
     pub status: String,
     pub config: AppConfig,
-    pub session_manager: SessionManager,
-    pub conversation: Option<ConversationLoop>,
+    pub chat: Option<ChatSession>,
     pub session_id: Option<String>,
     pub tools: std::sync::Arc<ToolRegistry>,
     pub tool_names: Vec<String>,
@@ -76,7 +74,6 @@ pub struct App {
 impl App {
     pub fn new() -> Result<Self> {
         let config = AppConfig::load()?;
-        let sm = SessionManager::new()?;
         let mut tools = ToolRegistry::new();
         oben_tools::discover_builtin_tools(&mut tools);
         let tool_names: Vec<String> = tools.list_tools().iter()
@@ -88,15 +85,14 @@ impl App {
             panels: HashMap::new(),
             status: String::new(),
             config,
-            session_manager: sm,
-            conversation: None,
+            chat: None,
             session_id: None,
             tools: std::sync::Arc::new(tools),
             tool_names,
         })
     }
 
-    pub fn init_conversation(&mut self) -> Result<()> {
+    pub fn init_chat(&mut self) -> Result<()> {
         let identity = oben_config::defaults::default_system_prompt();
         let skills_dirs: Vec<std::path::PathBuf> = vec![];
         let volatile = oben_conversation::system_prompt::build_volatile_block(
@@ -109,37 +105,32 @@ impl App {
             &self.config.model, &assembled.prompt,
             self.tools.list_tools().iter().map(|t| (*t).clone()).collect(),
         );
-        self.conversation = Some(ConversationLoop::new(
+        self.chat = Some(ChatSession::new(ChatSessionConfig {
+            system_prompt_text: assembled.prompt,
             transport,
-            std::sync::Arc::clone(&self.tools),
-            self.config.max_iterations.unwrap_or(50),
-            self.config.context.max_messages.unwrap_or(100),
-        ));
-        let session_id = if let Some(sid) = self.session_manager.active_session().map(|s| s.id.clone()) {
-            self.session_manager.switch_session(&sid)?.id.clone()
-        } else {
-            self.session_manager
-                .new_session(&format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")))
-                .id
-                .clone()
-        };
-        self.session_manager.load(Some(session_id.as_str()))?;
-        self.session_id = Some(session_id);
+            tools: std::sync::Arc::clone(&self.tools),
+            max_iterations: self.config.max_iterations.unwrap_or(50),
+            max_messages: self.config.context.max_messages.unwrap_or(100),
+        })?);
         Ok(())
     }
 
     pub fn create_chat_panel(&mut self) {
+        let session_id = self.chat.as_ref().and_then(|c| c.session_id().map(|s| s.to_string()));
+        let messages = self.chat.as_ref()
+            .and_then(|c| c.session_manager().active_session())
+            .map(|s| s.messages.clone());
         self.panels.insert(
             PanelId::Chat,
-            Box::new(ChatPanel::new(
-                self.session_id.clone(),
-                self.session_manager.active_session().map(|s| s.messages.clone()),
-            )),
+            Box::new(ChatPanel::new(session_id, messages)),
         );
     }
 
     pub fn create_sessions_panel(&mut self) {
-        let sessions: Vec<oben_models::Session> = self.session_manager.list_sessions().iter().map(|s| (*s).clone()).collect();
+        let sessions: Vec<oben_models::Session> = match &self.chat {
+            Some(chat) => chat.session_manager().list_sessions().iter().map(|s| (*s).clone()).collect(),
+            None => vec![],
+        };
         self.panels.insert(PanelId::Sessions, Box::new(SessionsPanel::new(sessions)));
     }
 
@@ -173,11 +164,14 @@ impl App {
     }
 
     pub fn update_session_messages(&mut self, messages: Vec<Message>) -> Result<()> {
-        if let Some(session_id) = &self.session_id {
-            if let Some(s) = self.session_manager.session_mut(session_id) {
-                s.messages = messages;
+        if let Some(chat) = &mut self.chat {
+            let sid = chat.session_id().map(|s| s.to_string());
+            if let Some(sid) = sid {
+                if let Some(s) = chat.session_manager_mut().session_mut(&sid) {
+                    s.messages = messages;
+                }
+                chat.session_manager_mut().save(Some(&sid))?;
             }
-            self.session_manager.save_session(session_id)?;
         }
         Ok(())
     }
@@ -189,7 +183,7 @@ enum TuiEvent {
 
 pub async fn run_tui() -> Result<()> {
     let mut app = App::new()?;
-    app.init_conversation()?;
+    app.init_chat()?;
     app.init_panels()?;
 
     enable_raw_mode()?;
@@ -280,12 +274,12 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         panel.draw(frame, layout.body);
     }
 
-    let session_info = match &app.session_id {
-        Some(_) => {
-            if let Some(s) = app.session_manager.active_session() {
+    let session_info = match app.chat.as_ref().and_then(|c| c.session_id()) {
+        Some(sid) => {
+            if let Some(s) = app.chat.as_ref().and_then(|c| c.session_manager().active_session()) {
                 format!(" Session: {} ({} msgs)", s.name, s.messages.len())
             } else {
-                " No session".to_string()
+                format!(" Session: {sid}")
             }
         }
         None => " No session".to_string(),

@@ -1810,6 +1810,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aa2c4e539b869820a2b82e1aef6ff40aa85e65decdd5185e83fb4b1249cd00f"
 
 [[package]]
+name = "oben-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "oben-config",
+ "oben-conversation",
+ "oben-gateway",
+ "oben-models",
+ "oben-sessions",
+ "oben-skills",
+ "oben-tools",
+ "oben-transport",
+ "oben-tui",
+ "oben-utils",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "oben-config"
 version = "0.1.0"
 dependencies = [
@@ -1843,6 +1867,7 @@ dependencies = [
  "oben-sessions",
  "oben-skills",
  "oben-tools",
+ "oben-transport",
  "regex",
  "reqwest",
  "serde",
@@ -2028,25 +2053,8 @@ dependencies = [
 name = "obenagent"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "futures",
- "oben-config",
- "oben-conversation",
- "oben-gateway",
- "oben-models",
- "oben-sessions",
- "oben-skills",
- "oben-tools",
- "oben-transport",
- "oben-tui",
- "oben-utils",
- "serde_json",
- "serde_yaml",
+ "oben-cli",
  "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

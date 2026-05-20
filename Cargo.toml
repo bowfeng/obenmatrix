@@ -10,7 +10,9 @@ members = [
     "oben-config",
     "oben-utils",
     "oben-goals",
-    "oben-curator", "oben-tui",
+    "oben-curator",
+    "oben-tui",
+    "oben-cli",
 ]
 resolver = "2"
 
@@ -23,7 +25,7 @@ authors = ["Nous Research"]
 repository = "https://github.com/bowfeng/obenagent"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["full", "tracing"] }
+tokio = { version = "1", features = ["full", "tracing", "rt-multi-thread"] }
 reqwest = { version = "0.12", features = ["json", "socks", "stream", "rustls-tls"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde = { version = "1", features = ["derive"] }
@@ -56,26 +58,8 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The self-improving AI agent"
+description = "The self-improving AI agent — CLI entry point"
 
 [dependencies]
-oben-conversation = { path = "oben-conversation" }
-oben-config = { path = "oben-config" }
-oben-models = { path = "oben-models" }
-oben-tools = { path = "oben-tools" }
-oben-skills = { path = "oben-skills" }
-oben-sessions = { path = "oben-sessions" }
-oben-transport = { path = "oben-transport" }
-oben-gateway = { path = "oben-gateway" }
-oben-tui = { path = "oben-tui" }
-oben-utils = { path = "oben-utils" }
-chrono = { workspace = true }
-
-anyhow = { workspace = true }
-clap = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tokio = { workspace = true }
-serde_yaml = { workspace = true }
-serde_json = { workspace = true }
-futures = { workspace = true }
+oben-cli = { path = "oben-cli" }
+tokio  = { workspace = true }

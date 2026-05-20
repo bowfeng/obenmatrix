@@ -16,6 +16,7 @@
 //! `ContextEngine::compress()` which delegates to `compact_session_messages()`.
 
 pub mod budget;
+pub mod chat_session;
 pub mod compression;
 pub mod context;
 pub mod conversation;
@@ -23,6 +24,7 @@ pub mod prompt;
 pub mod system_prompt;
 
 pub use budget::*;
+pub use chat_session::*;
 pub use compression::*;
 pub use context::*;
 pub use conversation::*;
