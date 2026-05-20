@@ -35,8 +35,12 @@ pub struct ContextEngineConfig {
     pub threshold_percent: f64,
     /// Number of head messages to protect (beyond system prompt).
     pub protect_first_n: usize,
-    /// Number of tail messages to protect.
-    pub protect_last_n: usize,
+    /// Token budget for tail — walk backward accumulating tokens.
+    pub tail_token_budget: usize,
+    /// Hard minimum: always protect at least this many messages in the tail.
+    pub tail_min_messages: usize,
+    /// Soft ceiling multiplier — allow budget to exceed by this factor.
+    pub tail_overhead: f64,
     /// Max messages buffer size (safety limit).
     pub max_messages: usize,
 }
@@ -47,7 +51,9 @@ impl Default for ContextEngineConfig {
             context_length: 128_000,
             threshold_percent: 0.75,
             protect_first_n: 3,
-            protect_last_n: 6,
+            tail_token_budget: 20_000,
+            tail_min_messages: 3,
+            tail_overhead: 1.5,
             max_messages: 100,
         }
     }
@@ -174,7 +180,9 @@ impl ContextEngine {
         transport: Option<&dyn TransportProvider>,
         focus_topic: Option<&str>,
     ) -> Result<()> {
-        if !self.should_compress(messages) {
+        let should = self.should_compress(messages);
+        eprintln!("ContextEngine::compress: should_compress={}, tokens={}", should, self.estimate_tokens(messages));
+        if !should {
             return Ok(());
         }
 
@@ -188,7 +196,9 @@ impl ContextEngine {
             let config = compression::CompressionConfig {
                 context_length: self.config.context_length,
                 protect_first_n: self.config.protect_first_n,
-                protect_last_n: self.config.protect_last_n,
+                tail_token_budget: self.config.tail_token_budget,
+                tail_min_messages: self.config.tail_min_messages,
+                tail_overhead: self.config.tail_overhead,
                 ..Default::default()
             };
 
@@ -215,14 +225,7 @@ impl ContextEngine {
                 result.stats.savings_pct,
             );
         } else {
-            // Fallback: lightweight text summarization (no LLM)
-            let summary = compression::summarize_context_legacy(messages)?;
-            let msg_count = messages.len();
-            messages.clear();
-            messages.push(Message::system(&summary));
-            self.compression_count += 1;
-
-            info!("ContextEngine: compressed {} messages to 1 summary (legacy)", msg_count);
+            return Err(anyhow::anyhow!("compression requires a transport provider"));
         }
 
         Ok(())

@@ -28,8 +28,14 @@ pub struct CompressionConfig {
     pub context_length: usize,
     /// Number of non-system head messages to protect.
     pub protect_first_n: usize,
-    /// Number of tail messages to protect.
-    pub protect_last_n: usize,
+    /// Token budget for the tail — walk backward accumulating tokens.
+    /// Default: ~20K tokens (scales with model context).
+    pub tail_token_budget: usize,
+    /// Hard minimum: always protect at least this many messages in the tail.
+    pub tail_min_messages: usize,
+    /// Soft ceiling multiplier — allow budget to exceed by this factor to
+    /// avoid cutting inside an oversized message.
+    pub tail_overhead: f64,
     /// Min tokens for the initial summary.
     pub min_summary_tokens: usize,
     /// Max tokens for the initial summary.
@@ -49,7 +55,9 @@ impl Default for CompressionConfig {
         Self {
             context_length: 128_000,
             protect_first_n: 3,
-            protect_last_n: 6,
+            tail_token_budget: 20_000,
+            tail_min_messages: 3,
+            tail_overhead: 1.5,
             min_summary_tokens: 2000,
             max_summary_tokens: 4000,
             iterated_max_tokens: 3000,
@@ -124,7 +132,7 @@ pub async fn compact_session_messages(
     let pruned = prune_tool_results(messages, config.max_tool_result_tokens);
 
     // Step 3: Split into head/tail/middle
-    let (head, middle, tail) = split_messages(&pruned, config.protect_first_n, config.protect_last_n);
+    let (head, middle, tail) = split_messages(&pruned, config);
 
     // Step 4: Compute middle tokens once, pass to generate_summary
     let middle_tokens: usize = middle.iter().map(|m| message_token_estimate(m)).sum();
@@ -183,23 +191,6 @@ pub async fn compact_session_messages(
     })
 }
 
-/// Legacy lightweight compression — structural summary (no LLM call).
-///
-/// This is a simple fallback used by `ConversationLoop::maybe_compress`.
-/// For full session compaction, use `compact_session_messages`.
-///
-/// **Deprecated**: Use `ContextEngine::compress()` instead. This is kept
-/// for backward compatibility but will be removed in a future version.
-pub fn summarize_context_legacy(messages: &[Message]) -> Result<String> {
-    let msg_count = messages.len();
-    let token_count = messages.iter().map(|m| message_token_estimate(m)).sum::<usize>();
-    Ok(format!(
-        "[CONTEXT SUMMARY: Conversation has {} messages, ~{} estimated tokens.]\n\
-         The conversation is ongoing. Refer to the full message history for details.",
-        msg_count, token_count
-    ))
-}
-
 /// Rough token estimation: ~4 chars per token.
 pub fn message_token_estimate(msg: &Message) -> usize {
     let text = match &msg.content {
@@ -227,22 +218,50 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> Vec<Message> 
 
 
 
-fn split_messages(
-    messages: &[Message],
-    protect_first_n: usize,
-    protect_last_n: usize,
-) -> (&[Message], &[Message], &[Message]) {
-    // Zero allocation — returns slices into the input.
-    // Caller clones only what they need (head, tail) into the new Vec.
+fn split_messages<'a>(
+    messages: &'a [Message],
+    config: &'a CompressionConfig,
+) -> (&'a [Message], &'a [Message], &'a [Message]) {
     let len = messages.len();
-    if len <= protect_first_n + protect_last_n {
-        let first = &messages[..len.min(protect_first_n)];
-        (first, &[], &messages[protect_first_n..])
+    if len == 0 {
+        return (&[], &[], &[]);
+    }
+
+    let head_end = config.protect_first_n.min(len);
+    let tail_start = find_tail_cut_by_tokens(messages, config);
+    // Ensure tail_start >= head_end to avoid invalid slices
+    let tail_start = tail_start.max(head_end);
+
+    let head = &messages[..head_end];
+    let middle = &messages[head_end..tail_start];
+    let tail = &messages[tail_start..];
+
+    (head, middle, tail)
+}
+
+/// Walk backward from the end, accumulating tokens until budget is reached.
+/// Enforces a hard minimum of `tail_min_messages` messages.
+fn find_tail_cut_by_tokens(messages: &[Message], config: &CompressionConfig) -> usize {
+    let min_protect = config.tail_min_messages.min(messages.len());
+    let budget = (config.tail_token_budget as f64 * config.tail_overhead) as usize;
+    let mut accumulated = 0;
+    let mut cut = 0;
+
+    for i in (0..messages.len()).rev() {
+        let tokens = message_token_estimate(&messages[i]);
+        if accumulated + tokens > budget && (messages.len() - i) >= min_protect {
+            break;
+        }
+        accumulated += tokens;
+        cut = i;
+    }
+
+    // Ensure we protect at least min_protect messages
+    let protect_count = messages.len().saturating_sub(cut);
+    if protect_count < min_protect {
+        messages.len().saturating_sub(min_protect)
     } else {
-        let head = &messages[..protect_first_n];
-        let tail = &messages[len - protect_last_n..];
-        let middle = &messages[protect_first_n..len - protect_last_n];
-        (head, middle, tail)
+        cut
     }
 }
 
@@ -441,6 +460,61 @@ mod tests {
     use oben_models::Message;
 
     #[test]
+    fn test_split_messages_with_token_budget() {
+        let config = CompressionConfig {
+            context_length: 100_000,
+            protect_first_n: 2,
+            tail_token_budget: 100, // ~400 chars
+            tail_min_messages: 2,
+            tail_overhead: 1.5,
+            ..Default::default()
+        };
+
+        // Messages: 10 messages, each ~20 chars
+        let messages: Vec<Message> = (0..10).map(|i| Message::user(format!("msg{}", i))).collect();
+        let (head, middle, tail) = split_messages(&messages, &config);
+
+        // Head: first 2 messages
+        assert_eq!(head.len(), 2);
+        // Tail: last ~2 messages (within budget)
+        assert!(tail.len() >= 2, "tail should have at least 2 messages");
+        // Middle: remaining
+        assert_eq!(middle.len(), messages.len() - head.len() - tail.len());
+    }
+
+    #[test]
+    fn test_split_messages_enforces_tail_min_messages() {
+        let config = CompressionConfig {
+            context_length: 100_000,
+            protect_first_n: 2,
+            tail_token_budget: 10, // Very small budget
+            tail_min_messages: 3,
+            tail_overhead: 1.5,
+            ..Default::default()
+        };
+
+        let messages: Vec<Message> = (0..5).map(|i| Message::user(format!("msg{}", i))).collect();
+        let (head, _middle, tail) = split_messages(&messages, &config);
+
+        // Even with small budget, tail should have at least 3 messages
+        assert_eq!(tail.len(), 3, "tail should enforce min_messages");
+        assert_eq!(head.len(), 2);
+    }
+
+    #[test]
+    fn test_split_messages_short_message_list() {
+        let config = CompressionConfig::default();
+
+        // Fewer messages than head + tail protection
+        let messages: Vec<Message> = (0..3).map(|i| Message::user(format!("msg{}", i))).collect();
+        let (head, middle, tail) = split_messages(&messages, &config);
+
+        // All messages should be in head (none in middle or tail)
+        assert!(middle.len() == 0, "no middle for short list");
+        assert!(head.len() + tail.len() >= 3, "all messages protected");
+    }
+
+    #[test]
     fn test_message_token_estimate_text() {
         let msg = Message::user("a".repeat(400));
         let tokens = message_token_estimate(&msg);
@@ -460,31 +534,5 @@ mod tests {
             tool_calls: None,
         };
         assert_eq!(message_token_estimate(&msg), 500);
-    }
-
-    #[test]
-    fn test_split_messages_equal_to_protection() {
-        let messages = (0..5).map(|i| Message::user(&format!("msg {}", i))).collect::<Vec<_>>();
-        let (head, middle, tail) = split_messages(&messages, 3, 2);
-        assert_eq!(head.len(), 3);
-        assert_eq!(middle.len(), 0);
-        assert_eq!(tail.len(), 2);
-    }
-
-    #[test]
-    fn test_split_messages_with_middle() {
-        let messages = (0..10).map(|i| Message::user(&format!("msg {}", i))).collect::<Vec<_>>();
-        let (head, middle, tail) = split_messages(&messages, 3, 3);
-        assert_eq!(head.len(), 3);
-        assert_eq!(middle.len(), 4);
-        assert_eq!(tail.len(), 3);
-    }
-
-    #[test]
-    fn test_legacy_summarize() {
-        let messages = vec![Message::user("hello"), Message::assistant("hi")];
-        let summary = summarize_context_legacy(&messages).unwrap();
-        assert!(summary.contains("2 messages"));
-        assert!(summary.contains("estimated tokens"));
     }
 }

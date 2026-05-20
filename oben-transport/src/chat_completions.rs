@@ -361,9 +361,8 @@ impl ChatCompletionsTransport {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>, system_prompt: impl Into<String>) -> Self {
         let base = BaseTransport::new(base_url, api_key, model);
         let system_prompt = system_prompt.into();
-        // No tools passed — empty list. The transport supports tools but
-        // this legacy constructor keeps the simple API for callers that
-        // don't have a tool registry (e.g. wizard, CLI one-shot).
+        // No tools passed — empty list. This constructor is used by callers
+        // that don't have a tool registry (e.g. wizard, CLI one-shot).
         let tools: Vec<serde_json::Value> = Vec::new();
         let template = build_request_template(&base, system_prompt.clone(), tools.clone());
         let stream_template = build_stream_request_template(&base, system_prompt.clone(), tools);
@@ -420,7 +419,7 @@ impl ChatCompletionsTransport {
         Self::with_tools(base_url, api_key, &config.model, system_prompt, tools)
     }
 
-    /// Create from a ProviderConfig (legacy: no tools).
+    /// Create from a ProviderConfig without tools.
     pub fn from_config(config: &oben_models::ProviderConfig, system_prompt: impl Into<String>) -> Self {
         let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();

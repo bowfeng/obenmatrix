@@ -33,18 +33,6 @@ pub struct SystemPromptConfig {
 }
 
 impl SystemPromptConfig {
-    /// Create a simple config from a plain-string prompt (legacy compat).
-    pub fn simple(prompt: Option<String>) -> Self {
-        Self {
-            identity: prompt.unwrap_or_default(),
-            tools_list: Vec::new(),
-            skills_dirs: Vec::new(),
-            context_cwd: None,
-            custom_message: None,
-            memory_context: None,
-        }
-    }
-
     /// Create a full 3-tier config.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -156,9 +144,22 @@ impl ConversationLoop {
         loop {
             self.budget.check()?;
 
+            // Auto-compression: check if context is getting full before making an LLM call.
+            // This ensures the API is never called with messages exceeding the token threshold.
+            if self.context_engine.should_compress(messages) {
+                info!(
+                    "Auto-compression: context full ({} messages, {} est. tokens), compressing",
+                    messages.len(),
+                    self.context_engine.estimate_tokens(messages),
+                );
+                self.maybe_compress(messages).await?;
+            }
+
             // Get LLM response — transport uses internal cache + incremental append.
             // &call_mode: zero-copy — the loop never mutates call_mode.
+            eprintln!("LLM_CALL: about to call transport.chat, messages={}", messages.len());
             let response = self.transport.chat(messages, &call_mode).await?;
+            eprintln!("LLM_CALL: got response, tool_calls={}", response.tool_calls.len());
             let tool_calls = &response.tool_calls;
             let text = &response.text;
 
@@ -214,7 +215,6 @@ impl ConversationLoop {
         }
     }
 
-    ///
     /// If `delta_callback` is provided, text tokens from *every* LLM call
     /// (including tool-result-followed-by-LLM calls) are streamed to it.
     pub async fn run_turn_with_streaming<F>(
@@ -265,6 +265,11 @@ impl ConversationLoop {
 
         loop {
             self.budget.check()?;
+
+            // Auto-compression: check if context is getting full before making an LLM call.
+            if self.context_engine.should_compress(messages) {
+                self.maybe_compress(messages).await?;
+            }
 
             // Get LLM response (streaming or non-streaming).
             // First call: Fresh triggers full build; subsequent: Incremental appends.
@@ -365,6 +370,7 @@ impl ConversationLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ContextEngineConfig;
     use oben_models::{
         Message, TransportProvider, TransportResponse, TransportToolCall,
     };
@@ -650,5 +656,177 @@ mod tests {
         assert_eq!(result, "Hello!");
         assert_eq!(messages.len(), 2); // user + assistant
         assert_eq!(*output.lock().unwrap(), "Hello!");
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-compression integration tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_auto_compression_fires_before_llm_call() {
+        // Mock transport that returns a summary response first (for compression),
+        // then a real LLM response.
+        let mock = std::sync::Arc::new(MockTransport {
+            responses: vec![
+                TransportResponse {
+                    text: "## Active Task\nTest completed.".to_string(),
+                    tool_calls: vec![],
+                    tokens_used: Some(50),
+                },
+                TransportResponse {
+                    text: "Hello from compressed context!".to_string(),
+                    tool_calls: vec![],
+                    tokens_used: Some(50),
+                },
+            ],
+            call_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
+        });
+
+        let config = ContextEngineConfig {
+            context_length: 1000,
+            threshold_percent: 0.5,
+            protect_first_n: 2,
+            tail_token_budget: 100, // Small budget so middle isn't empty
+            tail_min_messages: 2,
+            tail_overhead: 1.5,
+            max_messages: 100,
+        };
+
+        let mut loop_ = ConversationLoop::with_config(
+            mock.clone(),
+            std::sync::Arc::new(oben_tools::ToolRegistry::new()),
+            10,
+            100,
+            config,
+        );
+
+        // Create messages that exceed 500-token threshold
+        let long_content = "The quick brown fox jumps over the lazy dog. ".repeat(100);
+        let mut messages: Vec<Message> = (0..10)
+            .map(|i| Message::user(&format!("Message {}: {}", i, long_content)))
+            .collect();
+
+        let result = loop_
+            .run_turn(
+                &mut messages,
+                Message::user("Hi"),
+                &oben_models::CallMode::Fresh("test-session".to_string()),
+            )
+            .await
+            .unwrap();
+
+        // Two LLM calls: first for summary (compression), second for real response
+        assert_eq!(*mock.call_count.lock().unwrap(), 2);
+        assert_eq!(result, "Hello from compressed context!");
+        // Messages should be compressed (head + summary + tail)
+        assert!(messages.len() < 12, "Messages should be compressed");
+    }
+
+    #[tokio::test]
+    async fn test_no_compression_when_under_threshold() {
+        let mock = std::sync::Arc::new(MockTransport {
+            responses: vec![TransportResponse {
+                text: "Hello!".to_string(),
+                tool_calls: vec![],
+                tokens_used: Some(50),
+            }],
+            call_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
+        });
+
+        let config = ContextEngineConfig {
+            context_length: 10000,
+            threshold_percent: 0.5,
+            protect_first_n: 3,
+            tail_token_budget: 20_000,
+            tail_min_messages: 3,
+            tail_overhead: 1.5,
+            max_messages: 100,
+        };
+
+        let mut loop_ = ConversationLoop::with_config(
+            mock.clone(),
+            std::sync::Arc::new(oben_tools::ToolRegistry::new()),
+            10,
+            100,
+            config,
+        );
+
+        let mut messages = vec![Message::user("Hi")];
+
+        let result = loop_
+            .run_turn(
+                &mut messages,
+                Message::user("Hello"),
+                &oben_models::CallMode::Fresh("test-session".to_string()),
+            )
+            .await
+            .unwrap();
+
+        // One LLM call — no compression fired
+        assert_eq!(*mock.call_count.lock().unwrap(), 1);
+        assert_eq!(result, "Hello!");
+    }
+
+    #[tokio::test]
+    async fn test_auto_compression_fires_in_streaming() {
+        let mock = std::sync::Arc::new(MockTransport {
+            responses: vec![
+                // First call: summary for compression
+                TransportResponse {
+                    text: "## Active Task\nTest completed.".to_string(),
+                    tool_calls: vec![],
+                    tokens_used: Some(50),
+                },
+                // Second call: streamed response
+                TransportResponse {
+                    text: "Streamed response!".to_string(),
+                    tool_calls: vec![],
+                    tokens_used: Some(50),
+                },
+            ],
+            call_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
+        });
+
+        let config = ContextEngineConfig {
+            context_length: 1000,
+            threshold_percent: 0.5,
+            protect_first_n: 2,
+            tail_token_budget: 100,
+            tail_min_messages: 2,
+            tail_overhead: 1.5,
+            max_messages: 100,
+        };
+
+        let mut loop_ = ConversationLoop::with_config(
+            mock.clone(),
+            std::sync::Arc::new(oben_tools::ToolRegistry::new()),
+            10,
+            100,
+            config,
+        );
+
+        let long_content = "The quick brown fox jumps over the lazy dog. ".repeat(100);
+        let mut messages: Vec<Message> = (0..10)
+            .map(|i| Message::user(&format!("Message {}: {}", i, long_content)))
+            .collect();
+
+        let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let output_clone = output.clone();
+        let cb: oben_models::StreamDeltaCallback =
+            Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
+
+        let result = loop_
+            .run_turn_with_streaming(
+                &mut messages,
+                Message::user("Hi"),
+                &oben_models::CallMode::Fresh("test-session".to_string()),
+                Some(cb),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(*mock.call_count.lock().unwrap(), 2); // summary + streamed
+        assert_eq!(result, "Streamed response!");
+        assert_eq!(*output.lock().unwrap(), "Streamed response!");
     }
 }

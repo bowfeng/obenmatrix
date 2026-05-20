@@ -314,10 +314,10 @@ fn format_timestamp(ts: f64) -> String {
         .unwrap_or("unknown".to_string())
 }
 
-// ── Legacy search (in-memory, word-count) ──────────────────────────────────
+// ── Simple in-memory search (word-count substring matching) ──────────────
 
-/// Legacy in-memory search — word-count substring matching.
-/// Kept for backwards compatibility; use `Search` for new code.
+/// Fast in-memory search over a slice of sessions.
+/// Use for lightweight queries or when `Search` (FTS5) is not available.
 pub fn search_sessions(sessions: &[&oben_models::Session], query: &str, limit: usize) -> Vec<SearchResult> {
     let query_lower = query.to_lowercase();
     let query_words: Vec<&str> = query_lower.split_whitespace().collect();
@@ -365,7 +365,7 @@ fn extract_snippet(text: &str, query: &str, max_len: usize) -> String {
     }
 }
 
-/// A search result from session memory (legacy).
+/// A search result from session memory.
 pub struct SearchResult {
     pub session_name: String,
     pub message_index: usize,

@@ -577,6 +577,28 @@ impl SessionDB {
         })
     }
 
+    /// Mark a session as ended with a reason.
+    pub fn end_session(&self, session_id: &str, end_reason: &str) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
+                params![now_ts(), end_reason, session_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Set the parent_session_id for a session.
+    pub fn set_parent_session_id(&self, session_id: &str, parent_id: &str) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
+                params![parent_id, session_id],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn close(&self) -> Result<()> {
         let mut lock = self.conn.lock().unwrap();
         if let Some(conn) = lock.take() {
@@ -899,7 +921,6 @@ impl SessionManager {
         self.sessions.len()
     }
 
-    // ── Aliases for backwards compatibility ─────────────────────────────
 
     #[inline]
     pub fn active(&self) -> Option<&Session> {
@@ -919,6 +940,76 @@ impl SessionManager {
     #[inline]
     pub fn delete(&mut self, session_id: &str) -> Result<()> {
         self.remove_session(session_id)
+    }
+
+    /// Split a session after compression: end the parent, create a child.
+    ///
+    /// After context compression, the old session is marked as ended with
+    /// `end_reason = "compression"` and a new child session is created with
+    /// `parent_session_id` pointing to the old session.
+    ///
+    /// The child's title is auto-numbered: "chat-123" → "chat-123 (2)".
+    pub fn split_after_compression(&mut self, parent_id: &str) -> Result<Session> {
+        // 1. Mark parent as ended with compression reason
+        self.db.end_session(parent_id, "compression")?;
+
+        // 2. Save parent's messages to DB before creating child
+        let parent = self.sessions.get(parent_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", parent_id))?;
+        let parent_messages = parent.messages.clone();
+        self.db.save_messages(parent_id, &parent_messages)?;
+
+        // 3. Determine child title: extract base name and append "(N)"
+        let base_title = parent.metadata.title.as_deref().unwrap_or(&parent.name);
+        let child_title = self.next_child_title(base_title, &parent_id);
+
+        // 4. Create child session record in DB
+        let child_session = self.db.get_or_create_session(&child_title)?;
+        let child_id = child_session.id.clone();
+
+        // 5. Set parent_session_id in DB
+        self.db.set_parent_session_id(&child_id, parent_id)?;
+
+        // 6. Load child messages (empty) and messages into cache
+        let child_messages = self.db.load_messages(&child_id)?;
+        let mut full_child = child_session;
+        full_child.messages = child_messages;
+        self.sessions.insert(child_id.clone(), full_child.clone());
+
+        // 7. Set child as active session
+        self.active_session_id = Some(child_id.clone());
+
+        Ok(full_child)
+    }
+
+    /// Compute the next auto-numbered title for a child session.
+    ///
+    /// Finds the highest existing child number and increments it.
+    /// Examples: "chat" → "chat (2)", "chat (5)" → "chat (6)".
+    fn next_child_title(&self, base: &str, parent_id: &str) -> String {
+        let next_num = self.find_next_child_number(base, parent_id);
+        format!("{} ({})", base, next_num)
+    }
+
+    /// Find the next child number for a given base title.
+    fn find_next_child_number(&self, base: &str, parent_id: &str) -> usize {
+        // Scan in-memory sessions for existing children
+        let mut max_num = 1;
+        for s in self.sessions.values() {
+            if s.metadata.parent_session_id.as_deref() == Some(parent_id) {
+                if let Some(title) = &s.metadata.title {
+                    // Parse "base (N)" suffix
+                    if let Some(suffix) = title.strip_prefix(base) {
+                        if let Some(num) = suffix.strip_prefix(" (").and_then(|s| s.strip_suffix(')')) {
+                            if let Ok(n) = num.parse::<usize>() {
+                                if n > max_num { max_num = n; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        max_num + 1
     }
 
     /// Clone a session: create a new session with the same messages.
@@ -1118,5 +1209,81 @@ mod tests {
         db.get_or_create_session("session-b").unwrap();
         let sessions = db.list_sessions(None, &[], 10, 0, false).unwrap();
         assert!(sessions.len() >= 2);
+    }
+
+    // ── split_after_compression tests ─────────────────────────────────────
+
+    #[test]
+    fn test_split_after_compression_creates_child_session() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let parent_id = {
+            let parent = mgr.new_session("test-chat");
+            parent.add_message(Message::user("hello"));
+            parent.add_message(Message::assistant("hi there"));
+            parent.id.clone()
+        };
+        mgr.save(None).unwrap();
+
+        let child = mgr.split_after_compression(&parent_id).unwrap();
+
+        // New session was created
+        assert!(!child.id.is_empty());
+        assert_ne!(child.id, parent_id, "child must have different id");
+
+        // Parent is marked ended
+        let parent_db = mgr.db.get_session(&parent_id).unwrap().unwrap();
+        assert_eq!(parent_db.metadata.end_reason, Some("compression".to_string()), "parent end_reason should be 'compression'");
+        assert!(parent_db.metadata.ended_at.is_some(), "parent ended_at should be set");
+    }
+
+    #[test]
+    fn test_split_after_compression_sets_parent_session_id() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let parent_id = {
+            let parent = mgr.new_session("test-chat-2");
+            parent.add_message(Message::user("hello"));
+            parent.id.clone()
+        };
+        mgr.save(None).unwrap();
+
+        let child = mgr.split_after_compression(&parent_id).unwrap();
+
+        // Child references parent
+        let child_db = mgr.db.get_session(&child.id).unwrap().unwrap();
+        assert_eq!(child_db.metadata.parent_session_id, Some(parent_id), "child parent_session_id should match parent");
+    }
+
+    #[test]
+    fn test_split_after_compression_auto_numbers_title() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let parent_id = {
+            let parent = mgr.new_session("chat-12345");
+            parent.id.clone()
+        };
+        mgr.save(None).unwrap();
+
+        let child = mgr.split_after_compression(&parent_id).unwrap();
+
+        // Title should be "chat-12345 (2)"
+        let child_db = mgr.db.get_session(&child.id).unwrap().unwrap();
+        assert_eq!(child_db.metadata.title.as_deref(), Some("chat-12345 (2)"), "title should be auto-numbered");
+    }
+
+    #[test]
+    fn test_split_after_compression_returns_child() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let parent_id = {
+            let parent = mgr.new_session("split-test");
+            parent.add_message(Message::user("msg1"));
+            parent.add_message(Message::assistant("msg2"));
+            parent.id.clone()
+        };
+        mgr.save(None).unwrap();
+
+        let child = mgr.split_after_compression(&parent_id).unwrap();
+
+        // Returned session is the child
+        assert_eq!(child.id, child.id);
+        assert_eq!(child.name, "split-test (2)".to_string(), "title should be auto-numbered");
     }
 }
