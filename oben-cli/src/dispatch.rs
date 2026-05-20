@@ -21,7 +21,7 @@ pub async fn run_cli() -> Result<()> {
     oben_utils::logging::init(tracing::Level::INFO);
 
     match cli.command {
-        Commands::Chat { no_stream } => run_chat(!no_stream).await,
+        Commands::Chat { no_stream, continue_with } => run_chat(!no_stream, continue_with.as_deref()).await,
         Commands::Run { prompt, stream } => run_one_shot(&prompt, stream).await,
         Commands::Setup => run_setup(),
         Commands::Config { action } => run_config(action).await,
@@ -43,7 +43,7 @@ pub async fn run_cli() -> Result<()> {
 
 // ── Chat / Run ──────────────────────────────────────────────────────────
 
-async fn run_chat(stream: bool) -> Result<()> {
+async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
     info!("Starting interactive chat...");
 
     let config = oben_config::AppConfig::load()?;
@@ -75,10 +75,18 @@ async fn run_chat(stream: bool) -> Result<()> {
 
     let mut chat = chat;
 
-    // 如果有已存在的 active session，显示出来
-    if let Some(name) = chat.loaded_session_name() {
+    // Continue an existing session if requested
+    if let Some(key) = continue_with {
+        let name = chat.continue_session(key)?;
         if let Some(s) = chat.session_manager().active_session() {
-            println!("Session: {} ({} messages)\n", name, s.messages.len());
+            println!("Continuing session: {} ({} messages)\n", name, s.messages.len());
+        }
+    } else {
+        // 如果有已存在的 active session，显示出来
+        if let Some(name) = chat.loaded_session_name() {
+            if let Some(s) = chat.session_manager().active_session() {
+                println!("Session: {} ({} messages)\n", name, s.messages.len());
+            }
         }
     }
     println!("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");

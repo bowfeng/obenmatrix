@@ -189,6 +189,26 @@ impl ChatSession {
         Ok(response)
     }
 
+    /// Switch to an existing session by ID or name (load messages & set Fresh mode).
+    ///
+    /// Returns the session name if found, or an error if the session does not exist.
+    pub fn continue_session(&mut self, key: &str) -> Result<String> {
+        // Load all sessions into the in-memory cache first.
+        self.memory.init()?;
+
+        // Resolve name → UUID.
+        let sid = self.memory.find_key(key)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}. Run `oben sessions list` to see available sessions.", key))?;
+
+        self.memory.switch_session(&sid)?;
+        self.memory.load(Some(&sid))?;
+        self.session_id = Some(sid.clone());
+        self.call_mode = Some(CallMode::Fresh(sid.clone()));
+
+        let name = self.memory.active_session().map(|s| s.name.clone()).unwrap_or(key.to_string());
+        Ok(name)
+    }
+
     /// Access the underlying conversation loop (for compaction, etc.).
     pub fn conversation(&mut self) -> &mut ConversationLoop {
         &mut self.conversation

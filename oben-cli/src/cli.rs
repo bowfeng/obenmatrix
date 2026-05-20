@@ -22,6 +22,9 @@ pub enum Commands {
         /// Disable streaming
         #[arg(long)]
         no_stream: bool,
+        /// Continue an existing session by ID or name
+        #[arg(short, long)]
+        continue_with: Option<String>,
     },
     /// Run a one-shot prompt
     Run {
