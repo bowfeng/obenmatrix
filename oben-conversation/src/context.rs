@@ -98,6 +98,8 @@ pub struct ContextEngine {
     ineffective_compression_count: usize,
     /// Consecutive effective compressions (reset counter when ineffective occurs).
     consecutive_effective_compressions: usize,
+    /// Last generated summary — passed to next compression for iterative updates.
+    _previous_summary: Option<String>,
 }
 
 impl ContextEngine {
@@ -118,6 +120,7 @@ impl ContextEngine {
             last_compression_savings_pct: 0.0,
             ineffective_compression_count: 0,
             consecutive_effective_compressions: 0,
+            _previous_summary: None,
         }
     }
 
@@ -222,11 +225,12 @@ impl ContextEngine {
                 ..Default::default()
             };
 
+            let previous = self._previous_summary.clone();
             let result = compression::compact_session_messages(
                 transport,
                 messages,
                 &config,
-                None,
+                previous.as_deref(),
                 focus_topic,
                 self.compression_count,
             )
@@ -236,6 +240,13 @@ impl ContextEngine {
             messages.clear();
             messages.extend(result.messages);
             self.compression_count += 1;
+
+            // Save summary for next iterative update
+            if result.stats.summary_generated {
+                if let Some(ref summary_text) = result.summary {
+                    self._previous_summary = Some(summary_text.clone());
+                }
+            }
 
             // Update anti-thrashing counters
             let savings = result.stats.savings_pct;
@@ -278,6 +289,7 @@ impl ContextEngine {
         self.last_compression_savings_pct = 0.0;
         self.ineffective_compression_count = 0;
         self.consecutive_effective_compressions = 0;
+        self._previous_summary = None;
     }
 }
 
@@ -432,5 +444,19 @@ mod tests {
         ctx.last_compression_savings_pct = 4.0;
         ctx.ineffective_compression_count += 1; // now 4
         assert!(ctx.is_thrashing());
+    }
+
+    #[test]
+    fn test_previous_summary_cleared_on_reset() {
+        let mut ctx = ContextEngine::new();
+        ctx._previous_summary = Some("test summary".to_string());
+        ctx.reset();
+        assert!(ctx._previous_summary.is_none());
+    }
+
+    #[test]
+    fn test_previous_summary_initialized_none() {
+        let ctx = ContextEngine::new();
+        assert!(ctx._previous_summary.is_none());
     }
 }
