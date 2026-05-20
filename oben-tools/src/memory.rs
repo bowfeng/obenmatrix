@@ -1,7 +1,7 @@
 /// Memory tool — persistent curated memory with file persistence.
 ///
 /// Two stores: MEMORY.md (agent notes) and USER.md (user profile).
-/// Actions: add, replace, remove.
+/// Actions: add, replace, remove, read.
 
 use std::fs;
 use std::path::Path;
@@ -401,6 +401,45 @@ impl MemoryStore {
         self.make_success_response(target, Some("Entry removed."))
     }
 
+    /// Read entries from a store, optionally filtering by substring.
+    fn get_entries(&self, target: &str, query: Option<&str>) -> ToolResult {
+        let entries = if target == "user" {
+            &self.user_entries
+        } else {
+            &self.memory_entries
+        };
+
+        let filtered: Vec<&str> = match query {
+            Some(q) if q != "all" && !q.is_empty() => {
+                entries.iter().filter(|e| e.to_lowercase().contains(&q.to_lowercase())).map(|s| s.as_str()).collect()
+            }
+            _ => entries.iter().map(|s| s.as_str()).collect(),
+        };
+
+        let current = self.char_count(target);
+        let limit = self.char_limit(target);
+        let pct = if limit > 0 { (current as f64 / limit as f64 * 100.0).min(100.0) as usize } else { 0 };
+
+        let mut output = format!("{}: {} entries\nUsage: {}% — {}/{} chars\n\n", target, entries.len(), pct, current, limit);
+
+        if filtered.is_empty() {
+            output.push_str("(no entries)");
+        } else {
+            for (i, entry) in filtered.iter().enumerate() {
+                output.push_str(&format!("{}. {}", i + 1, entry));
+                if i < filtered.len() - 1 {
+                    output.push('\n');
+                }
+            }
+        }
+
+        ToolResult {
+            call_id: String::new(),
+            output,
+            error: None,
+        }
+    }
+
     fn make_success_response(&self, target: &str, message: Option<&str>) -> ToolResult {
         let entries = if target == "user" {
             &self.user_entries
@@ -434,7 +473,7 @@ fn make_memory_tool() -> Tool {
     let params = vec![
         ToolParameter {
             name: "action".into(),
-            description: "Action to perform: 'add', 'replace', or 'remove'.".into(),
+            description: "Action to perform: 'add', 'replace', 'remove', or 'read'.".into(),
             parameter_type: "string".into(),
             required: true,
         },
@@ -456,10 +495,16 @@ fn make_memory_tool() -> Tool {
             parameter_type: "string".into(),
             required: false,
         },
+        ToolParameter {
+            name: "query".into(),
+            description: "For 'read' action: 'all' to return all entries, or a keyword to filter entries by substring match.".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
     ];
     Tool {
         name: "memory".into(),
-        description: "Save durable information to persistent memory that survives across sessions. MEMORY.md (agent notes) and USER.md (user profile). Actions: add, replace, remove.".into(),
+        description: "Save durable information to persistent memory that survives across sessions. MEMORY.md (agent notes) and USER.md (user profile). Actions: add, replace, remove, read.".into(),
         parameters: ToolParameters::Flat(params),
     }
 }
@@ -510,11 +555,17 @@ fn make_memory_handler() -> ToolHandler {
                         .ok_or_else(|| anyhow::anyhow!("old_text is required for 'remove' action."))?;
                     store_mut.remove_entry(target, old_text)
                 }
+                "read" => {
+                    let query = args.get("query")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("all");
+                    store_mut.get_entries(target, Some(query))
+                }
                 _ => {
                     return Ok(ToolResult {
                         call_id,
                         output: String::new(),
-                        error: Some(format!("Unknown action '{}'. Use: add, replace, remove", action)),
+                        error: Some(format!("Unknown action '{}'. Use: add, replace, remove, read", action)),
                     });
                 }
             };
@@ -763,5 +814,82 @@ mod tests {
 
         let content = fs::read_to_string(&mem_file).unwrap();
         assert!(content.contains("PersistToFile999"), "File content: {}", content);
+    }
+
+    #[tokio::test]
+    async fn read_all_memory_entries() {
+        reset_store();
+        let registry = make_registry();
+        // Add some entries first
+        registry.execute("memory", &json!({
+            "action": "add",
+            "target": "memory",
+            "content": "FirstEntry",
+            "call_id": "read-1a",
+        })).await;
+        registry.execute("memory", &json!({
+            "action": "add",
+            "target": "memory",
+            "content": "SecondEntry",
+            "call_id": "read-1b",
+        })).await;
+
+        // Read all
+        let result = registry.execute("memory", &json!({
+            "action": "read",
+            "target": "memory",
+            "query": "all",
+            "call_id": "read-2",
+        })).await;
+
+        assert!(result.error.is_none());
+        assert!(result.output.contains("FirstEntry"));
+        assert!(result.output.contains("SecondEntry"));
+    }
+
+    #[tokio::test]
+    async fn read_filtered_entries() {
+        reset_store();
+        let registry = make_registry();
+        // Add some entries
+        registry.execute("memory", &json!({
+            "action": "add",
+            "target": "memory",
+            "content": "PrefersRust",
+            "call_id": "read-filter-1a",
+        })).await;
+        registry.execute("memory", &json!({
+            "action": "add",
+            "target": "memory",
+            "content": "PrefersPython",
+            "call_id": "read-filter-1b",
+        })).await;
+
+        // Read with filter
+        let result = registry.execute("memory", &json!({
+            "action": "read",
+            "target": "memory",
+            "query": "Rust",
+            "call_id": "read-filter-2",
+        })).await;
+
+        assert!(result.error.is_none());
+        assert!(result.output.contains("PrefersRust"));
+        assert!(!result.output.contains("PrefersPython"));
+    }
+
+    #[tokio::test]
+    async fn read_empty_store() {
+        reset_store();
+        let registry = make_registry();
+
+        let result = registry.execute("memory", &json!({
+            "action": "read",
+            "target": "memory",
+            "query": "all",
+            "call_id": "read-empty",
+        })).await;
+
+        assert!(result.error.is_none());
     }
 }
