@@ -873,10 +873,14 @@ impl SessionManager {
         self.find_session_key_by_name(key)
     }
 
-    pub fn remove_session(&mut self, session_id: &str) -> Result<()> {
-        self.db.delete_session(session_id)?;
-        self.sessions.remove(session_id);
-        if self.active_session_id.as_deref() == Some(session_id) {
+    pub fn remove_session(&mut self, key: &str) -> Result<()> {
+        // Resolve name → UUID (like switch() does)
+        let resolved = self.find_key(key)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", key))?;
+
+        self.db.delete_session(&resolved)?;
+        self.sessions.remove(&resolved);
+        if self.active_session_id.as_deref() == Some(&resolved) {
             self.active_session_id = None;
         }
         Ok(())
@@ -1040,6 +1044,18 @@ mod tests {
         assert_eq!(mgr.list().len(), 1);
         let id = mgr.list()[0].id.clone();
         mgr.remove_session(&id).unwrap();
+        assert_eq!(mgr.list().len(), 0);
+    }
+
+    #[test] fn test_manager_delete_by_name() {
+        // Regression: deletion was broken when called with session name
+        // (not UUID), because remove_session passed the name directly
+        // to db.delete_session() and HashMap::remove() which both
+        // expect the UUID primary key.
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create("delete-by-name");
+        assert_eq!(mgr.list().len(), 1);
+        mgr.remove_session("delete-by-name").unwrap();
         assert_eq!(mgr.list().len(), 0);
     }
 
