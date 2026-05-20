@@ -117,7 +117,7 @@ obenagent/               # Root workspace (binary)
 
 ## Configuration
 
-Configuration lives at `~/.oben/config.yaml`:
+Configuration lives at `~/.obenagent/config.yaml`:
 
 ```yaml
 model:
@@ -133,7 +133,7 @@ context:
 max_iterations: 50
 ```
 
-Or edit `~/.oben/config.yaml` manually (setup wizard is coming soon)
+Or edit `~/.obenagent/config.yaml` manually (setup wizard is coming soon)
 
 ---
 

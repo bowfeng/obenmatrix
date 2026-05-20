@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 // Stable identity
 // ---------------------------------------------------------------------------
 
-/// Default agent identity when no SOUL.md / ~/.oben/IDENTITY.md is present.
+/// Default agent identity when no SOUL.md / ~/.obenagent/IDENTITY.md is present.
 pub const DEFAULT_IDENTITY: &str =
     "You are ObenAgent, an intelligent AI assistant created by Nous Research. \
     You are helpful, knowledgeable, and direct. You assist users with a wide \
@@ -32,8 +32,8 @@ pub const DEFAULT_IDENTITY: &str =
 
 /// Files that serve as project context (first match wins, in order).
 const CONTEXT_FILE_PATTERNS: &[&[&str]] = &[
-    // .oben.md / OBEN.md (walk to git root)
-    &[".oben.md", "OBEN.md"],
+    // .obenagent.md / OBEN.md (walk to git root)
+    &[".obenagent.md", "OBEN.md"],
     // AGENTS.md (cwd only)
     &["AGENTS.md", "agents.md"],
     // CLAUDE.md (cwd only)
@@ -109,7 +109,7 @@ fn find_git_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Discover the nearest context file (`.oben.md` / `AGENTS.md` / etc.).
+/// Discover the nearest context file (`.obenagent.md` / `AGENTS.md` / etc.).
 /// Returns the path and content, or `None`.
 fn discover_context_file(start: &Path) -> Option<(PathBuf, String)> {
     let start = start.canonicalize().ok()?;

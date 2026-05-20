@@ -6,16 +6,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
-/// Path to the usage data file (~/.oben/skills/.usage.json)
+/// Path to the usage data file (~/.obenagent/skills/.usage.json)
 pub fn usage_file() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".oben").join("skills").join(".usage.json")
+    home.join(".obenagent").join("skills").join(".usage.json")
 }
 
-/// Path to the archive directory (~/.oben/skills/.archive/)
+/// Path to the archive directory (~/.obenagent/skills/.archive/)
 pub fn archive_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".oben").join("skills").join(".archive")
+    home.join(".obenagent").join("skills").join(".archive")
 }
 
 /// Usage record for a single skill.

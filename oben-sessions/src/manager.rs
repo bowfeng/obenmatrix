@@ -620,8 +620,8 @@ pub struct SessionManager {
 impl SessionManager {
     pub fn new() -> Result<Self> {
         let db_dir = dirs::home_dir()
-            .map(|d| d.join(".oben").join("memory"))
-            .unwrap_or_else(|| std::path::PathBuf::from("~/.oben"));
+            .map(|d| d.join(".obenagent").join("memory"))
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.obenagent"));
         let db_path = db_dir.join("state.db");
         Self::new_with_db_path(db_path)
     }

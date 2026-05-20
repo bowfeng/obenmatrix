@@ -88,7 +88,7 @@ obenagent/               # Root workspace (binary)
 │   └── table.rs         # Table formatter for CLI output
 │
 ├── oben-config/         # Configuration
-│   ├── config.rs        # AppConfig (YAML-based, ~/.oben/config.yaml)
+│   ├── config.rs        # AppConfig (YAML-based, ~/.obenagent/config.yaml)
 │   ├── defaults.rs      # Default system prompt, provider defaults
 │   └── wizard.rs        # Interactive setup wizard (clap + dialoguer)
 │
