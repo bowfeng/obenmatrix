@@ -129,7 +129,7 @@ pub async fn compact_session_messages(
     let original_count = messages.len();
 
     // Step 2: Prune tool results
-    let pruned = prune_tool_results(messages, config.max_tool_result_tokens);
+    let (pruned, pruned_count) = prune_tool_results(messages, config.max_tool_result_tokens);
 
     // Step 3: Split into head/tail/middle
     let (head, middle, tail) = split_messages(&pruned, config);
@@ -184,7 +184,7 @@ pub async fn compact_session_messages(
             original_tokens,
             compressed_tokens,
             savings_pct,
-            pruned_tool_results: 0, // stub: actual count tracked in prune_tool_results
+            pruned_tool_results: pruned_count,
             summary_generated,
         },
         summary,
@@ -210,10 +210,186 @@ pub fn message_token_estimate(msg: &Message) -> usize {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> Vec<Message> {
-    // Stub: full implementation groups tool results by parent call ID
-    // and prunes those that exceed the token budget
-    messages.to_vec()
+fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>, usize) {
+    let mut results = Vec::with_capacity(messages.len());
+    let mut pruned_count = 0usize;
+
+    // ---- Pass 1: Deduplicate by content ----
+    // Keep only the newest (last) full copy, replace older duplicates
+    // with a back-reference.
+    let mut seen_contents: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut duplicate_indices: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+
+    for (i, msg) in messages.iter().enumerate() {
+        if msg.role != oben_models::MessageRole::Tool {
+            continue;
+        }
+        let content = match &msg.content {
+            MessageContent::Text(s) => s.clone(),
+            _ => continue,
+        };
+        if content.is_empty() {
+            continue;
+        }
+        if let Some(&prev_idx) = seen_contents.get(&content) {
+            // Mark earlier duplicate for replacement
+            duplicate_indices.insert(prev_idx);
+        }
+        seen_contents.insert(content, i);
+    }
+
+    // Second pass: build message list with dedup replacements
+    for (i, msg) in messages.iter().enumerate() {
+        if duplicate_indices.contains(&i) {
+            // Replace duplicate with back-reference
+            let dup_msg = Message {
+                role: oben_models::MessageRole::Tool,
+                content: MessageContent::Text(
+                    "[Duplicate tool output — same content as a more recent call]".into(),
+                ),
+                id: msg.id.clone(),
+                tool_call_ids: msg.tool_call_ids.clone(),
+                tool_calls: None,
+            };
+            results.push(dup_msg);
+            pruned_count += 1;
+        } else {
+            results.push(msg.clone());
+        }
+    }
+
+    // ---- Pass 2: Replace large tool results with 1-line summaries ----
+    let max_output_len = 200;
+    for msg in results.iter_mut() {
+        if msg.role != oben_models::MessageRole::Tool {
+            continue;
+        }
+        match &msg.content {
+            MessageContent::Image { .. } => {
+                // Replace image content with placeholder
+                msg.content = MessageContent::Text(
+                    "[screenshot removed to save context]".into(),
+                );
+                pruned_count += 1;
+                continue;
+            }
+            MessageContent::Parts(parts) => {
+                // Check for image parts
+                let has_image = parts.iter().any(|p| matches!(p, MessagePart::Image { .. }));
+                if has_image {
+                    let text_parts: Vec<String> = parts.iter().filter_map(|p| match p {
+                        MessagePart::Text(s) => Some(s.clone()),
+                        _ => None,
+                    }).collect();
+                    if text_parts.is_empty() {
+                        msg.content = MessageContent::Text(
+                            "[screenshot removed to save context]".into(),
+                        );
+                    } else {
+                        msg.content = MessageContent::Text(text_parts.join("\n"));
+                    }
+                    pruned_count += 1;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+
+        // Check text content length
+        let text_len = match &msg.content {
+            MessageContent::Text(s) => s.len(),
+            _ => 0,
+        };
+
+        if text_len > max_output_len {
+            // Extract tool name from tool_call_ids (first ID is the parent call)
+            let tool_name = msg.tool_call_ids.first().map(|id| {
+                // Try to extract tool name from context — if available, use it
+                // Otherwise use a generic label
+                id.chars().take(20).collect::<String>()
+            }).unwrap_or_else(|| "tool".to_string());
+
+            // Create informative 1-line summary
+            let summary = format!(
+                "[{}] {} -> {} chars output (truncated)",
+                tool_name,
+                if text_len > 0 && msg.content.to_text().contains('\n') {
+                    format!("{} lines output", msg.content.to_text().matches('\n').count() + 1)
+                } else {
+                    format!("{} chars output", text_len)
+                },
+                text_len
+            );
+            msg.content = MessageContent::Text(summary);
+            pruned_count += 1;
+        }
+    }
+
+    // ---- Pass 3: Truncate large tool_call.arguments in assistant messages ----
+    let max_args_len = 500;
+    for msg in results.iter_mut() {
+        if msg.role != oben_models::MessageRole::Assistant {
+            continue;
+        }
+        if let Some(ref mut tool_calls) = msg.tool_calls {
+            for tc in tool_calls.iter_mut() {
+                if tc.arguments.is_string() {
+                    let args_str = tc.arguments.as_str().unwrap_or("");
+                    if args_str.len() > max_args_len {
+                        // Parse JSON and shrink string leaves, then re-serialize to string
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(args_str) {
+                            let shrunk = shrink_json_strings(&json, max_args_len);
+                            tc.arguments = serde_json::Value::String(
+                                serde_json::to_string(&shrunk)
+                                    .unwrap_or_else(|_| args_str.to_string()),
+                            );
+                            pruned_count += 1;
+                        } else {
+                            // If unparseable JSON, just truncate the raw string
+                            tc.arguments = serde_json::Value::String(format!(
+                                "{}... [truncated: {} chars]",
+                                &args_str[..max_args_len.min(args_str.len())],
+                                args_str.len()
+                            ));
+                            pruned_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Return pruned count via tuple
+    (results, pruned_count)
+}
+
+/// Shrink string values in a JSON tree to fit within max_chars limit.
+/// Preserves JSON structure while truncating string leaves.
+fn shrink_json_strings(value: &serde_json::Value, max_chars: usize) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => {
+            if s.len() > max_chars {
+                serde_json::Value::String(format!("{}...", &s[..max_chars.min(s.len())]))
+            } else {
+                value.clone()
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let new_map: serde_json::Map<String, serde_json::Value> = map.iter()
+                .map(|(k, v)| (k.clone(), shrink_json_strings(v, max_chars)))
+                .collect();
+            serde_json::Value::Object(new_map)
+        }
+        serde_json::Value::Array(arr) => {
+            let new_arr: Vec<serde_json::Value> = arr.iter()
+                .map(|v| shrink_json_strings(v, max_chars))
+                .collect();
+            serde_json::Value::Array(new_arr)
+        }
+        other => other.clone(),
+    }
 }
 
 
@@ -534,5 +710,62 @@ mod tests {
             tool_calls: None,
         };
         assert_eq!(message_token_estimate(&msg), 500);
+    }
+
+    #[test]
+    fn test_prune_tool_results_deduplicates() {
+        let msgs = vec![
+            Message::user("hello"),
+            Message::tool_result("call-1", "duplicate content"),
+            Message::assistant("ok"),
+            Message::tool_result("call-2", "duplicate content"), // duplicate
+            Message::user("world"),
+        ];
+        let (pruned, count) = prune_tool_results(&msgs, 10000);
+        assert_eq!(pruned.len(), msgs.len());
+        assert_eq!(count, 1, "should detect 1 duplicate");
+
+        // The earlier duplicate (index 1) should be replaced with back-reference
+        let dup_msg = &pruned[1];
+        assert_eq!(dup_msg.role, oben_models::MessageRole::Tool);
+        assert!(dup_msg.content.to_text().contains("Duplicate tool output"));
+        // The later one (index 3) should be preserved
+        assert!(!pruned[3].content.to_text().contains("Duplicate tool output"));
+    }
+
+    #[test]
+    fn test_prune_tool_results_truncates_large_outputs() {
+        let long_content = "x".repeat(300);
+        let msgs = vec![
+            Message::tool_result("call-1", long_content.clone()),
+        ];
+        let (pruned, count) = prune_tool_results(&msgs, 10000);
+        assert_eq!(count, 1, "should truncate 1 large output");
+        assert!(pruned[0].content.to_text().contains("300 chars output"));
+        assert!(pruned[0].content.to_text().len() < 300);
+    }
+
+    #[test]
+    fn test_prune_tool_results_json_valid() {
+        // Create an assistant message with tool calls containing long JSON args
+        let long_json = format!("{{\"key\": \"{}\"}}", "a".repeat(600));
+        let tool_call = oben_models::ToolCall {
+            id: "call-1".to_string(),
+            tool_name: "test_tool".to_string(),
+            arguments: serde_json::Value::String(long_json),
+        };
+        let msgs = vec![Message {
+            role: oben_models::MessageRole::Assistant,
+            content: MessageContent::Text("calling tool".into()),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: Some(vec![tool_call]),
+        }];
+        let (pruned, count) = prune_tool_results(&msgs, 10000);
+        assert_eq!(count, 1);
+
+        // Verify JSON is still valid
+        let args = pruned[0].tool_calls.as_ref().unwrap()[0].arguments.as_str().unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(args).is_ok());
     }
 }
