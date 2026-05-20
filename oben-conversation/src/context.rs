@@ -100,6 +100,10 @@ pub struct ContextEngine {
     consecutive_effective_compressions: usize,
     /// Last generated summary — passed to next compression for iterative updates.
     _previous_summary: Option<String>,
+    /// Last summary generation error (for gateway/CLI warning display).
+    _last_summary_error: Option<String>,
+    /// Model that failed during summary generation (for fallback routing).
+    _last_aux_model_failure_model: Option<String>,
 }
 
 impl ContextEngine {
@@ -121,6 +125,8 @@ impl ContextEngine {
             ineffective_compression_count: 0,
             consecutive_effective_compressions: 0,
             _previous_summary: None,
+            _last_summary_error: None,
+            _last_aux_model_failure_model: None,
         }
     }
 
@@ -226,7 +232,8 @@ impl ContextEngine {
             };
 
             let previous = self._previous_summary.clone();
-            let result = compression::compact_session_messages(
+            let transport_name = transport.name().to_string();
+            let result = match compression::compact_session_messages(
                 transport,
                 messages,
                 &config,
@@ -234,7 +241,34 @@ impl ContextEngine {
                 focus_topic,
                 self.compression_count,
             )
-            .await?;
+            .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    // Capture error for gateway/CLI display
+                    let err_str = e.to_string();
+                    self._last_summary_error = Some(err_str.clone());
+                    self._last_aux_model_failure_model = Some(transport_name.clone());
+                    tracing::error!(
+                        "Compression failed after summary generation via {}: {}",
+                        transport_name,
+                        err_str
+                    );
+                    // If abort mode, propagate error
+                    if config.max_tool_result_tokens == 0 {
+                        return Err(anyhow::anyhow!(
+                            "compression aborted: {}",
+                            err_str
+                        ));
+                    }
+                    // Otherwise: compression failed but messages are unchanged,
+                    // so just return Ok to let the loop continue
+                    return Err(anyhow::anyhow!(
+                        "compression failed (messages unchanged): {}",
+                        err_str
+                    ));
+                }
+            };
 
             // Replace messages in-place
             messages.clear();
@@ -290,6 +324,8 @@ impl ContextEngine {
         self.ineffective_compression_count = 0;
         self.consecutive_effective_compressions = 0;
         self._previous_summary = None;
+        self._last_summary_error = None;
+        self._last_aux_model_failure_model = None;
     }
 
     // -- Status introspection -----------------------------------------------

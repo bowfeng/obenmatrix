@@ -523,9 +523,11 @@ async fn generate_summary(
     messages: &[Message],
     previous_summary: Option<&str>,
     focus_topic: Option<&str>,
-    _config: &CompressionConfig,
+    config: &CompressionConfig,
     cached_tokens: usize,
 ) -> Result<String> {
+    let prefix = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. Respond ONLY to the latest user message that appears AFTER this summary. The current session state (files, config, etc.) may reflect work described here — avoid repeating it";
+    
     // Serialize messages into structured text for the summarizer
     let content_to_summarize = serialize_for_summary(messages);
 
@@ -560,11 +562,9 @@ async fn generate_summary(
         None => prompt,
     };
 
-    // Build summary message using TransportProvider abstraction
     let summary_msg = Message::user(prompt);
 
-    // Retry strategy: transient errors get retries, permanent errors fail fast.
-    // This mirrors the error classification pattern in Hermes' call_llm / _generate_summary.
+    // Retry strategy: transient errors get retries, permanent errors fail fast
     let max_retries = 2;
     let mut last_error: Option<anyhow::Error> = None;
 
@@ -575,20 +575,19 @@ async fn generate_summary(
                 attempt + 1,
                 last_error.as_ref().unwrap()
             );
-            // Brief delay between retries
             tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
         }
 
         match transport.chat(&[summary_msg.clone()], &oben_models::CallMode::Fresh(String::new())).await {
             Ok(response) => {
                 let summary = response.text.trim().to_string();
-                let prefix = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. Respond ONLY to the latest user message that appears AFTER this summary. The current session state (files, config, etc.) may reflect work described here — avoid repeating it";
                 if summary.is_empty() {
                     tracing::warn!(
                         "Summary generation via {} returned empty response",
                         transport.name()
                     );
-                    return Ok(prefix.to_string());
+                    let fallback = format!("{}: Empty summary — no content available.", prefix);
+                    return Ok(fallback);
                 }
                 return Ok(format!("{}:{}", prefix, summary));
             }
@@ -615,7 +614,6 @@ async fn generate_summary(
                 last_error = Some(e);
 
                 if is_permanent {
-                    // Permanent error — don't retry, just fail fast
                     tracing::warn!(
                         "Summary generation via {} failed with permanent error (attempt {}): {}",
                         transport.name(),
@@ -625,7 +623,6 @@ async fn generate_summary(
                     break;
                 }
 
-                // Transient error — log but continue to retry loop
                 tracing::debug!(
                     "Summary generation via {} failed (attempt {}/{}, transient): {}",
                     transport.name(),
@@ -637,17 +634,31 @@ async fn generate_summary(
         }
     }
 
-    // All retries exhausted or permanent error — fall back to static summary
-    // This ensures compaction still works even if the LLM is unavailable.
-    let fallback = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted due to context window limits. The LLM summary generation failed. Resume based on the current system prompt and recent message history.".to_string();
-    if let Some(err) = last_error {
-        tracing::error!(
-            "Summary generation failed after {} attempts via {}: {}. Returning static fallback.",
+    // All retries exhausted or permanent error
+    let err_msg = last_error.as_ref().map(|e| e.to_string()).unwrap_or_else(|| "unknown".to_string());
+
+    // Check abort mode: when max_tool_result_tokens is 0, signal abort_on_summary_failure=true
+    if config.max_tool_result_tokens == 0 {
+        tracing::warn!(
+            "Summary generation aborted after {} attempts via {}: {}",
             max_retries + 1,
             transport.name(),
-            err
+            err_msg
         );
+        return Err(anyhow::anyhow!(
+            "summary_generation_failed: abort_mode={}",
+            err_msg
+        ));
     }
+
+    // Fall back to static summary
+    let fallback = format!("{}: Earlier turns compacted. LLM summary generation failed ({} attempts). Resume from current system prompt and recent history.", prefix, max_retries + 1);
+    tracing::warn!(
+        "Summary generation failed after {} attempts via {}: {}. Returning static fallback.",
+        max_retries + 1,
+        transport.name(),
+        err_msg
+    );
     Ok(fallback)
 }
 
