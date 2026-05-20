@@ -103,6 +103,12 @@ enum SessionsCommand {
         #[arg(short, long)]
         session: String,
     },
+    /// Dump session messages to a JSON file
+    Dump {
+        /// Session ID or name (optional, defaults to active session)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -127,6 +133,7 @@ async fn main() -> Result<()> {
                 Some(SessionsCommand::List) => list_sessions(),
                 Some(SessionsCommand::Compact { session, focus }) => run_compact_session(session.as_deref(), focus.as_deref()).await,
                 Some(SessionsCommand::Delete { session }) => run_delete_session(&session),
+                Some(SessionsCommand::Dump { session }) => dump_session(session.as_deref()),
                 None => list_sessions(),
             }
         }
@@ -512,5 +519,46 @@ async fn run_models(action: ModelsCommand) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn dump_session(session_key: Option<&str>) -> Result<()> {
+    let mut sm = oben_sessions::SessionManager::new()?;
+    sm.load(None)?;
+
+    let active_id = sm.active().map(|s| s.id.clone());
+    let target: String = match session_key {
+        Some(key) => key.to_string(),
+        None => active_id.clone().unwrap_or_else(|| "active".to_string()),
+    };
+
+    let session_id = sm.find_key(&target)
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}. Run `oben sessions list` to see available sessions", target))?;
+
+    // Collect all session data before looking up the target (avoid borrow issues).
+    let sessions: Vec<oben_models::Session> = sm.list_sessions().into_iter().map(|s| s.clone()).collect();
+
+    let session = sessions.iter()
+        .find(|s| s.id == session_id)
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?
+        .clone();
+
+    let session_name = session.metadata.title.as_deref()
+        .unwrap_or(&session.id)
+        .replace(" ", "-");
+    let filename = format!("{}/dump-{}-{}.json", std::env::current_dir().unwrap().display(), session_name, chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+
+    let dump: serde_json::Value = serde_json::json!({
+        "id": session.id,
+        "name": session.name,
+        "title": session.metadata.title,
+        "message_count": session.messages.len(),
+        "messages": session.messages,
+    });
+
+    let json = serde_json::to_string_pretty(&dump)?;
+    std::fs::write(&filename, &json)?;
+
+    println!("Dumped {} messages from '{}' to {}", session.messages.len(), session.metadata.title.as_deref().unwrap_or(&session.name), filename);
     Ok(())
 }
