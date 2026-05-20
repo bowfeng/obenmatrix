@@ -167,6 +167,16 @@ pub async fn compact_session_messages(
     // Add tail (protected verbatim)
     compressed.extend(tail.iter().cloned());
 
+    // Step 6: Sanitize orphaned tool_call/tool_result pairs
+    let (removed_orphans, added_stubs) = sanitize_tool_pairs(&mut compressed);
+    if removed_orphans > 0 || added_stubs > 0 {
+        tracing::info!(
+            "Sanitizer: removed {} orphaned tool result(s), added {} stub(s)",
+            removed_orphans,
+            added_stubs,
+        );
+    }
+
     let compressed_tokens = compressed.iter().map(|m| message_token_estimate(m)).sum::<usize>();
     let compressed_count = compressed.len();
 
@@ -363,6 +373,66 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>
 
     // Return pruned count via tuple
     (results, pruned_count)
+}
+
+/// Sanitize orphaned tool_call/tool_result pairs after compression.
+///
+/// Two failure modes:
+/// 1. Tool result references a call_id whose assistant tool_call was removed
+/// 2. Assistant message has tool_calls whose results were dropped
+fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> (usize, usize) {
+    let mut removed_orphaned_results = 0usize;
+    let mut added_stub_results = 0usize;
+
+    // Collect all call_ids from assistant tool_calls (these are "surviving")
+    let mut surviving_call_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for msg in messages.iter() {
+        if let Some(ref tool_calls) = msg.tool_calls {
+            for tc in tool_calls {
+                surviving_call_ids.insert(tc.id.clone());
+            }
+        }
+    }
+
+    // Collect call_ids from tool results to know which are "covered"
+    let mut covered_call_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    messages.retain(|msg| {
+        if msg.role != oben_models::MessageRole::Tool {
+            return true;
+        }
+        for call_id in &msg.tool_call_ids {
+            if surviving_call_ids.contains(call_id) {
+                covered_call_ids.insert(call_id.clone());
+                return true;
+            }
+        }
+        removed_orphaned_results += 1;
+        false
+    });
+
+    // Find orphaned tool_calls (no matching tool_result)
+    let orphaned_call_ids: Vec<String> = surviving_call_ids.iter()
+        .filter(|id| !covered_call_ids.contains(*id))
+        .cloned()
+        .collect();
+
+    // Add stub results for orphaned calls
+    for call_id in orphaned_call_ids {
+        messages.push(Message::tool_result(&call_id,
+            "[Result from earlier conversation — see context summary above]"));
+        added_stub_results += 1;
+    }
+
+    // Update assistant messages to remove orphaned tool_calls
+    for msg in messages.iter_mut() {
+        if let Some(ref mut tool_calls) = msg.tool_calls {
+            tool_calls.retain(|tc| covered_call_ids.contains(&tc.id));
+        }
+    }
+
+    (removed_orphaned_results, added_stub_results)
 }
 
 /// Shrink string values in a JSON tree to fit within max_chars limit.
@@ -767,5 +837,65 @@ mod tests {
         // Verify JSON is still valid
         let args = pruned[0].tool_calls.as_ref().unwrap()[0].arguments.as_str().unwrap();
         assert!(serde_json::from_str::<serde_json::Value>(args).is_ok());
+    }
+
+    #[test]
+    fn test_sanitize_tool_pairs_removes_orphaned_results() {
+        let assistant_call = oben_models::ToolCall {
+            id: "call-1".to_string(),
+            tool_name: "test".to_string(),
+            arguments: serde_json::Value::String("{}".to_string()),
+        };
+        let assistant_call2 = oben_models::ToolCall {
+            id: "call-2".to_string(),
+            tool_name: "test".to_string(),
+            arguments: serde_json::Value::String("{}".to_string()),
+        };
+        let msgs = vec![
+            Message {
+                role: oben_models::MessageRole::Assistant,
+                content: MessageContent::Text("hi".into()),
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: Some(vec![assistant_call, assistant_call2]),
+            },
+            Message::tool_result("call-1", "result 1"),
+            Message::tool_result("call-99", "orphaned result"), // orphaned
+        ];
+        let mut messages: Vec<Message> = msgs;
+        let (removed, added) = sanitize_tool_pairs(&mut messages);
+        assert_eq!(removed, 1, "should remove 1 orphaned result (call-99)");
+        assert_eq!(added, 1, "should add 1 stub for call-2 (no matching result)");
+        // Only 1 tool result should remain (call-1 valid, call-99 removed, call-2 stub added)
+        let tool_msgs: Vec<_> = messages.iter().filter(|m| m.role == oben_models::MessageRole::Tool).collect();
+        assert_eq!(tool_msgs.len(), 2, "should have call-1 result + call-2 stub");
+    }
+
+    #[test]
+    fn test_sanitize_tool_pairs_adds_stub_results() {
+        let assistant_call = oben_models::ToolCall {
+            id: "call-1".to_string(),
+            tool_name: "test".to_string(),
+            arguments: serde_json::Value::String("{}".to_string()),
+        };
+        let msgs = vec![
+            Message {
+                role: oben_models::MessageRole::Assistant,
+                content: MessageContent::Text("hi".into()),
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: Some(vec![assistant_call]),
+            },
+        ];
+        let mut messages: Vec<Message> = msgs;
+        let (removed, added) = sanitize_tool_pairs(&mut messages);
+        assert_eq!(removed, 0);
+        assert_eq!(added, 1, "should add 1 stub result");
+        // Check stub content
+        let stub_msg = messages.iter().find(|m| {
+            m.role == oben_models::MessageRole::Tool &&
+            m.content.to_text().contains("Result from earlier conversation")
+        }).expect("should find stub tool result");
+        assert!(stub_msg.content.to_text().contains("context summary above"));
     }
 }
