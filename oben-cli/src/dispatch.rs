@@ -177,6 +177,15 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
 
     let mut messages = Vec::new();
     let call_mode = oben_models::CallMode::Fresh("cli-session".to_string());
+
+    // Preflight check: compress if session already over threshold
+    let passes = conversation.preflight_check(&mut messages).await;
+    if let Ok(n) = passes {
+        if n > 0 {
+            eprintln!("Preflight: {} compression pass(es) before turn", n);
+        }
+    }
+
     let response = if stream {
         conversation.run_turn_with_streaming(
             &mut messages,

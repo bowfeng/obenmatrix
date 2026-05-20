@@ -9,6 +9,7 @@
 //! Neither CLI nor TUI concerns are included — this is pure business logic.
 
 use anyhow::Result;
+use tracing::info;
 use oben_models::{CallMode, Message, StreamDeltaCallback};
 use oben_sessions::SessionManager;
 
@@ -162,6 +163,16 @@ impl ChatSession {
             }
         }
         let call_mode = self.call_mode.as_ref().unwrap();
+
+        // ── Preflight check — compress if session already over threshold ──
+        let passes = self.conversation.preflight_check(
+            &mut self.memory.active_session_mut().unwrap().messages,
+        ).await;
+        if let Ok(n) = passes {
+            if n > 0 {
+                info!("Preflight: {} compression pass(es) before turn", n);
+            }
+        }
 
         // ── Execute turn ─────────────────────────────────────────
         let response = if stream {

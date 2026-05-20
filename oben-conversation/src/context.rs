@@ -388,6 +388,69 @@ impl ContextEngine {
             model_name, context_length, threshold_tokens
         );
     }
+
+    /// Preflight check: compress messages if already over threshold.
+    ///
+    /// Used when loading an existing session or switching models to avoid
+    /// sending an oversized context to the LLM. Compresses up to `max_passes`
+    /// times, re-estimating after each pass.
+    pub async fn preflight_check(
+        &mut self,
+        messages: &mut Vec<Message>,
+        transport: Option<&dyn TransportProvider>,
+        focus_topic: Option<&str>,
+    ) -> Result<usize> {
+        const MAX_PREFLIGHT_PASSES: usize = 3;
+        let mut passes = 0usize;
+
+        loop {
+            let tokens = self.estimate_tokens(messages);
+            let threshold = self.threshold_tokens();
+
+            if tokens < threshold {
+                break; // Under budget — OK to proceed
+            }
+
+            if passes >= MAX_PREFLIGHT_PASSES {
+                tracing::warn!(
+                    "Preflight: session still over budget after {} compression passes (tokens={}, threshold={}); consider /new",
+                    MAX_PREFLIGHT_PASSES,
+                    tokens,
+                    threshold
+                );
+                break;
+            }
+
+            passes += 1;
+            tracing::info!(
+                "Preflight compression pass {}: tokens={}/{}",
+                passes,
+                tokens,
+                threshold
+            );
+
+            // Clear retry counters so the model gets a fresh budget
+            self.ineffective_compression_count = 0;
+            self.consecutive_effective_compressions = 0;
+
+            match self.compress(messages, transport, focus_topic).await {
+                Ok(_) => info!("Preflight compression pass {} completed", passes),
+                Err(e) => {
+                    // Compression failed (e.g. summary generation failed)
+                    // Messages unchanged — continue loop to re-estimate or give up
+                    tracing::warn!("Preflight compression pass {} failed: {}", passes, e);
+                }
+            }
+        }
+
+        info!(
+            "Preflight check complete: {} pass(es), session tokens now {}",
+            passes,
+            self.estimate_tokens(messages)
+        );
+
+        Ok(passes)
+    }
 }
 
 // ---------------------------------------------------------------------------
