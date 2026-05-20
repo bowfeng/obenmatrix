@@ -96,9 +96,9 @@ impl Default for ToolRegistry {
 
 /// Trait for tool modules that can self-register into a registry.
 ///
-/// Implement this to add a new tool. The module calls
-/// `registry.register(Self::tool(), Self::handler())` in its
-/// `register_self` method.
+/// Implement this to add a new tool. Add your module to the `ALL_TOOLS`
+/// array in `lib.rs` — `discover_builtin_tools` will auto-discover and
+/// register it.
 pub trait SelfRegisteringTool {
     /// The tool definition (name, description, parameters).
     fn tool() -> oben_models::Tool;
@@ -110,19 +110,26 @@ pub trait SelfRegisteringTool {
     }
 }
 
+/// Trait for modules that register themselves into a registry.
+///
+/// Add implementations to `ALL_TOOLS` in `lib.rs` for automatic
+/// discovery. Each implementation is a function pointer that calls
+/// the module's `register_self` method.
+pub trait ToolModule {
+    /// Register this module into the given registry.
+    fn register(registry: &mut ToolRegistry);
+}
+
 /// Discover and register all built-in tool modules.
 ///
-/// Each tool module implements `SelfRegisteringTool` and is registered
-/// here. Add a new line to register additional tools.
+/// Each tool module implements `ToolModule` and is registered here.
+/// **To add a new tool:** just implement `ToolModule` on a struct
+/// and add it to the `ALL_TOOLS` list in `lib.rs`. No changes here.
 pub fn discover_builtin_tools(registry: &mut ToolRegistry) {
-    // Shell tool
-    crate::shell::ShellTool::register_self(registry);
-    // File tools (read + write)
-    crate::read_write::register_file_tools(registry);
-    // Web tools
-    crate::web::WebTools::register_self(registry);
-    // Search tool
-    crate::search::SearchTool::register_self(registry);
+    // Auto-register all modules in the order defined in `ALL_TOOLS`
+    for module_fn in super::ALL_TOOLS {
+        module_fn(registry);
+    }
 }
 
 #[cfg(test)]

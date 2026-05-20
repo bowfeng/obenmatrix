@@ -124,10 +124,10 @@ async fn main() -> Result<()> {
         Commands::Skills => { list_skills(); Ok(()) }
         Commands::Sessions { action } => {
             match action {
-                Some(SessionsCommand::List) => { list_sessions(); Ok(()) }
+                Some(SessionsCommand::List) => list_sessions(),
                 Some(SessionsCommand::Compact { session, focus }) => run_compact_session(session.as_deref(), focus.as_deref()).await,
                 Some(SessionsCommand::Delete { session }) => run_delete_session(&session),
-                None => { list_sessions(); Ok(()) }
+                None => list_sessions(),
             }
         }
         Commands::Info => { show_info(); Ok(()) },
@@ -139,7 +139,7 @@ async fn run_chat(stream: bool) -> Result<()> {
     info!("Starting interactive chat...");
 
     let config = oben_config::AppConfig::load()?;
-    let mut memory = oben_memory::MemoryManager::new();
+    let mut memory = oben_sessions::SessionManager::new()?;
 
     let mut tools = oben_tools::ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut tools);
@@ -337,8 +337,8 @@ fn list_skills() {
     }
 }
 
-fn list_sessions() {
-    let memory = oben_memory::MemoryManager::new();
+fn list_sessions() -> Result<()> {
+    let memory = oben_sessions::SessionManager::new()?;
     let sessions = memory.list_sessions();
     if sessions.is_empty() {
         println!("No sessions found.");
@@ -349,6 +349,7 @@ fn list_sessions() {
             println!("  📄 {} — {} messages{}", s.name, s.message_count(), marker);
         }
     }
+    Ok(())
 }
 
 fn show_info() {
@@ -385,18 +386,21 @@ fn create_transport(
     )
 }
 
-/// Run session compaction using the SessionManager from oben-memory.
+/// Run session compaction using the SessionManager from oben-sessions.
 async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str>) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
-    let mut sm = oben_memory::SessionManager::new()?;
+    let mut sm = oben_sessions::SessionManager::new()?;
 
     // Find session (default to active)
-    let target = session_key.unwrap_or_else(|| {
-        sm.active().map(|s| s.id.as_str()).unwrap_or("active")
-    });
+    let active_id = sm.active().map(|s| s.id.clone());
+    let target: String = match session_key {
+        Some(key) => key.to_string(),
+        None => active_id.unwrap_or_else(|| "active".to_string()),
+    };
+    let target_ref = target.as_str();
 
-    // Clone session data (immutable borrow, no conflicts)
-    let session = sm.clone_session(target).ok_or_else(|| {
+    // Clone session data
+    let session = sm.clone_session(target_ref).ok_or_else(|| {
         anyhow::anyhow!("Session not found: {} (run `oben sessions list` to see available sessions)", target)
     })?;
 
@@ -456,7 +460,7 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
 }
 
 fn run_delete_session(session_key: &str) -> Result<()> {
-    let mut sm = oben_memory::SessionManager::new()?;
+    let mut sm = oben_sessions::SessionManager::new()?;
     sm.delete(session_key)?;
     println!("Deleted session '{}'", session_key);
     Ok(())

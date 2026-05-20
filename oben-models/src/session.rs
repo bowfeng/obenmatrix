@@ -11,7 +11,48 @@ pub struct SummaryChunk {
     pub summary: String,
 }
 
-/// A conversation session.
+/// Source tag for sessions (cli, telegram, discord, etc.).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub enum SessionSource {
+    #[default]
+    Cli,
+    Gateway,
+    Telegram,
+    Discord,
+    Slack,
+    Web,
+    Tool,
+    Cron,
+    Batch,
+    #[serde(other)]
+    Other,
+}
+
+/// Session metadata stored in the SQLite sessions table.
+/// Mirrors `hermes_state.py` SCHEMA_SQL sessions table.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionMetadata {
+    pub id: String,
+    pub name: String,
+    pub source: SessionSource,
+    pub model: Option<String>,
+    pub system_prompt: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub end_reason: Option<String>, // "compression", "branched", "cancelled", etc.
+    pub title: Option<String>,
+    pub preview: Option<String>,    // first 60 chars of first user message
+    pub message_count: usize,
+    pub tool_call_count: usize,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub handoff_state: Option<String>,
+    pub handoff_platform: Option<String>,
+    pub handoff_error: Option<String>,
+}
+
+/// A conversation session (in-memory view).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -28,6 +69,9 @@ pub struct Session {
     /// Total number of messages in raw.jsonl (for appends).
     #[serde(default)]
     pub persisted_message_count: usize,
+    /// SQLite metadata (populated when using SQLite-backed store).
+    #[serde(default)]
+    pub metadata: SessionMetadata,
 }
 
 impl Session {
@@ -42,6 +86,7 @@ impl Session {
             memory_context: None,
             summary_chunks: Vec::new(),
             persisted_message_count: 0,
+            metadata: SessionMetadata::default(),
         }
     }
 

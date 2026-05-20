@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{ToolHandler, SelfRegisteringTool, ToolRegistry};
 
 fn make_search_tool() -> Tool {
     let params = vec![
@@ -63,4 +63,9 @@ impl SelfRegisteringTool for SearchTool {
     fn handler() -> ToolHandler {
         make_search_handler()
     }
+}
+
+/// Register this module into the given registry.
+pub fn register(registry: &mut ToolRegistry) {
+    SearchTool::register_self(registry);
 }

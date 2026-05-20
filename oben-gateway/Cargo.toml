@@ -8,7 +8,7 @@ license = "MIT"
 oben-conversation = { path = "../oben-conversation" }
 oben-config = { path = "../oben-config" }
 oben-models = { path = "../oben-models" }
-oben-memory = { path = "../oben-memory" }
+oben-sessions = { path = "../oben-sessions" }
 oben-tools = { path = "../oben-tools" }
 
 anyhow.workspace = true

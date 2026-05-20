@@ -24,4 +24,4 @@ Architectural decisions are tracked in `docs/adr/`.
 
 ### compute and memory effficiency
 
-Coding should take time and space complexity to reduce them. 
+Coding should take time and space complexity to reduce them.

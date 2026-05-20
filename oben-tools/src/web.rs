@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{ToolHandler, SelfRegisteringTool, ToolRegistry};
 
 fn make_http_get_tool() -> Tool {
     let params = vec![
@@ -76,4 +76,9 @@ impl SelfRegisteringTool for WebTools {
     fn handler() -> ToolHandler {
         make_http_get_handler()
     }
+}
+
+/// Register this module into the given registry.
+pub fn register(registry: &mut ToolRegistry) {
+    WebTools::register_self(registry);
 }

@@ -9,7 +9,7 @@ oben-models = { path = "../oben-models" }
 oben-config = { path = "../oben-config" }
 oben-tools = { path = "../oben-tools" }
 oben-skills = { path = "../oben-skills" }
-oben-memory = { path = "../oben-memory" }
+oben-sessions = { path = "../oben-sessions" }
 
 anyhow.workspace = true
 async-trait.workspace = true

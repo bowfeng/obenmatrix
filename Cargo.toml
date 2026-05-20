@@ -4,7 +4,7 @@ members = [
     "oben-transport",
     "oben-models",
     "oben-tools",
-    "oben-memory",
+    "oben-sessions",
     "oben-skills",
     "oben-gateway",
     "oben-config",
@@ -40,6 +40,7 @@ itertools = "0.14"
 futures = "0.3"
 dirs = "5"
 once_cell = "1"
+rusqlite = { version = "0.32", features = ["bundled", "functions", "unlock_notify", "session"] }
 clap = { version = "4", features = ["derive"] }
 dialoguer = "0.11"
 indicatif = "0.17"
@@ -63,7 +64,7 @@ oben-config = { path = "oben-config" }
 oben-models = { path = "oben-models" }
 oben-tools = { path = "oben-tools" }
 oben-skills = { path = "oben-skills" }
-oben-memory = { path = "oben-memory" }
+oben-sessions = { path = "oben-sessions" }
 oben-transport = { path = "oben-transport" }
 oben-gateway = { path = "oben-gateway" }
 oben-utils = { path = "oben-utils" }

@@ -13,10 +13,10 @@
 | Metric | Status |
 |--------|--------|
 | Crates | 11/11 compiling |
-| Tests | 275/275 passing |
+| Tests | 406/406 passing |
 | CLI subcommands | 9 |
 | Provider transports | 1/7 (OpenAI-compatible ChatCompletions) |
-| Built-in tools | 4 |
+| Built-in tools | 15 |
 | Skill categories | 25/20+ ✅ |
 
 **Status: 🟡 Phase 1 — Core Engine**
@@ -32,6 +32,9 @@
 🔴 Provider        Anthropic • Bedrock • Gemini • Custom endpoints
 🔴 Platform        Telegram • Discord • Slack adapters
 🔴 Advanced Tools   Search • Browser • Voice • Image • MCP • Cron
+🔵 Web extract — HTML content extraction with SSRF protection
+🔵 Vision analyze — image download + base64 encoding + analysis
+🔵 Memory — persistent curated memory (MEMORY.md + USER.md), add/replace/remove
 🔴 TUI / Dashboard  Not started
 ```
 
@@ -52,14 +55,14 @@
 | **oben-config** | 6 | ✅ | YAML config, setup wizard (interactive), system prompt defaults, gateway config serialization, model discovery |
 | **oben_conversation** | 27 | ✅ | ConversationLoop, ContextEngine (buffer + token tracking + compression trigger), full compaction algorithm (compact_session_messages, config_from_app, CompressionConfig/Result), PromptBuilder, streaming + non-streaming turns |
 | **oben-transport** | 64 | ✅ | BaseHTTPTransport, ChatCompletionsTransport (OpenAI-compatible), SSE streaming via `eventsource-stream`, 53 unit + 11 integration tests with wiremock |
-| **oben-tools** | 34 | ✅ | ToolRegistry (dynamic dispatch), shell exec, read_file, write_file, http_get, search stub, 28 unit + 6 integration tests |
-| **oben-memory** | 7 | ✅ | MemoryManager (session CRUD + JSON persistence), full-text search, skill curation |
-| **oben-skills** | 28 | ✅ | SkillLoader (YAML/TXT/MD from disk), SkillManager (enable/disable/auto-use/instruction assembly), 25 built-in skill categories |
+| **oben-tools** | 95 | ✅ | ToolRegistry + auto-registration, terminal (fg/bg + mgmt), read_file, write_file, http_get, web_search, search_files (ripgrep), patch (fuzzy), web_extract (SSRF + HTML), vision_analyze (image base64), memory (add/replace/remove + scan), clarify, todo (JSON store), code_execution (sandbox), osv_check, skill (list/view), 95 unit tests |
+| **oben-sessions** | 28 | ✅ | SessionDB (SQLite-backed session state engine with FTS5, message windows, lineage resolution), Rich Search (discover/scroll/browse shapes), Bounded MemoryStore (file locking, atomic writes, injection scanning, frozen snapshots). Legacy JSONL SessionManager preserved for backwards compatibility.
+| **oben-skills** | 70 | ✅ | SkillLoader (recursive SKILL.md discovery, YAML/TXT/MD), SkillManager (enable/disable/auto-use/instruction assembly + preprocessing config), frontmatter parsing, platform matching, tags/config/conditions extraction, qualified name parsing, external dirs support, skill_preprocessing (template vars ${SKILL_DIR}/${SESSION_ID}, inline shell !`cmd` expansion), 70 unit tests |
 | **oben-goals** | 30 | ✅ | PlanNode (tree, builder, artifacts), PlanState (find/count/markdown/save/load), judge verdict parser, GoalState (turn budget), plan parser, node complete/failure parser |
 | **oben-gateway** | 13 | ✅ | Gateway struct, PlatformAdapter trait, Incoming/OutgoingMessage, mock adapter support |
 | **oben-curator** | 17 | ✅ | Usage tracking (use/view/patch counts), lifecycle states (active→stale→archived), scheduler (pause/resume), report generation (text + JSON) |
 
-**Total: 275 tests passing across 11 crates**
+**Total: 392 tests passing across 11 crates**
 
 ---
 
@@ -128,10 +131,10 @@ obenagent/               # Root workspace (binary)
 │   ├── curator.rs       # Curator orchestrator + CuratorState (scheduler)
 │   └── report.rs        # Human-readable + JSON report generation
 │
-├── oben-memory/         # Persistent memory
-│   ├── manager.rs       # MemoryManager — session CRUD, disk persistence (JSON)
-│   ├── search.rs        # search_sessions — full-text search with relevance scoring
-│   └── skill_curation.rs # SkillCurator — learns skills from usage patterns
+├── oben-sessions/       # Persistent memory & session management
+│   ├── manager.rs       # SessionDB (SQLite-backed session state engine with FTS5, message windows, lineage) + legacy SessionManager (JSONL backwards compat)
+│   ├── search.rs        # RichSearch (discover/scroll/browse shapes, FTS5-backed)
+│   └── skill_curation.rs # MemoryStore (bounded entries, file locking, atomic writes, injection scanning, frozen snapshots)
 │
 └── oben-gateway/        # Messaging gateway
     ├── gateway.rs       # Gateway — route messages from platforms to agent
@@ -251,9 +254,9 @@ Used `Arc<Mutex<F>>` in `run_turn_with_streaming` to share callbacks across stre
 | Metric | Target | Current |
 |--------|--------|---------|
 | Workspace compiles | ✅ 100% | ✅ 11/11 crates |
-| Tests | 80%+ | ✅ 275/275 passing (11 crates) |
+| Tests | 80%+ | ✅ 406/406 passing (11 crates) |
 | Provider transports | 6+ | 1/7 (ChatCompletions) |
-| Built-in tools | 20+ | 4 (shell, read, write, http_get) |
+| Built-in tools | 20+ | 15 (terminal, read, write, http_get, web_search, search_files, patch, web_extract, vision_analyze, memory, clarify, todo, code_execution, osv_check, skill) + auto-registration |
 | Skill categories | 20+ | ✅ 25/25 implemented |
 | Curator | 1 | ✅ Complete (usage, lifecycle, scheduler) |
 | Platform adapters | 5+ | 0/5 (trait defined) |
@@ -271,6 +274,7 @@ Used `Arc<Mutex<F>>` in `run_turn_with_streaming` to share callbacks across stre
 | 2026-05-17 | ✅ Goal loop | Autonomous agent loop with plan parsing, judge verdict, state machine |
 | 2026-05-17 | ✅ P2 Skills | 25 built-in skill categories matching Hermes Agent's `skills/` layout |
 | 2026-05-17 | ✅ Curator crate | Usage tracking, lifecycle management (active→stale→archived), scheduler |
+| 2026-05-19 | ✅ SQLite sessions | SessionDB (SQLite + FTS5), Rich Search (discover/scroll/browse), MemoryStore (atomic writes, injection scanning). 28 tests. Legacy JSONL fallback preserved. |
 
 ---
 

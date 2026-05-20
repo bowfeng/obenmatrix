@@ -8,6 +8,7 @@ license = "MIT"
 oben-models = { path = "../oben-models" }
 
 anyhow.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 tracing.workspace = true

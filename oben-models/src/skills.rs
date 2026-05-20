@@ -9,6 +9,8 @@ pub struct Skill {
     pub instructions: String,
     pub enabled: bool,
     pub auto_use: bool,
+    /// Arbitrary metadata from YAML frontmatter (platforms, tags, config vars, etc.).
+    pub metadata: Option<serde_yaml::Value>,
 }
 
 impl Skill {
@@ -20,6 +22,7 @@ impl Skill {
             instructions: String::new(),
             enabled: true,
             auto_use: false,
+            metadata: None,
         }
     }
 }
@@ -32,6 +35,7 @@ pub struct SkillBuilder {
     instructions: String,
     enabled: bool,
     auto_use: bool,
+    metadata: Option<serde_yaml::Value>,
 }
 
 impl SkillBuilder {
@@ -60,6 +64,11 @@ impl SkillBuilder {
         self
     }
 
+    pub fn metadata(mut self, meta: Option<serde_yaml::Value>) -> Self {
+        self.metadata = meta;
+        self
+    }
+
     pub fn build(self) -> Skill {
         Skill {
             name: self.name,
@@ -68,6 +77,7 @@ impl SkillBuilder {
             instructions: self.instructions,
             enabled: self.enabled,
             auto_use: self.auto_use,
+            metadata: self.metadata,
         }
     }
 }

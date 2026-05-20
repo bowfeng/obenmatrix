@@ -2,7 +2,7 @@
 /// Maps to `gateway/gateway.py` in Hermes.
 
 use anyhow::Result;
-use oben_memory::MemoryManager;
+use oben_sessions::SessionManager;
 use oben_tools::ToolRegistry;
 use tracing::info;
 
@@ -10,13 +10,13 @@ use crate::platform::IncomingMessage;
 
 /// The gateway process — listens on multiple platforms and routes to the agent.
 pub struct Gateway {
-    memory: MemoryManager,
+    session_manager: SessionManager,
     tools: ToolRegistry,
 }
 
 impl Gateway {
-    pub fn new(memory: MemoryManager, tools: ToolRegistry) -> Self {
-        Self { memory, tools }
+    pub fn new(session_manager: SessionManager, tools: ToolRegistry) -> Self {
+        Self { session_manager, tools }
     }
 
     /// Handle an incoming message (simplified — no platform-specific routing).
@@ -43,8 +43,8 @@ impl Gateway {
         }
     }
 
-    pub fn memory(&self) -> &MemoryManager {
-        &self.memory
+    pub fn session_manager(&self) -> &SessionManager {
+        &self.session_manager
     }
 
     pub fn tools(&self) -> &ToolRegistry {
@@ -59,7 +59,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_message_echo() {
-        let gateway = Gateway::new(MemoryManager::new(), oben_tools::ToolRegistry::new());
+        let gateway = Gateway::new(SessionManager::new().unwrap(), oben_tools::ToolRegistry::new());
         let msg = IncomingMessage {
             platform: "telegram".to_string(),
             user_id: "user-1".to_string(),
@@ -73,7 +73,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_message_short_content() {
-        let gateway = Gateway::new(MemoryManager::new(), oben_tools::ToolRegistry::new());
+        let gateway = Gateway::new(SessionManager::new().unwrap(), oben_tools::ToolRegistry::new());
         let msg = IncomingMessage {
             platform: "discord".to_string(),
             user_id: "user-2".to_string(),
@@ -87,7 +87,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_message_long_content_preview() {
-        let gateway = Gateway::new(MemoryManager::new(), oben_tools::ToolRegistry::new());
+        let gateway = Gateway::new(SessionManager::new().unwrap(), oben_tools::ToolRegistry::new());
         let long_content = "a".repeat(50);
         let msg = IncomingMessage {
             platform: "slack".to_string(),
@@ -103,7 +103,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_message_empty_content() {
-        let gateway = Gateway::new(MemoryManager::new(), oben_tools::ToolRegistry::new());
+        let gateway = Gateway::new(SessionManager::new().unwrap(), oben_tools::ToolRegistry::new());
         let msg = IncomingMessage {
             platform: "test".to_string(),
             user_id: "user-0".to_string(),

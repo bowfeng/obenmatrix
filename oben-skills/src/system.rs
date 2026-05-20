@@ -1,19 +1,44 @@
 /// Skill system — integration of skills into the agent's behavior.
 /// Maps to `agent/skill_utils.py`, `agent/skill_preprocessing.py`.
 
+use crate::skill_preprocessing::PreprocessingConfig;
 use oben_models::Skill;
 use tracing::info;
 
 /// Skill manager that controls which skills are active and how they're applied.
 pub struct SkillManager {
     skills: Vec<Skill>,
+    config: PreprocessingConfig,
+    skill_dir: Option<std::path::PathBuf>,
+    session_id: Option<String>,
 }
 
 impl SkillManager {
     pub fn new() -> Self {
         Self {
             skills: vec![],
+            config: PreprocessingConfig::default(),
+            skill_dir: None,
+            session_id: None,
         }
+    }
+
+    /// Set preprocessing configuration.
+    pub fn with_preprocessing_config(mut self, config: PreprocessingConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Set the skills directory (for ${HERMES_SKILL_DIR} substitution).
+    pub fn with_skill_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.skill_dir = Some(dir);
+        self
+    }
+
+    /// Set session ID (for ${HERMES_SESSION_ID} substitution).
+    pub fn with_session_id(mut self, id: String) -> Self {
+        self.session_id = Some(id);
+        self
     }
 
     /// Load skills from a loader.
@@ -126,7 +151,7 @@ mod tests {
     #[test]
     fn test_skill_manager_load_skills() {
         let mut mgr = SkillManager::new();
-        let skills = vec![Skill::builder("test-skill")
+        let skills = vec![Skill::builder("test-skill").metadata(None)
             .description("A test skill")
             .category("testing")
             .instructions("Do test things")
@@ -141,13 +166,13 @@ mod tests {
     fn test_skill_manager_filters_disabled() {
         let mut mgr = SkillManager::new();
         mgr.load_skills(vec![
-            Skill::builder("enabled")
+            Skill::builder("enabled").metadata(None)
                 .description("enabled skill")
                 .category("test")
                 .instructions("do stuff")
                 .enabled(true)
                 .build(),
-            Skill::builder("disabled")
+            Skill::builder("disabled").metadata(None)
                 .description("disabled skill")
                 .category("test")
                 .instructions("do stuff")
@@ -162,14 +187,14 @@ mod tests {
     fn test_skill_manager_build_instructions() {
         let mut mgr = SkillManager::new();
         mgr.load_skills(vec![
-            Skill::builder("auto-skill")
+            Skill::builder("auto-skill").metadata(None)
                 .description("Auto-use skill")
                 .category("core")
                 .instructions("You must do this.")
                 .enabled(true)
                 .auto_use(true)
                 .build(),
-            Skill::builder("manual-skill")
+            Skill::builder("manual-skill").metadata(None)
                 .description("Manual skill")
                 .category("core")
                 .instructions("Use when needed.")
@@ -188,13 +213,13 @@ mod tests {
     fn test_skill_manager_build_all_instructions() {
         let mut mgr = SkillManager::new();
         mgr.load_skills(vec![
-            Skill::builder("skill-a")
+            Skill::builder("skill-a").metadata(None)
                 .description("Skill A")
                 .category("core")
                 .instructions("Do A.")
                 .enabled(true)
                 .build(),
-            Skill::builder("skill-b")
+            Skill::builder("skill-b").metadata(None)
                 .description("Skill B")
                 .category("core")
                 .instructions("Do B.")
@@ -210,7 +235,7 @@ mod tests {
     fn test_skill_manager_enable_skill() {
         let mut mgr = SkillManager::new();
         // Load an enabled skill so it's in the list
-        mgr.load_skills(vec![Skill::builder("test-skill")
+        mgr.load_skills(vec![Skill::builder("test-skill").metadata(None)
             .description("Test")
             .category("core")
             .instructions("Instructions")
@@ -225,7 +250,7 @@ mod tests {
     #[test]
     fn test_skill_manager_disable_skill() {
         let mut mgr = SkillManager::new();
-        mgr.load_skills(vec![Skill::builder("test-skill")
+        mgr.load_skills(vec![Skill::builder("test-skill").metadata(None)
             .description("Test")
             .category("core")
             .instructions("Instructions")
@@ -245,14 +270,14 @@ mod tests {
     fn test_skill_manager_auto_use_skills() {
         let mut mgr = SkillManager::new();
         mgr.load_skills(vec![
-            Skill::builder("auto")
+            Skill::builder("auto").metadata(None)
                 .description("auto-use")
                 .category("core")
                 .instructions("Do auto.")
                 .enabled(true)
                 .auto_use(true)
                 .build(),
-            Skill::builder("manual")
+            Skill::builder("manual").metadata(None)
                 .description("manual")
                 .category("core")
                 .instructions("Manual.")
@@ -277,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_skill_builder_defaults() {
-        let skill = Skill::builder("defaults-test").build();
+        let skill = Skill::builder("defaults-test").metadata(None).build();
         assert_eq!(skill.name, "defaults-test");
         assert!(skill.enabled);
         assert!(!skill.auto_use);
@@ -288,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_skill_builder_full() {
-        let skill = Skill::builder("full-test")
+        let skill = Skill::builder("full-test").metadata(None)
             .description("Full description")
             .category("testing")
             .instructions("Full instructions")
@@ -306,8 +331,8 @@ mod tests {
     fn test_skill_manager_list_skill_names() {
         let mut mgr = SkillManager::new();
         mgr.load_skills(vec![
-            Skill::builder("skill-a").description("A").build(),
-            Skill::builder("skill-b").description("B").build(),
+            Skill::builder("skill-a").metadata(None).description("A").build(),
+            Skill::builder("skill-b").metadata(None).description("B").build(),
         ]);
         let names = mgr.list_skill_names();
         assert_eq!(names, vec!["skill-a", "skill-b"]);
@@ -317,9 +342,9 @@ mod tests {
     fn test_skill_manager_skills_by_category() {
         let mut mgr = SkillManager::new();
         mgr.load_skills(vec![
-            Skill::builder("skill-a").description("A").category("cat1").build(),
-            Skill::builder("skill-b").description("B").category("cat1").build(),
-            Skill::builder("skill-c").description("C").category("cat2").build(),
+            Skill::builder("skill-a").metadata(None).description("A").category("cat1").build(),
+            Skill::builder("skill-b").metadata(None).description("B").category("cat1").build(),
+            Skill::builder("skill-c").metadata(None).description("C").category("cat2").build(),
         ]);
         let categories = mgr.skills_by_category();
         assert_eq!(categories.len(), 2);
