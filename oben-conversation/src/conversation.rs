@@ -689,6 +689,8 @@ mod tests {
             tail_token_budget: 100, // Small budget so middle isn't empty
             tail_min_messages: 2,
             tail_overhead: 1.5,
+            ineffective_threshold: 10.0,
+            max_ineffective_consecutive: 2,
             max_messages: 100,
         };
 
@@ -740,6 +742,8 @@ mod tests {
             tail_token_budget: 20_000,
             tail_min_messages: 3,
             tail_overhead: 1.5,
+            ineffective_threshold: 10.0,
+            max_ineffective_consecutive: 2,
             max_messages: 100,
         };
 
@@ -794,6 +798,8 @@ mod tests {
             tail_token_budget: 100,
             tail_min_messages: 2,
             tail_overhead: 1.5,
+            ineffective_threshold: 10.0,
+            max_ineffective_consecutive: 2,
             max_messages: 100,
         };
 

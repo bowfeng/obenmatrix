@@ -43,6 +43,10 @@ pub struct ContextEngineConfig {
     pub tail_overhead: f64,
     /// Max messages buffer size (safety limit).
     pub max_messages: usize,
+    /// Minimum savings percentage for a compression to be considered effective.
+    pub ineffective_threshold: f64,
+    /// Max consecutive ineffective compressions before anti-thrashing kicks in.
+    pub max_ineffective_consecutive: usize,
 }
 
 impl Default for ContextEngineConfig {
@@ -55,6 +59,8 @@ impl Default for ContextEngineConfig {
             tail_min_messages: 3,
             tail_overhead: 1.5,
             max_messages: 100,
+            ineffective_threshold: 10.0,
+            max_ineffective_consecutive: 2,
         }
     }
 }
@@ -86,6 +92,12 @@ pub struct ContextEngine {
     active: bool,
     /// How many times compression has fired.
     compression_count: usize,
+    /// Last compression's savings percentage.
+    last_compression_savings_pct: f64,
+    /// Consecutive ineffective compressions (savings < threshold).
+    ineffective_compression_count: usize,
+    /// Consecutive effective compressions (reset counter when ineffective occurs).
+    consecutive_effective_compressions: usize,
 }
 
 impl ContextEngine {
@@ -103,6 +115,9 @@ impl ContextEngine {
             last_total_tokens: 0,
             active: true,
             compression_count: 0,
+            last_compression_savings_pct: 0.0,
+            ineffective_compression_count: 0,
+            consecutive_effective_compressions: 0,
         }
     }
 
@@ -145,12 +160,17 @@ impl ContextEngine {
 
     // -- Compression decision -----------------------------------------------
 
+    /// Check if anti-thrashing is active (too many ineffective compressions).
+    pub fn is_thrashing(&self) -> bool {
+        self.ineffective_compression_count >= self.config.max_ineffective_consecutive
+    }
+
     /// Return true if context is getting full and should be compressed.
     ///
     /// Priority: if we have real token data from the last API response,
     /// use that. Otherwise fall back to estimating from the message buffer.
     pub fn should_compress(&self, messages: &[Message]) -> bool {
-        if !self.active {
+        if !self.active || self.is_thrashing() {
             return false;
         }
 
@@ -217,6 +237,23 @@ impl ContextEngine {
             messages.extend(result.messages);
             self.compression_count += 1;
 
+            // Update anti-thrashing counters
+            let savings = result.stats.savings_pct;
+            self.last_compression_savings_pct = savings;
+            if savings < self.config.ineffective_threshold {
+                self.ineffective_compression_count += 1;
+                self.consecutive_effective_compressions = 0;
+                tracing::warn!(
+                    "Compression saved only {:.1}% — ineffective (threshold: {}%, consecutive: {})",
+                    savings,
+                    self.config.ineffective_threshold,
+                    self.ineffective_compression_count,
+                );
+            } else {
+                self.consecutive_effective_compressions += 1;
+                self.ineffective_compression_count = 0;
+            }
+
             info!(
                 "Compression complete: {} -> {} messages, {} tokens saved ({:.0}%)",
                 result.stats.original_count,
@@ -238,6 +275,9 @@ impl ContextEngine {
         self.last_completion_tokens = 0;
         self.last_total_tokens = 0;
         self.compression_count = 0;
+        self.last_compression_savings_pct = 0.0;
+        self.ineffective_compression_count = 0;
+        self.consecutive_effective_compressions = 0;
     }
 }
 
@@ -336,5 +376,61 @@ mod tests {
         ctx.reset();
         assert_eq!(ctx.last_total_tokens(), 0);
         assert_eq!(ctx.compression_count, 0);
+    }
+
+    #[test]
+    fn test_anti_thrashing_resets_on_effective_compression() {
+        let config = ContextEngineConfig {
+            context_length: 100_000,
+            threshold_percent: 0.75,
+            ineffective_threshold: 10.0,
+            max_ineffective_consecutive: 2,
+            ..Default::default()
+        };
+        let mut ctx = ContextEngine::with_config(config);
+
+        // First ineffective compression
+        ctx.ineffective_compression_count = 0;
+        assert!(!ctx.is_thrashing());
+
+        // Second ineffective — counter reaches threshold
+        ctx.ineffective_compression_count = 2;
+        assert!(ctx.is_thrashing());
+
+        // A good compression resets counter
+        ctx.ineffective_compression_count = 0;
+        assert!(!ctx.is_thrashing());
+    }
+
+    #[test]
+    fn test_reset_clears_thrashing_state() {
+        let mut ctx = ContextEngine::new();
+        ctx.ineffective_compression_count = 10;
+        ctx.consecutive_effective_compressions = 5;
+        ctx.reset();
+        assert_eq!(ctx.ineffective_compression_count, 0);
+        assert_eq!(ctx.consecutive_effective_compressions, 0);
+    }
+
+    #[test]
+    fn test_ineffective_threshold_config() {
+        let config = ContextEngineConfig {
+            ineffective_threshold: 20.0,
+            max_ineffective_consecutive: 3,
+            ..Default::default()
+        };
+        let mut ctx = ContextEngine::with_config(config);
+
+        // 3 ineffective compressions below 20% threshold
+        for _ in 0..3 {
+            ctx.last_compression_savings_pct = 15.0;
+            ctx.ineffective_compression_count += 1;
+        }
+        assert!(ctx.is_thrashing());
+
+        // But 4% is still ineffective with 20% threshold
+        ctx.last_compression_savings_pct = 4.0;
+        ctx.ineffective_compression_count += 1; // now 4
+        assert!(ctx.is_thrashing());
     }
 }
