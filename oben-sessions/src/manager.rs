@@ -289,6 +289,52 @@ impl SessionDB {
         })
     }
 
+    pub fn save_new_messages(&self, session_id: &str, messages: &[Message]) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        self.with_conn_mut(|conn| {
+            // Bulk insert with UPSERT on the autoincrement id (use session_id+timestamp+role as unique guard).
+            // We insert without specifying id so SQLite auto-allocates, and skip any that already exist.
+            let role_str = |role: &MessageRole| -> &str {
+                match role {
+                    MessageRole::System => "system",
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    MessageRole::Tool => "tool",
+                }
+            };
+
+            // Insert each message; sqlite's ignore ensures we don't insert duplicates
+            // if called while the DB was partially updated.
+            for msg in messages {
+                let role = role_str(&msg.role);
+                let content = msg.content.to_text();
+                let tool_calls = msg.tool_calls.as_ref().map(|c| serde_json::to_string(c).unwrap_or_default());
+                let tool_call_id = if msg.tool_call_ids.len() > 0 {
+                    Some(msg.tool_call_ids.join(","))
+                } else {
+                    None
+                };
+                conn.execute(
+                    "INSERT OR IGNORE INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown")],
+                )?;
+            }
+
+            // Update the session metadata count
+            let new_count = messages.len();
+            conn.execute(
+                "UPDATE sessions SET message_count = ? + ?, ended_at = ? WHERE id = ?",
+                params![new_count, 0_i32, now_ts(), session_id],
+            )?;
+
+            // Rebuild FTS index to include new messages
+            let _ = conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')", []);
+            Ok(())
+        })
+    }
+
     pub fn load_messages(&self, session_id: &str) -> Result<Vec<Message>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id")?;
@@ -775,12 +821,22 @@ impl SessionManager {
                 None => { info!("No active session to save"); return Ok(()); }
             },
         };
-        let messages = self.sessions.get(&sid)
+        let session = self.sessions.get(&sid)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", sid))?;
-        let messages = messages.messages.clone();
-        self.db.save_messages(&sid, &messages)?;
+        let new_count = session.messages.len() - session.persisted_message_count;
+
+        // No new messages to persist
+        if new_count == 0 {
+            return Ok(());
+        }
+
+        let start = session.messages.len() - new_count;
+        let new_messages: Vec<Message> = session.messages[start..].iter().cloned().collect();
+        drop(session);
+
+        self.db.save_new_messages(&sid, &new_messages)?;
         if let Some(s) = self.sessions.get_mut(&sid) {
-            s.persisted_message_count = messages.len();
+            s.persisted_message_count = s.messages.len();
         }
         Ok(())
     }

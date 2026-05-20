@@ -337,9 +337,10 @@ fn list_skills() {
     }
 }
 
-fn list_sessions() -> Result<()> {
-    let memory = oben_sessions::SessionManager::new()?;
-    let sessions = memory.list_sessions();
+ fn list_sessions() -> Result<()> {
+     let mut memory = oben_sessions::SessionManager::new()?;
+     memory.init()?;
+     let sessions = memory.list_sessions();
     if sessions.is_empty() {
         println!("No sessions found.");
     } else {
