@@ -177,6 +177,12 @@ pub async fn compact_session_messages(
         );
     }
 
+    // Step 7: Strip historical image content
+    let stripped_media = strip_historical_media(&mut compressed);
+    if stripped_media > 0 {
+        tracing::info!("Stripped {} image part(s) from historical messages", stripped_media);
+    }
+
     let compressed_tokens = compressed.iter().map(|m| message_token_estimate(m)).sum::<usize>();
     let compressed_count = compressed.len();
 
@@ -373,6 +379,83 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>
 
     // Return pruned count via tuple
     (results, pruned_count)
+}
+
+/// Strip historical image content from messages before the anchor.
+///
+/// The "anchor" is the newest user message that carries image content.
+/// All messages before the anchor have their image parts replaced with
+/// placeholders. Messages at/after the anchor are preserved verbatim.
+fn strip_historical_media(messages: &mut Vec<Message>) -> usize {
+    // Find the newest user message with image content (the anchor)
+    let anchor_idx = messages.iter().enumerate()
+        .rev()
+        .find(|(_, msg)| {
+            msg.role == oben_models::MessageRole::User && has_image_content(&msg.content)
+        })
+        .map(|(idx, _)| idx);
+
+    // If no anchor or anchor is the first message, nothing to strip
+    let anchor_idx = match anchor_idx {
+        Some(0) => return 0,
+        Some(idx) => idx,
+        None => return 0,
+    };
+
+    let mut stripped_count = 0;
+
+    for msg in messages.iter_mut().take(anchor_idx) {
+        let image_count = strip_images_from_content(&mut msg.content);
+        if image_count > 0 {
+            stripped_count += image_count;
+        }
+    }
+
+    stripped_count
+}
+
+/// Check if a MessageContent contains any image parts.
+fn has_image_content(content: &MessageContent) -> bool {
+    match content {
+        MessageContent::Image { .. } => true,
+        MessageContent::Parts(parts) => {
+            parts.iter().any(|p| matches!(p, MessagePart::Image { .. }))
+        }
+        MessageContent::Text(_) => false,
+    }
+}
+
+/// Strip images from content, replacing with placeholders.
+/// Returns count of images replaced.
+fn strip_images_from_content(content: &mut MessageContent) -> usize {
+    let mut count = 0;
+    match content {
+        MessageContent::Image { .. } => {
+            *content = MessageContent::Text(
+                "[screenshot removed to save context]".into()
+            );
+            count = 1;
+        }
+        MessageContent::Parts(parts) => {
+            let mut new_parts = Vec::new();
+            for part in parts.drain(..) {
+                match part {
+                    MessagePart::Image { .. } => {
+                        new_parts.push(MessagePart::Text(
+                            "[screenshot removed to save context]".into()
+                        ));
+                        count += 1;
+                    }
+                    MessagePart::Text(t) => {
+                        new_parts.push(MessagePart::Text(t));
+                    }
+                }
+            }
+            *content = MessageContent::Parts(new_parts);
+        }
+        MessageContent::Text(_) => {}
+    }
+    count
 }
 
 /// Sanitize orphaned tool_call/tool_result pairs after compression.
@@ -908,5 +991,128 @@ mod tests {
             m.content.to_text().contains("Result from earlier conversation")
         }).expect("should find stub tool result");
         assert!(stub_msg.content.to_text().contains("context summary above"));
+    }
+
+    #[test]
+    fn test_strip_historical_media_replaces_images_before_anchor() {
+        // Message at index 0 has an image — should be replaced
+        // Message at index 1 has text only — no change
+        // Message at index 2 has an image — this is the anchor, preserved
+        let msgs = vec![
+            Message {
+                role: oben_models::MessageRole::User,
+                content: MessageContent::Image {
+                    url: "data:image/png;base64,AAAA".into(),
+                    detail: None,
+                },
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: None,
+            },
+            Message {
+                role: oben_models::MessageRole::User,
+                content: MessageContent::Text("look at this".into()),
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: None,
+            },
+            Message {
+                role: oben_models::MessageRole::User,
+                content: MessageContent::Image {
+                    url: "data:image/png;base64,CCCC".into(),
+                    detail: None,
+                },
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: None,
+            },
+        ];
+        let mut messages: Vec<Message> = msgs;
+        let count = strip_historical_media(&mut messages);
+        assert_eq!(count, 1, "should strip 1 image from historical message");
+        // First message should now be a placeholder
+        assert!(messages[0].content.to_text().contains("screenshot removed"));
+        // Second message (text only) should be unchanged
+        assert_eq!(messages[1].content.to_text(), "look at this");
+        // Third message (anchor) should be preserved
+        assert!(matches!(messages[2].content, MessageContent::Image { .. }));
+    }
+
+    #[test]
+    fn test_strip_historical_media_no_anchor() {
+        let msgs = vec![
+            Message {
+                role: oben_models::MessageRole::User,
+                content: MessageContent::Text("hello".into()),
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: None,
+            },
+        ];
+        let mut messages: Vec<Message> = msgs;
+        let count = strip_historical_media(&mut messages);
+        assert_eq!(count, 0, "no images to strip");
+    }
+
+    #[test]
+    fn test_strip_historical_media_anchor_first_message() {
+        let msgs = vec![
+            Message {
+                role: oben_models::MessageRole::User,
+                content: MessageContent::Image {
+                    url: "data:image/png;base64,AAAA".into(),
+                    detail: None,
+                },
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: None,
+            },
+        ];
+        let mut messages: Vec<Message> = msgs;
+        let count = strip_historical_media(&mut messages);
+        assert_eq!(count, 0, "anchor is first message — nothing to strip");
+    }
+
+    #[test]
+    fn test_strip_historical_media_parts() {
+        // User message with mixed text and image parts before the anchor
+        let msgs = vec![
+            Message {
+                role: oben_models::MessageRole::User,
+                content: MessageContent::Parts(vec![
+                    MessagePart::Text("before image".into()),
+                    MessagePart::Image {
+                        url: "data:image/png;base64,BBBB".into(),
+                        detail: None,
+                    },
+                    MessagePart::Text("after image".into()),
+                ]),
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: None,
+            },
+            Message {
+                role: oben_models::MessageRole::User,
+                content: MessageContent::Image {
+                    url: "data:image/png;base64,CC".into(),
+                    detail: None,
+                },
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: None,
+            },
+        ];
+        let mut messages: Vec<Message> = msgs;
+        let count = strip_historical_media(&mut messages);
+        assert_eq!(count, 1, "should strip 1 image from Parts");
+        // Check the parts are replaced with text placeholders
+        let parts = match &messages[0].content {
+            MessageContent::Parts(p) => p,
+            _ => panic!("expected Parts"),
+        };
+        assert_eq!(parts.len(), 3);
+        assert!(matches!(&parts[0], MessagePart::Text(t) if t == "before image"));
+        assert!(matches!(&parts[1], MessagePart::Text(t) if t.contains("screenshot removed")));
+        assert!(matches!(&parts[2], MessagePart::Text(t) if t == "after image"));
     }
 }
