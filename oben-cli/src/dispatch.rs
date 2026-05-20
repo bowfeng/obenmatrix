@@ -21,7 +21,7 @@ pub async fn run_cli() -> Result<()> {
     oben_utils::logging::init(tracing::Level::INFO);
 
     match cli.command {
-        Commands::Chat { no_stream, continue_with } => run_chat(!no_stream, continue_with.as_deref()).await,
+        Commands::Chat { no_stream, continue_session } => run_chat(!no_stream, continue_session.as_deref()).await,
         Commands::Run { prompt, stream } => run_one_shot(&prompt, stream).await,
         Commands::Setup => run_setup(),
         Commands::Config { action } => run_config(action).await,
@@ -77,7 +77,13 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
 
     // Continue an existing session if requested
     if let Some(key) = continue_with {
-        let name = chat.continue_session(key)?;
+        // "latest" means use the most recent session
+        let resolved_key = if key == "latest" {
+            chat.session_manager().active_session().map(|s| s.name.clone()).unwrap_or_else(|| key.to_string())
+        } else {
+            key.to_string()
+        };
+        let name = chat.continue_session(&resolved_key)?;
         if let Some(s) = chat.session_manager().active_session() {
             println!("Continuing session: {} ({} messages)\n", name, s.messages.len());
         }
