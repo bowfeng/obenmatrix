@@ -9,6 +9,7 @@ use tracing::info;
 
 use clap::Parser;
 use crate::cli::{Cli, Commands, ConfigCommand, ModelsCommand, SessionsCommand};
+use oben_models::MessageRole;
 
 /// Entry point: parse CLI args and dispatch to the appropriate handler.
 pub async fn run_cli() -> Result<()> {
@@ -42,6 +43,39 @@ pub async fn run_cli() -> Result<()> {
 }
 
 // ── Chat / Run ──────────────────────────────────────────────────────────
+
+/// Display messages from a session in a compact format.
+fn print_session_messages(messages: &[oben_models::Message], max_show: usize) {
+    if messages.is_empty() {
+        println!("(no messages)");
+        return;
+    }
+
+    let show_count = messages.len().min(max_show);
+    let show = &messages[..show_count];
+    let overflow = messages.len().saturating_sub(max_show);
+
+    for msg in show {
+        let role = match msg.role {
+            MessageRole::User => "📝 你",
+            MessageRole::Assistant => "🤖 agent",
+            MessageRole::System => "📋 system",
+            MessageRole::Tool => "⚙️ tool",
+        };
+        let text = msg.content.to_text_ref().unwrap_or("<non-text>");
+        // Truncate long messages
+        let display = if text.len() > 120 {
+            format!("{}...", &text[..117])
+        } else {
+            text.to_string()
+        };
+        println!("  {} {}", role, display);
+    }
+
+    if overflow > 0 {
+        println!("  ... {} more messages", overflow);
+    }
+}
 
 async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
     info!("Starting interactive chat...");
@@ -85,7 +119,10 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         };
         let name = chat.continue_session(&resolved_key)?;
         if let Some(s) = chat.session_manager().active_session() {
-            println!("Continuing session: {} ({} messages)\n", name, s.messages.len());
+            let msg_count = s.messages.len();
+            println!("Continuing session: {} ({} messages)\n", name, msg_count);
+            print_session_messages(&s.messages, 10);
+            println!();
         }
     } else {
         // 如果有已存在的 active session，显示出来
