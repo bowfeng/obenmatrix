@@ -1,0 +1,34 @@
+[package]
+name = "oben-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Terminal UI for ObenAgent"
+
+[dependencies]
+oben-config = { path = "../oben-config" }
+oben-models = { path = "../oben-models" }
+oben-conversation = { path = "../oben-conversation" }
+oben-tools = { path = "../oben-tools" }
+oben-sessions = { path = "../oben-sessions" }
+oben-transport = { path = "../oben-transport" }
+oben-gateway = { path = "../oben-gateway" }
+oben-utils = { path = "../oben-utils" }
+oben-skills = { path = "../oben-skills" }
+
+ratatui = { version = "0", features = ["serde"] }
+crossterm = { version = "0", features = ["event-stream"] }
+unicode-segmentation = "1"
+unicode-width = "0"
+tokio = { workspace = true, features = ["sync"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

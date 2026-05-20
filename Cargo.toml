@@ -10,7 +10,7 @@ members = [
     "oben-config",
     "oben-utils",
     "oben-goals",
-    "oben-curator",
+    "oben-curator", "oben-tui",
 ]
 resolver = "2"
 
@@ -67,6 +67,7 @@ oben-skills = { path = "oben-skills" }
 oben-sessions = { path = "oben-sessions" }
 oben-transport = { path = "oben-transport" }
 oben-gateway = { path = "oben-gateway" }
+oben-tui = { path = "oben-tui" }
 oben-utils = { path = "oben-utils" }
 chrono = { workspace = true }
 

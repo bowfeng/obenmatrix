@@ -58,6 +58,8 @@ enum Commands {
         #[command(subcommand)]
         action: ModelsCommand,
     },
+    /// Start the terminal UI
+    Tui,
 }
 
 #[derive(Subcommand)]
@@ -139,6 +141,7 @@ async fn main() -> Result<()> {
         }
         Commands::Info => { show_info(); Ok(()) },
         Commands::Models { action } => run_models(action).await,
+        Commands::Tui => oben_tui::run_tui().await,
     }
 }
 
@@ -373,7 +376,8 @@ fn show_info() {
     println!("  skills  — List available skills");
     println!("  sessions [list|compact|delete] — Manage sessions");
     println!("  info     — Show agent info");
-    println!("  models   — Discover models from LLM provider");
+    println!("  tui     — Start the interactive terminal UI");
+    println!("  models  — Discover models from LLM provider");
 }
 
 /// Collect tool definitions from a registry for structured tool calling.

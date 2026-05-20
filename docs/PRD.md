@@ -92,7 +92,7 @@ obenagent/               # Root workspace (binary)
 │   ├── defaults.rs      # Default system prompt, provider defaults
 │   └── wizard.rs        # Interactive setup wizard (clap + dialoguer)
 │
-├── oben_conversation/           # Agent engine
+├── oben_conversation/   # Agent engine
 │   ├── conversation.rs  # ConversationLoop — main turn cycle (streaming + non-streaming)
 │   ├── context.rs       # ContextEngine — unified: buffer, real token tracking, should_compress(), compress()
 │   ├── prompt.rs        # PromptBuilder — system prompt + message assembly
