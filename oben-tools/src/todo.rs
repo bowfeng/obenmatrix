@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use chrono::{Local, Utc};
+use chrono::Utc;
 
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 

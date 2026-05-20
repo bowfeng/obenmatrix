@@ -267,7 +267,7 @@ fn list_skills(args: &Value, call_id: String) -> ToolResult {
         by_category.entry(cat.to_string()).or_default().push(skill);
     }
 
-    for (cat, mut cat_skills) in &mut by_category {
+    for (cat, cat_skills) in &mut by_category {
         output.push_str(&format!("\n### {} ({})\n", cat, cat_skills.len()));
         cat_skills.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         for skill in cat_skills {
