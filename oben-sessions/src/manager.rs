@@ -262,19 +262,18 @@ impl SessionDB {
         })
     }
 
-    pub fn save_messages(&self, session_id: &str, messages: &[Message]) -> Result<Vec<i64>> {
+    pub fn save_messages(&self, session_id: &str, messages: &mut [Message]) -> Result<()> {
         self.with_conn_mut(|conn| {
             conn.execute("UPDATE sessions SET message_count = ?, ended_at = ? WHERE id = ?",
                 params![messages.len(), now_ts(), session_id])?;
             conn.execute("DELETE FROM messages WHERE session_id = ?", params![session_id])?;
 
-            let mut ids = Vec::with_capacity(messages.len());
             if !messages.is_empty() {
                 let tx = conn.transaction()?;
                 let mut stmt = tx.prepare(
                     "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id"
                 )?;
-                for msg in messages {
+                for msg in messages.iter_mut() {
                     let role = match msg.role {
                         MessageRole::System => "system", MessageRole::User => "user",
                         MessageRole::Assistant => "assistant", MessageRole::Tool => "tool",
@@ -288,29 +287,28 @@ impl SessionDB {
                     };
                     let mut rows = stmt.query(params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown")])?;
                     if let Some(row) = rows.next()? {
-                        ids.push(row.get(0)?);
+                        msg.id = Some(row.get(0)?);
                     }
                 }
-                drop(stmt);  // release borrow on tx
+                drop(stmt);
                 tx.commit()?;
             }
 
             let _ = conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')", []);
-            Ok(ids)
+            Ok(())
         })
     }
 
-    pub fn save_new_messages(&self, session_id: &str, messages: &[Message]) -> Result<Vec<i64>> {
+    pub fn save_new_messages(&self, session_id: &str, messages: &mut [Message]) -> Result<()> {
         if messages.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
         self.with_conn_mut(|conn| {
             let tx = conn.transaction()?;
             let mut stmt = tx.prepare(
                 "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id"
             )?;
-            let mut ids = Vec::with_capacity(messages.len());
-            for msg in messages {
+            for msg in messages.iter_mut() {
                 let role = match msg.role {
                     MessageRole::System => "system",
                     MessageRole::User => "user",
@@ -326,12 +324,12 @@ impl SessionDB {
                 };
                 let mut rows = stmt.query(params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown")])?;
                 if let Some(row) = rows.next()? {
-                    ids.push(row.get(0)?);
+                    msg.id = Some(row.get(0)?);
                 }
             }
             drop(stmt);
             tx.commit()?;
-            Ok(ids)
+            Ok(())
         })
     }
 
@@ -850,17 +848,12 @@ impl SessionManager {
         }
 
         let start = session.messages.len() - new_count;
-        let new_messages: Vec<Message> = session.messages[start..].iter().cloned().collect();
+        let mut new_messages: Vec<Message> = session.messages[start..].iter().cloned().collect();
         drop(session);
 
-        let new_msg_ids = self.db.save_new_messages(&sid, &new_messages)?;
+        self.db.save_new_messages(&sid, &mut new_messages)?;
         if let Some(s) = self.sessions.get_mut(&sid) {
             s.persisted_message_count = s.messages.len();
-            // Assign ids to newly saved messages
-            let start = s.messages.len() - new_messages.len();
-            for (msg, id) in s.messages[start..].iter_mut().zip(new_msg_ids) {
-                msg.id = Some(id);
-            }
         }
         Ok(())
     }
@@ -950,12 +943,8 @@ impl SessionManager {
         {
             let parent = self.sessions.get_mut(parent_id)
                 .ok_or_else(|| anyhow::anyhow!("Session not found: {}", parent_id))?;
-            let parent_messages = parent.messages.clone();
-            let ids = self.db.save_messages(parent_id, &parent_messages)?;
-            // Assign returned ids back to messages
-            for (msg, id) in parent.messages.iter_mut().zip(ids) {
-                msg.id = Some(id);
-            }
+            let mut parent_messages = parent.messages.clone();
+            self.db.save_messages(parent_id, &mut parent_messages)?;
         } // parent dropped here
 
         // 3. Determine child title: extract base name and append "(N)"
@@ -1170,9 +1159,10 @@ mod tests {
         let db = SessionDB::new(&path).unwrap();
         let session = db.get_or_create_session("msg-test").unwrap();
         let session_id = session.id.clone();
-        db.save_messages(&session_id, &[
+        let mut msgs = vec![
             Message::user("hello"), Message::assistant("hi there"), Message::user("how are you"),
-        ]).unwrap();
+        ];
+        db.save_messages(&session_id, &mut msgs).unwrap();
         let loaded = db.load_messages(&session_id).unwrap();
         assert_eq!(loaded.len(), 3);
         assert_eq!(loaded[0].content.to_text(), "hello");
@@ -1184,8 +1174,8 @@ mod tests {
         let db = SessionDB::new(&path).unwrap();
         let session = db.get_or_create_session("around-test").unwrap();
         let sid = session.id.clone();
-        let msgs: Vec<Message> = (0..10).map(|i| Message::user(format!("message {}", i))).collect();
-        db.save_messages(&sid, &msgs).unwrap();
+        let mut msgs: Vec<Message> = (0..10).map(|i| Message::user(format!("message {}", i))).collect();
+        db.save_messages(&sid, &mut msgs).unwrap();
         let loaded = db.load_messages(&sid).unwrap();
         let anchor_id: i64 = loaded[5].id.unwrap();
         let result = db.get_messages_around(&sid, anchor_id, 2).unwrap();

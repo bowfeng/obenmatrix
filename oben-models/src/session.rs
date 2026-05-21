@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 /// A summary chunk in summary.jsonl — indicates which raw messages it covers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SummaryChunk {
-    /// Line number (1-indexed) in raw.jsonl where this summary starts.
-    pub from: usize,
-    /// Line number (1-indexed, exclusive) where this summary ends.
-    pub to: usize,
-    /// The summary text covering messages [from, to).
+    /// primary id of the first message covered
+    pub from: i64,
+    /// primary id of the last message covered
+    pub to: i64,
+    /// The summary text covering messages [from, to].
     pub summary: String,
 }
 
@@ -66,7 +66,6 @@ pub struct Session {
     /// Summary chunks indicating which raw message lines are covered.
     #[serde(default)]
     pub summary_chunks: Vec<SummaryChunk>,
-    /// Total number of messages in raw.jsonl (for appends).
     #[serde(default)]
     pub persisted_message_count: usize,
     /// SQLite metadata (populated when using SQLite-backed store).

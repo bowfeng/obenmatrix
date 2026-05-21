@@ -408,7 +408,7 @@ mod tests {
         // Create a session with messages
         let session = search.db.get_or_create_session("discover-test").unwrap();
         let sid = session.id.clone();
-        search.db.save_messages(&sid, &[
+        search.db.save_messages(&sid, &mut vec![
             Message::user("hello world"),
             Message::assistant("how can I help you today"),
             Message::user("search for rust code"),
@@ -438,10 +438,10 @@ mod tests {
 
         let session = search.db.get_or_create_session("scroll-test").unwrap();
         let sid = session.id.clone();
-        let msgs: Vec<Message> = (0..10)
+        let mut msgs: Vec<Message> = (0..10)
             .map(|i| Message::user(format!("message {}", i)))
             .collect();
-        search.db.save_messages(&sid, &msgs).unwrap();
+        search.db.save_messages(&sid, &mut msgs).unwrap();
 
         let loaded = search.db.load_messages(&sid).unwrap();
         let anchor_id: i64 = loaded[5].id.unwrap();
@@ -462,7 +462,8 @@ mod tests {
         // Scroll shape
         let session = search.db.get_or_create_session("unified-test").unwrap();
         let sid = session.id.clone();
-        search.db.save_messages(&sid, &[Message::user("hello")]).unwrap();
+        let mut msgs = vec![Message::user("hello")];
+        search.db.save_messages(&sid, &mut msgs).unwrap();
         let loaded = search.db.load_messages(&sid).unwrap();
         let mid: i64 = loaded[0].id.unwrap();
 
@@ -477,11 +478,11 @@ mod tests {
 
         let session = search.db.get_or_create_session("roundtrip").unwrap();
         let sid = session.id.clone();
-        let msgs = vec![
+        let mut msgs = vec![
             Message::user("first message"),
             Message::assistant("response"),
         ];
-        search.db.save_messages(&sid, &msgs).unwrap();
+        search.db.save_messages(&sid, &mut msgs).unwrap();
 
         let loaded = search.db.load_messages(&sid).unwrap();
         assert_eq!(loaded.len(), 2);
