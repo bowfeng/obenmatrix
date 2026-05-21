@@ -8,6 +8,7 @@
 //!
 //! Neither CLI nor TUI concerns are included — this is pure business logic.
 
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -197,5 +198,100 @@ impl Agent {
 
     pub fn conversation(&mut self) -> &mut DefaultConversationLoop {
         &mut self.conversation
+    }
+
+    /// Run an interactive CLI chat loop.
+    ///
+    /// Reads from stdin, calls `turn()` for each line, prints the response.
+    /// Handles session continuation, streaming output, and graceful exit.
+    ///
+    /// **This owns the conversation loop.** The caller only needs to
+    /// construct the `Agent` with config — everything else is here.
+    pub async fn interactive_chat(
+        &mut self,
+        stream: bool,
+        continue_with: Option<&str>,
+    ) -> Result<()> {
+        // ── Session continuation / display ──────────────────────
+        if let Some(key) = continue_with {
+            let resolved_key = if key == "latest" {
+                self.session_manager().active_session()
+                    .map(|s| s.name.clone()).unwrap_or_else(|| key.to_string())
+            } else {
+                key.to_string()
+            };
+            let name = self.continue_session(&resolved_key)?;
+            if let Some(s) = self.session_manager().active_session() {
+                let msg_count = s.messages.len();
+                println!("Continuing session: {} ({} messages)\n", name, msg_count);
+                print_session_messages(&s.messages, 10);
+                println!();
+            }
+        } else {
+            if let Some(name) = self.loaded_session_name() {
+                if let Some(s) = self.session_manager().active_session() {
+                    println!("Session: {} ({} messages)\n", name, s.messages.len());
+                }
+            }
+        }
+        println!("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
+
+        // ── Interactive loop ────────────────────────────────────
+        loop {
+            print!("> ");
+            std::io::stdout().flush()?;
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            let input = input.trim();
+
+            if input == "quit" || input == "exit" { break; }
+            if input.is_empty() { continue; }
+
+            let response = self.turn(input, stream, stream.then(|| {
+                Box::new(|text: &str| {
+                    print!("{}", text);
+                    std::io::stdout().flush().ok();
+                }) as oben_models::StreamDeltaCallback
+            })).await?;
+            if stream {
+                println!();
+            } else {
+                println!("\n{}", response);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn print_session_messages(messages: &[oben_models::Message], max_show: usize) {
+    if messages.is_empty() {
+        println!("(no messages)");
+        return;
+    }
+
+    let show_count = messages.len().min(max_show);
+    let show = &messages[..show_count];
+    let overflow = messages.len().saturating_sub(max_show);
+
+    for msg in show {
+        let role = match msg.role {
+            oben_models::MessageRole::User => "📝 你",
+            oben_models::MessageRole::Assistant => "🤖 agent",
+            oben_models::MessageRole::System => "📋 system",
+            oben_models::MessageRole::Tool => "⚙️ tool",
+        };
+        let text = msg.content.to_text_ref().unwrap_or("<non-text>");
+        let display = if text.len() > 120 {
+            format!("{}...", &text[..117])
+        } else {
+            text.to_string()
+        };
+        println!("  {} {}", role, display);
+    }
+
+    if overflow > 0 {
+        println!("  ... {} more messages", overflow);
     }
 }

@@ -12,7 +12,7 @@ use oben_agent::{CompactContextEngine, ContextEngine};
 
 use clap::Parser;
 use crate::cli::{Cli, Commands, ConfigCommand, ModelsCommand, SessionsCommand};
-use oben_models::{MessageRole, Session, SessionStore};
+use oben_models::{Message, Session, SessionStore};
 
 /// In-memory session store — no SQLite, no persistence, just a single
 /// session holding a `Vec<Message>`. Perfect for one-shot CLI commands.
@@ -81,39 +81,6 @@ pub async fn run_cli() -> Result<()> {
 
 // ── Chat / Run ──────────────────────────────────────────────────────────
 
-/// Display messages from a session in a compact format.
-fn print_session_messages(messages: &[oben_models::Message], max_show: usize) {
-    if messages.is_empty() {
-        println!("(no messages)");
-        return;
-    }
-
-    let show_count = messages.len().min(max_show);
-    let show = &messages[..show_count];
-    let overflow = messages.len().saturating_sub(max_show);
-
-    for msg in show {
-        let role = match msg.role {
-            MessageRole::User => "📝 你",
-            MessageRole::Assistant => "🤖 agent",
-            MessageRole::System => "📋 system",
-            MessageRole::Tool => "⚙️ tool",
-        };
-        let text = msg.content.to_text_ref().unwrap_or("<non-text>");
-        // Truncate long messages
-        let display = if text.len() > 120 {
-            format!("{}...", &text[..117])
-        } else {
-            text.to_string()
-        };
-        println!("  {} {}", role, display);
-    }
-
-    if overflow > 0 {
-        println!("  ... {} more messages", overflow);
-    }
-}
-
 async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
     info!("Starting interactive chat...");
 
@@ -136,7 +103,7 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         None, Some(&volatile),
     );
 
-    let chat = oben_agent::Agent::new(oben_agent::AgentConfig {
+    let mut chat = oben_agent::Agent::new(oben_agent::AgentConfig {
         system_prompt_text: assembled.prompt.clone(),
         transport: create_transport(&config, &assembled.prompt, tool_names.clone()),
         tools: std::sync::Arc::new(tools),
@@ -145,58 +112,7 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         context_config: oben_agent::CompressionConfig::default(),
     })?;
 
-    let mut chat = chat;
-
-    // Continue an existing session if requested
-    if let Some(key) = continue_with {
-        // "latest" means use the most recent session
-        let resolved_key = if key == "latest" {
-            chat.session_manager().active_session().map(|s| s.name.clone()).unwrap_or_else(|| key.to_string())
-        } else {
-            key.to_string()
-        };
-        let name = chat.continue_session(&resolved_key)?;
-        if let Some(s) = chat.session_manager().active_session() {
-            let msg_count = s.messages.len();
-            println!("Continuing session: {} ({} messages)\n", name, msg_count);
-            print_session_messages(&s.messages, 10);
-            println!();
-        }
-    } else {
-        // 如果有已存在的 active session，显示出来
-        if let Some(name) = chat.loaded_session_name() {
-            if let Some(s) = chat.session_manager().active_session() {
-                println!("Session: {} ({} messages)\n", name, s.messages.len());
-            }
-        }
-    }
-    println!("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
-
-    loop {
-        print!("> ");
-        std::io::stdout().flush()?;
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-
-        if input == "quit" || input == "exit" { break; }
-        if input.is_empty() { continue; }
-
-        let response = chat.turn(input, stream, stream.then(|| {
-            Box::new(|text: &str| {
-                print!("{}", text);
-                std::io::stdout().flush().ok();
-            }) as oben_models::StreamDeltaCallback
-        })).await?;
-        if stream {
-            println!();
-        } else {
-            println!("\n{}", response);
-        }
-    }
-
-    Ok(())
+    chat.interactive_chat(stream, continue_with).await
 }
 
 async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
