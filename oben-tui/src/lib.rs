@@ -32,7 +32,7 @@ use panels::sessions::SessionsPanel;
 use panels::{Panel, PanelId};
 
 use oben_config::AppConfig;
-use oben_conversation::{ChatSession, ChatSessionConfig};
+use oben_agent::{Agent, AgentConfig};
 use oben_models::Message;
 use oben_tools::ToolRegistry;
 use crossterm::Command;
@@ -65,7 +65,7 @@ pub struct App {
     pub panels: HashMap<PanelId, Box<dyn Panel>>,
     pub status: String,
     pub config: AppConfig,
-    pub chat: Option<ChatSession>,
+    pub chat: Option<Agent>,
     pub session_id: Option<String>,
     pub tools: std::sync::Arc<ToolRegistry>,
     pub tool_names: Vec<String>,
@@ -95,22 +95,23 @@ impl App {
     pub fn init_chat(&mut self) -> Result<()> {
         let identity = oben_config::defaults::default_system_prompt();
         let skills_dirs: Vec<std::path::PathBuf> = vec![];
-        let volatile = oben_conversation::system_prompt::build_volatile_block(
+        let volatile = oben_agent::system_prompt::build_volatile_block(
             None, None, Some(&self.config.model.model),
         );
-        let assembled = oben_conversation::system_prompt::build_system_prompt(
+        let assembled = oben_agent::system_prompt::build_system_prompt(
             &identity, &self.tool_names, &skills_dirs, None, None, Some(&volatile),
         );
         let transport = oben_transport::ChatCompletionsTransport::from_config_with_tools(
             &self.config.model, &assembled.prompt,
             self.tools.list_tools().iter().map(|t| (*t).clone()).collect(),
         );
-        self.chat = Some(ChatSession::new(ChatSessionConfig {
+        self.chat = Some(Agent::new(AgentConfig {
             system_prompt_text: assembled.prompt,
             transport,
             tools: std::sync::Arc::clone(&self.tools),
             max_iterations: self.config.max_iterations.unwrap_or(50),
             max_messages: self.config.context.max_messages.unwrap_or(100),
+            context_config: oben_agent::CompressionConfig::default(),
         })?);
         Ok(())
     }

@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-oben-conversation = { path = "../oben-conversation" }
+oben-agent = { path = "../oben-agent" }
 oben-config = { path = "../oben-config" }
 oben-models = { path = "../oben-models" }
 oben-sessions = { path = "../oben-sessions" }

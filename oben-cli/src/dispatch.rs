@@ -5,11 +5,48 @@
 
 use anyhow::Result;
 use std::io::Write;
+use std::sync::{Arc, Mutex};
 use tracing::info;
+
+use oben_agent::{CompactContextEngine, ContextEngine};
 
 use clap::Parser;
 use crate::cli::{Cli, Commands, ConfigCommand, ModelsCommand, SessionsCommand};
-use oben_models::MessageRole;
+use oben_models::{MessageRole, Session, SessionStore};
+
+/// In-memory session store — no SQLite, no persistence, just a single
+/// session holding a `Vec<Message>`. Perfect for one-shot CLI commands.
+struct MemorySessionStore {
+    session: Session,
+}
+
+impl MemorySessionStore {
+    fn new() -> Self {
+        let now = chrono::Utc::now();
+        Self {
+            session: Session {
+                id: format!("cli-{}", now.timestamp_millis()),
+                name: "cli-session".into(),
+                created_at: now,
+                updated_at: now,
+                messages: Vec::new(),
+                memory_context: None,
+                summary_chunks: Vec::new(),
+                persisted_message_count: 0,
+                metadata: Default::default(),
+            },
+        }
+    }
+}
+
+impl SessionStore for MemorySessionStore {
+    fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
+        if self.session.id == session_id { Some(&mut self.session) } else { None }
+    }
+    fn session(&self, session_id: &str) -> Option<&Session> {
+        if self.session.id == session_id { Some(&self.session) } else { None }
+    }
+}
 
 /// Entry point: parse CLI args and dispatch to the appropriate handler.
 pub async fn run_cli() -> Result<()> {
@@ -91,20 +128,21 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
     let skills_dirs = vec![std::path::PathBuf::from("skills")];
     let context_cwd = std::env::current_dir().ok();
 
-    let volatile = oben_conversation::system_prompt::build_volatile_block(
+    let volatile = oben_agent::system_prompt::build_volatile_block(
         None, None, Some(&config.model.model),
     );
-    let assembled = oben_conversation::system_prompt::build_system_prompt(
+    let assembled = oben_agent::system_prompt::build_system_prompt(
         &identity, &tool_names, &skills_dirs, context_cwd.as_deref(),
         None, Some(&volatile),
     );
 
-    let chat = oben_conversation::ChatSession::new(oben_conversation::ChatSessionConfig {
+    let chat = oben_agent::Agent::new(oben_agent::AgentConfig {
         system_prompt_text: assembled.prompt.clone(),
         transport: create_transport(&config, &assembled.prompt, tool_names.clone()),
         tools: std::sync::Arc::new(tools),
         max_iterations: config.max_iterations.unwrap_or(50),
         max_messages: config.context.max_messages.unwrap_or(100),
+        context_config: oben_agent::CompressionConfig::default(),
     })?;
 
     let mut chat = chat;
@@ -168,18 +206,23 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     oben_tools::discover_builtin_tools(&mut tools);
 
     let system_prompt = oben_config::defaults::default_system_prompt();
-    let mut conversation = oben_conversation::ConversationLoop::new(
-        create_transport(&config, &system_prompt, vec![]),
-        std::sync::Arc::new(tools),
-        config.max_iterations.unwrap_or(50),
-        config.context.max_messages.unwrap_or(100),
-    );
+    let transport = create_transport(&config, &system_prompt, vec![]);
 
-    let mut messages = Vec::new();
-    let call_mode = oben_models::CallMode::Fresh("cli-session".to_string());
+    let mut store = MemorySessionStore::new();
+    let session_id = store.session.id.clone();
+    let call_mode = oben_models::CallMode::Fresh(session_id.clone());
+
+    let context_engine: Arc<Mutex<dyn ContextEngine>> =
+        Arc::new(Mutex::new(CompactContextEngine::new()));
+    let mut conversation =
+        oben_agent::ConversationLoop::new(transport, std::sync::Arc::new(tools),
+            config.max_iterations.unwrap_or(50),
+            config.context.max_messages.unwrap_or(100),
+            context_engine,
+        );
 
     // Preflight check: compress if session already over threshold
-    let passes = conversation.preflight_check(&mut messages).await;
+    let passes = conversation.preflight_check(&mut store, &session_id).await;
     if let Ok(n) = passes {
         if n > 0 {
             eprintln!("Preflight: {} compression pass(es) before turn", n);
@@ -188,7 +231,8 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
 
     let response = if stream {
         conversation.run_turn_with_streaming(
-            &mut messages,
+            &mut store,
+            &session_id,
             oben_models::Message::user(prompt),
             &call_mode,
             Some(Box::new(|text: &str| {
@@ -197,7 +241,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
             })),
         ).await?
     } else {
-        conversation.run_turn(&mut messages, oben_models::Message::user(prompt), &call_mode).await?
+        conversation.run_turn(&mut store, &session_id, oben_models::Message::user(prompt), &call_mode).await?
     };
     if !stream { println!("\n{}", response); } else { println!(); }
 
@@ -296,9 +340,9 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
     println!("Compacting session '{}' ({} messages)...", session.name, session.message_count());
 
     let transport = create_transport(&config, "", Vec::new());
-    let comp_config = oben_conversation::compression::CompressionConfig::default();
+    let comp_config = oben_agent::compression::CompressionConfig::default();
 
-    let result = oben_conversation::compact_session_messages(
+    let result = oben_agent::compact_session_messages(
         &transport,
         &session.messages,
         &comp_config,
@@ -314,7 +358,7 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
             s.memory_context = Some(summary.clone());
             let old_msg_count = session.messages.len();
             s.summary_chunks.push(oben_models::SummaryChunk {
-                from: 1, to: old_msg_count, summary,
+                from: 1, to: old_msg_count as i64, summary,
             });
         }
     }

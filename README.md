@@ -95,7 +95,7 @@ obenagent/               # Root workspace (binary)
 ├── oben-models/         # Core domain types (messages, tools, skills, sessions, providers)
 ├── oben-utils/          # Shared utilities (logging, spinner, table formatter)
 ├── oben-config/         # YAML config, setup wizard, defaults
-├── oben-conversation/   # Agent engine — conversation loop, context engine, compression
+├── oben-agent/   # Agent engine — conversation loop, context engine, compression
 ├── oben-transport/      # LLM transport (OpenAI-compatible ChatCompletions)
 ├── oben-tools/          # Tool implementations (shell, read, write, HTTP)
 ├── oben-skills/         # Skill system — loader, manager, 25 built-in categories

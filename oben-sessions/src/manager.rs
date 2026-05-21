@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, types::Value, OptionalExtension};
 use tracing::info;
 
-use oben_models::{Message, MessageRole, Session, SessionMetadata, SessionSource, SummaryChunk};
+use oben_models::{Message, MessageRole, Session, SessionMetadata, SessionSource, SessionStore};
 
 fn now_ts() -> f64 {
     chrono::Utc::now().timestamp_millis() as f64 / 1000.0
@@ -919,6 +919,11 @@ impl SessionManager {
     }
 
     #[inline]
+    pub fn session(&self, session_id: &str) -> Option<&Session> {
+        self.sessions.get(session_id)
+    }
+
+    #[inline]
     pub fn save_session(&mut self, session_id: &str) -> Result<()> {
         self.save(Some(session_id))
     }
@@ -948,9 +953,9 @@ impl SessionManager {
         } // parent dropped here
 
         // 3. Determine child title: extract base name and append "(N)"
-        let parent = self.sessions.get(parent_id).unwrap();
-        let base_title = parent.metadata.title.as_deref().unwrap_or(&parent.name);
-        drop(parent);
+        let base_title = self.sessions.get(parent_id).map(|p| {
+            p.metadata.title.as_deref().unwrap_or(&p.name)
+        }).unwrap();
         let child_title = self.next_child_title(base_title, &parent_id);
 
         // 4. Create child session record in DB
@@ -1013,6 +1018,20 @@ impl SessionManager {
         self.sessions.insert(new_id.clone(), new_session.clone());
         self.active_session_id = Some(new_id.clone());
         Some(self.sessions.get(&new_id).unwrap().clone())
+    }
+}
+
+// ── SessionStore impl ───────────────────────────────────────────────────
+
+impl SessionStore for SessionManager {
+    #[inline]
+    fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
+        self.sessions.get_mut(session_id)
+    }
+
+    #[inline]
+    fn session(&self, session_id: &str) -> Option<&Session> {
+        self.sessions.get(session_id)
     }
 }
 

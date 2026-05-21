@@ -11,7 +11,7 @@ description = "Terminal UI for ObenAgent"
 [dependencies]
 oben-config = { path = "../oben-config" }
 oben-models = { path = "../oben-models" }
-oben-conversation = { path = "../oben-conversation" }
+oben-agent = { path = "../oben-agent" }
 oben-tools = { path = "../oben-tools" }
 oben-sessions = { path = "../oben-sessions" }
 oben-transport = { path = "../oben-transport" }

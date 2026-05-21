@@ -11,7 +11,7 @@ description = "CLI parsing and dispatch for ObenAgent"
 [dependencies]
 oben-config = { path = "../oben-config" }
 oben-models = { path = "../oben-models" }
-oben-conversation = { path = "../oben-conversation" }
+oben-agent = { path = "../oben-agent" }
 oben-tools = { path = "../oben-tools" }
 oben-skills = { path = "../oben-skills" }
 oben-sessions = { path = "../oben-sessions" }

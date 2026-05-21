@@ -16,3 +16,4 @@ pub mod skill_curation;
 pub use manager::*;
 pub use search::*;
 pub use skill_curation::*;
+pub use oben_models::SessionStore;

@@ -6,13 +6,16 @@
 /// This is a **deep** module: callers cross one small interface (`execute_turn`)
 /// and get a large amount of behaviour per unit of interface they learn.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
 use anyhow::Result;
 use tracing::info;
 
 use crate::budget::IterationBudget;
+
+use crate::compact_context::CompactContextEngine;
 use crate::context::ContextEngine;
-use oben_models::{Message, MessageRole, TransportProvider};
+use oben_models::{Message, MessageRole, Session, TransportProvider};
 
 // ---------------------------------------------------------------------------
 // TurnResult — what the executor returns after executing a turn
@@ -32,7 +35,7 @@ pub struct TurnResult {
 /// **Deep module**: one method, high leverage. Callers don't need to understand
 /// the internals of token tracking, compression decisions, or streaming setup.
 pub struct TurnExecutor {
-    context_engine: ContextEngine,
+    context_engine: Arc<Mutex<dyn ContextEngine>>,
     budget: IterationBudget,
     transport: Box<dyn TransportProvider>,
     tools: Arc<oben_tools::ToolRegistry>,
@@ -50,7 +53,7 @@ impl TurnExecutor {
             tools,
             max_iterations,
             max_messages,
-            crate::compression::CompressionConfig::default(),
+            Arc::new(Mutex::new(CompactContextEngine::new())),
         )
     }
 
@@ -59,10 +62,10 @@ impl TurnExecutor {
         tools: Arc<oben_tools::ToolRegistry>,
         max_iterations: usize,
         _max_messages: usize,
-        engine_config: crate::compression::CompressionConfig,
+        context_engine: Arc<Mutex<dyn ContextEngine>>,
     ) -> Self {
         Self {
-            context_engine: ContextEngine::with_config(engine_config),
+            context_engine,
             budget: IterationBudget::new(max_iterations),
             transport: Box::new(transport),
             tools,
@@ -73,15 +76,23 @@ impl TurnExecutor {
     ///
     /// If `delta_callback` is provided, text tokens are streamed to it via a
     /// lock-free channel with batched flushing (~512 bytes per flush).
+    ///
+    /// The session is mutated in-place; callers should persist after receiving
+    /// the result (e.g. via `store.save()` if applicable).
     pub async fn execute_turn(
         &mut self,
-        messages: &mut Vec<Message>,
+        store: &mut dyn oben_models::SessionStore,
+        session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
         delta_callback: Option<oben_models::StreamDeltaCallback>,
     ) -> Result<TurnResult> {
+        let session = store
+            .session_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+
         // Add user message to session
-        messages.push(user_message);
+        session.messages.push(user_message);
 
         // Streaming setup: lock-free channel with batched callback dispatch.
         // The channel buffer of 4096 tokens is far larger than any single
@@ -114,13 +125,13 @@ impl TurnExecutor {
             self.budget.check()?;
 
             // Auto-compression: check if context is getting full before making an LLM call.
-            if self.context_engine.should_compress(messages) {
+            if self.context_engine.lock().unwrap().should_compress(&session.messages) {
                 info!(
                     "Auto-compression: context full ({} messages, {} est. tokens), compressing",
-                    messages.len(),
-                    self.context_engine.estimate_tokens(messages),
+                    session.messages.len(),
+                    self.context_engine.lock().unwrap().estimate_tokens(&session.messages),
                 );
-                self.maybe_compress(messages).await?;
+                self.maybe_compress(session).await?;
             }
 
             // Get LLM response (streaming or non-streaming).
@@ -131,9 +142,9 @@ impl TurnExecutor {
                         // try_send is non-blocking, channel buffer is 4096.
                         let _ = tx_clone.try_send(text.to_string());
                     });
-                self.transport.stream_chat(messages, &call_mode, wrapper).await?
+                self.transport.stream_chat(&session.messages, &call_mode, wrapper).await?
             } else {
-                self.transport.chat(messages, &call_mode).await?
+                self.transport.chat(&session.messages, &call_mode).await?
             };
 
             let tool_calls = &response.tool_calls;
@@ -141,7 +152,10 @@ impl TurnExecutor {
 
             // Update token tracking from API response
             if let Some(tokens) = response.tokens_used {
-                self.context_engine.update_from_response(tokens, 0, tokens);
+                self.context_engine
+                    .lock()
+                    .unwrap()
+                    .update_from_response(tokens, 0, tokens);
             }
 
             // Add assistant response to session
@@ -154,7 +168,7 @@ impl TurnExecutor {
             } else {
                 Message::assistant(text.trim().to_string())
             };
-            messages.push(assistant_msg);
+            session.messages.push(assistant_msg);
 
             if tool_calls.is_empty() {
                 // Flush remaining buffered output before returning
@@ -168,7 +182,7 @@ impl TurnExecutor {
                 // When text is empty after tool results, return the tool
                 // results instead of empty string.
                 if text.trim().is_empty() {
-                    if let Some(last_tool_result) = messages.last().and_then(|m| {
+                    if let Some(last_tool_result) = session.messages.last().and_then(|m| {
                         if m.role == MessageRole::Tool {
                             m.content.to_text_ref()
                         } else {
@@ -178,32 +192,34 @@ impl TurnExecutor {
                         if !last_tool_result.is_empty() {
                             return Ok(TurnResult {
                                 text: last_tool_result.to_string(),
-                                messages: messages.clone(),
+                                messages: session.messages.clone(),
                             });
                         }
                     }
                 }
                 return Ok(TurnResult {
                     text: text.trim().to_string(),
-                    messages: messages.clone(),
+                    messages: session.messages.clone(),
                 });
             }
 
             // Dispatch tool calls
             for call in tool_calls {
                 let result = self.tools.execute(&call.tool_name, &call.arguments).await;
-                messages.push(Message::tool_result(&call.id, &result.output));
+                session.messages.push(Message::tool_result(&call.id, &result.output));
             }
         }
     }
 
     /// Compress context if needed.
-    pub async fn maybe_compress(&mut self, messages: &mut Vec<Message>) -> Result<()> {
-        if !self.context_engine.should_compress(messages) {
+    pub async fn maybe_compress(&mut self, session: &mut Session) -> Result<()> {
+        if !self.context_engine.lock().unwrap().should_compress(&session.messages) {
             return Ok(());
         }
         self.context_engine
-            .compress(messages, Some(&*self.transport), None)
+            .lock()
+            .unwrap()
+            .compress(&mut session.messages, Some(&*self.transport), None)
             .await?;
         Ok(())
     }
@@ -216,28 +232,30 @@ impl TurnExecutor {
         model_name: &str,
         context_length: Option<usize>,
     ) {
-        self.context_engine.on_session_start(session_id, model_name, context_length);
+        self.context_engine
+            .lock()
+            .unwrap()
+            .on_session_start(session_id, model_name, context_length);
     }
 
     pub fn on_session_reset(&mut self) {
-        self.context_engine.on_session_reset();
+        self.context_engine.lock().unwrap().on_session_reset();
     }
 
     pub fn on_session_end(&mut self, session_id: &str) {
-        self.context_engine.on_session_end(session_id);
+        self.context_engine.lock().unwrap().on_session_end(session_id);
     }
 
-    pub async fn preflight_check(
-        &mut self,
-        messages: &mut Vec<Message>,
-    ) -> Result<usize> {
+    pub async fn preflight_check(&mut self, session: &mut Session) -> Result<usize> {
         self.context_engine
-            .preflight_check(messages, Some(&*self.transport), None)
+            .lock()
+            .unwrap()
+            .preflight_check(&mut session.messages, Some(&*self.transport), None)
             .await
     }
 
-    pub fn message_count(&self, messages: &[Message]) -> usize {
-        messages.len()
+    pub fn message_count(&self, session: &Session) -> usize {
+        session.messages.len()
     }
 }
 
@@ -249,7 +267,34 @@ impl TurnExecutor {
 mod tests {
     use super::*;
     use crate::compression::CompressionConfig;
-    use oben_models::{TransportResponse, TransportToolCall};
+    use oben_models::{Session, SessionStore, TransportResponse, TransportToolCall};
+
+    /// In-memory test double for SessionStore — no SQLite needed.
+    struct TestSessionStore {
+        sessions: std::collections::HashMap<String, Session>,
+    }
+
+    impl TestSessionStore {
+        fn new() -> Self { Self { sessions: std::collections::HashMap::new() } }
+
+        fn insert(&mut self, name: &str, msgs: Vec<Message>) -> String {
+            let session = Session::new(name);
+            let id = session.id.clone();
+            let mut s = session;
+            s.messages = msgs;
+            self.sessions.insert(id.clone(), s);
+            id
+        }
+    }
+
+    impl oben_models::SessionStore for TestSessionStore {
+        fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
+            self.sessions.get_mut(session_id)
+        }
+        fn session(&self, session_id: &str) -> Option<&Session> {
+            self.sessions.get(session_id)
+        }
+    }
 
     struct MockTransport {
         responses: Vec<TransportResponse>,
@@ -303,12 +348,14 @@ mod tests {
             10,
             100,
         );
-        let mut messages = Vec::new();
+        let mut store = TestSessionStore::new();
+        let sid = store.insert("test-session", Vec::new());
 
         let result = executor.execute_turn(
-            &mut messages,
+            &mut store,
+            &sid,
             Message::user("Hi"),
-            &oben_models::CallMode::Fresh("test-session".to_string()),
+            &oben_models::CallMode::Fresh(sid.clone()),
             None,
         ).await.unwrap();
         assert_eq!(result.text, "Hello!");
@@ -343,12 +390,14 @@ mod tests {
             10,
             100,
         );
-        let mut messages = Vec::new();
+        let mut store = TestSessionStore::new();
+        let sid = store.insert("test-session", Vec::new());
 
         let result = executor.execute_turn(
-            &mut messages,
+            &mut store,
+            &sid,
             Message::user("list files"),
-            &oben_models::CallMode::Fresh("test-session".to_string()),
+            &oben_models::CallMode::Fresh(sid.clone()),
             None,
         ).await.unwrap();
         assert_eq!(result.text, "Done!");
@@ -372,12 +421,14 @@ mod tests {
             10,
             100,
         );
-        let mut messages = Vec::new();
+        let mut store = TestSessionStore::new();
+        let sid = store.insert("test-session", Vec::new());
 
         let result = executor.execute_turn(
-            &mut messages,
+            &mut store,
+            &sid,
             Message::user("Hi"),
-            &oben_models::CallMode::Fresh("test-session".to_string()),
+            &oben_models::CallMode::Fresh(sid.clone()),
             None,
         ).await.unwrap();
         assert_eq!(result.text, "");
@@ -405,12 +456,14 @@ mod tests {
             2,
             100,
         );
-        let mut messages = Vec::new();
+        let mut store = TestSessionStore::new();
+        let sid = store.insert("test-session", Vec::new());
 
         let result = executor.execute_turn(
-            &mut messages,
+            &mut store,
+            &sid,
             Message::user("Hi"),
-            &oben_models::CallMode::Fresh("test-session".to_string()),
+            &oben_models::CallMode::Fresh(sid.clone()),
             None,
         ).await;
         assert!(result.is_err());
@@ -435,7 +488,8 @@ mod tests {
             10,
             100,
         );
-        let mut messages = Vec::new();
+        let mut store = TestSessionStore::new();
+        let sid = store.insert("test-session", Vec::new());
 
         let output = Arc::new(std::sync::Mutex::new(String::new()));
         let output_clone = output.clone();
@@ -443,13 +497,14 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = executor.execute_turn(
-            &mut messages,
+            &mut store,
+            &sid,
             Message::user("Hi"),
-            &oben_models::CallMode::Fresh("test-session".to_string()),
+            &oben_models::CallMode::Fresh(sid.clone()),
             Some(cb),
         ).await.unwrap();
         assert_eq!(result.text, "Hello from stream!");
-        assert_eq!(messages.len(), 2);
+        assert_eq!(store.session(&sid).unwrap().messages.len(), 2);
         assert_eq!(*output.lock().unwrap(), "Hello from stream!");
     }
 
@@ -481,7 +536,8 @@ mod tests {
             10,
             100,
         );
-        let mut messages = Vec::new();
+        let mut store = TestSessionStore::new();
+        let sid = store.insert("test-session", Vec::new());
 
         let output = Arc::new(std::sync::Mutex::new(String::new()));
         let output_clone = output.clone();
@@ -489,9 +545,10 @@ mod tests {
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
         let result = executor.execute_turn(
-            &mut messages,
+            &mut store,
+            &sid,
             Message::user("list files"),
-            &oben_models::CallMode::Fresh("test-session".to_string()),
+            &oben_models::CallMode::Fresh(sid.clone()),
             Some(cb),
         ).await.unwrap();
         assert_eq!(result.text, "All done!");
@@ -519,10 +576,12 @@ mod tests {
             100,
         );
 
+        let mut store = TestSessionStore::new();
+        let sid = store.insert("test-session", vec![Message::system("test")]);
+
         executor.on_session_start("session-1", "gpt-4", Some(128_000));
-        let mut messages = vec![Message::system("test")];
         executor.on_session_reset();
-        let _ = executor.message_count(&messages);
+        let _ = executor.message_count(store.session_mut(&sid).unwrap());
         executor.on_session_end("session-1");
     }
 
@@ -563,24 +622,29 @@ mod tests {
             Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
-            config,
+            Arc::new(Mutex::new(CompactContextEngine::with_config(config))),
         );
 
         let long_content = "The quick brown fox jumps over the lazy dog. ".repeat(100);
-        let mut messages: Vec<Message> = (0..10)
+        let msgs: Vec<Message> = (0..10)
             .map(|i| Message::user(&format!("Message {}: {}", i, long_content)))
             .collect();
 
+        let mut store = TestSessionStore::new();
+        let sid = store.insert("test-session", msgs);
+
         let result = executor.execute_turn(
-            &mut messages,
+            &mut store,
+            &sid,
             Message::user("Hi"),
-            &oben_models::CallMode::Fresh("test-session".to_string()),
+            &oben_models::CallMode::Fresh(sid.clone()),
             None,
         ).await.unwrap();
 
         assert_eq!(*mock.call_count.lock().unwrap(), 2);
         assert_eq!(result.text, "Hello from compressed context!");
-        assert!(messages.len() < 12, "Messages should be compressed");
+        let msg_count = store.session(&sid).unwrap().messages.len();
+        assert!(msg_count < 12, "Messages should be compressed, got {}", msg_count);
     }
 
     #[tokio::test]
@@ -611,15 +675,17 @@ mod tests {
             Arc::new(oben_tools::ToolRegistry::new()),
             10,
             100,
-            config,
+            Arc::new(Mutex::new(CompactContextEngine::with_config(config))),
         );
 
-        let mut messages = vec![Message::user("Hi")];
+        let mut store = TestSessionStore::new();
+        let sid = store.insert("test-session", vec![Message::user("Hi")]);
 
         let result = executor.execute_turn(
-            &mut messages,
+            &mut store,
+            &sid,
             Message::user("Hello"),
-            &oben_models::CallMode::Fresh("test-session".to_string()),
+            &oben_models::CallMode::Fresh(sid.clone()),
             None,
         ).await.unwrap();
 

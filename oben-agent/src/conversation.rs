@@ -9,10 +9,15 @@
 use std::path::PathBuf;
 use anyhow::Result;
 
-use crate::compression::CompressionConfig;
+use std::sync::{Arc, Mutex};
+
+use crate::context::ContextEngine;
 use crate::turn_executor::TurnExecutor;
 use crate::system_prompt;
-use oben_models::Message;
+use oben_models::{Message, SessionStore};
+
+/// Type alias for the default conversation loop.
+pub type DefaultConversationLoop = ConversationLoop;
 
 /// Configuration for building the 3-tier system prompt.
 pub struct SystemPromptConfig {
@@ -58,7 +63,6 @@ impl SystemPromptConfig {
 /// The main agent loop — a thin coordinator that wires the deep `TurnExecutor`.
 pub struct ConversationLoop {
     executor: TurnExecutor,
-    last_compression_summary: Option<String>,
 }
 
 impl ConversationLoop {
@@ -67,44 +71,36 @@ impl ConversationLoop {
         tools: std::sync::Arc<oben_tools::ToolRegistry>,
         max_iterations: usize,
         max_messages: usize,
-    ) -> Self {
-        Self::with_config(
-            transport,
-            tools,
-            max_iterations,
-            max_messages,
-            CompressionConfig::default(),
-        )
-    }
-
-    pub fn with_config(
-        transport: impl oben_models::TransportProvider + 'static,
-        tools: std::sync::Arc<oben_tools::ToolRegistry>,
-        max_iterations: usize,
-        _max_messages: usize,
-        engine_config: CompressionConfig,
+        context_engine: Arc<Mutex<dyn ContextEngine>>,
     ) -> Self {
         Self {
-            executor: TurnExecutor::with_config(transport, tools, max_iterations, _max_messages, engine_config),
-            last_compression_summary: None,
+            executor: TurnExecutor::with_config(
+                transport,
+                tools,
+                max_iterations,
+                max_messages,
+                context_engine,
+            ),
         }
     }
 
     /// Run one conversation turn — delegates to `TurnExecutor::execute_turn(None)`.
     pub async fn run_turn(
         &mut self,
-        messages: &mut Vec<oben_models::Message>,
+        store: &mut dyn SessionStore,
+        session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
     ) -> Result<String> {
-        let result = self.executor.execute_turn(messages, user_message, call_mode, None).await?;
+        let result = self.executor.execute_turn(store, session_id, user_message, call_mode, None).await?;
         Ok(result.text)
     }
 
     /// Run one conversation turn with streaming — delegates to `execute_turn(Some(cb))`.
     pub async fn run_turn_with_streaming<F>(
         &mut self,
-        messages: &mut Vec<oben_models::Message>,
+        store: &mut dyn SessionStore,
+        session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
         delta_callback: Option<F>,
@@ -113,22 +109,27 @@ impl ConversationLoop {
         F: FnMut(&str) + Send + 'static,
     {
         let cb: oben_models::StreamDeltaCallback = Box::new(delta_callback.unwrap());
-        let result = self.executor.execute_turn(messages, user_message, call_mode, Some(cb)).await?;
+        let result = self.executor.execute_turn(store, session_id, user_message, call_mode, Some(cb)).await?;
         Ok(result.text)
     }
 
     /// Compress context if needed — coordinator concern.
-    pub async fn maybe_compress(&mut self, messages: &mut Vec<Message>) -> Result<()> {
-        self.executor.maybe_compress(messages).await?;
+    pub async fn maybe_compress(&mut self, store: &mut dyn SessionStore, session_id: &str) -> Result<()> {
+        let session = store.session_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+        self.executor.maybe_compress(session).await?;
         Ok(())
     }
 
     /// Preflight check — coordinator concern.
     pub async fn preflight_check(
         &mut self,
-        messages: &mut Vec<Message>,
+        store: &mut dyn SessionStore,
+        session_id: &str,
     ) -> Result<usize> {
-        self.executor.preflight_check(messages).await
+        let session = store.session_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+        self.executor.preflight_check(session).await
     }
 
     pub fn on_session_start(
@@ -148,7 +149,10 @@ impl ConversationLoop {
         self.executor.on_session_end(session_id);
     }
 
-    pub fn message_count(&self, messages: &[Message]) -> usize {
-        self.executor.message_count(messages)
+    pub fn message_count(&self, store: &dyn SessionStore, session_id: &str) -> usize {
+        store
+            .session(session_id)
+            .map(|s| s.messages.len())
+            .unwrap_or(0)
     }
 }

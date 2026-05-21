@@ -190,7 +190,7 @@ This handles cases where:
 
 ### Integration Points
 
-The `compact_session_messages` function in `oben-conversation/compression.rs` already handles:
+The `compact_session_messages` function in `oben-agent/compression.rs` already handles:
 - Tool result pruning
 - FTS rebuild
 - Summary chunk creation

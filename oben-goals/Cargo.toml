@@ -14,7 +14,7 @@ anyhow.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
-oben-conversation = { path = "../oben-conversation", optional = true }
+oben-agent = { path = "../oben-agent", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -24,4 +24,4 @@ async-trait.workspace = true
 [features]
 default = []
 # Enables full async goal loop with LLM transport integration
-full = ["tokio", "async-trait", "oben-conversation"]
+full = ["tokio", "async-trait", "oben-agent"]

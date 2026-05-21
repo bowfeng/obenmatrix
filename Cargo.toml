@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "oben-conversation",
+    "oben-agent",
     "oben-transport",
     "oben-models",
     "oben-tools",

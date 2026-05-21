@@ -73,6 +73,76 @@ pub struct Session {
     pub metadata: SessionMetadata,
 }
 
+/// In-memory access to a session's message buffer.
+///
+/// Both the real `SessionManager` and in-memory test doubles implement this
+/// trait, letting `TurnExecutor` and `ConversationLoop` work with any session
+/// store without requiring SQLite.
+pub trait SessionStore {
+    /// Get mutable access to a session's messages by ID.
+    fn session_mut(&mut self, session_id: &str) -> Option<&mut Session>;
+
+    /// Get read-only access to a session by ID.
+    fn session(&self, session_id: &str) -> Option<&Session>;
+}
+
+/// Thin wrapper so tests can construct a `SessionStore` from a plain
+/// `Vec<Message>` in one line.
+///
+/// # Example
+///
+/// ```
+/// use oben_models::{Message, MessageStore};
+/// let mut msgs = vec![Message::user("hello")];
+/// let mut store = MessageStore::new("session-1", msgs);
+/// // `store` can now be passed to ContextEngine::compress, TurnExecutor::execute_turn, etc.
+/// ```
+pub struct MessageStore {
+    session: Session,
+}
+
+impl MessageStore {
+    pub fn new(session_id: impl Into<String>, messages: Vec<crate::Message>) -> Self {
+        let now = chrono::Utc::now();
+        Self {
+            session: Session {
+                id: session_id.into(),
+                name: "msg-store".into(),
+                created_at: now,
+                updated_at: now,
+                messages,
+                memory_context: None,
+                summary_chunks: Vec::new(),
+                persisted_message_count: 0,
+                metadata: SessionMetadata::default(),
+            },
+        }
+    }
+
+    /// Returns the current session (by value).
+    pub fn into_session(self) -> Session {
+        self.session
+    }
+}
+
+impl SessionStore for MessageStore {
+    fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
+        if self.session.id == session_id {
+            Some(&mut self.session)
+        } else {
+            None
+        }
+    }
+
+    fn session(&self, session_id: &str) -> Option<&Session> {
+        if self.session.id == session_id {
+            Some(&self.session)
+        } else {
+            None
+        }
+    }
+}
+
 impl Session {
     pub fn new(name: impl Into<String>) -> Self {
         let now = chrono::Utc::now();

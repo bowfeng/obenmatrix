@@ -1,7 +1,7 @@
                                                                                                                                                         
  Implementation Summary                                                                                                                                  
                                                                                                                                                          
- ### New module: oben-conversation/src/system_prompt.rs                                                                                                  
+ ### New module: oben-agent/src/system_prompt.rs                                                                                                  
                                                                                                                                                          
  Mirrors Hermes Agent's agent/prompt_builder.py with a 3-tier cache-friendly architecture:                                                               
                                                                                                                                                          

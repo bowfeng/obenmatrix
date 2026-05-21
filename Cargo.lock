@@ -1810,14 +1810,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aa2c4e539b869820a2b82e1aef6ff40aa85e65decdd5185e83fb4b1249cd00f"
 
 [[package]]
+name = "oben-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "futures",
+ "itertools 0.14.0",
+ "oben-config",
+ "oben-models",
+ "oben-sessions",
+ "oben-skills",
+ "oben-tools",
+ "oben-transport",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "oben-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "oben-agent",
  "oben-config",
- "oben-conversation",
  "oben-gateway",
  "oben-models",
  "oben-sessions",
@@ -1853,30 +1877,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oben-conversation"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "dirs",
- "futures",
- "itertools 0.14.0",
- "oben-config",
- "oben-models",
- "oben-sessions",
- "oben-skills",
- "oben-tools",
- "oben-transport",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "oben-curator"
 version = "0.1.0"
 dependencies = [
@@ -1898,8 +1898,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "oben-agent",
  "oben-config",
- "oben-conversation",
  "oben-models",
  "oben-sessions",
  "oben-tools",
@@ -1916,7 +1916,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "oben-conversation",
+ "oben-agent",
  "serde",
  "serde_json",
  "tempfile",
@@ -2017,8 +2017,8 @@ dependencies = [
  "anyhow",
  "chrono",
  "crossterm 0.29.0",
+ "oben-agent",
  "oben-config",
- "oben-conversation",
  "oben-gateway",
  "oben-models",
  "oben-sessions",
