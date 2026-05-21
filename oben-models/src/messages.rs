@@ -7,7 +7,7 @@ use super::ToolCall;
 pub struct Message {
     pub role: MessageRole,
     pub content: MessageContent,
-    pub id: Option<String>,
+    pub id: Option<i64>,
     /// Tool call IDs this message references (for tool results).
     pub tool_call_ids: Vec<String>,
     /// Tool calls made by the assistant in this message.

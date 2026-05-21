@@ -91,7 +91,7 @@ fn row_to_message(row: &rusqlite::Row) -> std::result::Result<Message, rusqlite:
     let tool_calls: Option<String> = row.get("tool_calls").ok();
     let tool_calls = tool_calls.and_then(|tc| serde_json::from_str(&tc).ok());
     let tool_call_id: Option<String> = row.get("tool_call_id").ok();
-    let id: Option<String> = row.get::<_, i64>("id").ok().map(|v| v.to_string());
+    let id: Option<i64> = row.get("id").ok();
     Ok(Message {
         role,
         content: oben_models::MessageContent::Text(content),
@@ -279,6 +279,7 @@ impl SessionDB {
                 } else {
                     None
                 };
+                // Ignore return — rowid will be returned on next load via row_to_message.
                 conn.execute(
                     "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown")],
@@ -316,10 +317,13 @@ impl SessionDB {
                 } else {
                     None
                 };
-                conn.execute(
+                let _id = conn.execute(
                     "INSERT OR IGNORE INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown")],
                 )?;
+                // Only assign id if this was a new insert (not an IGNORE)
+                // We can't reliably know from the return value, so skip
+                // — the next load will pick up the DB-generated id.
             }
 
             // Update the session metadata count
@@ -376,15 +380,15 @@ impl SessionDB {
 
             let after_len = after.len();
             let mut all = before.into_iter().rev().chain(after.into_iter()).collect::<Vec<_>>();
-            if !all.iter().any(|m| m.id.as_deref() == Some(&around_message_id.to_string())) {
+            if !all.iter().any(|m| m.id == Some(around_message_id)) {
                 if let Ok(msg) = conn.query_row(
                     "SELECT * FROM messages WHERE id = ? AND session_id = ?",
                     params![around_message_id, session_id], row_to_message)
                 {
                     all.push(msg);
                     all.sort_by(|a, b| {
-                        let aid = a.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-                        let bid = b.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+                        let aid = a.id.unwrap_or(0);
+                        let bid = b.id.unwrap_or(0);
                         aid.cmp(&bid)
                     });
                 }
@@ -403,14 +407,11 @@ impl SessionDB {
         if primitive.window.is_empty() {
             return Ok(AnchoredView { window: Vec::new(), messages_before: 0, messages_after: 0, bookend_start: Vec::new(), bookend_end: Vec::new() });
         }
-        let anchor_id_str = around_message_id.to_string();
         let filtered: Vec<Message> = primitive.window.into_iter()
-            .filter(|m| m.id.as_deref() == Some(&anchor_id_str) || matches!(m.role, MessageRole::User | MessageRole::Assistant))
+            .filter(|m| m.id == Some(around_message_id) || matches!(m.role, MessageRole::User | MessageRole::Assistant))
             .collect();
-        let first_id_str = filtered.first().and_then(|m| m.id.clone()).unwrap_or_default();
-        let last_id_str = filtered.last().and_then(|m| m.id.clone()).unwrap_or_default();
-        let first_id: i64 = first_id_str.parse().unwrap_or(-1);
-        let last_id: i64 = last_id_str.parse().unwrap_or(-1);
+        let first_id = filtered.first().and_then(|m| m.id).unwrap_or(-1);
+        let last_id = filtered.last().and_then(|m| m.id).unwrap_or(-1);
 
         let bookend_start = if first_id > 0 {
             self._load_bookend(session_id, first_id, bookend, true)?
@@ -1186,7 +1187,7 @@ mod tests {
         let msgs: Vec<Message> = (0..10).map(|i| Message::user(format!("message {}", i))).collect();
         db.save_messages(&sid, &msgs).unwrap();
         let loaded = db.load_messages(&sid).unwrap();
-        let anchor_id: i64 = loaded[5].id.as_deref().unwrap().parse().unwrap();
+        let anchor_id: i64 = loaded[5].id.unwrap();
         let result = db.get_messages_around(&sid, anchor_id, 2).unwrap();
         assert!(result.window.len() >= 3);
     }

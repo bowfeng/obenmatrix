@@ -444,7 +444,7 @@ mod tests {
         search.db.save_messages(&sid, &msgs).unwrap();
 
         let loaded = search.db.load_messages(&sid).unwrap();
-        let anchor_id: i64 = loaded[5].id.as_deref().unwrap().parse().unwrap();
+        let anchor_id: i64 = loaded[5].id.unwrap();
 
         let result = search._scroll(&sid, anchor_id, 3).unwrap();
         assert!(!result.messages.is_empty());
@@ -464,7 +464,7 @@ mod tests {
         let sid = session.id.clone();
         search.db.save_messages(&sid, &[Message::user("hello")]).unwrap();
         let loaded = search.db.load_messages(&sid).unwrap();
-        let mid: i64 = loaded[0].id.as_deref().unwrap().parse().unwrap();
+        let mid: i64 = loaded[0].id.unwrap();
 
         let result = search.search("", 5, Some(&sid), Some(mid), Some(3)).unwrap();
         assert!(matches!(result, SearchOutput::Scroll(_)));
