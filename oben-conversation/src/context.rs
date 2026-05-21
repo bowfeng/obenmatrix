@@ -20,57 +20,12 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::compression;
+use crate::compression::CompressionConfig;
 use oben_models::{Message, TransportProvider};
 
 // ---------------------------------------------------------------------------
 // ContextEngine
 // ---------------------------------------------------------------------------
-
-/// Configuration for the context engine.
-#[derive(Debug, Clone)]
-pub struct ContextEngineConfig {
-    /// Context window size in tokens (e.g. 128_000).
-    pub context_length: usize,
-    /// Token threshold as a percentage of context_length (e.g. 0.75 = 75%).
-    pub threshold_percent: f64,
-    /// Number of head messages to protect (beyond system prompt).
-    pub protect_first_n: usize,
-    /// Token budget for tail — walk backward accumulating tokens.
-    pub tail_token_budget: usize,
-    /// Hard minimum: always protect at least this many messages in the tail.
-    pub tail_min_messages: usize,
-    /// Soft ceiling multiplier — allow budget to exceed by this factor.
-    pub tail_overhead: f64,
-    /// Max messages buffer size (safety limit).
-    pub max_messages: usize,
-    /// Minimum savings percentage for a compression to be considered effective.
-    pub ineffective_threshold: f64,
-    /// Max consecutive ineffective compressions before anti-thrashing kicks in.
-    pub max_ineffective_consecutive: usize,
-}
-
-impl Default for ContextEngineConfig {
-    fn default() -> Self {
-        Self {
-            context_length: 128_000,
-            threshold_percent: 0.75,
-            protect_first_n: 3,
-            tail_token_budget: 20_000,
-            tail_min_messages: 3,
-            tail_overhead: 1.5,
-            max_messages: 100,
-            ineffective_threshold: 10.0,
-            max_ineffective_consecutive: 2,
-        }
-    }
-}
-
-impl ContextEngineConfig {
-    /// Derive threshold tokens from context_length and threshold_percent.
-    pub fn threshold_tokens(&self) -> usize {
-        (self.context_length as f64 * self.threshold_percent) as usize
-    }
-}
 
 /// The context engine — stateless policy layer for context window management.
 ///
@@ -82,8 +37,8 @@ impl ContextEngineConfig {
 /// **Does not own messages.** All message operations take `&[Message]`
 /// (reads) or `&mut [Message]` (compression) — the Session is the owner.
 pub struct ContextEngine {
-    /// Configuration.
-    config: ContextEngineConfig,
+    /// Shared compression configuration (threshold, budgets, anti-thrashing).
+    config: CompressionConfig,
     /// Real token usage from the last API response.
     last_prompt_tokens: usize,
     last_completion_tokens: usize,
@@ -94,7 +49,7 @@ pub struct ContextEngine {
     compression_count: usize,
     /// Last compression's savings percentage.
     last_compression_savings_pct: f64,
-    /// Consecutive ineffective compressions (savings < threshold).
+    /// Consecutive ineffective compressions (savings < ineffective_threshold).
     ineffective_compression_count: usize,
     /// Consecutive effective compressions (reset counter when ineffective occurs).
     consecutive_effective_compressions: usize,
@@ -109,11 +64,11 @@ pub struct ContextEngine {
 impl ContextEngine {
     /// Create a new context engine with default configuration.
     pub fn new() -> Self {
-        Self::with_config(ContextEngineConfig::default())
+        Self::with_config(CompressionConfig::default())
     }
 
-    /// Create with a custom config.
-    pub fn with_config(config: ContextEngineConfig) -> Self {
+    /// Create with a custom compression config.
+    pub fn with_config(config: CompressionConfig) -> Self {
         Self {
             config,
             last_prompt_tokens: 0,
@@ -222,21 +177,12 @@ impl ContextEngine {
         );
 
         if let Some(transport) = transport {
-            let config = compression::CompressionConfig {
-                context_length: self.config.context_length,
-                protect_first_n: self.config.protect_first_n,
-                tail_token_budget: self.config.tail_token_budget,
-                tail_min_messages: self.config.tail_min_messages,
-                tail_overhead: self.config.tail_overhead,
-                ..Default::default()
-            };
-
             let previous = self._previous_summary.clone();
             let transport_name = transport.name().to_string();
             let result = match compression::compact_session_messages(
                 transport,
                 messages,
-                &config,
+                &self.config,
                 previous.as_deref(),
                 focus_topic,
                 self.compression_count,
@@ -255,7 +201,7 @@ impl ContextEngine {
                         err_str
                     );
                     // If abort mode, propagate error
-                    if config.max_tool_result_tokens == 0 {
+                    if self.config.max_tool_result_tokens == 0 {
                         return Err(anyhow::anyhow!(
                             "compression aborted: {}",
                             err_str
@@ -364,16 +310,17 @@ impl ContextEngine {
         let context_length = context_length.max(Self::MINIMUM_CONTEXT_LENGTH);
 
         // Calculate new threshold from model context
-        let threshold_tokens = (context_length as f64 * self.config.threshold_percent) as usize;
+        let threshold_tokens = self.config.threshold_tokens_for(context_length);
 
         // Calculate tail budget: threshold * summary_target_ratio (0.35)
         let tail_token_budget = (threshold_tokens as f64 * 0.35) as usize;
 
         // Calculate max summary tokens: min(context_length * 0.05, 12000)
-        let max_summary_tokens = (context_length as f64 * 0.05).min(12_000.0) as usize;
+        let _max_summary_tokens = (context_length as f64 * 0.05).min(12_000.0) as usize;
 
-        // Update config
+        // Update config atomically
         self.config.context_length = context_length;
+        self.config.tail_token_budget = tail_token_budget;
 
         // Log the update
         tracing::info!(
@@ -548,9 +495,8 @@ mod tests {
 
     #[test]
     fn test_threshold_tokens() {
-        let config = ContextEngineConfig {
+        let config = CompressionConfig {
             context_length: 100_000,
-            threshold_percent: 0.75,
             ..Default::default()
         };
         let ctx = ContextEngine::with_config(config);
@@ -566,9 +512,8 @@ mod tests {
 
     #[test]
     fn test_should_compress_with_real_tokens() {
-        let config = ContextEngineConfig {
+        let config = CompressionConfig {
             context_length: 10_000,
-            threshold_percent: 0.75,
             ..Default::default()
         };
         let mut ctx = ContextEngine::with_config(config);
@@ -598,9 +543,8 @@ mod tests {
     #[test]
     fn test_should_compress_estimates_from_messages() {
         // Use a small context so estimate triggers compression
-        let config = ContextEngineConfig {
+        let config = CompressionConfig {
             context_length: 10_000,
-            threshold_percent: 0.75,
             ..Default::default()
         };
         let ctx = ContextEngine::with_config(config);
@@ -624,9 +568,8 @@ mod tests {
 
     #[test]
     fn test_anti_thrashing_resets_on_effective_compression() {
-        let config = ContextEngineConfig {
+        let config = CompressionConfig {
             context_length: 100_000,
-            threshold_percent: 0.75,
             ineffective_threshold: 10.0,
             max_ineffective_consecutive: 2,
             ..Default::default()
@@ -658,7 +601,7 @@ mod tests {
 
     #[test]
     fn test_ineffective_threshold_config() {
-        let config = ContextEngineConfig {
+        let config = CompressionConfig {
             ineffective_threshold: 20.0,
             max_ineffective_consecutive: 3,
             ..Default::default()
@@ -694,9 +637,8 @@ mod tests {
 
     #[test]
     fn test_get_status_returns_all_fields() {
-        let config = ContextEngineConfig {
+        let config = CompressionConfig {
             context_length: 100_000,
-            threshold_percent: 0.75,
             ..Default::default()
         };
         let mut ctx = ContextEngine::with_config(config);
@@ -718,9 +660,8 @@ mod tests {
 
     #[test]
     fn test_get_status_usage_capped_at_100() {
-        let config = ContextEngineConfig {
+        let config = CompressionConfig {
             context_length: 1000,
-            threshold_percent: 0.75,
             ..Default::default()
         };
         let mut ctx = ContextEngine::with_config(config);
@@ -774,7 +715,7 @@ mod tests {
 
         let context_length = ctx.config.context_length;
         let threshold_tokens = ctx.config.threshold_tokens();
-        let expected_tail_budget = (threshold_tokens as f64 * 0.35) as usize;
+        let _expected_tail_budget = (threshold_tokens as f64 * 0.35) as usize;
 
         // We can't directly access tail_token_budget from tests, but we can verify
         // the config was updated correctly

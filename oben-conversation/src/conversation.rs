@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 use anyhow::Result;
 
-use crate::context::ContextEngineConfig;
+use crate::compression::CompressionConfig;
 use crate::turn_executor::TurnExecutor;
 use crate::system_prompt;
 use oben_models::Message;
@@ -73,7 +73,7 @@ impl ConversationLoop {
             tools,
             max_iterations,
             max_messages,
-            ContextEngineConfig::default(),
+            CompressionConfig::default(),
         )
     }
 
@@ -82,7 +82,7 @@ impl ConversationLoop {
         tools: std::sync::Arc<oben_tools::ToolRegistry>,
         max_iterations: usize,
         _max_messages: usize,
-        engine_config: ContextEngineConfig,
+        engine_config: CompressionConfig,
     ) -> Self {
         Self {
             executor: TurnExecutor::with_config(transport, tools, max_iterations, _max_messages, engine_config),

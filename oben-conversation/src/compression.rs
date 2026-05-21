@@ -26,6 +26,8 @@ use oben_models::{Message, MessageContent, MessagePart, TransportProvider};
 pub struct CompressionConfig {
     /// Total context window size in tokens.
     pub context_length: usize,
+    /// Token threshold as a percentage of context_length (e.g. 0.75 = 75%).
+    pub threshold_percent: f64,
     /// Number of non-system head messages to protect.
     pub protect_first_n: usize,
     /// Token budget for the tail — walk backward accumulating tokens.
@@ -48,12 +50,17 @@ pub struct CompressionConfig {
     pub final_summary_max_tokens: usize,
     /// Max tool result tokens to keep before pruning.
     pub max_tool_result_tokens: usize,
+    /// Min percentage savings for a compression to be considered effective.
+    pub ineffective_threshold: f64,
+    /// Max consecutive ineffective compressions before anti-thrashing kicks in.
+    pub max_ineffective_consecutive: usize,
 }
 
 impl Default for CompressionConfig {
     fn default() -> Self {
         Self {
             context_length: 128_000,
+            threshold_percent: 0.75,
             protect_first_n: 3,
             tail_token_budget: 20_000,
             tail_min_messages: 3,
@@ -64,7 +71,23 @@ impl Default for CompressionConfig {
             iterated_min_tokens: 1000,
             final_summary_max_tokens: 2500,
             max_tool_result_tokens: 10000,
+            ineffective_threshold: 10.0,
+            max_ineffective_consecutive: 2,
         }
+    }
+}
+
+impl CompressionConfig {
+    /// Derive the compression threshold in tokens from the current
+    /// context_length and threshold_percent.
+    pub fn threshold_tokens(&self) -> usize {
+        (self.context_length as f64 * self.threshold_percent) as usize
+    }
+
+    /// Derive threshold tokens from a given context length using the
+    /// current threshold_percent.
+    pub fn threshold_tokens_for(&self, context_length: usize) -> usize {
+        (context_length as f64 * self.threshold_percent) as usize
     }
 }
 
@@ -207,7 +230,6 @@ pub async fn compact_session_messages(
     })
 }
 
-/// Rough token estimation: ~4 chars per token.
 pub fn message_token_estimate(msg: &Message) -> usize {
     let text = match &msg.content {
         MessageContent::Text(s) => s,

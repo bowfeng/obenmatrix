@@ -50,7 +50,7 @@ impl TurnExecutor {
             tools,
             max_iterations,
             max_messages,
-            crate::context::ContextEngineConfig::default(),
+            crate::compression::CompressionConfig::default(),
         )
     }
 
@@ -59,7 +59,7 @@ impl TurnExecutor {
         tools: Arc<oben_tools::ToolRegistry>,
         max_iterations: usize,
         _max_messages: usize,
-        engine_config: crate::context::ContextEngineConfig,
+        engine_config: crate::compression::CompressionConfig,
     ) -> Self {
         Self {
             context_engine: ContextEngine::with_config(engine_config),
@@ -248,7 +248,7 @@ impl TurnExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::ContextEngineConfig;
+    use crate::compression::CompressionConfig;
     use oben_models::{TransportResponse, TransportToolCall};
 
     struct MockTransport {
@@ -546,7 +546,7 @@ mod tests {
             call_count: Arc::new(std::sync::Mutex::new(0)),
         });
 
-        let config = ContextEngineConfig {
+        let config = CompressionConfig {
             context_length: 1000,
             threshold_percent: 0.5,
             protect_first_n: 2,
@@ -555,7 +555,7 @@ mod tests {
             tail_overhead: 1.5,
             ineffective_threshold: 10.0,
             max_ineffective_consecutive: 2,
-            max_messages: 100,
+            ..Default::default()
         };
 
         let mut executor = TurnExecutor::with_config(
@@ -594,7 +594,7 @@ mod tests {
             call_count: Arc::new(std::sync::Mutex::new(0)),
         });
 
-        let config = ContextEngineConfig {
+        let config = CompressionConfig {
             context_length: 10_000,
             threshold_percent: 0.5,
             protect_first_n: 3,
@@ -603,7 +603,7 @@ mod tests {
             tail_overhead: 1.5,
             ineffective_threshold: 10.0,
             max_ineffective_consecutive: 2,
-            max_messages: 100,
+            ..Default::default()
         };
 
         let mut executor = TurnExecutor::with_config(
