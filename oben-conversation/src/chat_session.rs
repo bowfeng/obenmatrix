@@ -85,7 +85,6 @@ impl ChatSession {
         if let Some(active) = self.memory.active_session() {
             let sid = active.id.clone();
             let _ = self.memory.switch_session(&sid);
-            let _ = self.memory.load(Some(&sid));
             self.session_id = Some(sid);
             self.call_mode = Some(CallMode::Fresh(self.session_id.clone().expect("session id not set after loading active session")));
         }
@@ -156,8 +155,7 @@ impl ChatSession {
             None,      // context_length — uses config default
         );
 
-        // ── Load & set call mode ─────────────────────────────────
-        self.memory.load(Some(sid))?;
+
 
         match &self.call_mode {
             None => {
@@ -219,7 +217,6 @@ impl ChatSession {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}. Run `oben sessions list` to see available sessions.", key))?;
 
         self.memory.switch_session(&sid)?;
-        self.memory.load(Some(&sid))?;
         self.session_id = Some(sid.clone());
         self.call_mode = Some(CallMode::Fresh(sid.clone()));
 
