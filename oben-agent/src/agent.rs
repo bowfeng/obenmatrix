@@ -36,6 +36,50 @@ pub struct AgentConfig {
     pub context_config: crate::compression::CompressionConfig,
 }
 
+/// Callbacks passed to `interactive_chat` for flexible I/O.
+///
+/// Implement this to plug in custom input/output sources (e.g. TUI panels,
+/// network sockets, test fixtures). The default CLI implementation uses
+/// stdin/stdout.
+pub struct ChatCallbacks {
+    /// Print a session info line (e.g. "Continuing session: xxx").
+    pub print_info: fn(&str),
+    /// Print the prompt before reading input (e.g. "> ").
+    pub print_prompt: fn(),
+    /// Print a flush hint (optional, for custom streams).
+    pub print_flush: fn(),
+    /// Read the next user input line. Return `None` to exit.
+    pub read_input: fn() -> Option<String>,
+    /// Print a newline after response.
+    pub print_newline: fn(),
+    /// Exit condition callback. Return `true` to exit the loop.
+    /// Called on each input before sending to the agent.
+    pub should_exit: fn(&str) -> bool,
+}
+
+/// Default CLI callbacks.
+impl ChatCallbacks {
+    pub fn for_cli() -> Self {
+        Self {
+            print_info: |msg: &str| println!("{}", msg),
+            print_prompt: || print!("> "),
+            print_flush: || {
+                let _ = std::io::stdout().flush();
+            },
+            read_input: || {
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok() {
+                    Some(input.trim().to_string())
+                } else {
+                    Some(String::new())
+                }
+            },
+            print_newline: || println!(),
+            should_exit: |input: &str| input == "quit" || input == "exit",
+        }
+    }
+}
+
 /// An interactive agent that owns session lifecycle and conversation.
 ///
 /// Both the CLI `run_chat` and the TUI event loop use this struct.
@@ -200,18 +244,21 @@ impl Agent {
         &mut self.conversation
     }
 
-    /// Run an interactive CLI chat loop.
+    /// Run an interactive chat loop with custom I/O callbacks.
     ///
-    /// Reads from stdin, calls `turn()` for each line, prints the response.
-    /// Handles session continuation, streaming output, and graceful exit.
+    /// This is the generic entry point used by both CLI and TUI.
+    /// The caller provides `ChatCallbacks` to abstract stdin/stdio,
+    /// or calls `turn()` directly from a custom event loop (TUI).
     ///
-    /// **This owns the conversation loop.** The caller only needs to
-    /// construct the `Agent` with config — everything else is here.
-    pub async fn interactive_chat(
-        &mut self,
-        stream: bool,
-        continue_with: Option<&str>,
-    ) -> Result<()> {
+    /// **Example — custom TUI integration:**
+    /// ```ignore
+    /// agent.interactive_chat(ChatCallbacks {
+    ///     read_input: || get_tui_input(),   // custom input source
+    ///     should_exit: |_| false,           // TUI owns exit
+    ///     ..ChatCallbacks::for_cli()
+    /// }).await;
+    /// ```
+    pub async fn interactive_chat(&mut self, stream: bool, continue_with: Option<&str>, callbacks: ChatCallbacks) -> Result<()> {
         // ── Session continuation / display ──────────────────────
         if let Some(key) = continue_with {
             let resolved_key = if key == "latest" {
@@ -223,41 +270,43 @@ impl Agent {
             let name = self.continue_session(&resolved_key)?;
             if let Some(s) = self.session_manager().active_session() {
                 let msg_count = s.messages.len();
-                println!("Continuing session: {} ({} messages)\n", name, msg_count);
+                (callbacks.print_info)(&format!("Continuing session: {} ({} messages)\n", name, msg_count));
                 print_session_messages(&s.messages, 10);
-                println!();
+                (callbacks.print_info)("");
             }
         } else {
             if let Some(name) = self.loaded_session_name() {
                 if let Some(s) = self.session_manager().active_session() {
-                    println!("Session: {} ({} messages)\n", name, s.messages.len());
+                    (callbacks.print_info)(&format!("Session: {} ({} messages)\n", name, s.messages.len()));
                 }
             }
         }
-        println!("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
+        (callbacks.print_info)("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
+        (callbacks.print_flush)();
 
         // ── Interactive loop ────────────────────────────────────
         loop {
-            print!("> ");
-            std::io::stdout().flush()?;
+            (callbacks.print_prompt)();
+            (callbacks.print_flush)();
 
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            let input = input.trim();
+            let input = match (callbacks.read_input)() {
+                Some(line) if !line.trim().is_empty() => line.trim().to_string(),
+                _ => continue,
+            };
 
-            if input == "quit" || input == "exit" { break; }
-            if input.is_empty() { continue; }
+            if (callbacks.should_exit)(&input) { break; }
 
-            let response = self.turn(input, stream, stream.then(|| {
-                Box::new(|text: &str| {
+            let response = self.turn(&input, stream, stream.then(move || {
+                Box::new(move |text: &str| {
                     print!("{}", text);
-                    std::io::stdout().flush().ok();
-                }) as oben_models::StreamDeltaCallback
+                    (callbacks.print_flush)();
+                }) as StreamDeltaCallback
             })).await?;
             if stream {
-                println!();
+                (callbacks.print_newline)();
             } else {
-                println!("\n{}", response);
+                (callbacks.print_info)(&format!("\n{}", response));
+                (callbacks.print_flush)();
             }
         }
 

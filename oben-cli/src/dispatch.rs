@@ -112,7 +112,8 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         context_config: oben_agent::CompressionConfig::default(),
     })?;
 
-    chat.interactive_chat(stream, continue_with).await
+    let callbacks = oben_agent::ChatCallbacks::for_cli();
+    chat.interactive_chat(stream, continue_with, callbacks).await
 }
 
 async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
