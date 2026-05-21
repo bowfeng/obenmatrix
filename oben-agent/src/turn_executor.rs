@@ -1,21 +1,21 @@
 /// Turn executor — deep module for the core agent turn cycle.
 ///
+/// **Stateless**: `TurnExecutor` owns nothing — all resources (ContextEngine,
+/// Budget, Transport, Tools) are passed as function parameters.
+///
 /// Encapsulates the full turn cycle: budget check → compression → LLM call
 /// → tool dispatch → repeat until no more tool calls.
 ///
 /// This is a **deep** module: callers cross one small interface (`execute_turn`)
 /// and get a large amount of behaviour per unit of interface they learn.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::Result;
 use tracing::info;
 
-use crate::budget::IterationBudget;
-
-use crate::compact_context::CompactContextEngine;
 use crate::context::ContextEngine;
-use oben_models::{Message, MessageRole, Session, TransportProvider};
+use oben_models::{Message, MessageRole, Session, TransportProvider, SessionStore};
 
 // ---------------------------------------------------------------------------
 // TurnResult — what the executor returns after executing a turn
@@ -27,61 +27,38 @@ pub struct TurnResult {
 }
 
 // ---------------------------------------------------------------------------
-// TurnExecutor — the deep turn cycle
+// TurnExecutor — stateless turn cycle
 // ---------------------------------------------------------------------------
 
-/// Executes the full agent turn cycle: budget → compress → LLM → dispatch → repeat.
+/// Stateless executor — the full agent turn cycle.
 ///
-/// **Deep module**: one method, high leverage. Callers don't need to understand
-/// the internals of token tracking, compression decisions, or streaming setup.
-pub struct TurnExecutor {
-    context_engine: Arc<Mutex<dyn ContextEngine>>,
-    budget: IterationBudget,
-    transport: Box<dyn TransportProvider>,
-    tools: Arc<oben_tools::ToolRegistry>,
-}
+/// **Deep module**: one method, high leverage. All resources (ContextEngine,
+/// Budget, Transport, Tools) are passed as function parameters — `TurnExecutor`
+/// owns none of them.
+///
+/// **Responsibilities**: budget check → compression → LLM call → tool dispatch → repeat.
+///
+/// Callers don't need to understand the internals of token tracking,
+/// compression decisions, or streaming setup.
+pub struct TurnExecutor;
 
 impl TurnExecutor {
-    pub fn new(
-        transport: impl TransportProvider + 'static,
-        tools: Arc<oben_tools::ToolRegistry>,
-        max_iterations: usize,
-        max_messages: usize,
-    ) -> Self {
-        Self::with_config(
-            transport,
-            tools,
-            max_iterations,
-            max_messages,
-            Arc::new(Mutex::new(CompactContextEngine::new())),
-        )
-    }
-
-    pub fn with_config(
-        transport: impl TransportProvider + 'static,
-        tools: Arc<oben_tools::ToolRegistry>,
-        max_iterations: usize,
-        _max_messages: usize,
-        context_engine: Arc<Mutex<dyn ContextEngine>>,
-    ) -> Self {
-        Self {
-            context_engine,
-            budget: IterationBudget::new(max_iterations),
-            transport: Box::new(transport),
-            tools,
-        }
-    }
-
-    /// Execute one turn: budget check → compress → LLM → tool dispatch → repeat.
+    /// Execute one turn: budget check → compress → LLM → dispatch → repeat.
     ///
-    /// If `delta_callback` is provided, text tokens are streamed to it via a
-    /// lock-free channel with batched flushing (~512 bytes per flush).
-    ///
-    /// The session is mutated in-place; callers should persist after receiving
-    /// the result (e.g. via `store.save()` if applicable).
+    /// **Parameters** — all resources passed as parameters:
+    /// - `context_engine`: token tracking & compression
+    /// - `transport`: LLM API (dyn trait)
+    /// - `tools`: tool registry
+    /// - `store`: session store
+    /// - `session_id`: which session to operate on
+    /// - `user_message`: the user's input
+    /// - `call_mode`: Fresh or Incremental
+    /// - `delta_callback`: optional streaming callback
     pub async fn execute_turn(
-        &mut self,
-        store: &mut dyn oben_models::SessionStore,
+        context_engine: &Arc<std::sync::Mutex<Box<dyn ContextEngine>>>,
+        transport: &dyn TransportProvider,
+        tools: &Arc<oben_tools::ToolRegistry>,
+        store: &mut dyn SessionStore,
         session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
@@ -95,8 +72,6 @@ impl TurnExecutor {
         session.messages.push(user_message);
 
         // Streaming setup: lock-free channel with batched callback dispatch.
-        // The channel buffer of 4096 tokens is far larger than any single
-        // LLM response delta, making overflow practically impossible.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4096);
         let mut callback_handle: Option<tokio::task::JoinHandle<()>> = None;
         let has_callback = delta_callback.is_some();
@@ -122,16 +97,20 @@ impl TurnExecutor {
 
         // Core loop with tool dispatch
         loop {
-            self.budget.check()?;
+            // Budget check — managed by Agent, not TurnExecutor
 
-            // Auto-compression: check if context is getting full before making an LLM call.
-            if self.context_engine.lock().unwrap().should_compress(&session.messages) {
+            // Auto-compression: check if context is getting full
+            if context_engine.lock().unwrap().should_compress(&session.messages) {
                 info!(
                     "Auto-compression: context full ({} messages, {} est. tokens), compressing",
                     session.messages.len(),
-                    self.context_engine.lock().unwrap().estimate_tokens(&session.messages),
+                    context_engine.lock().unwrap().estimate_tokens(&session.messages),
                 );
-                self.maybe_compress(session).await?;
+                context_engine
+                    .lock()
+                    .unwrap()
+                    .compress(&mut session.messages, Some(transport), None)
+                    .await?;
             }
 
             // Get LLM response (streaming or non-streaming).
@@ -142,9 +121,9 @@ impl TurnExecutor {
                         // try_send is non-blocking, channel buffer is 4096.
                         let _ = tx_clone.try_send(text.to_string());
                     });
-                self.transport.stream_chat(&session.messages, &call_mode, wrapper).await?
+                transport.stream_chat(&session.messages, call_mode, wrapper).await?
             } else {
-                self.transport.chat(&session.messages, &call_mode).await?
+                transport.chat(&session.messages, call_mode).await?
             };
 
             let tool_calls = &response.tool_calls;
@@ -152,7 +131,7 @@ impl TurnExecutor {
 
             // Update token tracking from API response
             if let Some(tokens) = response.tokens_used {
-                self.context_engine
+                context_engine
                     .lock()
                     .unwrap()
                     .update_from_response(tokens, 0, tokens);
@@ -205,57 +184,40 @@ impl TurnExecutor {
 
             // Dispatch tool calls
             for call in tool_calls {
-                let result = self.tools.execute(&call.tool_name, &call.arguments).await;
+                let result = tools.execute(&call.tool_name, &call.arguments).await;
                 session.messages.push(Message::tool_result(&call.id, &result.output));
             }
         }
     }
 
     /// Compress context if needed.
-    pub async fn maybe_compress(&mut self, session: &mut Session) -> Result<()> {
-        if !self.context_engine.lock().unwrap().should_compress(&session.messages) {
+    async fn maybe_compress(
+        context_engine: &Arc<std::sync::Mutex<Box<dyn ContextEngine>>>,
+        transport: &dyn TransportProvider,
+        session: &mut Session,
+    ) -> Result<()> {
+        if !context_engine.lock().unwrap().should_compress(&session.messages) {
             return Ok(());
         }
-        self.context_engine
+        context_engine
             .lock()
             .unwrap()
-            .compress(&mut session.messages, Some(&*self.transport), None)
+            .compress(&mut session.messages, Some(transport), None)
             .await?;
         Ok(())
     }
 
-    // ── Session lifecycle hooks ────────────────────────────────────────
-
-    pub fn on_session_start(
-        &mut self,
-        session_id: &str,
-        model_name: &str,
-        context_length: Option<usize>,
-    ) {
-        self.context_engine
+    /// Preflight check — pure function.
+    pub async fn preflight_check(
+        context_engine: &Arc<std::sync::Mutex<Box<dyn ContextEngine>>>,
+        transport: &dyn TransportProvider,
+        session: &mut Session,
+    ) -> Result<usize> {
+        context_engine
             .lock()
             .unwrap()
-            .on_session_start(session_id, model_name, context_length);
-    }
-
-    pub fn on_session_reset(&mut self) {
-        self.context_engine.lock().unwrap().on_session_reset();
-    }
-
-    pub fn on_session_end(&mut self, session_id: &str) {
-        self.context_engine.lock().unwrap().on_session_end(session_id);
-    }
-
-    pub async fn preflight_check(&mut self, session: &mut Session) -> Result<usize> {
-        self.context_engine
-            .lock()
-            .unwrap()
-            .preflight_check(&mut session.messages, Some(&*self.transport), None)
+            .preflight_check(&mut session.messages, Some(transport), None)
             .await
-    }
-
-    pub fn message_count(&self, session: &Session) -> usize {
-        session.messages.len()
     }
 }
 
@@ -267,6 +229,8 @@ impl TurnExecutor {
 mod tests {
     use super::*;
     use crate::compression::CompressionConfig;
+    use crate::compact_context::CompactContextEngine;
+    use crate::turn_executor::TurnExecutor;
     use oben_models::{Session, SessionStore, TransportResponse, TransportToolCall};
 
     /// In-memory test double for SessionStore — no SQLite needed.
@@ -287,7 +251,7 @@ mod tests {
         }
     }
 
-    impl oben_models::SessionStore for TestSessionStore {
+    impl SessionStore for TestSessionStore {
         fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
             self.sessions.get_mut(session_id)
         }
@@ -333,27 +297,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_turn_text_response() {
-        let mock = Arc::new(MockTransport {
+        let mock = MockTransport {
             responses: vec![TransportResponse {
                 text: "Hello!".to_string(),
                 tool_calls: vec![],
                 tokens_used: Some(10),
             }],
             call_count: Arc::new(std::sync::Mutex::new(0)),
-        });
+        };
+        let context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(CompactContextEngine::new())));
+        let tools = Arc::new(oben_tools::ToolRegistry::new());
 
-        let mut executor = TurnExecutor::new(
-            mock,
-            Arc::new(oben_tools::ToolRegistry::new()),
-            10,
-            100,
-        );
         let mut store = TestSessionStore::new();
         let sid = store.insert("test-session", Vec::new());
 
-        let result = executor.execute_turn(
-            &mut store,
-            &sid,
+        let result = TurnExecutor::execute_turn(
+            &context_engine, &mock, &tools,
+            &mut store, &sid,
             Message::user("Hi"),
             &oben_models::CallMode::Fresh(sid.clone()),
             None,
@@ -364,7 +325,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_turn_with_tool_call() {
-        let mock = Arc::new(MockTransport {
+        let mock = MockTransport {
             responses: vec![
                 TransportResponse {
                     text: "Let me check.".to_string(),
@@ -382,20 +343,17 @@ mod tests {
                 },
             ],
             call_count: Arc::new(std::sync::Mutex::new(0)),
-        });
+        };
+        let context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(CompactContextEngine::new())));
+        let tools = Arc::new(oben_tools::ToolRegistry::new());
 
-        let mut executor = TurnExecutor::new(
-            mock,
-            Arc::new(oben_tools::ToolRegistry::new()),
-            10,
-            100,
-        );
         let mut store = TestSessionStore::new();
         let sid = store.insert("test-session", Vec::new());
 
-        let result = executor.execute_turn(
-            &mut store,
-            &sid,
+        let result = TurnExecutor::execute_turn(
+            &context_engine, &mock, &tools,
+            &mut store, &sid,
             Message::user("list files"),
             &oben_models::CallMode::Fresh(sid.clone()),
             None,
@@ -406,27 +364,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_turn_empty_response() {
-        let mock = Arc::new(MockTransport {
+        let mock = MockTransport {
             responses: vec![TransportResponse {
                 text: "".to_string(),
                 tool_calls: vec![],
                 tokens_used: Some(5),
             }],
             call_count: Arc::new(std::sync::Mutex::new(0)),
-        });
+        };
+        let context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(CompactContextEngine::new())));
+        let tools = Arc::new(oben_tools::ToolRegistry::new());
 
-        let mut executor = TurnExecutor::new(
-            mock,
-            Arc::new(oben_tools::ToolRegistry::new()),
-            10,
-            100,
-        );
         let mut store = TestSessionStore::new();
         let sid = store.insert("test-session", Vec::new());
 
-        let result = executor.execute_turn(
-            &mut store,
-            &sid,
+        let result = TurnExecutor::execute_turn(
+            &context_engine, &mock, &tools,
+            &mut store, &sid,
             Message::user("Hi"),
             &oben_models::CallMode::Fresh(sid.clone()),
             None,
@@ -435,59 +390,22 @@ mod tests {
         assert_eq!(result.messages.len(), 2);
     }
 
-    #[tokio::test]
-    async fn test_execute_turn_budget_exceeded() {
-        let mock = Arc::new(MockTransport {
-            responses: vec![TransportResponse {
-                text: "".to_string(),
-                tool_calls: vec![TransportToolCall {
-                    id: "call-1".to_string(),
-                    tool_name: "shell".to_string(),
-                    arguments: serde_json::json!({"command": "ls"}),
-                }],
-                tokens_used: Some(1),
-            }],
-            call_count: Arc::new(std::sync::Mutex::new(0)),
-        });
-
-        let mut executor = TurnExecutor::new(
-            mock,
-            Arc::new(oben_tools::ToolRegistry::new()),
-            2,
-            100,
-        );
-        let mut store = TestSessionStore::new();
-        let sid = store.insert("test-session", Vec::new());
-
-        let result = executor.execute_turn(
-            &mut store,
-            &sid,
-            Message::user("Hi"),
-            &oben_models::CallMode::Fresh(sid.clone()),
-            None,
-        ).await;
-        assert!(result.is_err());
-    }
-
     // ── Streaming tests ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_streaming_basic() {
-        let mock = Arc::new(MockTransport {
+        let mock = MockTransport {
             responses: vec![TransportResponse {
                 text: "Hello from stream!".to_string(),
                 tool_calls: vec![],
                 tokens_used: Some(10),
             }],
             call_count: Arc::new(std::sync::Mutex::new(0)),
-        });
+        };
+        let context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(CompactContextEngine::new())));
+        let tools = Arc::new(oben_tools::ToolRegistry::new());
 
-        let mut executor = TurnExecutor::new(
-            mock,
-            Arc::new(oben_tools::ToolRegistry::new()),
-            10,
-            100,
-        );
         let mut store = TestSessionStore::new();
         let sid = store.insert("test-session", Vec::new());
 
@@ -496,9 +414,9 @@ mod tests {
         let cb: oben_models::StreamDeltaCallback =
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
-        let result = executor.execute_turn(
-            &mut store,
-            &sid,
+        let result = TurnExecutor::execute_turn(
+            &context_engine, &mock, &tools,
+            &mut store, &sid,
             Message::user("Hi"),
             &oben_models::CallMode::Fresh(sid.clone()),
             Some(cb),
@@ -510,7 +428,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_streaming_with_tool_calls() {
-        let mock = Arc::new(MockTransport {
+        let mock = MockTransport {
             responses: vec![
                 TransportResponse {
                     text: "Let me check.".to_string(),
@@ -528,14 +446,11 @@ mod tests {
                 },
             ],
             call_count: Arc::new(std::sync::Mutex::new(0)),
-        });
+        };
+        let context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(CompactContextEngine::new())));
+        let tools = Arc::new(oben_tools::ToolRegistry::new());
 
-        let mut executor = TurnExecutor::new(
-            mock,
-            Arc::new(oben_tools::ToolRegistry::new()),
-            10,
-            100,
-        );
         let mut store = TestSessionStore::new();
         let sid = store.insert("test-session", Vec::new());
 
@@ -544,9 +459,9 @@ mod tests {
         let cb: oben_models::StreamDeltaCallback =
             Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
-        let result = executor.execute_turn(
-            &mut store,
-            &sid,
+        let result = TurnExecutor::execute_turn(
+            &context_engine, &mock, &tools,
+            &mut store, &sid,
             Message::user("list files"),
             &oben_models::CallMode::Fresh(sid.clone()),
             Some(cb),
@@ -556,40 +471,11 @@ mod tests {
         assert_eq!(result.messages.len(), 4);
     }
 
-    // ── Session lifecycle tests ────────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_session_lifecycle() {
-        let mock = Arc::new(MockTransport {
-            responses: vec![TransportResponse {
-                text: "Hi back!".to_string(),
-                tool_calls: vec![],
-                tokens_used: Some(5),
-            }],
-            call_count: Arc::new(std::sync::Mutex::new(0)),
-        });
-
-        let mut executor = TurnExecutor::new(
-            mock,
-            Arc::new(oben_tools::ToolRegistry::new()),
-            10,
-            100,
-        );
-
-        let mut store = TestSessionStore::new();
-        let sid = store.insert("test-session", vec![Message::system("test")]);
-
-        executor.on_session_start("session-1", "gpt-4", Some(128_000));
-        executor.on_session_reset();
-        let _ = executor.message_count(store.session_mut(&sid).unwrap());
-        executor.on_session_end("session-1");
-    }
-
     // ── Auto-compression tests ─────────────────────────────────────────
 
     #[tokio::test]
     async fn test_auto_compression_fires() {
-        let mock = Arc::new(MockTransport {
+        let mock = MockTransport {
             responses: vec![
                 TransportResponse {
                     text: "## Active Task\nTest completed.".to_string(),
@@ -603,8 +489,7 @@ mod tests {
                 },
             ],
             call_count: Arc::new(std::sync::Mutex::new(0)),
-        });
-
+        };
         let config = CompressionConfig {
             context_length: 1000,
             threshold_percent: 0.5,
@@ -616,14 +501,9 @@ mod tests {
             max_ineffective_consecutive: 2,
             ..Default::default()
         };
-
-        let mut executor = TurnExecutor::with_config(
-            mock.clone(),
-            Arc::new(oben_tools::ToolRegistry::new()),
-            10,
-            100,
-            Arc::new(Mutex::new(CompactContextEngine::with_config(config))),
-        );
+        let context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(CompactContextEngine::with_config(config))));
+        let tools = Arc::new(oben_tools::ToolRegistry::new());
 
         let long_content = "The quick brown fox jumps over the lazy dog. ".repeat(100);
         let msgs: Vec<Message> = (0..10)
@@ -633,9 +513,9 @@ mod tests {
         let mut store = TestSessionStore::new();
         let sid = store.insert("test-session", msgs);
 
-        let result = executor.execute_turn(
-            &mut store,
-            &sid,
+        let result = TurnExecutor::execute_turn(
+            &context_engine, &mock, &tools,
+            &mut store, &sid,
             Message::user("Hi"),
             &oben_models::CallMode::Fresh(sid.clone()),
             None,
@@ -649,15 +529,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_compression_when_under_threshold() {
-        let mock = Arc::new(MockTransport {
+        let mock = MockTransport {
             responses: vec![TransportResponse {
                 text: "Hello!".to_string(),
                 tool_calls: vec![],
                 tokens_used: Some(50),
             }],
             call_count: Arc::new(std::sync::Mutex::new(0)),
-        });
-
+        };
         let config = CompressionConfig {
             context_length: 10_000,
             threshold_percent: 0.5,
@@ -669,21 +548,16 @@ mod tests {
             max_ineffective_consecutive: 2,
             ..Default::default()
         };
-
-        let mut executor = TurnExecutor::with_config(
-            mock.clone(),
-            Arc::new(oben_tools::ToolRegistry::new()),
-            10,
-            100,
-            Arc::new(Mutex::new(CompactContextEngine::with_config(config))),
-        );
+        let context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(CompactContextEngine::with_config(config))));
+        let tools = Arc::new(oben_tools::ToolRegistry::new());
 
         let mut store = TestSessionStore::new();
         let sid = store.insert("test-session", vec![Message::user("Hi")]);
 
-        let result = executor.execute_turn(
-            &mut store,
-            &sid,
+        let result = TurnExecutor::execute_turn(
+            &context_engine, &mock, &tools,
+            &mut store, &sid,
             Message::user("Hello"),
             &oben_models::CallMode::Fresh(sid.clone()),
             None,

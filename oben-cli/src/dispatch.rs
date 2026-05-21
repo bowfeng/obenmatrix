@@ -12,7 +12,7 @@ use oben_agent::{CompactContextEngine, ContextEngine};
 
 use clap::Parser;
 use crate::cli::{Cli, Commands, ConfigCommand, ModelsCommand, SessionsCommand};
-use oben_models::{Message, Session, SessionStore};
+use oben_models::{Session, SessionStore};
 
 /// In-memory session store — no SQLite, no persistence, just a single
 /// session holding a `Vec<Message>`. Perfect for one-shot CLI commands.
@@ -104,9 +104,10 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
     );
 
     let mut chat = oben_agent::Agent::new(oben_agent::AgentConfig {
-        system_prompt_text: assembled.prompt.clone(),
+        system_prompt: assembled.prompt.clone(),
         transport: create_transport(&config, &assembled.prompt, tool_names.clone()),
         tools: std::sync::Arc::new(tools),
+        skills_dirs,
         max_iterations: config.max_iterations.unwrap_or(50),
         max_messages: config.context.max_messages.unwrap_or(100),
         context_config: oben_agent::CompressionConfig::default(),
@@ -125,41 +126,23 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     let system_prompt = oben_config::defaults::default_system_prompt();
     let transport = create_transport(&config, &system_prompt, vec![]);
 
-    let mut store = MemorySessionStore::new();
-    let session_id = store.session.id.clone();
-    let call_mode = oben_models::CallMode::Fresh(session_id.clone());
+    let mut agent = oben_agent::Agent::new(oben_agent::AgentConfig {
+        system_prompt: system_prompt,
+        transport,
+        tools: std::sync::Arc::new(tools),
+        skills_dirs: vec![],
+        max_iterations: config.max_iterations.unwrap_or(50),
+        max_messages: config.context.max_messages.unwrap_or(100),
+        context_config: oben_agent::CompressionConfig::default(),
+    })?;
 
-    let context_engine: Arc<Mutex<dyn ContextEngine>> =
-        Arc::new(Mutex::new(CompactContextEngine::new()));
-    let mut conversation =
-        oben_agent::ConversationLoop::new(transport, std::sync::Arc::new(tools),
-            config.max_iterations.unwrap_or(50),
-            config.context.max_messages.unwrap_or(100),
-            context_engine,
-        );
+    let response = agent.turn(prompt, stream, stream.then(|| {
+        Box::new(|text: &str| {
+            print!("{}", text);
+            std::io::stdout().flush().ok();
+        }) as oben_models::StreamDeltaCallback
+    })).await?;
 
-    // Preflight check: compress if session already over threshold
-    let passes = conversation.preflight_check(&mut store, &session_id).await;
-    if let Ok(n) = passes {
-        if n > 0 {
-            eprintln!("Preflight: {} compression pass(es) before turn", n);
-        }
-    }
-
-    let response = if stream {
-        conversation.run_turn_with_streaming(
-            &mut store,
-            &session_id,
-            oben_models::Message::user(prompt),
-            &call_mode,
-            Some(Box::new(|text: &str| {
-                print!("{}", text);
-                std::io::stdout().flush().ok();
-            })),
-        ).await?
-    } else {
-        conversation.run_turn(&mut store, &session_id, oben_models::Message::user(prompt), &call_mode).await?
-    };
     if !stream { println!("\n{}", response); } else { println!(); }
 
     Ok(())

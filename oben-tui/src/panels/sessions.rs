@@ -4,7 +4,7 @@ use super::Panel;
 use crate::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Table, Row, Cell, TableState as RatatuiTableState};
+use ratatui::widgets::{Block, Borders, Paragraph, Table, Row, Cell};
 use ratatui::layout::Rect;
 
 use oben_models::Session;

@@ -1,329 +1,243 @@
 //! Agent — shared between CLI and TUI.
 //!
-//! Wraps a `SessionManager` and `ConversationLoop`, handling:
-//! - Lazy session creation (only on first input)
-//! - Session switching / loading
-//! - Call mode management (Fresh → Incremental)
-//! - Session save after each turn
+//! **Resource Ownership:**
+//! Agent owns all runtime resources — Transport, Tools, Skills, SystemPrompt,
+//! ContextEngine, and SessionManager. It delegates turn execution to `ConversationLoop`.
 //!
-//! Neither CLI nor TUI concerns are included — this is pure business logic.
+//! **Responsibilities:**
+//! - Own Transport, Tools, Skills, SystemPrompt, ContextEngine (resource management)
+//! - Own SessionManager (session lifecycle, persistence)
+//! - Delegate turn cycle to ConversationLoop
+//! - Manage session switching
+//! - Interactive chat loop
 
-use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::info;
-use oben_models::{CallMode, Message, StreamDeltaCallback};
+use oben_models::StreamDeltaCallback;
 use oben_sessions::SessionManager;
 
-use crate::compact_context::CompactContextEngine;
-use crate::context::ContextEngine;
-use crate::conversation::{ConversationLoop, DefaultConversationLoop};
+use crate::conversation::{ChatCallbacks, ConversationLoop};
 
 /// Configuration for building an `Agent`.
 pub struct AgentConfig {
-    /// Pre-built system prompt text.
-    pub system_prompt_text: String,
+    /// System prompt for the agent.
+    pub system_prompt: String,
     /// Transport for LLM calls.
     pub transport: oben_transport::ChatCompletionsTransport,
     /// Registered tools.
     pub tools: std::sync::Arc<oben_tools::ToolRegistry>,
+    /// Skills directories.
+    pub skills_dirs: Vec<std::path::PathBuf>,
+    /// Compression configuration.
+    pub context_config: crate::compression::CompressionConfig,
     /// Max iteration budget per turn.
     pub max_iterations: usize,
     /// Max messages in context.
     pub max_messages: usize,
-    /// Compression configuration.
-    pub context_config: crate::compression::CompressionConfig,
 }
 
-/// Callbacks passed to `interactive_chat` for flexible I/O.
-///
-/// Implement this to plug in custom input/output sources (e.g. TUI panels,
-/// network sockets, test fixtures). The default CLI implementation uses
-/// stdin/stdout.
-pub struct ChatCallbacks {
-    /// Print a session info line (e.g. "Continuing session: xxx").
-    pub print_info: fn(&str),
-    /// Print the prompt before reading input (e.g. "> ").
-    pub print_prompt: fn(),
-    /// Print a flush hint (optional, for custom streams).
-    pub print_flush: fn(),
-    /// Read the next user input line. Return `None` to exit.
-    pub read_input: fn() -> Option<String>,
-    /// Print a newline after response.
-    pub print_newline: fn(),
-    /// Exit condition callback. Return `true` to exit the loop.
-    /// Called on each input before sending to the agent.
-    pub should_exit: fn(&str) -> bool,
-}
-
-/// Default CLI callbacks.
-impl ChatCallbacks {
-    pub fn for_cli() -> Self {
-        Self {
-            print_info: |msg: &str| println!("{}", msg),
-            print_prompt: || print!("> "),
-            print_flush: || {
-                let _ = std::io::stdout().flush();
-            },
-            read_input: || {
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_ok() {
-                    Some(input.trim().to_string())
-                } else {
-                    Some(String::new())
-                }
-            },
-            print_newline: || println!(),
-            should_exit: |input: &str| input == "quit" || input == "exit",
-        }
-    }
-}
-
-/// An interactive agent that owns session lifecycle and conversation.
-///
-/// Both the CLI `run_chat` and the TUI event loop use this struct.
-/// It does not touch stdin/stdout — those are handled by the caller.
-///
-/// **Async API** — `turn()` returns a `Future`. The caller manages the
-/// tokio runtime (typically via `#[tokio::main(flavor = "multi_thread")]`
-/// in main.rs, so multiple agents can run concurrently).
+/// An interactive agent — owns all resources, delegates to ConversationLoop.
 pub struct Agent {
-    conversation: DefaultConversationLoop,
+    /// Transport — owned by Agent, shared across sessions.
+    transport: Arc<oben_transport::ChatCompletionsTransport>,
+    /// Tools registry — owned by Agent.
+    tools: Arc<oben_tools::ToolRegistry>,
+    /// Skills dirs — owned by Agent.
+    skills_dirs: Vec<std::path::PathBuf>,
+    /// System prompt — owned by Agent.
+    system_prompt: String,
+    /// Context engine — owned by Agent, manages token tracking & compression.
+    context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>>,
+    /// Call mode — tracked per-session (Fresh on first turn, Incremental after).
+    call_mode: std::sync::Mutex<Option<oben_models::CallMode>>,
+    /// Session manager — owns session lifecycle and persistence.
     session_manager: SessionManager,
-    context_engine: Arc<Mutex<dyn ContextEngine>>,
-    system_prompt_text: String,
-    session_id: Option<String>,
-    call_mode: Option<CallMode>,
 }
 
 impl Agent {
     /// Create a new agent. Does NOT own a tokio runtime.
     pub fn new(config: AgentConfig) -> Result<Self> {
-        let context_engine: Arc<Mutex<dyn ContextEngine>> =
-            Arc::new(Mutex::new(CompactContextEngine::with_config(config.context_config)));
-        let mut session = Self {
-            conversation: ConversationLoop::new(
-                config.transport,
-                config.tools,
-                config.max_iterations,
-                config.max_messages,
-                context_engine.clone(),
-            ),
-            session_manager: SessionManager::new()?,
+        let context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(crate::compact_context::CompactContextEngine::with_config(config.context_config))));
+        let mut agent = Self {
+            transport: Arc::new(config.transport),
+            tools: config.tools,
+            skills_dirs: config.skills_dirs,
+            system_prompt: config.system_prompt,
             context_engine,
-            system_prompt_text: config.system_prompt_text,
-            session_id: None,
-            call_mode: None,
+            call_mode: std::sync::Mutex::new(None),
+            session_manager: SessionManager::new()?,
         };
-        session.eager_load_active_session();
-        Ok(session)
-    }
-
-    pub fn loaded_session_name(&self) -> Option<String> {
-        self.session_id.as_ref().and_then(|sid| {
-            self.session_manager.active_session()
-                .filter(|s| s.id == *sid)
-                .map(|s| s.name.clone())
-        })
+        agent.eager_load_active_session();
+        Ok(agent)
     }
 
     fn eager_load_active_session(&mut self) {
         if let Some(active) = self.session_manager.active_session() {
             let sid = active.id.clone();
             let _ = self.session_manager.switch_session(&sid);
-            self.session_id = Some(sid);
-            self.call_mode = Some(CallMode::Fresh(self.session_id.clone().expect("loaded")));
         }
     }
 
-    pub fn session_id(&self) -> Option<&str> {
-        self.session_id.as_deref()
-    }
-
+    /// Access the session manager for listing/saving outside the turn cycle.
     pub fn session_manager(&self) -> &SessionManager {
         &self.session_manager
     }
 
+    /// Mutably access the session manager (for admin ops: load, delete, new).
     pub fn session_manager_mut(&mut self) -> &mut SessionManager {
         &mut self.session_manager
     }
 
-    /// Execute one conversation turn — async.
+    /// Execute one conversation turn.
+    ///
+    /// Full turn cycle:
+    /// 1. Resolve session ID (lazy create if none)
+    /// 2. Update call mode (Fresh → Incremental)
+    /// 3. Execute turn (preflight + execute) via ConversationLoop
+    /// 4. Save session
     pub async fn turn(
         &mut self,
         input: &str,
-        stream: bool,
+        _stream: bool,
         delta_callback: Option<StreamDeltaCallback>,
     ) -> Result<String> {
-        // ── Phase 1: sync session ID resolution ──────────────────
-        let sid = {
-            let active_id = self.session_manager.active_session().map(|s| s.id.clone());
-            match active_id {
-                Some(sid) => self
-                    .session_manager
-                    .switch_session(&sid)
-                    .map(|s| s.id.clone())
-                    .unwrap_or_else(|_| {
-                        self.session_manager
-                            .new_session(&format!(
-                                "chat-{}",
-                                chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                            ))
-                            .id
-                            .clone()
-                    }),
-                None => self
-                    .session_manager
-                    .new_session(&format!(
-                        "chat-{}",
-                        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                    ))
-                    .id
-                    .clone(),
+        // Phase 1: resolve session
+        let sid = self.resolve_session();
+
+        // Phase 2: update call mode
+        let mut mode_guard = self.call_mode.lock().unwrap();
+        let call_mode = match mode_guard.as_ref() {
+            Some(m) => m.clone(),
+            None => {
+                let mode = oben_models::CallMode::Fresh(sid.clone());
+                *mode_guard = Some(mode.clone());
+                mode
             }
         };
-        self.session_id = Some(sid.clone());
 
-        self.context_engine.lock().unwrap().on_session_start(
-            &sid, "default", None,
-        );
+        let input_msg = oben_models::Message::user(input);
 
-        match &self.call_mode {
-            None => { self.call_mode = Some(CallMode::Fresh(sid.clone())); }
-            Some(mode) => {
-                if matches!(mode, CallMode::Fresh(_)) {
-                    self.call_mode = Some(CallMode::Incremental(sid.clone()));
-                }
-            }
-        }
-        let call_mode = self.call_mode.as_ref().unwrap().clone();
-        let input_msg = Message::user(input);
+        // Phase 3: execute turn (preflight + execute in one borrow)
+        let response = ConversationLoop::execute_turn(
+            &self.context_engine,
+            &self.transport,
+            &self.tools,
+            &mut self.session_manager,
+            &sid,
+            input_msg,
+            &call_mode,
+            delta_callback,
+        ).await?;
 
-        // ── Phase 2: async work via ConversationLoop ────────────
-        self.conversation.preflight_check(&mut self.session_manager, &sid).await?;
-
-        let response = if stream {
-            self.conversation
-                .run_turn_with_streaming(&mut self.session_manager, &sid, input_msg, &call_mode, delta_callback)
-                .await?
-        } else {
-            self.conversation
-                .run_turn(&mut self.session_manager, &sid, input_msg, &call_mode)
-                .await?
-        };
-
+        // Phase 4: persist
         self.session_manager.save(None)?;
 
         Ok(response)
     }
 
+    /// Resolve session ID (lazy create if no active session).
+    fn resolve_session(&mut self) -> String {
+        let sid = {
+            let active_id = self.session_manager.active_session().map(|s| s.id.clone());
+            match active_id {
+                Some(sid) => self.session_manager.switch_session(&sid)
+                    .map(|s| s.id.clone())
+                    .unwrap_or_else(|_| {
+                        self.session_manager.new_session(&format!(
+                            "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                        )).id.clone()
+                    }),
+                None => self.session_manager.new_session(&format!(
+                    "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                )).id.clone(),
+            }
+        };
+        sid
+    }
+
+    /// Switch to an existing session by ID or name.
     pub fn continue_session(&mut self, key: &str) -> Result<String> {
         self.session_manager.init()?;
         let sid = self.session_manager.find_key(key)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}. Run `oben sessions list` to see available sessions.", key))?;
 
         self.session_manager.switch_session(&sid)?;
-        self.session_id = Some(sid.clone());
-        self.call_mode = Some(CallMode::Fresh(sid.clone()));
-
-        let name = self.session_manager.active_session().map(|s| s.name.clone()).unwrap_or(key.to_string());
-        self.context_engine.lock().unwrap().on_session_start(&sid, "default", None);
+        let name = self.session_manager.active_session()
+            .map(|s| s.name.clone()).unwrap_or(key.to_string());
         Ok(name)
     }
 
+    /// Reset the current session (clear messages).
     pub fn reset(&mut self) -> Result<()> {
-        self.context_engine.lock().unwrap().on_session_reset();
         if let Some(session) = self.session_manager.active_session_mut() {
             session.messages.clear();
         }
         Ok(())
     }
 
-    pub fn conversation(&mut self) -> &mut DefaultConversationLoop {
-        &mut self.conversation
+    /// Get the currently loaded session name.
+    pub fn loaded_session_name(&self) -> Option<String> {
+        self.session_manager.active_session().map(|s| s.name.clone())
     }
 
-    /// Run an interactive chat loop with custom I/O callbacks.
+    /// Get the active session name (alias for loaded_session_name).
+    pub fn active_session_name(&self) -> Option<String> {
+        self.loaded_session_name()
+    }
+
+    /// Run an interactive chat — delegates loop to ConversationLoop.
     ///
-    /// This is the generic entry point used by both CLI and TUI.
-    /// The caller provides `ChatCallbacks` to abstract stdin/stdio,
-    /// or calls `turn()` directly from a custom event loop (TUI).
-    ///
-    /// **Example — custom TUI integration:**
-    /// ```ignore
-    /// agent.interactive_chat(ChatCallbacks {
-    ///     read_input: || get_tui_input(),   // custom input source
-    ///     should_exit: |_| false,           // TUI owns exit
-    ///     ..ChatCallbacks::for_cli()
-    /// }).await;
-    /// ```
-    pub async fn interactive_chat(&mut self, stream: bool, continue_with: Option<&str>, callbacks: ChatCallbacks) -> Result<()> {
-        // ── Session continuation / display ──────────────────────
+    /// Agent only handles session setup; ConversationLoop runs the
+    /// turn loop with call_mode (Fresh → Incremental) management.
+    pub async fn interactive_chat(
+        &mut self,
+        stream: bool,
+        continue_with: Option<&str>,
+        callbacks: ChatCallbacks,
+    ) -> Result<()> {
+        // Session setup — Agent owns session lifecycle
         if let Some(key) = continue_with {
-            let resolved_key = if key == "latest" {
-                self.session_manager().active_session()
+            let resolved = if key == "latest" {
+                self.session_manager.active_session()
                     .map(|s| s.name.clone()).unwrap_or_else(|| key.to_string())
             } else {
                 key.to_string()
             };
-            let name = self.continue_session(&resolved_key)?;
-            if let Some(s) = self.session_manager().active_session() {
-                let msg_count = s.messages.len();
-                (callbacks.print_info)(&format!("Continuing session: {} ({} messages)\n", name, msg_count));
+            let name = self.continue_session(&resolved)?;
+            if let Some(s) = self.session_manager.active_session() {
+                let count = s.messages.len();
+                (callbacks.print_info)(&format!("Continuing session: {} ({} messages)\n", name, count));
                 print_session_messages(&s.messages, 10);
                 (callbacks.print_info)("");
             }
-        } else {
-            if let Some(name) = self.loaded_session_name() {
-                if let Some(s) = self.session_manager().active_session() {
-                    (callbacks.print_info)(&format!("Session: {} ({} messages)\n", name, s.messages.len()));
-                }
+        } else if let Some(name) = self.loaded_session_name() {
+            if let Some(s) = self.session_manager.active_session() {
+                (callbacks.print_info)(&format!("Session: {} ({} messages)\n", name, s.messages.len()));
             }
         }
         (callbacks.print_info)("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
         (callbacks.print_flush)();
 
-        // ── Interactive loop ────────────────────────────────────
-        loop {
-            (callbacks.print_prompt)();
-            (callbacks.print_flush)();
-
-            let input = match (callbacks.read_input)() {
-                Some(line) if !line.trim().is_empty() => line.trim().to_string(),
-                _ => continue,
-            };
-
-            if (callbacks.should_exit)(&input) { break; }
-
-            let response = self.turn(&input, stream, stream.then(move || {
-                Box::new(move |text: &str| {
-                    print!("{}", text);
-                    (callbacks.print_flush)();
-                }) as StreamDeltaCallback
-            })).await?;
-            if stream {
-                (callbacks.print_newline)();
-            } else {
-                (callbacks.print_info)(&format!("\n{}", response));
-                (callbacks.print_flush)();
-            }
-        }
-
-        Ok(())
+        // Delegate loop to ConversationLoop
+        ConversationLoop::run_loop(
+            &self.context_engine,
+            &self.transport,
+            &self.tools,
+            &mut self.session_manager,
+            &mut self.call_mode,
+            stream,
+            callbacks,
+        ).await
     }
 }
 
 fn print_session_messages(messages: &[oben_models::Message], max_show: usize) {
-    if messages.is_empty() {
-        println!("(no messages)");
-        return;
-    }
-
+    if messages.is_empty() { println!("(no messages)"); return; }
     let show_count = messages.len().min(max_show);
     let show = &messages[..show_count];
     let overflow = messages.len().saturating_sub(max_show);
-
     for msg in show {
         let role = match msg.role {
             oben_models::MessageRole::User => "📝 你",
@@ -332,15 +246,8 @@ fn print_session_messages(messages: &[oben_models::Message], max_show: usize) {
             oben_models::MessageRole::Tool => "⚙️ tool",
         };
         let text = msg.content.to_text_ref().unwrap_or("<non-text>");
-        let display = if text.len() > 120 {
-            format!("{}...", &text[..117])
-        } else {
-            text.to_string()
-        };
+        let display = if text.len() > 120 { format!("{}...", &text[..117]) } else { text.to_string() };
         println!("  {} {}", role, display);
     }
-
-    if overflow > 0 {
-        println!("  ... {} more messages", overflow);
-    }
+    if overflow > 0 { println!("  ... {} more messages", overflow); }
 }

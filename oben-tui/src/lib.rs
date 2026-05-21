@@ -11,9 +11,9 @@ use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, K
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode, disable_raw_mode};
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout, Rect, Position};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Paragraph, Widget, Cell, Row, Table, TableState as RatatuiTableState};
+use ratatui::widgets::Paragraph;
 
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -22,7 +22,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
 
 use panels::chat::ChatPanel;
@@ -35,7 +35,7 @@ use oben_config::AppConfig;
 use oben_agent::{Agent, AgentConfig};
 use oben_models::Message;
 use oben_tools::ToolRegistry;
-use crossterm::Command;
+
 
 pub struct Layouts {
     pub header: Rect,
@@ -59,6 +59,11 @@ impl Layouts {
     }
 }
 
+pub(crate) enum TuiEvent {
+    Key(KeyEvent),
+    ChatInput(String),
+}
+
 pub struct App {
     pub running: bool,
     pub active_panel: PanelId,
@@ -69,6 +74,7 @@ pub struct App {
     pub session_id: Option<String>,
     pub tools: std::sync::Arc<ToolRegistry>,
     pub tool_names: Vec<String>,
+    pub input_tx: Option<tokio::sync::mpsc::UnboundedSender<TuiEvent>>,
 }
 
 impl App {
@@ -89,6 +95,7 @@ impl App {
             session_id: None,
             tools: std::sync::Arc::new(tools),
             tool_names,
+            input_tx: None,
         })
     }
 
@@ -106,9 +113,10 @@ impl App {
             self.tools.list_tools().iter().map(|t| (*t).clone()).collect(),
         );
         self.chat = Some(Agent::new(AgentConfig {
-            system_prompt_text: assembled.prompt,
+            system_prompt: assembled.prompt,
             transport,
             tools: std::sync::Arc::clone(&self.tools),
+            skills_dirs: vec![],
             max_iterations: self.config.max_iterations.unwrap_or(50),
             max_messages: self.config.context.max_messages.unwrap_or(100),
             context_config: oben_agent::CompressionConfig::default(),
@@ -117,10 +125,10 @@ impl App {
     }
 
     pub fn create_chat_panel(&mut self) {
-        let session_id = self.chat.as_ref().and_then(|c| c.session_id().map(|s| s.to_string()));
-        let messages = self.chat.as_ref()
-            .and_then(|c| c.session_manager().active_session())
-            .map(|s| s.messages.clone());
+        let session_id = self.chat.as_ref().and_then(|c| c.active_session_name().map(|s| s.clone()));
+        let messages = self.chat.as_ref().and_then(|c| {
+            c.session_manager().active_session().map(|s| s.messages.clone())
+        });
         self.panels.insert(
             PanelId::Chat,
             Box::new(ChatPanel::new(session_id, messages)),
@@ -165,21 +173,9 @@ impl App {
     }
 
     pub fn update_session_messages(&mut self, messages: Vec<Message>) -> Result<()> {
-        if let Some(chat) = &mut self.chat {
-            let sid = chat.session_id().map(|s| s.to_string());
-            if let Some(sid) = sid {
-                if let Some(s) = chat.session_manager_mut().session_mut(&sid) {
-                    s.messages = messages;
-                }
-                chat.session_manager_mut().save(Some(&sid))?;
-            }
-        }
+        let _ = messages;
         Ok(())
     }
-}
-
-enum TuiEvent {
-    Key(KeyEvent),
 }
 
 pub async fn run_tui() -> Result<()> {
@@ -195,7 +191,9 @@ pub async fn run_tui() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = unbounded_channel();
+    app.input_tx = Some(event_tx.clone());
+
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
 
@@ -217,7 +215,32 @@ pub async fn run_tui() -> Result<()> {
         })?;
 
         match event_rx.recv().await {
-            Some(TuiEvent::Key(key)) => handle_key(&mut app, key),
+            Some(TuiEvent::Key(key)) => {
+                handle_key(&mut app, key);
+            }
+            Some(TuiEvent::ChatInput(input)) => {
+                // Run turn directly in async context (no spawn needed)
+                if let Some(ref mut chat) = app.chat {
+                    match chat.turn(&input, false, None).await {
+                        Ok(_) => {
+                            if app.active_panel == PanelId::Chat {
+                                let session_id = app.chat.as_ref().and_then(|c| c.active_session_name().map(|s| s.clone()));
+                                let messages = app.chat.as_ref().and_then(|c| {
+                                    c.session_manager().active_session().map(|s| s.messages.clone())
+                                });
+                                app.panels.insert(
+                                    PanelId::Chat,
+                                    Box::new(ChatPanel::new(session_id, messages)),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            app.status = format!("Error: {}", e);
+                            info!("Agent turn error: {}", e);
+                        }
+                    }
+                }
+            }
             None => break,
         }
     }
@@ -244,8 +267,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::F(4) => { app.active_panel = PanelId::Setup; return; }
         _ => {}
     }
-    if let Some(panel) = app.panels.get_mut(&app.active_panel) {
-        // Move panel out, call handle_key, put it back
+    if let Some(_panel) = app.panels.get_mut(&app.active_panel) {
         let panel_id = app.active_panel;
         if let Some(boxed_panel) = app.panels.remove(&panel_id) {
             let mut panel = boxed_panel;
@@ -275,14 +297,8 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         panel.draw(frame, layout.body);
     }
 
-    let session_info = match app.chat.as_ref().and_then(|c| c.session_id()) {
-        Some(sid) => {
-            if let Some(s) = app.chat.as_ref().and_then(|c| c.session_manager().active_session()) {
-                format!(" Session: {} ({} msgs)", s.name, s.messages.len())
-            } else {
-                format!(" Session: {sid}")
-            }
-        }
+    let session_info = match app.chat.as_ref().and_then(|c| c.session_manager().active_session()) {
+        Some(s) => format!(" Session: {} ({} msgs)", s.name, s.messages.len()),
         None => " No session".to_string(),
     };
 

@@ -1,11 +1,11 @@
 //! Chat panel — message history, streaming, input bar, tool call display.
 
 use super::Panel;
-use crate::App;
+use crate::{App, TuiEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarState, Widget, ScrollbarOrientation};
+use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarState, ScrollbarOrientation};
 use oben_models::Message;
 
 pub enum ChatViewMode {
@@ -120,7 +120,7 @@ impl Panel for ChatPanel {
         }
     }
 
-    fn handle_key(&mut self, _app: &mut App, key: KeyEvent) {
+    fn handle_key(&mut self, app: &mut App, key: KeyEvent) {
         if self.streaming {
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 self.streaming = false;
@@ -132,6 +132,10 @@ impl Panel for ChatPanel {
         match key.code {
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
                 if !self.input.is_empty() {
+                    // Send input to async main loop via channel
+                    if let Some(tx) = &app.input_tx {
+                        let _ = tx.send(TuiEvent::ChatInput(self.input.clone()));
+                    }
                     self.input.clear();
                     self.cursor = 0;
                 }

@@ -1,158 +1,194 @@
 /// Conversation loop — coordinator that wires the deep `TurnExecutor`.
 ///
-/// The `ConversationLoop` is a thin coordinator layer. The actual turn logic
-/// lives in `TurnExecutor` (deep module), and this layer provides:
-/// - Session lifecycle hooks
-/// - Compression summary tracking
-/// - The two public entry points (`run_turn` / `run_turn_with_streaming`)
+/// **Responsibilities:**
+/// - Interactive chat loop (prompt → input → execute → output)
+/// - Call mode management (Fresh → Incremental)
+/// - Preflight check before each turn
+/// - Delegate to TurnExecutor for actual turn cycle
+///
+/// ConversationLoop does NOT own SessionManager, ContextEngine, Budget,
+/// Transport, or Tools — those are Agent's responsibilities.
 
-use std::path::PathBuf;
 use anyhow::Result;
-
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use crate::context::ContextEngine;
 use crate::turn_executor::TurnExecutor;
-use crate::system_prompt;
-use oben_models::{Message, SessionStore};
+use oben_models::{CallMode, Message, SessionStore, TransportProvider};
+use oben_sessions::SessionManager;
 
-/// Type alias for the default conversation loop.
-pub type DefaultConversationLoop = ConversationLoop;
-
-/// Configuration for building the 3-tier system prompt.
-pub struct SystemPromptConfig {
-    identity: String,
-    tools_list: Vec<String>,
-    skills_dirs: Vec<PathBuf>,
-    context_cwd: Option<PathBuf>,
-    custom_message: Option<String>,
-    memory_context: Option<String>,
+/// Callbacks for interactive_chat — abstracts I/O for CLI/TUI.
+#[derive(Clone)]
+pub struct ChatCallbacks {
+    pub print_info: fn(&str),
+    pub print_prompt: fn(),
+    pub print_flush: fn(),
+    pub read_input: fn() -> Option<String>,
+    pub print_newline: fn(),
+    pub should_exit: fn(&str) -> bool,
 }
 
-impl SystemPromptConfig {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        identity: String,
-        tools_list: Vec<String>,
-        skills_dirs: Vec<PathBuf>,
-        context_cwd: Option<PathBuf>,
-        custom_message: Option<String>,
-        memory_context: Option<String>,
-    ) -> Self {
-        Self { identity, tools_list, skills_dirs, context_cwd, custom_message, memory_context }
-    }
-
-    pub fn build_system_prompt(&self, session_id: &str, model_name: &str) -> String {
-        let volatile = system_prompt::build_volatile_block(
-            self.memory_context.as_deref(),
-            Some(session_id),
-            if model_name.is_empty() { None } else { Some(model_name) },
-        );
-        let assembled = system_prompt::build_system_prompt(
-            &self.identity,
-            &self.tools_list,
-            &self.skills_dirs,
-            self.context_cwd.as_deref(),
-            self.custom_message.as_deref(),
-            if volatile.is_empty() { None } else { Some(&volatile) },
-        );
-        assembled.prompt
-    }
-}
-
-/// The main agent loop — a thin coordinator that wires the deep `TurnExecutor`.
-pub struct ConversationLoop {
-    executor: TurnExecutor,
-}
-
-impl ConversationLoop {
-    pub fn new(
-        transport: impl oben_models::TransportProvider + 'static,
-        tools: std::sync::Arc<oben_tools::ToolRegistry>,
-        max_iterations: usize,
-        max_messages: usize,
-        context_engine: Arc<Mutex<dyn ContextEngine>>,
-    ) -> Self {
+impl ChatCallbacks {
+    pub fn for_cli() -> Self {
         Self {
-            executor: TurnExecutor::with_config(
-                transport,
-                tools,
-                max_iterations,
-                max_messages,
-                context_engine,
-            ),
+            print_info: |msg: &str| println!("{}", msg),
+            print_prompt: || print!("> "),
+            print_flush: || { let _ = std::io::stdout().flush(); },
+            read_input: || {
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok() {
+                    Some(input.trim().to_string())
+                } else {
+                    Some(String::new())
+                }
+            },
+            print_newline: || println!(),
+            should_exit: |input: &str| input == "quit" || input == "exit",
         }
     }
+}
 
-    /// Run one conversation turn — delegates to `TurnExecutor::execute_turn(None)`.
-    pub async fn run_turn(
-        &mut self,
+/// The conversation coordinator — wires the deep `TurnExecutor`.
+///
+/// **Thin coordinator layer only.** The actual turn logic lives in
+/// `TurnExecutor` (deep module). This layer provides:
+/// - Interactive chat loop
+/// - Call mode management (Fresh → Incremental)
+/// - Preflight compression check
+/// - Delegation to `TurnExecutor` for the core turn cycle
+///
+/// ConversationLoop does NOT own SessionManager, ContextEngine, Budget,
+/// Transport, or Tools — that's Agent's job. All resources are passed
+/// as function parameters.
+pub struct ConversationLoop;
+
+impl ConversationLoop {
+    /// Execute one turn — wraps preflight + execute_turn.
+    ///
+    /// All resources passed as parameters — ConversationLoop owns nothing.
+    pub async fn execute_turn(
+        context_engine: &Arc<Mutex<Box<dyn ContextEngine>>>,
+        transport: &dyn TransportProvider,
+        tools: &Arc<oben_tools::ToolRegistry>,
         store: &mut dyn SessionStore,
         session_id: &str,
         user_message: Message,
-        call_mode: &oben_models::CallMode,
+        call_mode: &CallMode,
+        delta_callback: Option<oben_models::StreamDeltaCallback>,
     ) -> Result<String> {
-        let result = self.executor.execute_turn(store, session_id, user_message, call_mode, None).await?;
+        // Phase 1: preflight — compress if needed
+        {
+            let session = store.session_mut(session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+            context_engine.lock().unwrap().preflight_check(
+                &mut session.messages, Some(transport), None
+            ).await?;
+        }
+
+        // Phase 2: execute turn
+        let result = TurnExecutor::execute_turn(
+            context_engine,
+            transport,
+            tools,
+            store,
+            session_id,
+            user_message,
+            call_mode,
+            delta_callback,
+        ).await?;
+
         Ok(result.text)
     }
 
-    /// Run one conversation turn with streaming — delegates to `execute_turn(Some(cb))`.
-    pub async fn run_turn_with_streaming<F>(
-        &mut self,
-        store: &mut dyn SessionStore,
-        session_id: &str,
-        user_message: Message,
-        call_mode: &oben_models::CallMode,
-        delta_callback: Option<F>,
-    ) -> Result<String>
-    where
-        F: FnMut(&str) + Send + 'static,
-    {
-        let cb: oben_models::StreamDeltaCallback = Box::new(delta_callback.unwrap());
-        let result = self.executor.execute_turn(store, session_id, user_message, call_mode, Some(cb)).await?;
-        Ok(result.text)
-    }
+    /// Run the interactive chat loop.
+    ///
+    /// **Ownership**: Call mode (Fresh → Incremental) is tracked in this
+    /// method. Agent owns session state; ConversationLoop owns the loop
+    /// and delegates turns to TurnExecutor.
+    pub async fn run_loop(
+        context_engine: &Arc<Mutex<Box<dyn ContextEngine>>>,
+        transport: &dyn TransportProvider,
+        tools: &Arc<oben_tools::ToolRegistry>,
+        session_manager: &mut SessionManager,
+        call_mode: &mut Mutex<Option<CallMode>>,
+        stream: bool,
+        callbacks: ChatCallbacks,
+    ) -> Result<()> {
+        // Core loop
+        loop {
+            (callbacks.print_prompt)();
+            (callbacks.print_flush)();
 
-    /// Compress context if needed — coordinator concern.
-    pub async fn maybe_compress(&mut self, store: &mut dyn SessionStore, session_id: &str) -> Result<()> {
-        let session = store.session_mut(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
-        self.executor.maybe_compress(session).await?;
+            let input = match (callbacks.read_input)() {
+                Some(line) if !line.trim().is_empty() => line.trim().to_string(),
+                _ => continue,
+            };
+
+            if (callbacks.should_exit)(&input) { break; }
+
+            // Resolve session — get or create
+            let sid = session_manager
+                .active_session()
+                .map(|s| s.id.clone())
+                .unwrap_or_else(|| {
+                    // No active session — create one
+                    let id = format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+                    session_manager.new_session(&id);
+                    session_manager.active_session().unwrap().id.clone()
+                });
+
+            // Update call mode: Fresh on first turn, Incremental after
+            let call_mode_val = {
+                let mut guard = call_mode.lock().unwrap();
+                match guard.as_ref() {
+                    Some(CallMode::Fresh(_)) => {
+                        *guard = Some(CallMode::Incremental(sid.clone()));
+                        CallMode::Fresh(sid.clone())
+                    }
+                    Some(CallMode::Incremental(_)) => guard.as_ref().unwrap().clone(),
+                    None => {
+                        let mode = CallMode::Fresh(sid.clone());
+                        *guard = Some(mode.clone());
+                        mode
+                    }
+                }
+            };
+
+            let input_msg = Message::user(&input);
+
+            // Execute turn (preflight + execute in one borrow)
+            let response = Self::execute_turn(
+                context_engine,
+                transport,
+                tools,
+                session_manager, // SessionManager implements SessionStore
+                &sid,
+                input_msg,
+                &call_mode_val,
+                if stream {
+                    let cb = callbacks.clone();
+                    Some(Box::new(move |text: &str| {
+                        print!("{}", text);
+                        (cb.print_flush)();
+                    }))
+                } else {
+                    None
+                },
+            ).await?;
+
+            // Output
+            if stream {
+                (callbacks.print_newline)();
+            } else {
+                (callbacks.print_info)(&format!("\n{}", response));
+                (callbacks.print_flush)();
+            }
+
+            // Persist session after turn
+            session_manager.save(None)?;
+        }
+
         Ok(())
-    }
-
-    /// Preflight check — coordinator concern.
-    pub async fn preflight_check(
-        &mut self,
-        store: &mut dyn SessionStore,
-        session_id: &str,
-    ) -> Result<usize> {
-        let session = store.session_mut(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
-        self.executor.preflight_check(session).await
-    }
-
-    pub fn on_session_start(
-        &mut self,
-        session_id: &str,
-        model_name: &str,
-        context_length: Option<usize>,
-    ) {
-        self.executor.on_session_start(session_id, model_name, context_length);
-    }
-
-    pub fn on_session_reset(&mut self) {
-        self.executor.on_session_reset();
-    }
-
-    pub fn on_session_end(&mut self, session_id: &str) {
-        self.executor.on_session_end(session_id);
-    }
-
-    pub fn message_count(&self, store: &dyn SessionStore, session_id: &str) -> usize {
-        store
-            .session(session_id)
-            .map(|s| s.messages.len())
-            .unwrap_or(0)
     }
 }

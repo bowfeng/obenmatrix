@@ -10,8 +10,6 @@
 use anyhow::Result;
 use oben_models::{Message, TransportProvider};
 
-use crate::compression::CompressionConfig;
-
 // ---------------------------------------------------------------------------
 // ContextEngine trait
 // ---------------------------------------------------------------------------
