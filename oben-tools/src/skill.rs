@@ -448,15 +448,23 @@ mod tests {
         }
     }
 
+    fn get_unique_test_category() -> String {
+        // Generate a unique category per test to avoid parallel test interference
+        // on the shared skills directory.
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("oben-test-skill-{}", id)
+    }
+
     #[tokio::test]
     async fn lists_skills() {
-        cleanup_test_skills();
-        
-        // Create a test skill
+        let category = get_unique_test_category();
+
+        // Create a test skill in a unique category to avoid parallel test interference
         create_test_skill(
             "test-skill",
             "A test skill for testing",
-            "test",
+            &category,
             "This is the content of the test skill."
         );
 
@@ -469,8 +477,6 @@ mod tests {
         assert!(result.error.is_none());
         assert!(result.output.contains("test-skill"), "Output: {}", result.output);
         assert!(result.output.contains("A test skill for testing"));
-
-        cleanup_test_skills();
     }
 
     // NOTE: Category filter test removed - shares skill directory with parallel tests
@@ -478,26 +484,24 @@ mod tests {
 
     #[tokio::test]
     async fn views_skill() {
-        cleanup_test_skills();
-        
+        let category = get_unique_test_category();
+
         create_test_skill(
             "test-view",
             "View test skill",
-            "test",
+            &category,
             "Full content of test skill."
         );
 
         let registry = make_registry();
         let result = registry.execute("skill", &json!({
             "action": "view",
-            "name": "test/test-view.md",
+            "name": &format!("{}/test-view.md", category),
             "call_id": "test-3",
         })).await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("Full content of test skill"));
-
-        cleanup_test_skills();
     }
 
     #[tokio::test]

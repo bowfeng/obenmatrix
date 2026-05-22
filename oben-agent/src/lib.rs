@@ -14,28 +14,34 @@
 
 pub mod agent;
 pub mod budget;
+pub mod callbacks;
 pub mod compact_context;
 pub mod compact;
 pub mod context;
 pub mod conversation;
 pub mod error_classifier;
+pub mod fallback;
 pub mod interrupt;
 pub mod message_sanitize;
 pub mod prompt;
 pub mod retry;
+pub mod stream_processor;
 pub mod system_prompt;
 pub mod turn_executor;
 
 pub use agent::*;
 pub use budget::*;
+pub use callbacks::*;
 pub use compact_context::*;
 pub use compact::*;
 pub use context::*;
 pub use conversation::*;
 pub use error_classifier::*;
+pub use fallback::*;
 pub use interrupt::*;
 pub use message_sanitize::*;
 pub use prompt::*;
 pub use retry::*;
+pub use stream_processor::*;
 pub use system_prompt::*;
 pub use turn_executor::*;

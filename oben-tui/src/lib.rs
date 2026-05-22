@@ -120,6 +120,8 @@ impl App {
             max_iterations: self.config.max_iterations.unwrap_or(50),
             max_messages: self.config.context.max_messages.unwrap_or(100),
             context_config: oben_agent::CompactCofig::default(),
+            fallback_models: vec![],
+            callbacks: oben_agent::AgentCallbacks::default(),
         })?);
         Ok(())
     }
