@@ -1825,6 +1825,7 @@ dependencies = [
  "oben-skills",
  "oben-tools",
  "oben-transport",
+ "rand 0.8.6",
  "regex",
  "reqwest",
  "serde",

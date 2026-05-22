@@ -10,6 +10,14 @@
 //! - Delegate turn cycle to ConversationLoop
 //! - Manage session switching
 //! - Interactive chat loop
+//! - Cross-thread interrupt and steer (Tier 1 features)
+//!
+//! **Tier 1 Features (Hermes AIAgent Parity):**
+//! - Interrupt handling: cross-thread atomic flag for graceful stop
+//! - Steer mechanism: inject text into next tool result without interrupting
+//! - Iteration budget: with 80%/90% warnings (via ConversationLoop)
+//! - Retry with backoff: jittered exponential retry (via ConversationLoop)
+//! - Error classification: categorize API errors (via ConversationLoop)
 
 use std::sync::Arc;
 
@@ -18,6 +26,7 @@ use oben_models::StreamDeltaCallback;
 use oben_sessions::SessionManager;
 
 use crate::conversation::{ChatCallbacks, ConversationLoop};
+use crate::interrupt::InterruptState;
 
 /// Configuration for building an `Agent`.
 pub struct AgentConfig {
@@ -53,6 +62,8 @@ pub struct Agent {
     call_mode: Option<oben_models::CallMode>,
     /// Session manager — owns session lifecycle and persistence.
     session_manager: SessionManager,
+    /// Interrupt state — shared via Arc with ConversationLoop/TurnExecutor.
+    interrupt_state: Arc<InterruptState>,
 }
 
 impl Agent {
@@ -66,6 +77,7 @@ impl Agent {
             context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(config.context_config)),
             call_mode: None,
             session_manager: SessionManager::new()?,
+            interrupt_state: Arc::new(InterruptState::new()),
         };
         agent.eager_load_active_session();
         Ok(agent)
@@ -86,6 +98,47 @@ impl Agent {
     /// Mutably access the session manager (for admin ops: load, delete, new).
     pub fn session_manager_mut(&mut self) -> &mut SessionManager {
         &mut self.session_manager
+    }
+
+    // ── Tier 1: Interrupt & Steer ────────────────────────────────────────
+
+    /// Interrupt the agent's current tool-calling loop.
+    ///
+    /// Call this from another thread (e.g. input handler, message receiver)
+    /// to gracefully stop the agent and process a new message.
+    ///
+    /// Also signals long-running tool executions to terminate early, so the
+    /// agent can respond immediately.
+    ///
+    /// # Arguments
+    /// * `message` — Optional message that triggered the interrupt.
+    pub fn interrupt(&self, message: Option<&str>) {
+        let msg = message.map(|s| s.to_string());
+        self.interrupt_state.request_interrupt(msg);
+    }
+
+    /// Clear any pending interrupt request.
+    pub fn clear_interrupt(&self) {
+        self.interrupt_state.clear_interrupt();
+    }
+
+    /// Inject a user note into the next tool result without interrupting.
+    ///
+    /// Unlike `interrupt()`, this does NOT stop the current tool call. The
+    /// text is stashed and the agent loop appends it to the LAST tool
+    /// result's content once the current tool batch finishes.
+    ///
+    /// Thread-safe: callable from any thread.
+    ///
+    /// # Returns
+    /// `true` if the steer was accepted, `false` if the text was empty.
+    pub fn steer(&self, text: &str) -> bool {
+        self.interrupt_state.steer(text)
+    }
+
+    /// Get activity summary for diagnostics.
+    pub fn get_activity_summary(&self) -> crate::interrupt::ActivitySummary {
+        self.interrupt_state.get_activity_summary()
     }
 
     /// Execute one conversation turn.

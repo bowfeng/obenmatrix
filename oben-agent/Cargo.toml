@@ -24,3 +24,4 @@ regex.workspace = true
 reqwest.workspace = true
 dirs.workspace = true
 futures.workspace = true
+rand.workspace = true
