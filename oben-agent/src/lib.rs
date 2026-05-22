@@ -15,7 +15,7 @@
 pub mod agent;
 pub mod budget;
 pub mod compact_context;
-pub mod compression;
+pub mod compact;
 pub mod context;
 pub mod conversation;
 pub mod prompt;
@@ -25,7 +25,7 @@ pub mod turn_executor;
 pub use agent::*;
 pub use budget::*;
 pub use compact_context::*;
-pub use compression::*;
+pub use compact::*;
 pub use context::*;
 pub use conversation::*;
 pub use prompt::*;

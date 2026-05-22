@@ -19,11 +19,11 @@ use anyhow::Result;
 use oben_models::{Message, MessageContent, MessagePart, TransportProvider};
 
 // ---------------------------------------------------------------------------
-// CompressionConfig — parameters for the full compaction algorithm
+// CompactCofig — parameters for the full compaction algorithm
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct CompressionConfig {
+pub struct CompactCofig {
     /// Total context window size in tokens.
     pub context_length: usize,
     /// Token threshold as a percentage of context_length (e.g. 0.75 = 75%).
@@ -56,7 +56,7 @@ pub struct CompressionConfig {
     pub max_ineffective_consecutive: usize,
 }
 
-impl Default for CompressionConfig {
+impl Default for CompactCofig {
     fn default() -> Self {
         Self {
             context_length: 128_000,
@@ -77,7 +77,7 @@ impl Default for CompressionConfig {
     }
 }
 
-impl CompressionConfig {
+impl CompactCofig {
     /// Derive the compression threshold in tokens from the current
     /// context_length and threshold_percent.
     pub fn threshold_tokens(&self) -> usize {
@@ -98,9 +98,9 @@ impl CompressionConfig {
 #[derive(Debug, Clone)]
 pub struct CompressionStats {
     pub original_count: usize,
-    pub compressed_count: usize,
+    pub compacted_count: usize,
     pub original_tokens: usize,
-    pub compressed_tokens: usize,
+    pub compacted_tokens: usize,
     pub savings_pct: f64,
     pub pruned_tool_results: usize,
     pub summary_generated: bool,
@@ -119,7 +119,7 @@ pub struct CompressionResult {
 /// Compact a session's message list.
 ///
 /// This is the full compaction algorithm. It returns a new message list with
-/// the compressed/summarized version of the original.
+/// the compacted/summarized version of the original.
 ///
 /// # Arguments
 /// * `messages` — The original message list to compress
@@ -130,7 +130,7 @@ pub struct CompressionResult {
 /// Compact a session's message list.
 ///
 /// This is the full compaction algorithm. It returns a new message list with
-/// the compressed/summarized version of the original.
+/// the compacted/summarized version of the original.
 ///
 /// # Arguments
 /// * `transport` — LLM transport for generating summaries (must be OpenAI-compatible)
@@ -142,7 +142,7 @@ pub struct CompressionResult {
 pub async fn compact_session_messages(
     transport: &dyn TransportProvider,
     messages: &[Message],
-    config: &CompressionConfig,
+    config: &CompactCofig,
     previous_summary: Option<&str>,
     focus_topic: Option<&str>,
     _compression_round: usize,
@@ -176,22 +176,22 @@ pub async fn compact_session_messages(
 
     let summary_generated = summary.is_some();
 
-    // Step 5: Build compressed message list
-    let mut compressed = Vec::new();
+    // Step 5: Build compacted message list
+    let mut compacted = Vec::new();
 
     // Add head (protected verbatim)
-    compressed.extend(head.iter().cloned());
+    compacted.extend(head.iter().cloned());
 
     // Add summary if present
     if let Some(ref summary_text) = summary {
-        compressed.push(Message::system(summary_text));
+        compacted.push(Message::system(summary_text));
     }
 
     // Add tail (protected verbatim)
-    compressed.extend(tail.iter().cloned());
+    compacted.extend(tail.iter().cloned());
 
     // Step 6: Sanitize orphaned tool_call/tool_result pairs
-    let (removed_orphans, added_stubs) = sanitize_tool_pairs(&mut compressed);
+    let (removed_orphans, added_stubs) = sanitize_tool_pairs(&mut compacted);
     if removed_orphans > 0 || added_stubs > 0 {
         tracing::info!(
             "Sanitizer: removed {} orphaned tool result(s), added {} stub(s)",
@@ -201,27 +201,27 @@ pub async fn compact_session_messages(
     }
 
     // Step 7: Strip historical image content
-    let stripped_media = strip_historical_media(&mut compressed);
+    let stripped_media = strip_historical_media(&mut compacted);
     if stripped_media > 0 {
         tracing::info!("Stripped {} image part(s) from historical messages", stripped_media);
     }
 
-    let compressed_tokens = compressed.iter().map(|m| message_token_estimate(m)).sum::<usize>();
-    let compressed_count = compressed.len();
+    let compacted_tokens = compacted.iter().map(|m| message_token_estimate(m)).sum::<usize>();
+    let compacted_count = compacted.len();
 
     let savings_pct = if original_tokens > 0 {
-        ((original_tokens as f64 - compressed_tokens as f64) / original_tokens as f64 * 100.0).round()
+        ((original_tokens as f64 - compacted_tokens as f64) / original_tokens as f64 * 100.0).round()
     } else {
         0.0
     };
 
     Ok(CompressionResult {
-        messages: compressed,
+        messages: compacted,
         stats: CompressionStats {
             original_count,
-            compressed_count,
+            compacted_count,
             original_tokens,
-            compressed_tokens,
+            compacted_tokens,
             savings_pct,
             pruned_tool_results: pruned_count,
             summary_generated,
@@ -571,7 +571,7 @@ fn shrink_json_strings(value: &serde_json::Value, max_chars: usize) -> serde_jso
 
 fn split_messages<'a>(
     messages: &'a [Message],
-    config: &'a CompressionConfig,
+    config: &'a CompactCofig,
 ) -> (&'a [Message], &'a [Message], &'a [Message]) {
     let len = messages.len();
     if len == 0 {
@@ -592,7 +592,7 @@ fn split_messages<'a>(
 
 /// Walk backward from the end, accumulating tokens until budget is reached.
 /// Enforces a hard minimum of `tail_min_messages` messages.
-fn find_tail_cut_by_tokens(messages: &[Message], config: &CompressionConfig) -> usize {
+fn find_tail_cut_by_tokens(messages: &[Message], config: &CompactCofig) -> usize {
     let min_protect = config.tail_min_messages.min(messages.len());
     let budget = (config.tail_token_budget as f64 * config.tail_overhead) as usize;
     let mut accumulated = 0;
@@ -628,7 +628,7 @@ async fn generate_summary(
     messages: &[Message],
     previous_summary: Option<&str>,
     focus_topic: Option<&str>,
-    config: &CompressionConfig,
+    config: &CompactCofig,
     cached_tokens: usize,
 ) -> Result<String> {
     let prefix = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. Respond ONLY to the latest user message that appears AFTER this summary. The current session state (files, config, etc.) may reflect work described here — avoid repeating it";
@@ -823,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_split_messages_with_token_budget() {
-        let config = CompressionConfig {
+        let config = CompactCofig {
             context_length: 100_000,
             protect_first_n: 2,
             tail_token_budget: 100, // ~400 chars
@@ -846,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_split_messages_enforces_tail_min_messages() {
-        let config = CompressionConfig {
+        let config = CompactCofig {
             context_length: 100_000,
             protect_first_n: 2,
             tail_token_budget: 10, // Very small budget
@@ -865,7 +865,7 @@ mod tests {
 
     #[test]
     fn test_split_messages_short_message_list() {
-        let config = CompressionConfig::default();
+        let config = CompactCofig::default();
 
         // Fewer messages than head + tail protection
         let messages: Vec<Message> = (0..3).map(|i| Message::user(format!("msg{}", i))).collect();

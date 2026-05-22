@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::context::ContextEngine;
 use crate::turn_executor::TurnExecutor;
@@ -68,9 +68,9 @@ impl ConversationLoop {
     ///
     /// All resources passed as parameters — ConversationLoop owns nothing.
     pub async fn execute_turn(
-        context_engine: &Arc<Mutex<Box<dyn ContextEngine>>>,
+        context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
-        tools: &Arc<oben_tools::ToolRegistry>,
+        tools: &std::sync::Arc<oben_tools::ToolRegistry>,
         store: &mut dyn SessionStore,
         session_id: &str,
         user_message: Message,
@@ -78,12 +78,14 @@ impl ConversationLoop {
         delta_callback: Option<oben_models::StreamDeltaCallback>,
     ) -> Result<String> {
         // Phase 1: preflight — compress if needed
-        {
-            let session = store.session_mut(session_id)
-                .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
-            context_engine.lock().unwrap().preflight_check(
-                &mut session.messages, Some(transport), None
-            ).await?;
+        // Get a mutable reference to the session's messages for preflight
+        let session = store.session_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+        let passes = context_engine.preflight_check(
+            &mut session.messages, Some(transport), None
+        ).await?;
+        if passes > 0 {
+            tracing::debug!("Preflight compression: {} pass(es)", passes);
         }
 
         // Phase 2: execute turn
@@ -107,11 +109,11 @@ impl ConversationLoop {
     /// method. Agent owns session state; ConversationLoop owns the loop
     /// and delegates turns to TurnExecutor.
     pub async fn run_loop(
-        context_engine: &Arc<Mutex<Box<dyn ContextEngine>>>,
+        context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
         session_manager: &mut SessionManager,
-        call_mode: &mut Mutex<Option<CallMode>>,
+        call_mode: &mut Option<CallMode>,
         stream: bool,
         callbacks: ChatCallbacks,
     ) -> Result<()> {
@@ -139,19 +141,16 @@ impl ConversationLoop {
                 });
 
             // Update call mode: Fresh on first turn, Incremental after
-            let call_mode_val = {
-                let mut guard = call_mode.lock().unwrap();
-                match guard.as_ref() {
-                    Some(CallMode::Fresh(_)) => {
-                        *guard = Some(CallMode::Incremental(sid.clone()));
-                        CallMode::Fresh(sid.clone())
-                    }
-                    Some(CallMode::Incremental(_)) => guard.as_ref().unwrap().clone(),
-                    None => {
-                        let mode = CallMode::Fresh(sid.clone());
-                        *guard = Some(mode.clone());
-                        mode
-                    }
+            let call_mode_val = match call_mode {
+                Some(CallMode::Fresh(_)) => {
+                    *call_mode = Some(CallMode::Incremental(sid.clone()));
+                    CallMode::Fresh(sid.clone())
+                }
+                Some(CallMode::Incremental(_)) => call_mode.as_ref().unwrap().clone(),
+                None => {
+                    let mode = CallMode::Fresh(sid.clone());
+                    *call_mode = Some(mode.clone());
+                    mode
                 }
             };
 

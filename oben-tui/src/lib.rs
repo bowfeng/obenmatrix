@@ -119,7 +119,7 @@ impl App {
             skills_dirs: vec![],
             max_iterations: self.config.max_iterations.unwrap_or(50),
             max_messages: self.config.context.max_messages.unwrap_or(100),
-            context_config: oben_agent::CompressionConfig::default(),
+            context_config: oben_agent::CompactCofig::default(),
         })?);
         Ok(())
     }
@@ -137,7 +137,7 @@ impl App {
 
     pub fn create_sessions_panel(&mut self) {
         let sessions: Vec<oben_models::Session> = match &self.chat {
-            Some(chat) => chat.session_manager().list_sessions().iter().map(|s| (*s).clone()).collect(),
+            Some(chat) => chat.session_manager().list_sessions_full(),
             None => vec![],
         };
         self.panels.insert(PanelId::Sessions, Box::new(SessionsPanel::new(sessions)));

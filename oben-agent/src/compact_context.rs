@@ -10,10 +10,10 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::compression;
-use crate::compression::CompressionConfig;
+use crate::compact;
+use crate::compact::CompactCofig;
 use crate::context::ContextEngine;
-use oben_models::{Message, TransportProvider};
+use oben_models::{Message, SessionStore, TransportProvider};
 
 // ---------------------------------------------------------------------------
 // CompactContextEngine
@@ -24,7 +24,7 @@ use oben_models::{Message, TransportProvider};
 /// Tracks real token usage from API responses and decides when the
 /// context window is getting full.
 pub struct CompactContextEngine {
-    config: CompressionConfig,
+    config: CompactCofig,
     last_prompt_tokens: usize,
     last_completion_tokens: usize,
     last_total_tokens: usize,
@@ -40,10 +40,10 @@ pub struct CompactContextEngine {
 
 impl CompactContextEngine {
     pub fn new() -> Self {
-        Self::with_config(CompressionConfig::default())
+        Self::with_config(CompactCofig::default())
     }
 
-    pub fn with_config(config: CompressionConfig) -> Self {
+    pub fn with_config(config: CompactCofig) -> Self {
         Self {
             config,
             last_prompt_tokens: 0,
@@ -85,10 +85,10 @@ impl ContextEngine for CompactContextEngine {
     }
 
     fn estimate_tokens(&self, messages: &[Message]) -> usize {
-        messages.iter().map(compression::message_token_estimate).sum()
+        messages.iter().map(compact::message_token_estimate).sum()
     }
 
-    fn should_compress(&self, messages: &[Message]) -> bool {
+    fn should_compact(&self, messages: &[Message]) -> bool {
         if !self.active || self.is_thrashing() {
             return false;
         }
@@ -99,14 +99,14 @@ impl ContextEngine for CompactContextEngine {
         tokens > self.config.threshold_tokens()
     }
 
-    async fn compress(
+    async fn compact(
         &mut self,
         messages: &mut Vec<Message>,
         transport: Option<&dyn TransportProvider>,
         focus_topic: Option<&str>,
     ) -> Result<()> {
-        let should = self.should_compress(messages);
-        eprintln!("ContextEngine::compress: should_compress={}, tokens={}", should, self.estimate_tokens(messages));
+        let should = self.should_compact(messages);
+        eprintln!("ContextEngine::compact: should_compact={}, tokens={}", should, self.estimate_tokens(messages));
         if !should {
             return Ok(());
         }
@@ -120,7 +120,7 @@ impl ContextEngine for CompactContextEngine {
         if let Some(transport) = transport {
             let previous = self._previous_summary.clone();
             let transport_name = transport.name().to_string();
-            let result = match compression::compact_session_messages(
+            let result = match compact::compact_session_messages(
                 transport,
                 messages,
                 &self.config,
@@ -176,8 +176,8 @@ impl ContextEngine for CompactContextEngine {
             info!(
                 "Compression complete: {} -> {} messages, {} tokens saved ({:.0}%)",
                 result.stats.original_count,
-                result.stats.compressed_count,
-                result.stats.original_tokens.saturating_sub(result.stats.compressed_tokens),
+                result.stats.compacted_count,
+                result.stats.original_tokens.saturating_sub(result.stats.compacted_tokens),
                 result.stats.savings_pct,
             );
         } else {
@@ -253,7 +253,7 @@ impl ContextEngine for CompactContextEngine {
             self.ineffective_compression_count = 0;
             self.consecutive_effective_compressions = 0;
 
-            match self.compress(messages, transport, focus_topic).await {
+            match self.compact(messages, transport, focus_topic).await {
                 Ok(_) => info!("Preflight compression pass {} completed", passes),
                 Err(e) => {
                     tracing::warn!("Preflight compression pass {} failed: {}", passes, e);
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_threshold_tokens() {
-        let engine = CompactContextEngine::with_config(CompressionConfig {
+        let engine = CompactContextEngine::with_config(CompactCofig {
             context_length: 100_000,
             ..Default::default()
         });
@@ -317,18 +317,18 @@ mod tests {
     }
 
     #[test]
-    fn test_should_compress_with_real_tokens() {
-        let engine = CompactContextEngine::with_config(CompressionConfig {
+    fn test_should_compact_with_real_tokens() {
+        let engine = CompactContextEngine::with_config(CompactCofig {
             context_length: 10_000,
             ..Default::default()
         });
         let msgs = Vec::<Message>::new();
-        assert!(!engine.should_compress(&msgs));
+        assert!(!engine.should_compact(&msgs));
     }
 
     #[test]
     fn test_is_thrashing_resets_on_effective_compression() {
-        let config = CompressionConfig {
+        let config = CompactCofig {
             context_length: 100_000,
             ineffective_threshold: 10.0,
             max_ineffective_consecutive: 2,

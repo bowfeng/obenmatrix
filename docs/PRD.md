@@ -53,7 +53,7 @@
 | **oben-models** | 34 | ✅ | Message, Tool, Skill, Session, ProviderConfig, TransportProvider trait, ModelInfo, ModelListResponse |
 | **oben-utils** | 6 | ✅ | Logging (tracing + `--verbose`/`RUST_LOG`), terminal spinner, path security, env helpers, table formatter |
 | **oben-config** | 6 | ✅ | YAML config, setup wizard (interactive), system prompt defaults, gateway config serialization, model discovery |
-| **oben_conversation** | 27 | ✅ | ConversationLoop, ContextEngine (buffer + token tracking + compression trigger), full compaction algorithm (compact_session_messages, config_from_app, CompressionConfig/Result), PromptBuilder, streaming + non-streaming turns |
+| **oben_conversation** | 27 | ✅ | ConversationLoop, ContextEngine (buffer + token tracking + compression trigger), full compaction algorithm (compact_session_messages, config_from_app, CompactCofig/Result), PromptBuilder, streaming + non-streaming turns |
 | **oben-transport** | 64 | ✅ | BaseHTTPTransport, ChatCompletionsTransport (OpenAI-compatible), SSE streaming via `eventsource-stream`, 53 unit + 11 integration tests with wiremock |
 | **oben-tools** | 95 | ✅ | ToolRegistry + auto-registration, terminal (fg/bg + mgmt), read_file, write_file, http_get, web_search, search_files (ripgrep), patch (fuzzy), web_extract (SSRF + HTML), vision_analyze (image base64), memory (add/replace/remove + scan), clarify, todo (JSON store), code_execution (sandbox), osv_check, skill (list/view), 95 unit tests |
 | **oben-sessions** | 28 | ✅ | SessionDB (SQLite-backed session state engine with FTS5, message windows, lineage resolution), Rich Search (discover/scroll/browse shapes), Bounded MemoryStore (file locking, atomic writes, injection scanning, frozen snapshots). Legacy JSONL SessionManager preserved for backwards compatibility.
@@ -96,7 +96,7 @@ obenagent/               # Root workspace (binary)
 │   ├── conversation.rs  # ConversationLoop — main turn cycle (streaming + non-streaming)
 │   ├── context.rs       # ContextEngine — unified: buffer, real token tracking, should_compress(), compress()
 │   ├── prompt.rs        # PromptBuilder — system prompt + message assembly
-│   ├── compression.rs   # Full compaction: compact_session_messages(), config_from_app(), CompressionConfig/Result/Stats
+│   ├── compression.rs   # Full compaction: compact_session_messages(), config_from_app(), CompactCofig/Result/Stats
 │   ├── budget.rs        # IterationBudget — turn limits per conversation
 │   └── transport.rs     # Re-exports TransportProvider from oben-models
 │

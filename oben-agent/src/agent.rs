@@ -30,7 +30,7 @@ pub struct AgentConfig {
     /// Skills directories.
     pub skills_dirs: Vec<std::path::PathBuf>,
     /// Compression configuration.
-    pub context_config: crate::compression::CompressionConfig,
+    pub context_config: crate::compact::CompactCofig,
     /// Max iteration budget per turn.
     pub max_iterations: usize,
     /// Max messages in context.
@@ -48,9 +48,9 @@ pub struct Agent {
     /// System prompt — owned by Agent.
     system_prompt: String,
     /// Context engine — owned by Agent, manages token tracking & compression.
-    context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>>,
+    context_engine: Box<dyn crate::context::ContextEngine>,
     /// Call mode — tracked per-session (Fresh on first turn, Incremental after).
-    call_mode: std::sync::Mutex<Option<oben_models::CallMode>>,
+    call_mode: Option<oben_models::CallMode>,
     /// Session manager — owns session lifecycle and persistence.
     session_manager: SessionManager,
 }
@@ -58,15 +58,13 @@ pub struct Agent {
 impl Agent {
     /// Create a new agent. Does NOT own a tokio runtime.
     pub fn new(config: AgentConfig) -> Result<Self> {
-        let context_engine: Arc<std::sync::Mutex<Box<dyn crate::context::ContextEngine>>> =
-            Arc::new(std::sync::Mutex::new(Box::new(crate::compact_context::CompactContextEngine::with_config(config.context_config))));
         let mut agent = Self {
             transport: Arc::new(config.transport),
             tools: config.tools,
             skills_dirs: config.skills_dirs,
             system_prompt: config.system_prompt,
-            context_engine,
-            call_mode: std::sync::Mutex::new(None),
+            context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(config.context_config)),
+            call_mode: None,
             session_manager: SessionManager::new()?,
         };
         agent.eager_load_active_session();
@@ -106,13 +104,12 @@ impl Agent {
         // Phase 1: resolve session
         let sid = self.resolve_session();
 
-        // Phase 2: update call mode
-        let mut mode_guard = self.call_mode.lock().unwrap();
-        let call_mode = match mode_guard.as_ref() {
+        // Phase 2: update call mode (Fresh → Incremental)
+        let call_mode = match &self.call_mode {
             Some(m) => m.clone(),
             None => {
                 let mode = oben_models::CallMode::Fresh(sid.clone());
-                *mode_guard = Some(mode.clone());
+                self.call_mode = Some(mode.clone());
                 mode
             }
         };
@@ -121,7 +118,7 @@ impl Agent {
 
         // Phase 3: execute turn (preflight + execute in one borrow)
         let response = ConversationLoop::execute_turn(
-            &self.context_engine,
+            &mut self.context_engine,
             &self.transport,
             &self.tools,
             &mut self.session_manager,
@@ -222,7 +219,7 @@ impl Agent {
 
         // Delegate loop to ConversationLoop
         ConversationLoop::run_loop(
-            &self.context_engine,
+            &mut self.context_engine,
             &self.transport,
             &self.tools,
             &mut self.session_manager,

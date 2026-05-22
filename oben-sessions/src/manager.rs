@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, types::Value, OptionalExtension};
 use tracing::info;
 
-use oben_models::{Message, MessageRole, Session, SessionMetadata, SessionSource, SessionStore};
+use oben_models::{Message, MessageRole, Session, SessionMetadata, SessionOrigin, SessionSource, SessionStore, SessionManagerExt};
 
 fn now_ts() -> f64 {
     chrono::Utc::now().timestamp_millis() as f64 / 1000.0
@@ -198,9 +198,19 @@ impl SessionDB {
                     tool_call_count: row.get("tool_call_count")?,
                     input_tokens: row.get("input_tokens")?,
                     output_tokens: row.get("output_tokens")?,
+                    total_tokens: (row.get::<_, i32>("input_tokens")? as usize) + (row.get::<_, i32>("output_tokens")? as usize),
+                    estimated_cost_usd: 0.0,
+                    cost_status: "unknown".to_string(),
                     handoff_state: row.get("handoff_state")?,
                     handoff_platform: row.get("handoff_platform")?,
                     handoff_error: row.get("handoff_error")?,
+                    origin: None,
+                    last_prompt_tokens: 0,
+                    is_fresh_reset: false,
+                    suspended: false,
+                    resume_pending: false,
+                    resume_reason: None,
+                    last_resume_marked_at: None,
                 })
             }) {
                 Ok(metadata) => Ok(Some(Session {
@@ -251,6 +261,16 @@ impl SessionDB {
             handoff_state: row.11, handoff_platform: row.16, handoff_error: row.17,
             message_count: row.12, tool_call_count: row.13,
             input_tokens: row.14, output_tokens: row.15,
+            total_tokens: row.14.saturating_add(row.15),
+            estimated_cost_usd: 0.0,
+            cost_status: "unknown".to_string(),
+            origin: None,
+            last_prompt_tokens: 0,
+            is_fresh_reset: false,
+            suspended: false,
+            resume_pending: false,
+            resume_reason: None,
+            last_resume_marked_at: None,
         };
 
         Ok(Session {
@@ -481,6 +501,16 @@ impl SessionDB {
                     handoff_state: row.get("handoff_state")?,
                     handoff_platform: row.get("handoff_platform")?,
                     handoff_error: row.get("handoff_error")?,
+                    total_tokens: (row.get::<_, i32>("input_tokens")? as usize) + (row.get::<_, i32>("output_tokens")? as usize),
+                    estimated_cost_usd: 0.0,
+                    cost_status: "unknown".to_string(),
+                    origin: None,
+                    last_prompt_tokens: 0,
+                    is_fresh_reset: false,
+                    suspended: false,
+                    resume_pending: false,
+                    resume_reason: None,
+                    last_resume_marked_at: None,
                 })
             })?;
             let mut result = Vec::new();
@@ -673,11 +703,24 @@ pub fn sanitize_fts5_query(query: &str) -> String {
 
 // ── SessionManager (SQLite-backed, wraps SessionDB) ────────────────────────
 
+/// Lifecycle state of the session manager.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionState {
+    /// DB is not yet initialized. SessionManager is idle.
+    Off,
+    /// DB is open, session metadata loaded (titles, IDs, timestamps).
+    /// No messages loaded — messages are loaded on-demand.
+    Init,
+    /// One specific session's messages are loaded and ready for use.
+    Loaded(String),
+}
+
 /// In-memory session cache with SQLite persistence via SessionDB.
 pub struct SessionManager {
     db: SessionDB,
     sessions: std::collections::HashMap<String, Session>,
     active_session_id: Option<String>,
+    state: SessionState,
 }
 
 impl SessionManager {
@@ -700,7 +743,21 @@ impl SessionManager {
             db,
             sessions: std::collections::HashMap::new(),
             active_session_id: None,
+            state: SessionState::Off,
         })
+    }
+
+    /// Return current state.
+    pub fn state(&self) -> &SessionState {
+        &self.state
+    }
+
+    /// Close the session manager — drops the DB connection and resets to Off.
+    pub fn close(&mut self) -> Result<()> {
+        self.sessions.clear();
+        self.active_session_id = None;
+        self.state = SessionState::Off;
+        Ok(())
     }
 
     fn find_session_key_by_name(&self, name: &str) -> Option<String> {
@@ -724,59 +781,111 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Load session metadata from DB without messages.
+    ///
+    /// **State transition: Off → Init**.
+    ///
+    /// Populates the in-memory cache with session titles, IDs, and timestamps
+    /// — sufficient for listing and searching sessions without paying the cost
+    /// of loading all messages.
     pub fn init(&mut self) -> Result<()> {
-        // List all sessions from DB and load into cache
-        let session_ids: Vec<String> = self.db.list_sessions(None, &[], 1000, 0, false)?
-            .iter().map(|s| s.id.clone()).collect();
-        for sid in session_ids {
-            if let Ok(session) = self.db.get_session(&sid) {
-                if let Some(mut s) = session {
-                    let msgs = self.db.load_messages(&sid)?;
-                    s.persisted_message_count = msgs.len();
-                    s.messages = msgs;
-                    self.sessions.insert(sid.clone(), s);
-                }
-            }
+        // Idempotent — already initialized
+        if self.state != SessionState::Off {
+            return Ok(());
+        }
+        let metas = self.db.list_sessions(None, &[], 1000, 0, false)?;
+        for meta in metas {
+            let s = Session {
+                id: meta.id.clone(),
+                name: meta.name.clone(),
+                created_at: meta.started_at,
+                updated_at: meta.started_at,
+                messages: Vec::new(), // metadata only — no messages loaded
+                memory_context: None,
+                summary_chunks: Vec::new(),
+                persisted_message_count: 0,
+                metadata: meta,
+            };
+            self.sessions.insert(s.id.clone(), s);
         }
         if let Some(last) = self.sessions.values().max_by_key(|s| s.updated_at) {
             self.active_session_id = Some(last.id.clone());
         }
+        self.state = SessionState::Init;
         Ok(())
     }
 
+    /// Get or create a session by name, loading its messages.
+    ///
+    /// **State transition: Init → Loaded**.
+    /// Returns `&mut Session` for in-place modification. See also
+    /// `get_or_create_session` which returns the session ID.
     pub fn get_or_create_session(&mut self, name: &str) -> &mut Session {
+        // Ensure we're initialized
+        if self.state == SessionState::Off {
+            self.init().ok(); // best effort, continue anyway
+        }
         let key = self.find_session_key_by_name(name);
         match key {
-            Some(key) => self.sessions.get_mut(&key).unwrap(),
+            Some(key) => {
+                // Session exists in cache but might not have messages loaded
+                // Check if we need to load messages
+                let session = self.sessions.get(&key).unwrap();
+                if session.messages.is_empty() {
+                    self.load_session_into_cache(&key).ok();
+                }
+                self.state = SessionState::Loaded(key.clone());
+                self.sessions.get_mut(&key).unwrap()
+            }
             None => {
                 let session = self.db.get_or_create_session(name).unwrap();
                 let id = session.id.clone();
                 let messages = self.db.load_messages(&id).unwrap_or_default();
+                let msg_count = messages.len();
                 let mut full_session = session;
                 full_session.messages = messages;
+                full_session.persisted_message_count = msg_count;
                 self.sessions.insert(id.clone(), full_session);
                 self.active_session_id = Some(id.clone());
+                self.state = SessionState::Loaded(id.clone());
                 self.sessions.get_mut(&id).unwrap()
             }
         }
     }
 
-    pub fn new_session(&mut self, name: &str) -> &mut Session {
+    /// Create a new session (empty messages).
+    ///
+    /// **State transition: Off → Init → Loaded**.
+    /// Returns `&mut Session` for in-place modification. See also
+    /// `create_session` which returns the session ID.
+    pub fn create_session(&mut self, name: &str) -> &mut Session {
+        // Ensure we're initialized
+        if self.state == SessionState::Off {
+            self.init().ok(); // best effort, continue anyway
+        }
         let session = self.db.get_or_create_session(name).unwrap();
         let id = session.id.clone();
-        let messages = self.db.load_messages(&id).unwrap_or_default();
-        let mut full_session = session;
-        full_session.messages = messages;
-        self.sessions.insert(id.clone(), full_session);
+        self.sessions.insert(id.clone(), session);
         self.active_session_id = Some(id);
+        self.state = SessionState::Loaded(self.active_session_id.as_ref().unwrap().clone());
         self.sessions.get_mut(self.active_session_id.as_ref().unwrap()).unwrap()
     }
 
-    pub fn create(&mut self, name: &str) -> &mut Session {
-        self.new_session(name)
+    /// Alias for `create_session`.
+    pub fn new_session(&mut self, name: &str) -> &mut Session {
+        self.create_session(name)
     }
 
+    /// Switch to a session, loading its messages.
+    ///
+    /// **State transition: Init → Loaded**.
+    /// Returns `&mut Session` for in-place modification. See also
+    /// `switch_session` which returns the session ID.
     pub fn switch_session(&mut self, session_id: &str) -> Result<&mut Session> {
+        // Ensure we're initialized
+        if self.state == SessionState::Off {
+            self.init()?;
+        }
         let current_active = self.active_session_id.clone();
         if let Some(ref active_id) = current_active {
             if active_id != session_id {
@@ -805,7 +914,7 @@ impl SessionManager {
         if let Ok(sr) = self.switch(key) {
             return Ok(sr);
         }
-        let session = self.create(key);
+        let session = self.create_session(key);
         Ok(SwitchResult {
             session_id: session.id.clone(),
             name: session.name.clone(),
@@ -822,12 +931,14 @@ impl SessionManager {
         self.active_session_id.as_ref().and_then(|id| self.sessions.get_mut(id))
     }
 
-    pub fn list_sessions(&self) -> Vec<&Session> {
+    /// Return all sessions as a `Vec<&Session>`.
+    pub fn list_sessions_ref(&self) -> Vec<&Session> {
         self.sessions.values().collect()
     }
 
+    /// Alias for `list_sessions_ref`.
     pub fn list(&self) -> Vec<&Session> {
-        self.list_sessions()
+        self.list_sessions_ref()
     }
 
     pub fn save(&mut self, session_id: Option<&str>) -> Result<()> {
@@ -858,29 +969,29 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Load session messages into the cache.
+    ///
+    /// **State transition: Init → Loaded**.
+    ///
+    /// If `session_id` is `Some`, only that session's messages are loaded.
+    /// If `None`, the active session's messages are loaded.
     pub fn load(&mut self, session_id: Option<&str>) -> Result<()> {
-        match session_id {
-            Some(id) => self.load_session_into_cache(id),
-            None => {
-                // Load all sessions from DB
-                let ids: Vec<String> = self.db.list_sessions(None, &[], 1000, 0, false)?
-                    .iter().map(|s| s.id.clone()).collect();
-                for sid in ids {
-                    if let Ok(session) = self.db.get_session(&sid) {
-                        if let Some(mut s) = session {
-                            let msgs = self.db.load_messages(&sid)?;
-                            s.persisted_message_count = msgs.len();
-                            s.messages = msgs;
-                            self.sessions.insert(sid.clone(), s);
-                        }
-                    }
-                }
-                if let Some(last) = self.sessions.values().max_by_key(|s| s.updated_at) {
-                    self.active_session_id = Some(last.id.clone());
-                }
-                Ok(())
-            }
+        match self.state {
+            SessionState::Off => { self.init()?; }
+            SessionState::Init => {}
+            SessionState::Loaded(_) => return Ok(()), // already loaded
         }
+        // If no session_id given and no active session, just load metadata (no-op for empty DB)
+        if session_id.is_none() && self.active_session_id.is_none() {
+            return Ok(());
+        }
+        let target_id = match session_id {
+            Some(id) => id.to_string(),
+            None => self.active_session_id.as_ref().unwrap().clone(),
+        };
+        self.load_session_into_cache(&target_id)?;
+        self.state = SessionState::Loaded(target_id);
+        Ok(())
     }
 
     pub fn find_key(&self, key: &str) -> Option<String> {
@@ -890,7 +1001,7 @@ impl SessionManager {
         self.find_session_key_by_name(key)
     }
 
-    pub fn remove_session(&mut self, key: &str) -> Result<()> {
+    pub fn delete_session(&mut self, key: &str) -> Result<()> {
         // Resolve name → UUID (like switch() does)
         let resolved = self.find_key(key)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", key))?;
@@ -901,6 +1012,16 @@ impl SessionManager {
             self.active_session_id = None;
         }
         Ok(())
+    }
+
+    /// Alias for `delete_session`.
+    pub fn remove_session(&mut self, key: &str) -> Result<()> {
+        self.delete_session(key)
+    }
+
+    /// Alias for `delete_session`.
+    pub fn delete(&mut self, key: &str) -> Result<()> {
+        self.delete_session(key)
     }
 
     pub fn session_count(&self) -> usize {
@@ -923,14 +1044,9 @@ impl SessionManager {
         self.sessions.get(session_id)
     }
 
-    #[inline]
-    pub fn save_session(&mut self, session_id: &str) -> Result<()> {
-        self.save(Some(session_id))
-    }
-
-    #[inline]
-    pub fn delete(&mut self, session_id: &str) -> Result<()> {
-        self.remove_session(session_id)
+    /// Save pending messages. Accepts `Option<&str>` to match `SessionManagerExt`.
+    pub fn save_session(&mut self, session_id: Option<&str>) -> Result<()> {
+        self.save(session_id)
     }
 
     /// Split a session after compression: end the parent, create a child.
@@ -1019,6 +1135,292 @@ impl SessionManager {
         self.active_session_id = Some(new_id.clone());
         Some(self.sessions.get(&new_id).unwrap().clone())
     }
+
+    // ── SessionManagerExt methods ───────────────────────────────────────
+
+    /// Get or create a session by name, returning the session ID.
+    pub fn get_or_create_session_id(&mut self, name: &str) -> String {
+        let session = self.get_or_create_session(name);
+        session.id.clone()
+    }
+
+    /// Create a new empty session, returning the session ID.
+    pub fn create_session_id(&mut self, name: &str) -> String {
+        let session = self.create_session(name);
+        session.id.clone()
+    }
+
+    /// Reset the current session — clear messages, keep metadata.
+    pub fn reset_current_session(&mut self) -> Result<()> {
+        let sid = self.active_session_id.clone()
+            .ok_or_else(|| anyhow::anyhow!("No active session to reset"))?;
+        self.reset_session(&sid)
+    }
+
+    /// Reset a specific session — clear messages, keep metadata.
+    pub fn reset_session(&mut self, key: &str) -> Result<()> {
+        let sid = self.find_key(key)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", key))?;
+        let now_ts = now_ts();
+        // End the current session in DB
+        self.db.end_session(&sid, "reset")?;
+        // Create new session with same metadata
+        let old_meta = self.sessions.get(&sid).map(|s| s.metadata.clone());
+        let new_id = format!("reset_{}", uuid::Uuid::new_v4().to_string());
+        let meta = old_meta.unwrap_or_default();
+        let new_meta = SessionMetadata {
+            id: new_id.clone(),
+            name: meta.name.clone(),
+            source: meta.source.clone(),
+            model: meta.model.clone(),
+            system_prompt: meta.system_prompt.clone(),
+            parent_session_id: Some(sid.clone()),
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            end_reason: Some("reset".to_string()),
+            title: meta.title.clone(),
+            preview: meta.preview.clone(),
+            message_count: 0,
+            tool_call_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cost_status: "unknown".to_string(),
+            handoff_state: None,
+            handoff_platform: None,
+            handoff_error: None,
+            origin: meta.origin.clone(),
+            last_prompt_tokens: 0,
+            is_fresh_reset: true,
+            suspended: false,
+            resume_pending: false,
+            resume_reason: None,
+            last_resume_marked_at: None,
+        };
+        // Update DB
+        self.db.set_parent_session_id(&new_id, &sid)?;
+        // Update in-memory cache
+        if let Some(s) = self.sessions.get_mut(&sid) {
+            s.metadata = meta.clone();
+            s.messages.clear();
+            s.persisted_message_count = 0;
+            s.updated_at = chrono::Utc::now();
+        }
+        // Insert new session
+        let new_session = Session {
+            id: new_id.clone(),
+            name: meta.name.clone(),
+            created_at: meta.started_at,
+            updated_at: chrono::Utc::now(),
+            messages: Vec::new(),
+            memory_context: None,
+            summary_chunks: Vec::new(),
+            persisted_message_count: 0,
+            metadata: new_meta,
+        };
+        self.sessions.insert(new_id.clone(), new_session);
+        self.active_session_id = Some(new_id.clone());
+        Ok(())
+    }
+
+    /// Suspend a session — next access will auto-create a fresh session.
+    pub fn suspend_session(&mut self, key: &str) -> bool {
+        let sid = match self.find_key(key) {
+            Some(id) => id,
+            None => return false,
+        };
+        if let Some(s) = self.sessions.get_mut(&sid) {
+            s.metadata.suspended = true;
+            self.db.end_session(&sid, "suspended").ok();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Mark a session as resumable after a restart interruption.
+    pub fn mark_resume_pending(&mut self, key: &str, reason: &str) -> bool {
+        let sid = match self.find_key(key) {
+            Some(id) => id,
+            None => return false,
+        };
+        if let Some(s) = self.sessions.get_mut(&sid) {
+            if !s.metadata.suspended {
+                s.metadata.resume_pending = true;
+                s.metadata.resume_reason = Some(reason.to_string());
+                s.metadata.last_resume_marked_at = Some(chrono::Utc::now());
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Clear the resume-pending flag after a successful resumed turn.
+    pub fn clear_resume_pending(&mut self, key: &str) -> bool {
+        let sid = match self.find_key(key) {
+            Some(id) => id,
+            None => return false,
+        };
+        if let Some(s) = self.sessions.get_mut(&sid) {
+            if s.metadata.resume_pending {
+                s.metadata.resume_pending = false;
+                s.metadata.resume_reason = None;
+                s.metadata.last_resume_marked_at = None;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// List all sessions as `SessionListEntry` with metadata.
+    pub fn list_sessions(&self, active_minutes: Option<u64>) -> Vec<oben_models::SessionListEntry> {
+        let now = chrono::Utc::now();
+        let cutoff = active_minutes.map(|m| now - chrono::Duration::minutes(m as i64));
+        self.sessions.values()
+            .filter(|s| {
+                cutoff.map(|c| s.updated_at >= c).unwrap_or(true)
+            })
+            .map(|s| oben_models::SessionListEntry {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                title: s.metadata.title.clone(),
+                source: s.metadata.source.clone(),
+                model: s.metadata.model.clone(),
+                message_count: s.metadata.message_count,
+                tool_call_count: s.metadata.tool_call_count,
+                input_tokens: s.metadata.input_tokens,
+                output_tokens: s.metadata.output_tokens,
+                started_at: s.metadata.started_at,
+                last_active: s.updated_at,
+                ended_at: s.metadata.ended_at,
+                end_reason: s.metadata.end_reason.clone(),
+                preview: s.metadata.preview.clone(),
+                parent_session_id: s.metadata.parent_session_id.clone(),
+                suspended: s.metadata.suspended,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    /// List all sessions as full `Session` objects.
+    /// Alias for iterating `sessions.values().cloned()`.
+    pub fn list_sessions_full(&self) -> Vec<oben_models::Session> {
+        self.sessions.values().cloned().collect()
+    }
+
+    /// Prune sessions older than `max_age_days` (exclude suspended and active).
+    pub fn prune_sessions(&mut self, max_age_days: i64) -> usize {
+        if max_age_days <= 0 {
+            return 0;
+        }
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days);
+        let active_sid = self.active_session_id.clone();
+        let to_remove: Vec<String> = self.sessions.iter()
+            .filter(|(_, s)| {
+                !s.metadata.suspended
+                    && s.updated_at < cutoff
+                    && s.id != active_sid.as_deref().unwrap_or("")
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for sid in &to_remove {
+            self.db.delete_session(sid).ok();
+            self.sessions.remove(sid);
+        }
+        if to_remove.contains(&active_sid.clone().unwrap_or_default()) {
+            self.active_session_id = None;
+        }
+        to_remove.len()
+    }
+
+    /// Get the active session ID.
+    pub fn active_session_id(&self) -> Option<String> {
+        self.active_session_id.clone()
+    }
+
+    /// Update token tracking for a session.
+    pub fn update_token_tracking(
+        &mut self,
+        session_id: &str,
+        input_tokens: usize,
+        output_tokens: usize,
+        total_tokens: usize,
+        estimated_cost_usd: f64,
+    ) {
+        if let Some(s) = self.sessions.get_mut(session_id) {
+            s.metadata.input_tokens += input_tokens;
+            s.metadata.output_tokens += output_tokens;
+            s.metadata.total_tokens += total_tokens;
+            s.metadata.estimated_cost_usd += estimated_cost_usd;
+            s.metadata.cost_status = "tracked".to_string();
+            s.metadata.last_prompt_tokens = input_tokens;
+        }
+    }
+}
+
+// ── SessionManagerExt impl for SessionManager ───────────────────────────
+// Uses `SessionManager::method(self)` to call inherent methods without
+// ambiguity — avoids infinite recursion vs `self.method()`.
+
+impl SessionManagerExt for SessionManager {
+    fn init(&mut self) -> Result<()> {
+        SessionManager::init(self)
+    }
+    fn get_or_create_session(&mut self, name: &str) -> &mut Session {
+        SessionManager::get_or_create_session(self, name)
+    }
+    fn create_session(&mut self, name: &str) -> &mut Session {
+        SessionManager::create_session(self, name)
+    }
+    fn switch_session(&mut self, key: &str) -> Result<&mut Session, anyhow::Error> {
+        SessionManager::switch_session(self, key)
+    }
+    fn reset_current_session(&mut self) -> Result<()> {
+        SessionManager::reset_current_session(self)
+    }
+    fn reset_session(&mut self, key: &str) -> Result<()> {
+        SessionManager::reset_session(self, key)
+    }
+    fn suspend_session(&mut self, key: &str) -> bool {
+        SessionManager::suspend_session(self, key)
+    }
+    fn mark_resume_pending(&mut self, key: &str, reason: &str) -> bool {
+        SessionManager::mark_resume_pending(self, key, reason)
+    }
+    fn clear_resume_pending(&mut self, key: &str) -> bool {
+        SessionManager::clear_resume_pending(self, key)
+    }
+    fn list_sessions(&self, active_minutes: Option<u64>) -> Vec<oben_models::SessionListEntry> {
+        SessionManager::list_sessions(self, active_minutes)
+    }
+    fn delete_session(&mut self, key: &str) -> Result<()> {
+        SessionManager::remove_session(self, key)
+    }
+    fn prune_sessions(&mut self, max_age_days: i64) -> usize {
+        SessionManager::prune_sessions(self, max_age_days)
+    }
+    fn save_session(&mut self, session_id: Option<&str>) -> Result<()> {
+        SessionManager::save(self, session_id)
+    }
+    fn active_session_id(&self) -> Option<String> {
+        SessionManager::active_session_id(self)
+    }
+    fn update_token_tracking(
+        &mut self,
+        session_id: &str,
+        input_tokens: usize,
+        output_tokens: usize,
+        total_tokens: usize,
+        estimated_cost_usd: f64,
+    ) {
+        SessionManager::update_token_tracking(self, session_id, input_tokens, output_tokens, total_tokens, estimated_cost_usd)
+    }
 }
 
 // ── SessionStore impl ───────────────────────────────────────────────────
@@ -1064,7 +1466,7 @@ mod tests {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path).unwrap();
         mgr.new_session("s1"); mgr.new_session("s2");
-        assert_eq!(mgr.list_sessions().len(), 2);
+        assert_eq!(mgr.list_sessions_ref().len(), 2);
     }
 
     #[test] fn test_manager_get_or_create_reuses_existing() {
@@ -1088,7 +1490,7 @@ mod tests {
         let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
         mgr2.load(None).unwrap();
         assert_eq!(mgr2.session_count(), count);
-        let loaded = mgr2.list_sessions().into_iter().next().unwrap();
+        let loaded = mgr2.list_sessions_ref().into_iter().next().unwrap();
         assert_eq!(loaded.name, "persist-test");
         assert_eq!(loaded.message_count(), 2);
     }
@@ -1134,13 +1536,13 @@ mod tests {
         mgr.save(None).unwrap();
         let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
         mgr2.load(None).unwrap();
-        let loaded = mgr2.list_sessions().into_iter().next().unwrap();
+        let loaded = mgr2.list_sessions_ref().into_iter().next().unwrap();
         assert_eq!(loaded.message_count(), 4);
     }
 
     #[test] fn test_manager_delete() {
         let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
-        mgr.create("to-delete");
+        mgr.new_session("to-delete");
         assert_eq!(mgr.list().len(), 1);
         let id = mgr.list()[0].id.clone();
         mgr.remove_session(&id).unwrap();
@@ -1153,7 +1555,7 @@ mod tests {
         // to db.delete_session() and HashMap::remove() which both
         // expect the UUID primary key.
         let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
-        mgr.create("delete-by-name");
+        mgr.new_session("delete-by-name");
         assert_eq!(mgr.list().len(), 1);
         mgr.remove_session("delete-by-name").unwrap();
         assert_eq!(mgr.list().len(), 0);

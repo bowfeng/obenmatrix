@@ -14,7 +14,7 @@ use clap::Parser;
 use crate::cli::{Cli, Commands, ConfigCommand, ModelsCommand, SessionsCommand};
 use oben_models::{Session, SessionStore};
 
-/// In-memory session store — no SQLite, no persistence, just a single
+/// In-memory session store - no SQLite, no persistence, just a single
 /// session holding a `Vec<Message>`. Perfect for one-shot CLI commands.
 struct MemorySessionStore {
     session: Session,
@@ -110,7 +110,7 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         skills_dirs,
         max_iterations: config.max_iterations.unwrap_or(50),
         max_messages: config.context.max_messages.unwrap_or(100),
-        context_config: oben_agent::CompressionConfig::default(),
+        context_config: oben_agent::CompactCofig::default(),
     })?;
 
     let callbacks = oben_agent::ChatCallbacks::for_cli();
@@ -133,7 +133,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         skills_dirs: vec![],
         max_iterations: config.max_iterations.unwrap_or(50),
         max_messages: config.context.max_messages.unwrap_or(100),
-        context_config: oben_agent::CompressionConfig::default(),
+        context_config: oben_agent::CompactCofig::default(),
     })?;
 
     let response = agent.turn(prompt, stream, stream.then(|| {
@@ -182,7 +182,7 @@ fn list_tools() -> Result<()> {
     } else {
         println!("Registered tools ({}):", tool_list.len());
         for tool in tool_list {
-            println!("  📦 {} — {}", tool.name, tool.description);
+            println!("  📦 {} - {}", tool.name, tool.description);
         }
     }
     Ok(())
@@ -192,7 +192,7 @@ fn list_skills() -> Result<()> {
     let skills = oben_skills::builtin_skills();
     println!("Built-in skills ({}):", skills.len());
     for skill in skills {
-        println!("  📖 {} ({}) — {}", skill.name, skill.category, skill.description);
+        println!("  📖 {} ({}) - {}", skill.name, skill.category, skill.description);
     }
     Ok(())
 }
@@ -200,18 +200,18 @@ fn list_skills() -> Result<()> {
 // ── Sessions ────────────────────────────────────────────────────────────
 
 fn list_sessions() -> Result<()> {
-    let mut memory = oben_sessions::SessionManager::new()?;
-    memory.init()?;
-    let sessions = memory.list_sessions();
+    let mut session_manager = oben_sessions::SessionManager::new()?;
+    session_manager.init()?;
+    let sessions = session_manager.list_sessions(None);
     if sessions.is_empty() {
         println!("No sessions found.");
     } else {
         println!("Sessions ({}):", sessions.len());
         for s in sessions {
-            let marker = memory.active_session().and_then(|a|
+            let marker = session_manager.active_session().and_then(|a|
                 if a.id == s.id { Some(" ← active") } else { None }
             ).unwrap_or("");
-            println!("  📄 {} — {} messages{}", s.name, s.message_count(), marker);
+            println!("  📄 {} — {} messages{}", s.name, s.message_count, marker);
         }
     }
     Ok(())
@@ -240,7 +240,7 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
     println!("Compacting session '{}' ({} messages)...", session.name, session.message_count());
 
     let transport = create_transport(&config, "", Vec::new());
-    let comp_config = oben_agent::compression::CompressionConfig::default();
+    let comp_config = oben_agent::compact::CompactCofig::default();
 
     let result = oben_agent::compact_session_messages(
         &transport,
@@ -262,11 +262,11 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
             });
         }
     }
-    sm.save_session(&session.id)?;
+    sm.save_session(Some(&session.id))?;
 
     println!("✓ Compaction complete:");
     println!("  Before: {} messages, ~{} tokens", result.stats.original_count, result.stats.original_tokens);
-    println!("  After:  {} messages, ~{} tokens", result.stats.compressed_count, result.stats.compressed_tokens);
+    println!("  After:  {} messages, ~{} tokens", result.stats.compacted_count, result.stats.compacted_tokens);
     println!("  Saved:  {:.0}% tokens ({} tool results pruned)",
         result.stats.savings_pct, result.stats.pruned_tool_results);
     if result.stats.summary_generated {
@@ -302,7 +302,7 @@ fn dump_session(session_key: Option<&str>) -> Result<()> {
     let session_id = sm.find_key(&target)
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}. Run `oben sessions list` to see available sessions", target))?;
 
-    let sessions: Vec<oben_models::Session> = sm.list_sessions().into_iter().map(|s| s.clone()).collect();
+    let sessions: Vec<oben_models::Session> = sm.list_sessions_full();
     let session = sessions.iter()
         .find(|s| s.id == session_id)
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?
