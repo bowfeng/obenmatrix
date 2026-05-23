@@ -151,16 +151,18 @@ impl TurnExecutor {
         session.messages.push(user_message);
 
         // ── Streaming setup ──────────────────────────────────────────
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4096);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let mut callback_handle: Option<tokio::task::JoinHandle<()>> = None;
         let has_streaming = delta_callback.is_some();
 
-        // Build the callback that stream_chat will invoke.
-        // This callback writes each text chunk to `tx`. A separate spawned
-        // task reads from `rx`, buffers chunks, and forwards them to the
-        // user-provided callback.
-        let mut stream_cb: Option<oben_models::StreamDeltaCallback> = if let Some(user_cb) = delta_callback {
-            let user_cb = Arc::new(std::sync::Mutex::new(user_cb));
+        // Wrap the user callback in Arc<Mutex> so it can be shared across
+        // loop iterations and retry attempts. Each iteration creates a new
+        // wrapper that forwards to the same Arc.
+        let shared_cb = delta_callback.map(|cb| Arc::new(std::sync::Mutex::new(cb)));
+
+        // Spawn task that forwards text from channel to user callback.
+        if let Some(ref cb_for_task) = shared_cb {
+            let cb_for_task = Arc::clone(cb_for_task);
             callback_handle = Some(tokio::task::spawn(async move {
                 let mut buf = String::new();
                 const FLUSH_THRESHOLD: usize = 512;
@@ -168,21 +170,14 @@ impl TurnExecutor {
                     buf.push_str(&chunk);
                     if buf.len() >= FLUSH_THRESHOLD {
                         let text = std::mem::take(&mut buf);
-                        user_cb.lock().unwrap()(&text);
+                        cb_for_task.lock().unwrap()(&text);
                     }
                 }
                 if !buf.is_empty() {
-                    user_cb.lock().unwrap()(&buf);
+                    cb_for_task.lock().unwrap()(&buf);
                 }
             }));
-            // Create a callback that writes chunks to the channel
-            let cb_tx = tx.clone();
-            Some(Box::new(move |text: &str| {
-                let _ = cb_tx.try_send(text.to_string());
-            }) as oben_models::StreamDeltaCallback)
-        } else {
-            None
-        };
+        }
 
         // ── Budget setup ─────────────────────────────────────────────
         let mut budget = budget.unwrap_or_else(|| IterationBudget::new(90));
@@ -315,77 +310,39 @@ impl TurnExecutor {
             let transport_ref = transport;
             let callbacks_ref = &config.callbacks;
 
-            // On the first iteration, consume the streaming callback.
-            // Subsequent iterations (tool call responses) use non-streaming chat().
-            let response = match stream_cb.take() {
-                Some(delta_cb) => {
-                    // ── Streaming path: use stream_chat for real-time output ──
-                    // Wrap callback in Arc<Mutex> so retries can share it.
-                    // Create a closure wrapper for each retry attempt.
-                    let cb_shared = Arc::new(std::sync::Mutex::new(delta_cb));
-                    retry_with_backoff(&config.retry_config, || {
-                        let transport_ref = transport_ref;
-                        let messages = session.messages.clone();
-                        let mode = call_mode.clone();
-                        let cb = cb_shared.clone();
-                        let callbacks_ref = callbacks_ref;
+            // Always stream — clone Arc<Mutex> for each retry attempt.
+            let cb_shared = shared_cb.as_ref().unwrap().clone();
+            let response = retry_with_backoff(&config.retry_config, || {
+                let transport_ref = transport_ref;
+                let messages = session.messages.clone();
+                let mode = call_mode.clone();
+                let cb = cb_shared.clone();
+                let callbacks_ref = callbacks_ref;
 
-                        async move {
+                async move {
+                    if let Some(cb) = callbacks_ref {
+                        cb.call_status("lifecycle", "api_call_start");
+                    }
+                    let cb_clone = cb.clone();
+                    let cb_wrapper = Box::new(move |text: &str| {
+                        cb_clone.lock().unwrap()(text);
+                    }) as oben_models::StreamDeltaCallback;
+                    match transport_ref.stream_chat(&messages, &mode, cb_wrapper).await {
+                        Ok(resp) => {
                             if let Some(cb) = callbacks_ref {
-                                cb.call_status("lifecycle", "api_call_start");
+                                cb.call_status("lifecycle", "api_call_complete");
                             }
-                            // Create a new callback that delegates to the shared mutex
-                            let cb_clone = cb.clone();
-                            let cb_wrapper = Box::new(move |text: &str| {
-                                cb_clone.lock().unwrap()(text);
-                            }) as oben_models::StreamDeltaCallback;
-                            match transport_ref.stream_chat(&messages, &mode, cb_wrapper).await {
-                                Ok(resp) => {
-                                    if let Some(cb) = callbacks_ref {
-                                        cb.call_status("lifecycle", "api_call_complete");
-                                    }
-                                    Ok(resp)
-                                }
-                                Err(e) => {
-                                    if let Some(cb) = callbacks_ref {
-                                        cb.call_status("warn", &format!("api_call_failed: {}", e));
-                                    }
-                                    Err(retryable_transient(e.to_string()))
-                                }
-                            }
+                            Ok(resp)
                         }
-                    }).await
-                }
-                None => {
-                    // ── Non-streaming path: use chat() ──
-                    retry_with_backoff(&config.retry_config, || {
-                        let transport_ref = transport_ref;
-                        let messages = session.messages.clone();
-                        let mode = call_mode.clone();
-                        let callbacks_ref = callbacks_ref;
-
-                        async move {
+                        Err(e) => {
                             if let Some(cb) = callbacks_ref {
-                                cb.call_status("lifecycle", "api_call_start");
+                                cb.call_status("warn", &format!("api_call_failed: {}", e));
                             }
-                            match transport_ref.chat(&messages, &mode).await {
-                                Ok(resp) => {
-                                    if let Some(cb) = callbacks_ref {
-                                        cb.call_status("lifecycle", "api_call_complete");
-                                    }
-                                    Ok(resp)
-                                }
-                                Err(e) => {
-                                    if let Some(cb) = callbacks_ref {
-                                        cb.call_status("warn", &format!("api_call_failed: {}", e));
-                                    }
-                                    Err(retryable_transient(e.to_string()))
-                                }
-                            }
+                            Err(retryable_transient(e.to_string()))
                         }
-                    }).await
+                    }
                 }
-            };
+            }).await;
 
             // ── Fallback activation (after retry loop) ─────────────────
             if let Err(ref e) = response {

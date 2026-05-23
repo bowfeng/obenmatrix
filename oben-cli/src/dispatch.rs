@@ -105,7 +105,7 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
 
     let mut chat = oben_agent::Agent::new(oben_agent::AgentConfig {
         system_prompt: assembled.prompt.clone(),
-        transport: create_transport(&config, &assembled.prompt, tool_names.clone()),
+        transport: create_transport(&config, &assembled.prompt, &tools),
         tools: std::sync::Arc::new(tools),
         skills_dirs,
         max_iterations: config.max_iterations.unwrap_or(50),
@@ -127,7 +127,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     oben_tools::discover_builtin_tools(&mut tools);
 
     let system_prompt = oben_config::defaults::default_system_prompt();
-    let transport = create_transport(&config, &system_prompt, vec![]);
+    let transport = create_transport(&config, &system_prompt, &tools);
 
     let mut agent = oben_agent::Agent::new(oben_agent::AgentConfig {
         system_prompt: system_prompt,
@@ -245,7 +245,7 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
 
     println!("Compacting session '{}' ({} messages)...", session.name, session.message_count());
 
-    let transport = create_transport(&config, "", Vec::new());
+    let transport = create_transport(&config, "", &oben_tools::ToolRegistry::new());
     let comp_config = oben_agent::compact::CompactCofig::default();
 
     let result = oben_agent::compact_session_messages(
@@ -344,7 +344,7 @@ fn dump_session(session_key: Option<&str>) -> Result<()> {
 
 async fn run_models(action: ModelsCommand) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
-    let transport = create_transport(&config, "", Vec::new());
+    let transport = create_transport(&config, "", &oben_tools::ToolRegistry::new());
 
     match action {
         ModelsCommand::List => {
@@ -395,11 +395,12 @@ fn collect_tool_defs(registry: &oben_tools::ToolRegistry) -> Vec<oben_models::To
 fn create_transport(
     config: &oben_config::AppConfig,
     system_prompt: &str,
-    _tool_names: Vec<String>,
+    tools: &oben_tools::ToolRegistry,
 ) -> oben_transport::ChatCompletionsTransport {
+    let tool_defs = collect_tool_defs(tools);
     oben_transport::ChatCompletionsTransport::from_config_with_tools(
         &config.model,
         system_prompt,
-        collect_tool_defs(&oben_tools::ToolRegistry::new()),
+        tool_defs,
     )
 }

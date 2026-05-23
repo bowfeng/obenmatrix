@@ -145,7 +145,8 @@ impl Default for StreamingContextScrubber {
 /// If a `thinking` tag is not closed, the entire text is preserved
 /// (we don't want to silently drop user-visible content).
 pub fn scrub_thinking_blocks(text: &str) -> String {
-    tracing::debug!("scrub_thinking_blocks: input len={}, first_80={:?}", text.len(), &text[..text.len().min(80)]);
+    let preview: String = text.chars().take(80).collect();
+    tracing::debug!("scrub_thinking_blocks: input len={}, first_80={:?}", text.len(), preview);
     let mut result = String::new();
     let mut remaining = text.to_string();
 

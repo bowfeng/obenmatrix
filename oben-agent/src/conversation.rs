@@ -234,9 +234,11 @@ impl ConversationLoop {
             let _ = session_manager.save(None);
             if let Some(resp) = response_text {
                 if !stream {
+                    // Non-streaming: print the full response.
                     (callbacks.print_info)(&format!("\n{}", resp));
-                    (callbacks.print_flush)();
                 }
+                // In streaming mode, text was already printed via delta callback.
+                (callbacks.print_flush)();
             }
         }
 

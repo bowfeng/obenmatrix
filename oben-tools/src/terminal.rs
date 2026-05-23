@@ -360,6 +360,9 @@ async fn handle_background_task(
 const MAX_OUTPUT_BYTES: usize = 100_000;
 
 /// Format stdout and stderr into a unified output string.
+///
+/// No labels are added — the chat panel displays raw output.
+/// Stderr is appended only if non-empty.
 fn format_output(stdout: &str, stderr: &str) -> String {
     let stdout = if stdout.len() > MAX_OUTPUT_BYTES {
         format!(
@@ -381,18 +384,10 @@ fn format_output(stdout: &str, stderr: &str) -> String {
         stderr.to_string()
     };
 
-    let mut parts = Vec::new();
-    if !stdout.is_empty() {
-        parts.push(format!("stdout:\n{}", stdout));
-    }
-    if !stderr.is_empty() {
-        parts.push(format!("stderr:\n{}", stderr));
-    }
-
-    if parts.is_empty() {
-        String::new()
+    if !stdout.is_empty() && !stderr.is_empty() {
+        format!("{}\n{}", stdout, stderr)
     } else {
-        parts.join("\n")
+        format!("{}{}", stdout, stderr)
     }
 }
 
@@ -598,7 +593,7 @@ mod tests {
         })).await;
 
         assert!(result.error.is_none());
-        assert!(result.output.contains("stdout"));
+        assert!(result.output.contains("out"));
         assert!(result.output.contains("err"));
     }
 

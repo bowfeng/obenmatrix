@@ -486,7 +486,8 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
 
         let choice = resp.choices.first().ok_or_else(|| anyhow::anyhow!("No response choices"))?;
         let text = choice.message.content.clone().unwrap_or_default();
-        debug!("Extracted text: len={}, first_100={:?}", text.len(), &text[..text.len().min(100)]);
+        let preview: String = text.chars().take(100).collect();
+        debug!("Extracted text: len={}, first_100={:?}", text.len(), preview);
         let tool_calls: Vec<TransportToolCall> = choice
             .message
             .tool_calls
