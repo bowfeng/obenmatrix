@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, types::Value, OptionalExtension};
 use tracing::info;
 
-use oben_models::{Message, MessageRole, Session, SessionMetadata, SessionOrigin, SessionSource, SessionStore, SessionManagerExt};
+use oben_models::{Message, MessageRole, Session, SessionMetadata, SessionSource, SessionStore, SessionManagerExt};
 
 fn now_ts() -> f64 {
     chrono::Utc::now().timestamp_millis() as f64 / 1000.0
@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL DEFAULT 'cli',
     model TEXT,
+    model_config TEXT,
     system_prompt TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
@@ -45,6 +46,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     tool_call_count INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    reasoning_tokens INTEGER DEFAULT 0,
+    api_call_count INTEGER DEFAULT 0,
+    user_id TEXT,
+    estimated_cost_usd REAL DEFAULT 0,
+    actual_cost_usd REAL DEFAULT 0,
+    cost_status TEXT,
+    cost_source TEXT,
+    pricing_version TEXT,
+    billing_provider TEXT,
+    billing_base_url TEXT,
+    billing_mode TEXT,
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
@@ -63,19 +77,156 @@ CREATE TABLE IF NOT EXISTS messages (
     finish_reason TEXT,
     reasoning TEXT,
     reasoning_content TEXT,
-    reasoning_details TEXT
+    reasoning_details TEXT,
+    codex_reasoning_items TEXT,
+    codex_message_items TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 ";
 
 const FTS_SQL: &str = "
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content);
+
+-- Trigram FTS5 table for CJK/Thai/other non-space-delimited scripts.
+-- The default unicode61 tokenizer splits CJK characters into individual
+-- tokens, breaking phrase matching. The trigram tokenizer creates
+-- overlapping 3-byte sequences so substring queries work natively.
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
+    content,
+    tokenize='trigram'
+);
+
+-- Sync triggers for default FTS5
+CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+    DELETE FROM messages_fts WHERE rowid = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+    DELETE FROM messages_fts WHERE rowid = old.id;
+    INSERT INTO messages_fts(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
+END;
+
+-- Sync triggers for trigram FTS5
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
+    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
+    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
+END;
 ";
 
+fn is_retryable_error(error: &anyhow::Error) -> bool {
+    let msg = error.to_string().to_lowercase();
+    msg.contains("locked") || msg.contains("busy") || msg.contains("database is locked")
+}
+
+
+
+/// Schema version for data migrations (not column additions).
+const SCHEMA_VERSION: u32 = 2;
+
 fn reconcile_schema(conn: &Connection) -> Result<()> {
+    // Ensure schema_version table exists
     conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")?;
-    conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (11)", [])?;
+    
+    // Check current version
+    let current_version: u32 = conn.query_row(
+        "SELECT version FROM schema_version LIMIT 1",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    
+    // Declarative column reconciliation: compare SCHEMA_SQL against live tables
+    // and ADD any missing columns. This makes adding a column as simple as
+    // editing SCHEMA_SQL — no version-gated migrations needed.
+    let expected = parse_expected_columns(SCHEMA_SQL)?;
+    for (table_name, expected_cols) in &expected {
+        let live_cols = get_live_columns(conn, table_name)?;
+        for (col_name, col_type) in expected_cols {
+            if !live_cols.contains(col_name) {
+                let _ = conn.execute(
+                    &format!("ALTER TABLE \"{}\" ADD COLUMN \"{}\" {}",
+                        table_name, col_name, col_type),
+                    [],
+                );
+            }
+        }
+    }
+    
+    // Data migrations (version-gated, only when schema_version < 2)
+    // None currently needed — all additions are declarative.
+    
+    if current_version < SCHEMA_VERSION {
+        conn.execute(
+            "UPDATE schema_version SET version = ?",
+            [SCHEMA_VERSION],
+        )?;
+    }
+    
     Ok(())
+}
+
+/// Parse expected columns from SCHEMA_SQL by executing it in memory
+/// and using PRAGMA table_info. This handles all SQL syntax correctly
+/// (DEFAULT expressions, inline REFERENCES, CHECK constraints, etc.)
+fn parse_expected_columns(schema_sql: &str) -> Result<Vec<(String, Vec<(String, String)>)>> {
+    let mut ref_conn = Connection::open_in_memory()?;
+    ref_conn.execute_batch(schema_sql)?;
+    
+    let mut result = Vec::new();
+    let mut stmt = ref_conn.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    )?;
+    let tables: Vec<String> = stmt.query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok()).collect();
+    
+    for table_name in tables {
+        let mut stmt2 = ref_conn.prepare(&format!("PRAGMA table_info(\"{}\")", table_name))?;
+        let mut cols = Vec::new();
+        for row in stmt2.query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })? {
+            if let Ok((name, col_type)) = row {
+                cols.push((name, col_type));
+            }
+        }
+        result.push((table_name, cols));
+    }
+    
+    Ok(result)
+}
+
+/// Get live column names for a table via PRAGMA table_info.
+fn get_live_columns(conn: &Connection, table_name: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info(\"{}\")", table_name))?;
+    let mut cols = Vec::new();
+    for row in stmt.query_map([], |row| row.get::<_, String>(1))? {
+        if let Ok(name) = row {
+            cols.push(name);
+        }
+    }
+    Ok(cols)
 }
 
 fn row_to_message(row: &rusqlite::Row) -> std::result::Result<Message, rusqlite::Error> {
@@ -105,7 +256,24 @@ pub struct SessionDB {
     #[allow(dead_code)]
     db_path: std::path::PathBuf,
     conn: std::sync::Mutex<Option<Connection>>,
+    /// Write serialization lock — separates WAL write-lock acquisition
+    /// from connection locking, so concurrent async tasks don't hold
+    /// the connection mutex across long sleeps (retry jitter).
+    write_lock: std::sync::Mutex<()>,
+    /// Counter for periodic WAL checkpointing (every N writes).
+    write_count: std::sync::atomic::AtomicUsize,
 }
+
+// ── Write contention tuning (mirrors hermes_state.py) ─────────────────────
+/// Max retries before giving up on a locked DB.
+const WRITE_MAX_RETRIES: usize = 15;
+/// Min sleep between retries (20ms) — breaks convoy effects that
+/// SQLite's deterministic backoff schedule creates.
+const WRITE_RETRY_MIN_S: f64 = 0.020;
+/// Max sleep between retries (150ms).
+const WRITE_RETRY_MAX_S: f64 = 0.150;
+/// Checkpoint WAL every N successful writes.
+const CHECKPOINT_EVERY_N_WRITES: usize = 50;
 
 impl SessionDB {
     pub fn new<P: AsRef<std::path::Path>>(db_path: P) -> Result<Self> {
@@ -113,12 +281,70 @@ impl SessionDB {
         let db_dir = db_path.parent().unwrap_or(db_path.as_ref());
         std::fs::create_dir_all(db_dir)?;
         let conn = Connection::open(&db_path)?;
-        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_size_limit=1000000; PRAGMA synchronous=NORMAL;")?;
+        
+        // WAL mode with short timeout — application-level retry handles
+        // contention instead of sitting in SQLite's busy handler (deterministic
+        // schedule causes convoy effects under load). Timeout of 1s means SQLite
+        // waits 1s internally before returning DatabaseBusy, much faster than
+        // the default 30s.
+        //
+        // WAL mode requires shared-memory (mmap) coordination and fcntl
+        // byte-range locks that don't reliably work on network filesystems
+        // (NFS, SMB/CIFS, some FUSE mounts). Fall back to DELETE mode.
+        let journal_mode = Self::try_set_journal_mode(&conn);
+        
+        conn.execute_batch(
+            &format!(
+                "PRAGMA foreign_keys=ON; \
+                 PRAGMA journal_mode={}; \
+                 PRAGMA journal_size_limit=1000000; \
+                 PRAGMA synchronous=NORMAL; \
+                 PRAGMA busy_timeout=1000;",
+                journal_mode
+            ),
+        )?;
         conn.execute_batch(SCHEMA_SQL)?;
         conn.execute_batch(FTS_SQL)?;
         reconcile_schema(&conn)?;
-        info!("Opened session DB at {}", db_path.display());
-        Ok(Self { db_path, conn: std::sync::Mutex::new(Some(conn)) })
+        
+        let mode_label = if journal_mode == "wal" { "WAL (fast)" } else { "DELETE (NFS-safe)" };
+        info!("Opened session DB at {} [journal_mode={}]", db_path.display(), mode_label);
+        
+        Ok(Self {
+            db_path,
+            conn: std::sync::Mutex::new(Some(conn)),
+            write_lock: std::sync::Mutex::new(()),
+            write_count: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+    
+    /// Try WAL mode first; fall back to DELETE on network filesystems.
+    /// 
+    /// Returns the journal mode actually set ("wal" or "delete").
+    /// Try WAL mode first; fall back to DELETE on network filesystems.
+    /// Returns the journal mode actually set ("wal" or "delete").
+    fn try_set_journal_mode(conn: &Connection) -> &'static str {
+        // Attempt WAL mode first
+        if conn.execute_batch("PRAGMA journal_mode=WAL").is_ok() {
+            // Verify it actually took effect
+            if let Ok(mode) = conn.query_row("PRAGMA journal_mode", [], |row: &rusqlite::Row| {
+                row.get::<_, String>(0)
+            }) {
+                if mode != "wal" {
+                    info!("WAL mode unavailable, falling back to DELETE");
+                    let _ = conn.execute_batch("PRAGMA journal_mode=DELETE");
+                    return "delete";
+                }
+            }
+            "wal"
+        } else {
+            // WAL setup failed — fall back to DELETE mode
+            info!("WAL not supported on this filesystem, falling back to DELETE. \
+                   Note: journal_mode=DELETE works on NFS/SMB/FUSE but reduces \
+                   concurrency — concurrent readers are blocked during writes.");
+            let _ = conn.execute_batch("PRAGMA journal_mode=DELETE");
+            "delete"
+        }
     }
 
     fn with_conn<F, T>(&self, f: F) -> Result<T>
@@ -131,26 +357,209 @@ impl SessionDB {
         }
     }
 
-    fn with_conn_mut<F, T>(&self, f: F) -> Result<T>
-    where F: FnOnce(&mut Connection) -> Result<T>,
+    /// Execute a write transaction with BEGIN IMMEDIATE and jittered retry.
+    ///
+    /// `BEGIN IMMEDIATE` acquires the WAL write lock at transaction start
+    /// (not at commit time), so lock contention surfaces immediately.
+    /// On `database is locked` / `DatabaseBusy`, we sleep a random 20-150ms
+    /// and retry — breaking the convoy pattern that SQLite's built-in
+    /// deterministic backoff schedule creates under high concurrency.
+    fn with_conn_mut<F, T>(&self, mut f: F) -> Result<T>
+    where F: FnMut(&mut Connection) -> Result<T>,
     {
-        let mut lock = self.conn.lock().unwrap();
-        match lock.as_mut() {
-            Some(c) => f(c),
-            None => Err(anyhow!("database connection is closed")),
+        let mut last_err: Option<String> = None;
+
+        for attempt in 0..WRITE_MAX_RETRIES {
+            // Acquire the write serialization lock so only one WAL transaction
+            // runs at a time. Other threads wait on this lock, NOT on the
+            // connection mutex — keeping the connection mutex scope minimal
+            // (only for the actual DB operation, not for the sleep between retries).
+            let _wl = self.write_lock.lock().unwrap();
+
+            {
+                let mut lock = self.conn.lock().unwrap();
+                let conn = lock.as_mut().ok_or_else(|| anyhow::anyhow!("database connection is closed"))?;
+                
+                // BEGIN IMMEDIATE acquires the WAL write lock at transaction start.
+                // On contention this fails immediately (not wait 1s for busy_timeout),
+                // so we can retry with jitter right away.
+                if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
+                    last_err = Some("BEGIN IMMEDIATE failed".to_string());
+                    continue;
+                }
+                
+                match f(conn) {
+                    Ok(result) => {
+                        // Success — commit
+                        if conn.execute_batch("COMMIT").is_ok() {
+                            return Ok(result);
+                        }
+                        // COMMIT failed — rollback and retry
+                        let _ = conn.execute_batch("ROLLBACK");
+                        last_err = Some("COMMIT failed".to_string());
+                    }
+                    Err(e) => {
+                        // Operation failed — rollback
+                        let _ = conn.execute_batch("ROLLBACK");
+                        // f() returns anyhow::Error — check the message string
+                        let err_msg = e.to_string();
+                        if !is_retryable_error(&e) {
+                            return Err(e); // Re-throw non-lock errors immediately
+                        }
+                        last_err = Some(err_msg);
+                    }
+                }
+            }
+
+            // On retryable error, sleep with jitter and try again
+            if let Some(ref _err_msg) = last_err {
+                if attempt < WRITE_MAX_RETRIES - 1 {
+                    let jitter = rand::random::<f64>() * (WRITE_RETRY_MAX_S - WRITE_RETRY_MIN_S) + WRITE_RETRY_MIN_S;
+                    std::thread::sleep(std::time::Duration::from_secs_f64(jitter));
+                    continue;
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("database is locked after max retries: {:?}", last_err))
+    }
+
+    /// Record a successful write and checkpoint if needed.
+    fn record_write(&self) {
+        let count = self.write_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if count % CHECKPOINT_EVERY_N_WRITES == 0 {
+            self.try_wal_checkpoint();
         }
     }
 
+    fn try_wal_checkpoint(&self) {
+        // Best-effort PASSIVE WAL checkpoint.  Never blocks, never raises.
+        // Flushes committed WAL frames back into the main DB file for any
+        // frames that no other connection currently needs.  Keeps the WAL
+        // from growing unbounded when many processes hold persistent connections.
+        if let Ok(lock) = self.conn.lock() {
+            if let Some(ref conn) = lock.as_ref() {
+                let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)");
+            }
+        }
+    }
+
+    /// Sanitize a session title: strip control chars, collapse whitespace,
+    /// enforce max length. Matches Hermes' `sanitize_title()`.
+    pub fn sanitize_title(title: &str) -> Option<String> {
+        use regex::Regex;
+        static RE: std::sync::LazyLock<Regex> = 
+            std::sync::LazyLock::new(|| Regex::new(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]").unwrap());
+        static RE_UNICODE: std::sync::LazyLock<Regex> = 
+            std::sync::LazyLock::new(|| Regex::new(
+                r"[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]"
+            ).unwrap());
+        static RE_WHITESPACE: std::sync::LazyLock<Regex> = 
+            std::sync::LazyLock::new(|| Regex::new(r"\s+").unwrap());
+        
+        let max_len = 100;
+        let cleaned = RE.replace_all(title, "");
+        let cleaned = RE_UNICODE.replace_all(&cleaned, "");
+        let cleaned = RE_WHITESPACE.replace_all(&cleaned, " ");
+        let cleaned = cleaned.trim().to_string();
+        
+        if cleaned.is_empty() {
+            return None;
+        }
+        
+        // Truncate to max length at character boundary
+        let truncated: String = cleaned.chars().take(max_len).collect();
+        Some(truncated)
+    }
+
+    /// Resolve a title to the latest session in its lineage.
+    ///
+    /// If the exact title exists, returns that session's ID.
+    /// If not, searches for "title #N" variants and returns the latest one.
+    pub fn resolve_session_by_title(&self, title: &str) -> Result<Option<String>> {
+        self.with_conn(|conn| {
+            // First try exact match
+            if let Some(id) = conn.query_row(
+                "SELECT id FROM sessions WHERE title = ?",
+                params![title],
+                |row| row.get::<_, String>(0),
+            ).optional()? {
+                return Ok(Some(id));
+            }
+            
+            // Search for numbered variants: "title #2", "title #3", etc.
+            // Escape SQL LIKE wildcards
+            let escaped = title
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            
+            match conn.query_row(
+                "SELECT id FROM sessions WHERE title LIKE ? ESCAPE '\\\\' ORDER BY started_at DESC LIMIT 1",
+                params![format!("{} #%%", escaped)],
+                |row| row.get::<_, String>(0),
+            ).optional()? {
+                Some(id) => Ok(Some(id)),
+                None => {
+                    // Also try without the #N suffix
+                    let escaped2 = escaped.replace("#%", "%");
+                    match conn.query_row(
+                        "SELECT id FROM sessions WHERE title LIKE ? ESCAPE '\\\\' ORDER BY started_at DESC LIMIT 1",
+                        params![format!("{}%", escaped2)],
+                        |row| row.get::<_, String>(0),
+                    ).map_err(|e| anyhow::anyhow!(e))? {
+                        id => Ok(Some(id)),
+                    }
+                }
+            }
+        })
+    }
+
+    /// Generate the next title in a lineage: "my task" → "my task #2".
+    pub fn get_next_title_in_lineage(&self, base_title: &str) -> Result<String> {
+        self.with_conn(|conn| {
+            // Strip existing #N suffix to find the true base
+            let base = if let Some(m) = base_title.rfind(" #") {
+                base_title[..m].to_string()
+            } else {
+                base_title.to_string()
+            };
+            
+            let escaped = base
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            
+            let max_num: Option<i32> = conn.query_row(
+                "SELECT MAX(CAST(SUBSTR(title, INSTR(title, '# ') + 2) AS INTEGER)) \
+                 FROM sessions WHERE title LIKE ? ESCAPE '\\\\'",
+                params![format!("{} #%%", escaped)],
+                |row| row.get::<_, Option<i32>>(0),
+            ).map_err(|e| anyhow::anyhow!(e))?;
+            
+            let next = max_num.map(|n| n + 1).unwrap_or(1);
+            if next <= 1 {
+                Ok(base)  // First instance — no suffix needed
+            } else {
+                Ok(format!("{} #{}", base, next))
+            }
+        })
+    }
+
     pub fn get_or_create_session(&self, name: &str) -> Result<Session> {
+        let sanitized = Self::sanitize_title(name);
+        let title = sanitized.clone().unwrap_or_else(|| name.to_string());
+        
         let session = self.with_conn(|conn| {
+            // Try exact title match first
             let id: Option<String> = conn.query_row(
                 "SELECT id FROM sessions WHERE COALESCE(title, '') = ? LIMIT 1",
-                [name],
+                params![&title],
                 |row| row.get(0),
             ).ok();
             match id {
                 Some(id) => self.session_from_id(conn, &id),
-                None => self.create_session_record(conn, name),
+                None => self.create_session_record(conn, &title),
             }
         })?;
         Ok(session)
@@ -283,38 +692,22 @@ impl SessionDB {
     }
 
     pub fn save_messages(&self, session_id: &str, messages: &mut [Message]) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        // Append-only strategy: never delete existing messages.
+        // For compaction, the caller should first clear messages via
+        // `delete_session_messages()` or a dedicated clear path.
+        self.save_new_messages(session_id, messages)
+    }
+
+    /// Clear all messages for a session (used by compaction).
+    /// Unlike `save_messages`, this does NOT delete the session itself.
+    pub fn clear_messages(&self, session_id: &str) -> Result<()> {
         self.with_conn_mut(|conn| {
-            conn.execute("UPDATE sessions SET message_count = ?, ended_at = ? WHERE id = ?",
-                params![messages.len(), now_ts(), session_id])?;
             conn.execute("DELETE FROM messages WHERE session_id = ?", params![session_id])?;
-
-            if !messages.is_empty() {
-                let tx = conn.transaction()?;
-                let mut stmt = tx.prepare(
-                    "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id"
-                )?;
-                for msg in messages.iter_mut() {
-                    let role = match msg.role {
-                        MessageRole::System => "system", MessageRole::User => "user",
-                        MessageRole::Assistant => "assistant", MessageRole::Tool => "tool",
-                    };
-                    let content = msg.content.to_text();
-                    let tool_calls = msg.tool_calls.as_ref().map(|c| serde_json::to_string(c).unwrap_or_default());
-                    let tool_call_id = if msg.tool_call_ids.len() > 0 {
-                        Some(msg.tool_call_ids.join(","))
-                    } else {
-                        None
-                    };
-                    let mut rows = stmt.query(params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown")])?;
-                    if let Some(row) = rows.next()? {
-                        msg.id = Some(row.get(0)?);
-                    }
-                }
-                drop(stmt);
-                tx.commit()?;
-            }
-
-            let _ = conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')", []);
+            conn.execute("UPDATE sessions SET message_count = 0, ended_at = ? WHERE id = ?",
+                params![now_ts(), session_id])?;
             Ok(())
         })
     }
@@ -323,9 +716,10 @@ impl SessionDB {
         if messages.is_empty() {
             return Ok(());
         }
+        self.record_write();
         self.with_conn_mut(|conn| {
-            let tx = conn.transaction()?;
-            let mut stmt = tx.prepare(
+            // No nested transaction — with_conn_mut already manages BEGIN IMMEDIATE / COMMIT
+            let mut stmt = conn.prepare(
                 "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id"
             )?;
             for msg in messages.iter_mut() {
@@ -348,7 +742,6 @@ impl SessionDB {
                 }
             }
             drop(stmt);
-            tx.commit()?;
             Ok(())
         })
     }
@@ -549,25 +942,132 @@ impl SessionDB {
         })
     }
 
+    /// Walk the compression-continuation chain and return the tip session ID.
+    ///
+    /// A compression continuation is a child session where:
+    /// 1. The parent's `end_reason = 'compression'`
+    /// 2. The child was created AFTER the parent was ended
+    ///
+    /// This distinguishes compression continuations from delegate subagents
+    /// or branch children, which also have `parent_session_id` but were
+    /// spawned while the parent was still live.
     pub fn resolve_session_tip(&self, session_id: &str) -> Result<String> {
         self.with_conn(|conn| {
             let mut current = session_id.to_string();
             for _ in 0..100 {
-                let has_messages = conn.query_row(
-                    "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
-                    params![current],
-                    |row| row.get::<_, i32>(0),
-                ).optional()?.map(|v| v == 1).unwrap_or(false);
-                if has_messages { return Ok(current); }
-                match conn.query_row(
-                    "SELECT id FROM sessions WHERE parent_session_id = ? ORDER BY started_at DESC LIMIT 1",
-                    params![current], |row| row.get(0))
-                {
-                    Ok(cid) => current = cid,
-                    Err(_) => return Ok(current),
+                // Check if current has a parent
+                let parent_id: Option<String> = conn.query_row(
+                    "SELECT parent_session_id FROM sessions WHERE id = ?",
+                    params![&current],
+                    |row| row.get::<_, Option<String>>(0),
+                )?;
+                
+                let parent_id = match parent_id {
+                    Some(pid) => pid,
+                    None => return Ok(current),  // No parent — this is the tip
+                };
+                
+                // Check if parent ended with compression and child started after
+                let parent_info: (Option<String>, Option<f64>) = conn.query_row(
+                    "SELECT end_reason, ended_at FROM sessions WHERE id = ?",
+                    params![&parent_id],
+                    |row| Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
+                    )),
+                )?;
+                
+                match parent_info {
+                    (Some(end_reason), Some(ended_at)) 
+                        if end_reason == "compression" => {
+                        // Parent ended with compression — walk to children
+                        // Started_at >= ended_at means child was created as continuation
+                        match conn.query_row(
+                            "SELECT id FROM sessions \
+                             WHERE parent_session_id = ? \
+                             AND started_at >= ? \
+                             ORDER BY started_at DESC LIMIT 1",
+                            params![&parent_id, ended_at],
+                            |row| row.get::<_, String>(0),
+                        ) {
+                            Ok(child_id) => current = child_id,
+                            Err(_) => return Ok(current),  // No more children
+                        }
+                    }
+                    _ => return Ok(current),  // Parent not compression or data issue
                 }
             }
             Ok(current)
+        })
+    }
+
+    /// Mark orphaned compression continuation sessions as ended.
+    ///
+    /// Targets child sessions where:
+    /// - Parent has end_reason='compression' and is ended
+    /// - Child has messages but api_call_count=0 and no end_reason/ended_at
+    /// - Child is >7 days old
+    pub fn finalize_orphaned_compression_sessions(&self) -> Result<usize> {
+        self.with_conn_mut(|conn| {
+            let now_ts: f64 = now_ts();
+            let cutoff_ts = now_ts - 7.0 * 24.0 * 3600.0; // 7 days ago
+            let result = conn.execute(
+                "UPDATE sessions \
+                 SET ended_at = ?, end_reason = 'orphaned_compression' \
+                 WHERE api_call_count = 0 \
+                   AND end_reason IS NULL \
+                   AND ended_at IS NULL \
+                   AND started_at < ? \
+                   AND parent_session_id IS NOT NULL \
+                   AND EXISTS (
+                       SELECT 1 FROM sessions p \
+                       WHERE p.id = sessions.parent_session_id \
+                         AND p.end_reason = 'compression' \
+                         AND p.ended_at IS NOT NULL
+                   ) \
+                   AND EXISTS (
+                       SELECT 1 FROM messages m \
+                       WHERE m.session_id = sessions.id
+                   )",
+                params![now_ts, cutoff_ts],
+            );
+            match result {
+                Ok(count) => Ok(count as usize),
+                Err(_) => Ok(0), // Best effort
+            }
+        })
+    }
+
+    /// Remove empty TUI ghost sessions (no messages, no title, >24h old).
+    pub fn prune_empty_ghost_sessions(&self) -> Result<usize> {
+        self.with_conn_mut(|conn| {
+            let cutoff = now_ts() - 24.0 * 3600.0; // 24 hours ago
+            // Find ghost sessions
+            let mut stmt = conn.prepare(
+                "SELECT id FROM sessions \
+                 WHERE source = 'tui' \
+                   AND title IS NULL \
+                   AND ended_at IS NOT NULL \
+                   AND started_at < ? \
+                   AND NOT EXISTS (
+                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                   )"
+            )?;
+            let ghosts: Vec<String> = stmt.query_map(
+                params![cutoff],
+                |row| row.get::<_, String>(0),
+            )?.filter_map(|r| r.ok()).collect();
+            
+            if ghosts.is_empty() { return Ok(0); }
+            
+            let placeholders: String = ghosts.iter()
+                .map(|_| "?").collect::<Vec<_>>().join(",");
+            let count = conn.execute(
+                &format!("DELETE FROM sessions WHERE id IN ({})", placeholders),
+                rusqlite::params_from_iter(ghosts.iter()),
+            )?;
+            
+            Ok(count)
         })
     }
 
@@ -1071,7 +1571,7 @@ impl SessionManager {
         // 3. Determine child title: extract base name and append "(N)"
         let base_title = self.sessions.get(parent_id).map(|p| {
             p.metadata.title.as_deref().unwrap_or(&p.name)
-        }).unwrap();
+        }).unwrap_or(&"unnamed");
         let child_title = self.next_child_title(base_title, &parent_id);
 
         // 4. Create child session record in DB
@@ -1161,7 +1661,7 @@ impl SessionManager {
     pub fn reset_session(&mut self, key: &str) -> Result<()> {
         let sid = self.find_key(key)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", key))?;
-        let now_ts = now_ts();
+        let _now_ts = now_ts();
         // End the current session in DB
         self.db.end_session(&sid, "reset")?;
         // Create new session with same metadata
@@ -1697,5 +2197,67 @@ mod tests {
         // Returned session is the child
         assert_eq!(child.id, child.id);
         assert_eq!(child.name, "split-test (2)".to_string(), "title should be auto-numbered");
+    }
+
+    // ── Concurrent write tests ────────────────────────────────────────────────
+
+    /// Regression test: concurrent writes to the same session must not fail
+    /// with "database is locked" under the jittered retry protocol.
+    ///
+    /// Spawns 10 threads, each appending messages to the same session.
+    /// Without jittered retry, this would fail with SQLite locking errors
+    /// because multiple threads compete for the WAL write lock.
+    #[test]
+    fn test_concurrent_writes_no_lock_errors() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        
+        let dir = make_db_dir();
+        let db = Arc::new(SessionDB::new(dir.join("concurrent.db")).unwrap());
+        
+        // Create a session shared by all threads
+        let session = db.get_or_create_session("concurrent-test").unwrap();
+        let sid = session.id;
+        
+        let num_threads = 10;
+        let msgs_per_thread = 20;
+        let mut handles = Vec::with_capacity(num_threads);
+        
+        let success_count = Arc::new(AtomicUsize::new(0));
+        let error_count = Arc::new(AtomicUsize::new(0));
+        
+        for i in 0..num_threads {
+            let db_clone = Arc::clone(&db);
+            let sid_clone = sid.clone();
+            let success = Arc::clone(&success_count);
+            let errors = Arc::clone(&error_count);
+            
+            let handle = std::thread::spawn(move || {
+                let msgs: Vec<Message> = (0..msgs_per_thread)
+                    .map(|j| Message::user(format!("t{}-m{}", i, j)))
+                    .collect();
+                
+                if db_clone.save_new_messages(&sid_clone, &mut msgs.clone().into_boxed_slice()).is_ok() {
+                    success.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    errors.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            handles.push(handle);
+        }
+        
+        for handle in handles {
+            handle.join().expect("thread panicked");
+        }
+        
+        let successes = success_count.load(Ordering::Relaxed);
+        let errors = error_count.load(Ordering::Relaxed);
+        
+        assert_eq!(errors, 0, "Expected 0 lock errors but got {} (successes={}/{})",
+            errors, successes, num_threads);
+        assert_eq!(successes, num_threads);
+        
+        // Verify all messages were persisted
+        let loaded = db.load_messages(&sid).unwrap();
+        assert_eq!(loaded.len(), num_threads * msgs_per_thread);
     }
 }
