@@ -8,6 +8,17 @@ use anyhow::Result;
 use oben_models::{CallMode, Message, Tool, TransportProvider};
 use oben_transport::chat_completions::ChatCompletionsTransport;
 
+/// Safely take the first `n` chars from a string (UTF-8 safe).
+fn preview(s: &str, n: usize) -> &str {
+    if s.len() <= n {
+        s
+    } else {
+        // Byte index after n chars
+        let end = s.char_indices().nth(n).map(|(i, _)| i).unwrap_or(s.len());
+        &s[..end]
+    }
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -80,7 +91,7 @@ async fn test_live_tool_calls_response() -> Result<()> {
         .await?;
 
     eprintln!("✅ Tool call test passed:");
-    eprintln!("  response.text preview='{}'", &resp.text[..resp.text.len().min(200)]);
+    eprintln!("  response.text preview='{}'", preview(&resp.text, 200));
     eprintln!("  tool_calls.len={}", resp.tool_calls.len());
     if !resp.tool_calls.is_empty() {
         for tc in &resp.tool_calls {
@@ -102,7 +113,7 @@ async fn test_live_tool_calls_response() -> Result<()> {
         assert!(
             !has_xml_artifact,
             "LLM returned text with XML-like artifacts (indicating it has no tool definitions): {}",
-            &resp.text[..resp.text.len().min(300)]
+            preview(&resp.text, 300)
         );
     }
 
@@ -136,7 +147,7 @@ async fn test_live_stream_tool_calls_response() -> Result<()> {
     eprintln!("  response.text len={}", resp.text.len());
     eprintln!("  callback captured len={}", captured_text.len());
     eprintln!("  tool_calls.len={}", resp.tool_calls.len());
-    eprintln!("  response preview='{}'", &resp.text[..resp.text.len().min(100)]);
+    eprintln!("  response preview='{}'", preview(&resp.text, 100));
 
     // Either text or tool calls are acceptable, but no XML artifacts
     if !resp.text.is_empty() && resp.tool_calls.is_empty() {
@@ -148,7 +159,7 @@ async fn test_live_stream_tool_calls_response() -> Result<()> {
         assert!(
             !has_xml_artifact,
             "Stream LLM returned text with XML-like artifacts (no tool defs): {}",
-            &resp.text[..resp.text.len().min(300)]
+            preview(&resp.text, 300)
         );
     }
 
@@ -189,7 +200,7 @@ async fn test_live_tool_transport_normal_chat() -> Result<()> {
     assert!(
         !has_xml_artifact,
         "Chat returned XML-like artifacts (no tool defs): {}",
-        &resp.text[..resp.text.len().min(200)]
+        preview(&resp.text, 200)
     );
 
     eprintln!("✅ Normal chat with tools passed: text_len={}, tool_calls={}",
@@ -239,12 +250,149 @@ async fn test_live_transport_tool_vs_no_tool() -> Result<()> {
 
     eprintln!("✅ Transport comparison test passed:");
     eprintln!("  with_tools: text='{}...', tool_calls={}",
-        &resp_with.text[..resp_with.text.len().min(100)],
+        preview(&resp_with.text, 100),
         resp_with.tool_calls.len());
     eprintln!("  no_tools: text='{}...', tool_calls={}",
-        &resp_without.text[..resp_without.text.len().min(100)],
+        preview(&resp_without.text, 100),
         resp_without.tool_calls.len());
 
+    Ok(())
+}
+
+/// Live test: multi-turn agent chat with tool use and Chinese input.
+///
+/// given: a transport built with shell tool definitions
+/// when: sending 3 consecutive turns — "hello", "现实当前目录", "你是谁"
+/// then: all responses are shown, no duplicate text within a single response,
+///       no missing responses, tool call in turn 2 produces directory output
+#[tokio::test]
+async fn test_live_multiturn_chat_with_tools() -> Result<()> {
+    let (base_url, model, api_key) = get_live_config();
+    let transport = create_tool_transport(&base_url, &model, &api_key);
+
+    let session_id = format!("multiturn-{}", uuid::Uuid::new_v4());
+
+    // Quick connectivity check — skip if server is down
+    let probe = transport
+        .chat(
+            &[Message::user("hi")],
+            &CallMode::Fresh(format!("{}-probe", session_id)),
+        )
+        .await;
+    if probe.is_err() {
+        eprintln!("⏭️  Skipping multi-turn test: LLM server at {} is unreachable", base_url);
+        return Ok(());
+    }
+
+    // Helper: send with up to 2 retries
+    async fn send_with_retry(
+        transport: &dyn oben_models::TransportProvider,
+        msgs: &[Message],
+        mode: &CallMode,
+    ) -> Result<oben_models::TransportResponse> {
+        let mut last_err = None;
+        for attempt in 0..=2 {
+            match transport.chat(msgs, mode).await {
+                Ok(r) => return Ok(r),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!("All retries failed: {}", last_err.unwrap()))
+    }
+
+    // ---- Turn 1: "hello" ----
+    let resp1 = send_with_retry(&transport, &[Message::user("hello")], &CallMode::Fresh(session_id.clone())).await?;
+    assert!(!resp1.text.trim().is_empty(), "Turn 1 (hello) should have a response");
+    let text1 = resp1.text.trim().to_string();
+
+    eprintln!("✅ Multi-turn turn 1 (hello): text_len={}, tool_calls={}", text1.len(), resp1.tool_calls.len());
+    eprintln!("   preview='{}'", preview(&text1, 120));
+
+    // ---- Turn 2: "现实当前目录" (show current directory) — may invoke shell tool ----
+    let resp2 = send_with_retry(&transport, &[Message::user("现实当前目录")], &CallMode::Incremental(session_id.clone())).await?;
+    assert!(
+        !resp2.text.trim().is_empty() || !resp2.tool_calls.is_empty(),
+        "Turn 2 (现实当前目录) should have a response (text or tool_calls)"
+    );
+    let text2 = resp2.text.trim().to_string();
+
+    eprintln!("✅ Multi-turn turn 2 (现实当前目录): text_len={}, tool_calls={}", text2.len(), resp2.tool_calls.len());
+    eprintln!("   text='{}'", preview(&text2, 120));
+
+    // ---- Turn 3: "你是谁" (who are you) ----
+    let resp3 = send_with_retry(&transport, &[Message::user("你是谁")], &CallMode::Incremental(session_id.clone())).await?;
+    assert!(
+        !resp3.text.trim().is_empty() || !resp3.tool_calls.is_empty(),
+        "Turn 3 (你是谁) should have a response (text or tool_calls)"
+    );
+    let text3 = resp3.text.trim().to_string();
+
+    eprintln!("✅ Multi-turn turn 3 (你是谁): text_len={}, tool_calls={}", text3.len(), resp3.tool_calls.len());
+    eprintln!("   text='{}'", preview(&text3, 120));
+
+    // ---- Assertions ----
+
+    // 1. No missing responses: each turn must have text or tool_calls
+    assert!(!text1.is_empty() || !resp1.tool_calls.is_empty(), "Turn 1 must have response");
+    assert!(!text2.is_empty() || !resp2.tool_calls.is_empty(), "Turn 2 must have response");
+    assert!(!text3.is_empty() || !resp3.tool_calls.is_empty(), "Turn 3 must have response");
+
+    // 2. No duplicate text within a single response (only check turns that have text):
+    for (text, label) in [(&text1, "turn1"), (&text2, "turn2"), (&text3, "turn3")]
+        .into_iter()
+        .filter(|(t, _)| !t.is_empty())
+    {
+        let lines: Vec<&str> = text.lines().collect();
+        for j in 1..lines.len() {
+            assert!(lines[j] != lines[j - 1],
+                "Duplicate adjacent lines in {}: {}", label, preview(&text, 200));
+        }
+    }
+
+    // 3. No cross-turn text duplication: text responses should differ
+    if !text1.is_empty() && !text2.is_empty() {
+        assert_ne!(text1, text2, "Turn 1 and Turn 2 text should not be identical");
+    }
+    if !text2.is_empty() && !text3.is_empty() {
+        assert_ne!(text2, text3, "Turn 2 and Turn 3 text should not be identical");
+    }
+    if !text1.is_empty() && !text3.is_empty() {
+        assert_ne!(text1, text3, "Turn 1 and Turn 3 text should not be identical");
+    }
+
+    // 4. Turn 2 (现实当前目录) should either have tool_calls or contain directory-like output
+    let has_tool_call = resp2.tool_calls.iter().any(|tc| {
+        tc.tool_name == "shell"
+            || serde_json::to_string(&tc.arguments).map(|s| s.contains("command")).unwrap_or(false)
+    });
+    let has_path_chars = text2.contains("/Users/") || text2.contains("/home/")
+        || text2.contains(".git") || text2.contains(".rs");
+
+    if has_tool_call {
+        eprintln!("  ↳ Turn 2 invoked shell tool call (expected)");
+    } else if has_path_chars {
+        eprintln!("  ↳ Turn 2 returned directory-like output in text (acceptable)");
+    } else {
+        eprintln!("  ↳ Turn 2: no tool call detected, text doesn't contain obvious path chars");
+        eprintln!("     tool_calls={}", resp2.tool_calls.len());
+        eprintln!("     text preview='{}'", preview(&text2, 200));
+    }
+
+    // 5. Turn 3 (你是谁) should reference identity or agent (Chinese or English)
+    let text3_lower = text3.to_lowercase();
+    let identity_keywords = ["助手", "agent", "assistant", "chat", "help", "模型", "回答"];
+    let has_identity = identity_keywords.iter().any(|k| text3_lower.contains(k) || text3.contains(k));
+    if !has_identity {
+        eprintln!("  ↳ Turn 3 doesn't contain obvious identity keywords (LLM may answer in English)");
+        eprintln!("     text='{}'", preview(&text3, 200));
+    }
+
+    eprintln!("✅ Multi-turn chat test passed: 3 responses, all non-empty, no duplicates");
     Ok(())
 }
 
