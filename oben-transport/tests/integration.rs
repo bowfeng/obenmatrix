@@ -19,7 +19,6 @@ fn simple_sse_response(text: &str) -> String {
 }
 
 fn streaming_response_with_tool_calls(id: &str, name: &str, args: &str) -> String {
-    // args is a JSON-encoded string, need to escape it for the outer JSON
     let args_escaped = args.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
         "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"{}\",\"function\":{{\"name\":\"{}\",\"arguments\":\"{}\"}}}}]}},\"index\":0,\"finish_reason\":null}}]}}\n\ndata: [DONE]",
@@ -53,8 +52,6 @@ fn non_streaming_response_with_tool_calls(
     name: &str,
     args: &str,
 ) -> String {
-    // args is a JSON-encoded string like {"command": "ls"}
-    // We need to properly escape it for the outer JSON
     let args_escaped = args.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
         "{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{{\"id\":\"{}\",\"type\":\"function\",\"function\":{{\"name\":\"{}\",\"arguments\":\"{}\"}}}}]}}}}],\"model\":\"test\"}}",
@@ -63,7 +60,7 @@ fn non_streaming_response_with_tool_calls(
 }
 
 // =============================================================================
-// Non-streaming tests
+// Non-streaming tests (mock)
 // =============================================================================
 
 #[tokio::test]
@@ -179,7 +176,7 @@ async fn test_chat_completions_no_choices() -> Result<()> {
 }
 
 // =============================================================================
-// Streaming tests
+// Streaming tests (mock)
 // =============================================================================
 
 #[tokio::test]
@@ -281,7 +278,6 @@ async fn test_stream_chat_tool_calls() -> Result<()> {
 async fn test_stream_chat_empty_content() -> Result<()> {
     let server = MockServer::start().await;
 
-    // Only finish_reason, no content — should produce empty string
     let sse = format!(
         "data: {{\"choices\":[{{\"delta\":{{\"finish_reason\":\"stop\"}}}}]}}\n\ndata: [DONE]"
     );
@@ -335,17 +331,8 @@ async fn test_stream_chat_api_error() -> Result<()> {
     Ok(())
 }
 
-// =============================================================================
-// Multi-turn integration (chat + stream_chat mix)
-// =============================================================================
-// NOTE: This test requires careful mock expectation counting.
-// wiremock 0.6's MockBuilder::expect() requires Times to be in scope
-// but the method resolution fails in tests. Use a different approach.
-
-// Simplified multi-turn test using separate mock servers
 #[tokio::test]
 async fn test_stream_chat_separate_instances() -> Result<()> {
-    // Test that streaming produces text content that the callback captures
     let server = MockServer::start().await;
 
     let sse = simple_sse_response("Captured text");

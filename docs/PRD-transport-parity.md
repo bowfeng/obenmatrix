@@ -1,0 +1,28 @@
+# Transport & Provider — Parity vs Hermes-Agent
+
+**Scope:** LLM transport implementations in `oben-transport`  
+**Reference:** `/Users/ellie/workspace/hermes-agent/agent/transports/`
+
+---
+
+## Gap Matrix
+
+| # | Feature | Severity | Status | Issue | Notes |
+|---|---------|----------|--------|-------|-------|
+| T.1 | OpenAI-compatible `ChatCompletionsTransport` | ✅ | ✅ | (built-in) | Streaming + SSE, tool calls, usage tracking |
+| T.2 | Anthropic native Messages API | 🔴 | ❌ | [TBD] | Native `messages/` API with prompt caching, tool use, thinking tokens |
+| T.3 | AWS Bedrock transport | 🟡 | ❌ | [TBD] | `bedrock/runtime` client for Claude/Mistral/Llama |
+| T.4 | Google Gemini transport | 🟡 | ❌ | [TBD] | Gemini API (REST + AIO) |
+| T.5 | Codex / OpenAI Codex protocol | 🟢 | ❌ | [TBD] | Event-driven protocol |
+| T.6 | Transport trait + registry pattern | 🟡 | ❌ | [TBD] | `get_transport("anthropic_messages")` dispatch, auto-registration |
+
+---
+
+## Legend
+
+- **🔴 Critical** — blocks production use
+- **🟡 High** — important for core functionality
+- **🟢 Medium** — nice-to-have
+- **Status**: ✅ Done | ❌ Not Started
+
+**Workflow:** Open issue → branch (`#<number>-<desc>`) → implement → PR → close issue.

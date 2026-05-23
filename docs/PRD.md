@@ -8,12 +8,26 @@
 
 ---
 
+## Tracking Documents
+
+| Document | Purpose |
+|----------|--------|
+| [`docs/PRD.md`](PRD.md) | **This file** — architecture, milestones, overall progress |
+| [`docs/PRD-feature-parity.md`](PRD-feature-parity.md) | **Master parity tracker** — every gap between Hermes and ObenAgent, with GitHub issue links |
+| [`docs/PRD-SESSION-PARITY.md`](PRD-SESSION-PARITY.md) | **Session layer deep-dive** — detailed analysis of session gaps (subset of the master tracker) |
+| [`docs/design/aiagent-design.md`](design/aiagent-design.md) | **Architecture design** — Rust-specific design decisions for parity features |
+| `docs/adr/` | **Architectural decisions** — key design choices and their rationale |
+
+**Workflow:** Feature gaps are tracked in `PRD-feature-parity.md`. Each gap gets a GitHub issue. Implementation happens in a branch, PR is opened, and after merge the issue is closed.
+
+---
+
 ## Overview
 
 | Metric | Status |
 |--------|--------|
 | Crates | 11/11 compiling |
-| Tests | 406/406 passing |
+| Tests | 494/494 passing (389 unit + 8 live + 97 other) |
 | CLI subcommands | 9 |
 | Provider transports | 1/7 (OpenAI-compatible ChatCompletions) |
 | Built-in tools | 15 |
@@ -26,8 +40,10 @@
 ✅ Engine           ConversationLoop • ContextEngine • Budget • Compression (merged)
 ✅ AIAgent Parity   Tier 1: retry/backoff, error classification, interrupt/steer, sanitization, budget warnings
                     Phase 2: fallback chain, rich callbacks, stream scrubbers, prefix caching, activity tracking
-✅ Sessions         ober-session: lifecycle + LLM compaction algorithm
+✅ Sessions         Lifecycle + LLM compaction + write concurrency (jittered retry/WAL) + schema expansion (14 cols) + compression lineage + trigram FTS5 + title management
 ✅ Transport        OpenAI-compatible (streaming + SSE)
+✅ Scenario-test   oben-scenario-test: 8 live tests covering roundtrip, concurrency, persistence, FTS5, titles, schema, memory
+                    (mock tests stay in each crate; live LLM + cross-crate flows here)
 ✅ CLI              chat run setup config tools skills sessions info models
 ✅ Goals            Autonomous loop with plan parsing, judge verdict, state machine
 ✅ Curator          Skill lifecycle management (active→stale→archived)
@@ -46,6 +62,7 @@
 
 | Date | Status | Notes |
 |------|--------|-------|
+| 2026-05-22 | ✅ Session Parity | **Write concurrency**: BEGIN IMMEDIATE + jittered retry + WAL checkpoint + NFS fallback. **Schema expansion**: 14 new columns (billing/caching/API tracking) + declarative reconciliation. **Compression lineage**: end_reason-aware walking + orphan cleanup + ghost pruning. **Trigram FTS5**: CJK/Thai search. **Title management**: sanitization + dedup + lineage resolution. Closes #30, #32, #33, #37. |
 | 2026-05-22 | ✅ Phase 2: Advanced Runtime | Fallback model chain, rich callback system (12+ types), streaming scrubbers (thinking blocks, memory context), system prompt prefix caching, activity tracking. Closes #27 |
 | 2026-05-22 | ✅ Tier 1: Core Reliability | Retry with jittered backoff, error classification, iteration budget with 80%/90% warnings, cross-thread interrupt + steer, message sanitization. Closes #25 |
 | 2026-05-18 | ✅ LLM-based summarization | `generate_summary()` no longer a stub — actually calls LLM via `reqwest` with structured prompt template (Active Task, Goal, Constraints, Completed Actions, etc.), iterative updates, and focus topic support. Falls back to static placeholder on LLM failure. CLI: `oben sessions compact [-s SESSION] [-f FOCUS]` |

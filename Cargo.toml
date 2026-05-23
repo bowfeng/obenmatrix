@@ -13,6 +13,7 @@ members = [
     "oben-curator",
     "oben-tui",
     "oben-cli",
+    "oben-scenario-test",
 ]
 resolver = "2"
 
