@@ -10,14 +10,12 @@
 //! - Delegate turn cycle to ConversationLoop
 //! - Manage session switching
 //! - Interactive chat loop
-//! - Cross-thread interrupt and steer (Tier 1 features)
-//!
-//! **Tier 1 Features (Hermes AIAgent Parity):**
-//! - Interrupt handling: cross-thread atomic flag for graceful stop
-//! - Steer mechanism: inject text into next tool result without interrupting
-//! - Iteration budget: with 80%/90% warnings (via ConversationLoop)
-//! - Retry with backoff: jittered exponential retry (via ConversationLoop)
-//! - Error classification: categorize API errors (via ConversationLoop)
+//! - Cross-thread interrupt and steer (Tier 1)
+//! - Fallback model chain (Tier 2)
+//! - Rich callback system (Tier 2)
+//! - Activity tracking (Tier 2)
+//! - System prompt prefix caching (Tier 2)
+//! - Concurrent tool dispatch (Tier 2)
 
 use std::sync::Arc;
 
@@ -25,8 +23,11 @@ use anyhow::Result;
 use oben_models::StreamDeltaCallback;
 use oben_sessions::SessionManager;
 
+use crate::callbacks::AgentCallbacks;
 use crate::conversation::{ChatCallbacks, ConversationLoop};
+use crate::fallback::FallbackChain;
 use crate::interrupt::InterruptState;
+use crate::system_prompt_cache::SystemPromptCache;
 
 /// Configuration for building an `Agent`.
 pub struct AgentConfig {
@@ -44,6 +45,12 @@ pub struct AgentConfig {
     pub max_iterations: usize,
     /// Max messages in context.
     pub max_messages: usize,
+    /// Fallback model chain.
+    pub fallback_models: Vec<crate::fallback::FallbackConfig>,
+    /// Agent callbacks for platform integration.
+    pub callbacks: AgentCallbacks,
+    /// Concurrent dispatch configuration.
+    pub concurrent_dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
 }
 
 /// An interactive agent — owns all resources, delegates to ConversationLoop.
@@ -64,6 +71,14 @@ pub struct Agent {
     session_manager: SessionManager,
     /// Interrupt state — shared via Arc with ConversationLoop/TurnExecutor.
     interrupt_state: Arc<InterruptState>,
+    /// Fallback model chain.
+    fallback_chain: FallbackChain,
+    /// Agent callbacks.
+    callbacks: AgentCallbacks,
+    /// System prompt prefix cache.
+    prompt_cache: SystemPromptCache,
+    /// Concurrent dispatch config.
+    dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
 }
 
 impl Agent {
@@ -78,6 +93,10 @@ impl Agent {
             call_mode: None,
             session_manager: SessionManager::new()?,
             interrupt_state: Arc::new(InterruptState::new()),
+            fallback_chain: FallbackChain::new(config.fallback_models),
+            callbacks: config.callbacks,
+            prompt_cache: SystemPromptCache::new(),
+            dispatch_config: config.concurrent_dispatch_config,
         };
         agent.eager_load_active_session();
         Ok(agent)
@@ -103,15 +122,6 @@ impl Agent {
     // ── Tier 1: Interrupt & Steer ────────────────────────────────────────
 
     /// Interrupt the agent's current tool-calling loop.
-    ///
-    /// Call this from another thread (e.g. input handler, message receiver)
-    /// to gracefully stop the agent and process a new message.
-    ///
-    /// Also signals long-running tool executions to terminate early, so the
-    /// agent can respond immediately.
-    ///
-    /// # Arguments
-    /// * `message` — Optional message that triggered the interrupt.
     pub fn interrupt(&self, message: Option<&str>) {
         let msg = message.map(|s| s.to_string());
         self.interrupt_state.request_interrupt(msg);
@@ -123,41 +133,92 @@ impl Agent {
     }
 
     /// Inject a user note into the next tool result without interrupting.
-    ///
-    /// Unlike `interrupt()`, this does NOT stop the current tool call. The
-    /// text is stashed and the agent loop appends it to the LAST tool
-    /// result's content once the current tool batch finishes.
-    ///
-    /// Thread-safe: callable from any thread.
-    ///
-    /// # Returns
-    /// `true` if the steer was accepted, `false` if the text was empty.
     pub fn steer(&self, text: &str) -> bool {
         self.interrupt_state.steer(text)
     }
 
+    // ── Tier 2: Fallback Models ──────────────────────────────────────────
+
+    /// Set the fallback model chain.
+    pub fn set_fallback_chain(&mut self, chain: Vec<crate::fallback::FallbackConfig>) {
+        self.fallback_chain = FallbackChain::new(chain);
+    }
+
+    /// Check if a fallback was activated.
+    pub fn fallback_activated(&self) -> bool {
+        self.fallback_chain.is_activated()
+    }
+
+    /// Get the active fallback config (if any).
+    pub fn active_fallback(&self) -> Option<&crate::fallback::FallbackConfig> {
+        self.fallback_chain.active_fallback()
+    }
+
+    /// Get fallback chain status for diagnostics.
+    pub fn fallback_status(&self) -> String {
+        if self.fallback_chain.is_activated() {
+            if let Some(fb) = self.active_fallback() {
+                format!("Fallback active: {}/{}", fb.provider, fb.model)
+            } else {
+                "Fallback active (unknown)".to_string()
+            }
+        } else {
+            "Primary model active".to_string()
+        }
+    }
+
+    // ── Tier 2: Callbacks ────────────────────────────────────────────────
+
+    /// Set the agent callbacks.
+    pub fn set_callbacks(&mut self, callbacks: AgentCallbacks) {
+        self.callbacks = callbacks;
+    }
+
+    /// Get reference to current callbacks.
+    pub fn callbacks(&self) -> &AgentCallbacks {
+        &self.callbacks
+    }
+
+    // ── Tier 2: System Prompt Cache ──────────────────────────────────────
+
+    /// Set the cached system prompt after building a new one.
+    pub fn set_cached_prompt(&mut self, prompt: &str) {
+        self.prompt_cache.set_prompt(prompt);
+    }
+
+    /// Get the cached system prompt, if available.
+    pub fn get_cached_prompt(&self) -> Option<&str> {
+        self.prompt_cache.get_prompt()
+    }
+
+    /// Check if we have a cached prompt.
+    pub fn has_cached_prompt(&self) -> bool {
+        self.prompt_cache.has_prompt()
+    }
+
+    // ── Tier 2: Activity Tracking ────────────────────────────────────────
+
     /// Get activity summary for diagnostics.
     pub fn get_activity_summary(&self) -> crate::interrupt::ActivitySummary {
-        self.interrupt_state.get_activity_summary()
+        self.interrupt_state.get_activity_summary(None, 0, 0)
+    }
+
+    // ── Tier 2: Concurrent Dispatch ──────────────────────────────────────
+
+    /// Get the concurrent dispatch config.
+    pub fn dispatch_config(&self) -> &crate::concurrent_dispatch::ConcurrentDispatchConfig {
+        &self.dispatch_config
     }
 
     /// Execute one conversation turn.
-    ///
-    /// Full turn cycle:
-    /// 1. Resolve session ID (lazy create if none)
-    /// 2. Update call mode (Fresh → Incremental)
-    /// 3. Execute turn (preflight + execute) via ConversationLoop
-    /// 4. Save session
     pub async fn turn(
         &mut self,
         input: &str,
         _stream: bool,
         delta_callback: Option<StreamDeltaCallback>,
     ) -> Result<String> {
-        // Phase 1: resolve session
         let sid = self.resolve_session();
 
-        // Phase 2: update call mode (Fresh → Incremental)
         let call_mode = match &self.call_mode {
             Some(m) => m.clone(),
             None => {
@@ -169,7 +230,6 @@ impl Agent {
 
         let input_msg = oben_models::Message::user(input);
 
-        // Phase 3: execute turn (preflight + execute in one borrow)
         let response = ConversationLoop::execute_turn(
             &mut self.context_engine,
             &self.transport,
@@ -181,7 +241,6 @@ impl Agent {
             delta_callback,
         ).await?;
 
-        // Phase 4: persist
         self.session_manager.save(None)?;
 
         Ok(response)
@@ -232,22 +291,18 @@ impl Agent {
         self.session_manager.active_session().map(|s| s.name.clone())
     }
 
-    /// Get the active session name (alias for loaded_session_name).
+    /// Get the active session name.
     pub fn active_session_name(&self) -> Option<String> {
         self.loaded_session_name()
     }
 
-    /// Run an interactive chat — delegates loop to ConversationLoop.
-    ///
-    /// Agent only handles session setup; ConversationLoop runs the
-    /// turn loop with call_mode (Fresh → Incremental) management.
+    /// Run an interactive chat.
     pub async fn interactive_chat(
         &mut self,
         stream: bool,
         continue_with: Option<&str>,
         callbacks: ChatCallbacks,
     ) -> Result<()> {
-        // Session setup — Agent owns session lifecycle
         if let Some(key) = continue_with {
             let resolved = if key == "latest" {
                 self.session_manager.active_session()
@@ -270,7 +325,6 @@ impl Agent {
         (callbacks.print_info)("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
         (callbacks.print_flush)();
 
-        // Delegate loop to ConversationLoop
         ConversationLoop::run_loop(
             &mut self.context_engine,
             &self.transport,

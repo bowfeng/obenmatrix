@@ -24,6 +24,8 @@
 ```
 ✅ Foundation       Models • Utils • Config • Skills • Memory • Gateway • Curator
 ✅ Engine           ConversationLoop • ContextEngine • Budget • Compression (merged)
+✅ AIAgent Parity   Tier 1: retry/backoff, error classification, interrupt/steer, sanitization, budget warnings
+                    Phase 2: fallback chain, rich callbacks, stream scrubbers, prefix caching, activity tracking
 ✅ Sessions         ober-session: lifecycle + LLM compaction algorithm
 ✅ Transport        OpenAI-compatible (streaming + SSE)
 ✅ CLI              chat run setup config tools skills sessions info models
@@ -44,6 +46,8 @@
 
 | Date | Status | Notes |
 |------|--------|-------|
+| 2026-05-22 | ✅ Phase 2: Advanced Runtime | Fallback model chain, rich callback system (12+ types), streaming scrubbers (thinking blocks, memory context), system prompt prefix caching, activity tracking. Closes #27 |
+| 2026-05-22 | ✅ Tier 1: Core Reliability | Retry with jittered backoff, error classification, iteration budget with 80%/90% warnings, cross-thread interrupt + steer, message sanitization. Closes #25 |
 | 2026-05-18 | ✅ LLM-based summarization | `generate_summary()` no longer a stub — actually calls LLM via `reqwest` with structured prompt template (Active Task, Goal, Constraints, Completed Actions, etc.), iterative updates, and focus topic support. Falls back to static placeholder on LLM failure. CLI: `oben sessions compact [-s SESSION] [-f FOCUS]` |
 
 ## Done ✅
@@ -218,6 +222,11 @@ Used `Arc<Mutex<F>>` in `run_turn_with_streaming` to share callbacks across stre
 - TUI with syntax highlighting, multiline editing, slash commands
 - Web dashboard
 - Multi-language (i18n)
+
+### M9: Hermes AIAgent Parity ✅
+- **Tier 1 — Core Reliability:** retry with jittered backoff, error classification (8 categories), iteration budget with 80%/90% warnings, cross-thread interrupt + steer mechanism, message sanitization (thinking-only drop, user merge)
+- **Phase 2 — Advanced Runtime:** fallback model chain with auto-activation, rich callback system (12+ callback types), streaming scrubbers (thinking blocks, memory context), activity tracking with timeout support
+- Design doc: `docs/design/aiagent-design.md`
 
 ---
 

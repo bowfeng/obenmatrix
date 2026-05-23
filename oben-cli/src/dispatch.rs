@@ -111,6 +111,9 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         max_iterations: config.max_iterations.unwrap_or(50),
         max_messages: config.context.max_messages.unwrap_or(100),
         context_config: oben_agent::CompactCofig::default(),
+        fallback_models: vec![],
+        callbacks: oben_agent::AgentCallbacks::default(),
+        concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
     })?;
 
     let callbacks = oben_agent::ChatCallbacks::for_cli();
@@ -134,6 +137,9 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         max_iterations: config.max_iterations.unwrap_or(50),
         max_messages: config.context.max_messages.unwrap_or(100),
         context_config: oben_agent::CompactCofig::default(),
+        fallback_models: vec![],
+        callbacks: oben_agent::AgentCallbacks::default(),
+        concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
     })?;
 
     let response = agent.turn(prompt, stream, stream.then(|| {
