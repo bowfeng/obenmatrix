@@ -122,6 +122,7 @@ impl App {
             context_config: oben_agent::CompactCofig::default(),
             fallback_models: vec![],
             callbacks: oben_agent::AgentCallbacks::default(),
+            concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
         })?);
         Ok(())
     }

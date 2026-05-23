@@ -14,6 +14,8 @@
 //! - Fallback model chain (Tier 2)
 //! - Rich callback system (Tier 2)
 //! - Activity tracking (Tier 2)
+//! - System prompt prefix caching (Tier 2)
+//! - Concurrent tool dispatch (Tier 2)
 
 use std::sync::Arc;
 
@@ -25,6 +27,7 @@ use crate::callbacks::AgentCallbacks;
 use crate::conversation::{ChatCallbacks, ConversationLoop};
 use crate::fallback::FallbackChain;
 use crate::interrupt::InterruptState;
+use crate::system_prompt_cache::SystemPromptCache;
 
 /// Configuration for building an `Agent`.
 pub struct AgentConfig {
@@ -46,6 +49,8 @@ pub struct AgentConfig {
     pub fallback_models: Vec<crate::fallback::FallbackConfig>,
     /// Agent callbacks for platform integration.
     pub callbacks: AgentCallbacks,
+    /// Concurrent dispatch configuration.
+    pub concurrent_dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
 }
 
 /// An interactive agent — owns all resources, delegates to ConversationLoop.
@@ -70,6 +75,10 @@ pub struct Agent {
     fallback_chain: FallbackChain,
     /// Agent callbacks.
     callbacks: AgentCallbacks,
+    /// System prompt prefix cache.
+    prompt_cache: SystemPromptCache,
+    /// Concurrent dispatch config.
+    dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
 }
 
 impl Agent {
@@ -86,6 +95,8 @@ impl Agent {
             interrupt_state: Arc::new(InterruptState::new()),
             fallback_chain: FallbackChain::new(config.fallback_models),
             callbacks: config.callbacks,
+            prompt_cache: SystemPromptCache::new(),
+            dispatch_config: config.concurrent_dispatch_config,
         };
         agent.eager_load_active_session();
         Ok(agent)
@@ -168,11 +179,35 @@ impl Agent {
         &self.callbacks
     }
 
+    // ── Tier 2: System Prompt Cache ──────────────────────────────────────
+
+    /// Set the cached system prompt after building a new one.
+    pub fn set_cached_prompt(&mut self, prompt: &str) {
+        self.prompt_cache.set_prompt(prompt);
+    }
+
+    /// Get the cached system prompt, if available.
+    pub fn get_cached_prompt(&self) -> Option<&str> {
+        self.prompt_cache.get_prompt()
+    }
+
+    /// Check if we have a cached prompt.
+    pub fn has_cached_prompt(&self) -> bool {
+        self.prompt_cache.has_prompt()
+    }
+
     // ── Tier 2: Activity Tracking ────────────────────────────────────────
 
     /// Get activity summary for diagnostics.
     pub fn get_activity_summary(&self) -> crate::interrupt::ActivitySummary {
         self.interrupt_state.get_activity_summary(None, 0, 0)
+    }
+
+    // ── Tier 2: Concurrent Dispatch ──────────────────────────────────────
+
+    /// Get the concurrent dispatch config.
+    pub fn dispatch_config(&self) -> &crate::concurrent_dispatch::ConcurrentDispatchConfig {
+        &self.dispatch_config
     }
 
     /// Execute one conversation turn.
