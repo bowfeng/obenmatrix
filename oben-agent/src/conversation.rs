@@ -202,6 +202,13 @@ impl ConversationLoop {
                 None
             };
 
+            // Save on ALL exit paths — success, error, or early return.
+            // Without this, `execute_turn` errors would lose the user's
+            // message (it's in the in-memory session but never persisted).
+            //
+            // `execute_turn` takes `&mut session_manager` across the await,
+            // preventing a second mutable borrow. We break the borrow chain
+            // by extracting error info before calling save().
             let response = Self::execute_turn(
                 context_engine,
                 transport,
@@ -211,16 +218,26 @@ impl ConversationLoop {
                 input_msg,
                 &call_mode_val,
                 delta_cb,
-            ).await?;
+            ).await;
 
-            // When streaming, the delta_callback already prints in real-time.
-            // Only print the final assembled text for non-streaming turns.
-            if !stream {
-                (callbacks.print_info)(&format!("\n{}", response));
-                (callbacks.print_flush)();
+            let response_text = match response {
+                Ok(resp) => Some(resp),
+                Err(e) => {
+                    let err_str = format!("Turn error: {}", e);
+                    // Drop e to end borrow chain, then save.
+                    std::mem::drop(e);
+                    let _ = session_manager.save(None);
+                    return Err(anyhow::anyhow!(err_str));
+                }
+            };
+            // Save after the match — execute_turn's borrow has ended.
+            let _ = session_manager.save(None);
+            if let Some(resp) = response_text {
+                if !stream {
+                    (callbacks.print_info)(&format!("\n{}", resp));
+                    (callbacks.print_flush)();
+                }
             }
-
-            session_manager.save(None)?;
         }
 
         Ok(())
