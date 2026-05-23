@@ -100,6 +100,9 @@ impl ConversationLoop {
         let turn_config = TurnConfig {
             retry_config,
             budget_warning: None,
+            callbacks: options.callbacks,
+            fallback_chain: options.fallback,
+            dispatch_config: None,
         };
 
         let result = TurnExecutor::execute_turn_with_config(

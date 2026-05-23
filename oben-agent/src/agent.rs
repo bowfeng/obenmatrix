@@ -88,7 +88,7 @@ impl Agent {
             transport: Arc::new(config.transport),
             tools: config.tools,
             skills_dirs: config.skills_dirs,
-            system_prompt: config.system_prompt,
+            system_prompt: config.system_prompt.clone(),
             context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(config.context_config)),
             call_mode: None,
             session_manager: SessionManager::new()?,
@@ -98,6 +98,9 @@ impl Agent {
             prompt_cache: SystemPromptCache::new(),
             dispatch_config: config.concurrent_dispatch_config,
         };
+        // Initialize the prompt cache with the initial system prompt.
+        // The cache will be updated on each compaction/session change.
+        agent.prompt_cache.set_prompt(&config.system_prompt);
         agent.eager_load_active_session();
         Ok(agent)
     }

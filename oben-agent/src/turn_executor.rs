@@ -12,11 +12,15 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::budget::{BudgetWarningCallback, IterationBudget};
+use crate::callbacks::AgentCallbacks;
+use crate::concurrent_dispatch::{self, ConcurrentDispatchConfig, PendingToolCall};
 use crate::context::ContextEngine;
 use crate::error_classifier::{ClassifiedError, ErrorKind};
+use crate::fallback::FallbackChain;
 use crate::interrupt::SharedInterrupt;
 use crate::message_sanitize::sanitize_messages;
 use crate::retry::{retry_with_backoff, RetryConfig, retryable_transient};
+use crate::stream_processor;
 use oben_models::{Message, MessageRole, SessionStore, TransportProvider};
 
 // ---------------------------------------------------------------------------
@@ -29,6 +33,12 @@ pub struct TurnConfig {
     pub retry_config: RetryConfig,
     /// Budget warning callback.
     pub budget_warning: Option<BudgetWarningCallback>,
+    /// Agent callbacks for rich event dispatch (Tier 2).
+    pub callbacks: Option<AgentCallbacks>,
+    /// Fallback model chain (Tier 2).
+    pub fallback_chain: Option<FallbackChain>,
+    /// Concurrent dispatch configuration (Tier 2).
+    pub dispatch_config: Option<ConcurrentDispatchConfig>,
 }
 
 impl Default for TurnConfig {
@@ -36,6 +46,9 @@ impl Default for TurnConfig {
         Self {
             retry_config: RetryConfig::default(),
             budget_warning: None,
+            callbacks: None,
+            fallback_chain: None,
+            dispatch_config: None,
         }
     }
 }
@@ -119,7 +132,7 @@ impl TurnExecutor {
         delta_callback: Option<oben_models::StreamDeltaCallback>,
         budget: Option<IterationBudget>,
         interrupt: Option<SharedInterrupt>,
-        config: TurnConfig,
+        mut config: TurnConfig,
     ) -> Result<TurnResult> {
         let session = store
             .session_mut(session_id)
@@ -155,6 +168,14 @@ impl TurnExecutor {
         let mut budget = budget.unwrap_or_else(|| IterationBudget::new(90));
         if let Some(cb) = config.budget_warning {
             budget.on_warning(cb);
+        }
+
+        // ── Activity tracking: mark turn start ───────────────────────
+        if let Some(ref cb) = config.callbacks {
+            cb.call_status("lifecycle", "turn_start");
+        }
+        if let Some(ref int_state) = interrupt {
+            int_state.touch_activity();
         }
 
         // ── Core loop: LLM call → tool dispatch → repeat ─────────────
@@ -212,33 +233,71 @@ impl TurnExecutor {
                 }
             }
 
-            // ── API call with retry ────────────────────────────────────
+            // ── API call with retry + activity tracking ──
             let transport_ref = transport;
+            let callbacks_ref = &config.callbacks;
 
             let response = retry_with_backoff(&config.retry_config, || {
                 let transport_ref = transport_ref;
                 let messages = session.messages.clone();
                 let mode = call_mode.clone();
+                let callbacks_ref = callbacks_ref;
 
                 async move {
+                    // Activity tracking: mark API call start
+                    if let Some(cb) = callbacks_ref {
+                        cb.call_status("lifecycle", "api_call_start");
+                    }
+
                     match transport_ref.chat(&messages, &mode).await {
-                        Ok(resp) => Ok(resp),
-                        Err(e) => {
-                            let classified = ClassifiedError::from_anyhow(&e);
-                            if classified.kind.is_retryable() {
-                                Err(retryable_transient(e.to_string()))
-                            } else {
-                                Err(e)
+                        Ok(resp) => {
+                            // Activity tracking: mark API call complete
+                            if let Some(cb) = callbacks_ref {
+                                cb.call_status("lifecycle", "api_call_complete");
                             }
+                            Ok(resp)
+                        }
+                        Err(e) => {
+                            // Activity tracking: mark API call failure
+                            if let Some(cb) = callbacks_ref {
+                                cb.call_status("warn", &format!("api_call_failed: {}", e));
+                            }
+                            // Defer fallback activation to after retry loop
+                            Err(retryable_transient(e.to_string()))
                         }
                     }
                 }
             }).await;
 
+            // ── Fallback activation (after retry loop) ─────────────────
+            if let Err(ref e) = response {
+                let classified = ClassifiedError::from_anyhow(e);
+                if classified.kind.is_retryable() {
+                    if let Some(ref mut chain) = config.fallback_chain {
+                        if let Some(_fb) = chain.activate_next() {
+                            info!(
+                                "Fallback activated after retries: {}/{} (HTTP {:?})",
+                                _fb.provider, _fb.model, classified.http_code
+                            );
+                            if let Some(ref cb) = config.callbacks {
+                                cb.call_status(
+                                    "warn",
+                                    &format!("fallback_activated: {}/{}", _fb.provider, _fb.model),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             match response {
                 Ok(response) => {
                     let tool_calls = &response.tool_calls;
-                    let text = &response.text;
+                    let mut text = response.text.to_string();
+
+                    // ── Stream scrubbing (Tier 2): strip thinking blocks & memory context ──
+                    text = stream_processor::scrub_thinking_blocks(&text);
+                    text = stream_processor::scrub_memory_context(&text);
 
                     // Update token tracking
                     if let Some(tokens) = response.tokens_used {
@@ -290,22 +349,42 @@ impl TurnExecutor {
                         });
                     }
 
-                    // ── Dispatch tool calls ──────────────────────────────
-                    for call in tool_calls {
-                        // Check interrupt before each tool
-                        if let Some(int_state) = &interrupt {
-                            if int_state.is_interrupted() {
-                                let msg = int_state.drain_interrupt_message();
-                                info!("Interrupted during tool dispatch: {:?}", msg);
-                                return Ok(TurnResult {
-                                    text: String::new(),
-                                    messages: session.messages.clone(),
-                                });
-                            }
-                        }
+                    // ── Dispatch tool calls (concurrent + callbacks, Tier 2) ─────
+                    let default_dispatch = ConcurrentDispatchConfig::default();
+                    let dispatch_config = config.dispatch_config.as_ref().unwrap_or(&default_dispatch);
 
-                        let result = tools.execute(&call.tool_name, &call.arguments).await;
-                        session.messages.push(Message::tool_result(&call.id, &result.output));
+                    // Convert to pending calls and dispatch
+                    let pending_calls: Vec<PendingToolCall> = tool_calls
+                        .iter()
+                        .map(|c| PendingToolCall {
+                            tool_name: c.tool_name.clone(),
+                            arguments: c.arguments.clone(),
+                            call_id: c.id.clone(),
+                        })
+                        .collect();
+
+                    // Notify callbacks of tool generation
+                    if let Some(cb) = &config.callbacks {
+                        for call in &pending_calls {
+                            cb.call_tool_gen(&call.tool_name, &call.call_id);
+                            cb.call_tool_start(&call.tool_name, &call.arguments.to_string());
+                        }
+                    }
+
+                    // Dispatch: concurrent if multiple, sequential if single
+                    let results = concurrent_dispatch::dispatch_tool_calls(
+                        tools,
+                        dispatch_config,
+                        &pending_calls,
+                        interrupt.as_ref(),
+                    ).await?;
+
+                    // Store results and notify callbacks
+                    for (i, result) in results.iter().enumerate() {
+                        session.messages.push(Message::tool_result(&pending_calls[i].call_id, &result.output));
+                        if let Some(cb) = &config.callbacks {
+                            cb.call_tool_complete(&pending_calls[i].tool_name, &pending_calls[i].arguments.to_string(), &result.output);
+                        }
                     }
                 }
                 Err(e) => {
