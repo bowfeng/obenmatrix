@@ -105,7 +105,7 @@ impl ConversationLoop {
             dispatch_config: None,
         };
 
-        let result = TurnExecutor::execute_turn_with_config(
+        let result: crate::TurnResult = TurnExecutor::execute_turn_with_config(
             context_engine,
             transport,
             tools,
@@ -213,9 +213,9 @@ impl ConversationLoop {
                 delta_cb,
             ).await?;
 
-            if stream {
-                (callbacks.print_newline)();
-            } else {
+            // When streaming, the delta_callback already prints in real-time.
+            // Only print the final assembled text for non-streaming turns.
+            if !stream {
                 (callbacks.print_info)(&format!("\n{}", response));
                 (callbacks.print_flush)();
             }

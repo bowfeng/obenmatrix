@@ -83,3 +83,15 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## 5. Project is written mainly in rust, so please follow best pratice of rust programming style.
+
+**Code it by using TDD, unit test and integration test.**
+
+The modle file is at /Users/ellie/.obenagent/config.yaml, and its content is
+model:
+  kind: Custom
+  base_url: "http://10.0.0.177:8000/v1"
+  model: "qwen35-local"
+  default_model: "qwen35-local"
+  api_key: "sk-local"

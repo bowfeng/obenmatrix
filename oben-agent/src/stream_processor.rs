@@ -140,17 +140,25 @@ impl Default for StreamingContextScrubber {
 }
 
 /// Scrub a single text string of thinking blocks (non-streaming).
+///
+/// Only strips content between `thinking...</think>` pairs.
+/// If a `thinking` tag is not closed, the entire text is preserved
+/// (we don't want to silently drop user-visible content).
 pub fn scrub_thinking_blocks(text: &str) -> String {
+    tracing::debug!("scrub_thinking_blocks: input len={}, first_80={:?}", text.len(), &text[..text.len().min(80)]);
     let mut result = String::new();
     let mut remaining = text.to_string();
 
     while let Some(start) = remaining.find("thinking") {
         let before = &remaining[..start];
         result.push_str(before);
-        if let Some(end) = remaining[start + "thinking".len()..].find("</think") {
-            remaining = remaining[start + "thinking".len() + end + "</think>".len()..].to_string();
+        let after_open = &remaining[start + "thinking".len()..];
+        if let Some(end) = after_open.find("</think") {
+            let after_close = &after_open[end + "</think>".len()..];
+            remaining = after_close.to_string();
         } else {
-            return result;
+            // Unclosed thinking block → preserve entire text
+            return text.to_string();
         }
     }
     result.push_str(&remaining);
@@ -165,10 +173,13 @@ pub fn scrub_memory_context(text: &str) -> String {
     while let Some(start) = remaining.find("<memory-context>") {
         let before = &remaining[..start];
         result.push_str(before);
-        if let Some(end) = remaining[start + "<memory-context>".len()..].find("</memory>") {
-            remaining = remaining[start + "<memory-context>".len() + end + "</memory>".len()..].to_string();
+        let after_open = &remaining[start + "<memory-context>".len()..];
+        if let Some(end) = after_open.find("</memory>") {
+            let after_close = &after_open[end + "</memory>".len()..];
+            remaining = after_close.to_string();
         } else {
-            return result;
+            // Unclosed memory block → preserve entire text
+            return text.to_string();
         }
     }
     result.push_str(&remaining);
@@ -205,9 +216,16 @@ mod tests {
     }
 
     #[test]
-    fn test_scrub_unclosed_tag_strips_rest() {
+    fn test_scrub_unclosed_thinking_preserves_text() {
+        // BUG FIX: Previously this returned "" (empty), silently dropping
+        // user-visible content. Now it preserves the full text because
+        // we can't reliably determine intent of an unclosed tag.
         let text = format!("thinkingunclosed");
-        assert_eq!(scrub_thinking_blocks(&text), "");
+        assert_eq!(scrub_thinking_blocks(&text), "thinkingunclosed");
+
+        // Unclosed thinking in the middle of text
+        let text = "hello thinking about this";
+        assert_eq!(scrub_thinking_blocks(&text), "hello thinking about this");
     }
 
     // ── StreamingThinkScrubber tests ─────────────────────────────────

@@ -21,3 +21,4 @@ futures-util = { version = "0.3", features = ["io"] }
 [dev-dependencies]
 tempfile.workspace = true
 wiremock = "0.6"
+serde_yaml.workspace = true

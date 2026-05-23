@@ -470,8 +470,23 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
 
         let resp: ChatResponse = response.json().await?;
 
+        debug!(
+            "LLM response: choices={:?}, usage={:?}",
+            resp.choices.iter().map(|c| {
+                format!(
+                    "role={:?} content_len={:?} tool_calls={:?} finish={:?}",
+                    c.message.role,
+                    c.message.content.as_ref().map(|s| s.len()),
+                    c.message.tool_calls.as_ref().map(|tcs| tcs.len()),
+                    c.finish_reason,
+                )
+            }).collect::<Vec<_>>(),
+            resp.usage.as_ref().map(|u| format!("prompt={:?} comp={:?} total={:?}", u.prompt_tokens, u.completion_tokens, u.total_tokens)),
+        );
+
         let choice = resp.choices.first().ok_or_else(|| anyhow::anyhow!("No response choices"))?;
         let text = choice.message.content.clone().unwrap_or_default();
+        debug!("Extracted text: len={}, first_100={:?}", text.len(), &text[..text.len().min(100)]);
         let tool_calls: Vec<TransportToolCall> = choice
             .message
             .tool_calls

@@ -144,10 +144,14 @@ impl TurnExecutor {
         // ── Streaming setup ──────────────────────────────────────────
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4096);
         let mut callback_handle: Option<tokio::task::JoinHandle<()>> = None;
-        let has_callback = delta_callback.is_some();
+        let has_streaming = delta_callback.is_some();
 
-        if let Some(cb) = delta_callback {
-            let cb = Arc::new(std::sync::Mutex::new(cb));
+        // Build the callback that stream_chat will invoke.
+        // This callback writes each text chunk to `tx`. A separate spawned
+        // task reads from `rx`, buffers chunks, and forwards them to the
+        // user-provided callback.
+        let mut stream_cb: Option<oben_models::StreamDeltaCallback> = if let Some(user_cb) = delta_callback {
+            let user_cb = Arc::new(std::sync::Mutex::new(user_cb));
             callback_handle = Some(tokio::task::spawn(async move {
                 let mut buf = String::new();
                 const FLUSH_THRESHOLD: usize = 512;
@@ -155,14 +159,21 @@ impl TurnExecutor {
                     buf.push_str(&chunk);
                     if buf.len() >= FLUSH_THRESHOLD {
                         let text = std::mem::take(&mut buf);
-                        cb.lock().unwrap()(&text);
+                        user_cb.lock().unwrap()(&text);
                     }
                 }
                 if !buf.is_empty() {
-                    cb.lock().unwrap()(&buf);
+                    user_cb.lock().unwrap()(&buf);
                 }
             }));
-        }
+            // Create a callback that writes chunks to the channel
+            let cb_tx = tx.clone();
+            Some(Box::new(move |text: &str| {
+                let _ = cb_tx.try_send(text.to_string());
+            }) as oben_models::StreamDeltaCallback)
+        } else {
+            None
+        };
 
         // ── Budget setup ─────────────────────────────────────────────
         let mut budget = budget.unwrap_or_else(|| IterationBudget::new(90));
@@ -237,37 +248,77 @@ impl TurnExecutor {
             let transport_ref = transport;
             let callbacks_ref = &config.callbacks;
 
-            let response = retry_with_backoff(&config.retry_config, || {
-                let transport_ref = transport_ref;
-                let messages = session.messages.clone();
-                let mode = call_mode.clone();
-                let callbacks_ref = callbacks_ref;
+            // On the first iteration, consume the streaming callback.
+            // Subsequent iterations (tool call responses) use non-streaming chat().
+            let response = match stream_cb.take() {
+                Some(delta_cb) => {
+                    // ── Streaming path: use stream_chat for real-time output ──
+                    // Wrap callback in Arc<Mutex> so retries can share it.
+                    // Create a closure wrapper for each retry attempt.
+                    let cb_shared = Arc::new(std::sync::Mutex::new(delta_cb));
+                    retry_with_backoff(&config.retry_config, || {
+                        let transport_ref = transport_ref;
+                        let messages = session.messages.clone();
+                        let mode = call_mode.clone();
+                        let cb = cb_shared.clone();
+                        let callbacks_ref = callbacks_ref;
 
-                async move {
-                    // Activity tracking: mark API call start
-                    if let Some(cb) = callbacks_ref {
-                        cb.call_status("lifecycle", "api_call_start");
-                    }
-
-                    match transport_ref.chat(&messages, &mode).await {
-                        Ok(resp) => {
-                            // Activity tracking: mark API call complete
+                        async move {
                             if let Some(cb) = callbacks_ref {
-                                cb.call_status("lifecycle", "api_call_complete");
+                                cb.call_status("lifecycle", "api_call_start");
                             }
-                            Ok(resp)
-                        }
-                        Err(e) => {
-                            // Activity tracking: mark API call failure
-                            if let Some(cb) = callbacks_ref {
-                                cb.call_status("warn", &format!("api_call_failed: {}", e));
+                            // Create a new callback that delegates to the shared mutex
+                            let cb_clone = cb.clone();
+                            let cb_wrapper = Box::new(move |text: &str| {
+                                cb_clone.lock().unwrap()(text);
+                            }) as oben_models::StreamDeltaCallback;
+                            match transport_ref.stream_chat(&messages, &mode, cb_wrapper).await {
+                                Ok(resp) => {
+                                    if let Some(cb) = callbacks_ref {
+                                        cb.call_status("lifecycle", "api_call_complete");
+                                    }
+                                    Ok(resp)
+                                }
+                                Err(e) => {
+                                    if let Some(cb) = callbacks_ref {
+                                        cb.call_status("warn", &format!("api_call_failed: {}", e));
+                                    }
+                                    Err(retryable_transient(e.to_string()))
+                                }
                             }
-                            // Defer fallback activation to after retry loop
-                            Err(retryable_transient(e.to_string()))
                         }
-                    }
+                    }).await
                 }
-            }).await;
+                None => {
+                    // ── Non-streaming path: use chat() ──
+                    retry_with_backoff(&config.retry_config, || {
+                        let transport_ref = transport_ref;
+                        let messages = session.messages.clone();
+                        let mode = call_mode.clone();
+                        let callbacks_ref = callbacks_ref;
+
+                        async move {
+                            if let Some(cb) = callbacks_ref {
+                                cb.call_status("lifecycle", "api_call_start");
+                            }
+                            match transport_ref.chat(&messages, &mode).await {
+                                Ok(resp) => {
+                                    if let Some(cb) = callbacks_ref {
+                                        cb.call_status("lifecycle", "api_call_complete");
+                                    }
+                                    Ok(resp)
+                                }
+                                Err(e) => {
+                                    if let Some(cb) = callbacks_ref {
+                                        cb.call_status("warn", &format!("api_call_failed: {}", e));
+                                    }
+                                    Err(retryable_transient(e.to_string()))
+                                }
+                            }
+                        }
+                    }).await
+                }
+            };
 
             // ── Fallback activation (after retry loop) ─────────────────
             if let Err(ref e) = response {
@@ -295,8 +346,16 @@ impl TurnExecutor {
                     let tool_calls = &response.tool_calls;
                     let mut text = response.text.to_string();
 
+                    tracing::debug!("TurnExecutor: got LLM response text len={}, tool_calls={}, first_100={:?}",
+                        text.len(), tool_calls.len(), &text[..text.len().min(100)]);
+
                     // ── Stream scrubbing (Tier 2): strip thinking blocks & memory context ──
+                    let before_scrub = text.clone();
                     text = stream_processor::scrub_thinking_blocks(&text);
+                    if text != before_scrub {
+                        tracing::warn!("scrub_thinking_blocks changed text: before_len={} after_len={} diff={}",
+                            before_scrub.len(), text.len(), before_scrub.len() - text.len());
+                    }
                     text = stream_processor::scrub_memory_context(&text);
 
                     // Update token tracking
@@ -318,7 +377,7 @@ impl TurnExecutor {
 
                     if tool_calls.is_empty() {
                         // Flush streaming output
-                        if has_callback {
+                        if has_streaming {
                             drop(tx);
                             if let Some(handle) = callback_handle.take() {
                                 let _ = handle.await;
@@ -396,7 +455,7 @@ impl TurnExecutor {
                     );
 
                     // Flush streaming if active
-                    if has_callback {
+                    if has_streaming {
                         drop(tx);
                         if let Some(handle) = callback_handle.take() {
                             let _ = handle.await;
