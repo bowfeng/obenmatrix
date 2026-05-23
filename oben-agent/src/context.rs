@@ -8,7 +8,7 @@
 /// and mutates the message buffer in-place via `compact()`.
 
 use anyhow::Result;
-use oben_models::{Message, SessionStore, TransportProvider};
+use oben_models::{Message, TransportProvider};
 
 // ---------------------------------------------------------------------------
 // ContextEngine trait

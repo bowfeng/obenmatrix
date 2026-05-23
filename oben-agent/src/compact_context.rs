@@ -13,7 +13,7 @@ use tracing::info;
 use crate::compact;
 use crate::compact::CompactCofig;
 use crate::context::ContextEngine;
-use oben_models::{Message, SessionStore, TransportProvider};
+use oben_models::{Message, TransportProvider};
 
 // ---------------------------------------------------------------------------
 // CompactContextEngine
