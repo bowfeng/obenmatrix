@@ -21,7 +21,7 @@ use crate::interrupt::SharedInterrupt;
 use crate::message_sanitize::sanitize_messages;
 use crate::retry::{retry_with_backoff, RetryConfig, retryable_transient};
 use crate::stream_processor;
-use oben_models::{Message, MessageRole, SessionStore, TransportProvider};
+use oben_models::{Message, MessageRole, Session, SessionManagerExt, TransportProvider};
 
 // ---------------------------------------------------------------------------
 // TurnConfig — configuration for turn execution
@@ -83,6 +83,7 @@ impl TurnExecutor {
     /// - `transport`: LLM API (dyn trait)
     /// - `tools`: tool registry
     /// - `store`: session store
+    /// - `session_manager`: session lifecycle (for rotation on compression)
     /// - `session_id`: which session to operate on
     /// - `user_message`: the user's input
     /// - `call_mode`: Fresh or Incremental
@@ -91,7 +92,7 @@ impl TurnExecutor {
         context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
-        store: &mut dyn SessionStore,
+        session_manager: &mut dyn SessionManagerExt,
         session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
@@ -101,7 +102,7 @@ impl TurnExecutor {
             context_engine,
             transport,
             tools,
-            store,
+            session_manager,
             session_id,
             user_message,
             call_mode,
@@ -125,7 +126,7 @@ impl TurnExecutor {
         context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
-        store: &mut dyn SessionStore,
+        session_manager: &mut dyn SessionManagerExt,
         session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
@@ -134,9 +135,17 @@ impl TurnExecutor {
         interrupt: Option<SharedInterrupt>,
         mut config: TurnConfig,
     ) -> Result<TurnResult> {
-        let session = store
-            .session_mut(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+        let mut current_session_id = session_id.to_string();
+        let mut current_session: Option<&mut Session> = session_manager
+            .session_mut(&current_session_id)
+            .map(|s| {
+                current_session_id = s.id.clone();
+                s
+            });
+
+        let mut session = current_session
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", current_session_id))?;
 
         // Add user message to session
         session.messages.push(user_message);
@@ -230,6 +239,64 @@ impl TurnExecutor {
                 context_engine
                     .compact(&mut session.messages, Some(transport), None)
                     .await?;
+
+                // Session rotation: end parent, create child with lineage.
+                // This mirrors Hermes Agent's `compress_context()` which splits
+                // the session into parent (ended) + child (continuation).
+                //
+                // We can't hold `session` (borrowed from `session_manager`)
+                // while calling `session_manager` methods. Drop the borrow,
+                // do the rotation, then re-acquire.
+                let parent_id = current_session_id.clone();
+                drop(session);
+
+                // 1. End the parent session
+                context_engine.on_session_end(&parent_id);
+
+                // 2. Split: end parent in DB, create child with lineage
+                let child_session = match session_manager.split_after_compression(&parent_id) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("Session rotation failed: {} (continuing with parent)", e);
+                        // Re-acquire old session reference
+                        current_session = Some(
+                            session_manager
+                                .session_mut(&parent_id)
+                                .ok_or_else(|| anyhow::anyhow!("Parent session disappeared: {}", parent_id))?,
+                        );
+                        session = current_session
+                            .as_mut()
+                            .ok_or_else(|| anyhow::anyhow!("Parent session disappeared: {}", parent_id))?;
+                        continue;
+                    }
+                };
+                let child_id = child_session.id.clone();
+
+                // 3. Update our tracking
+                current_session_id = child_id.clone();
+                current_session = Some(
+                    session_manager
+                        .session_mut(&child_id)
+                        .ok_or_else(|| anyhow::anyhow!("Child session disappeared: {}", child_id))?,
+                );
+                session = current_session
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("Child session disappeared: {}", child_id))?;
+
+                // 5. Start the new session on the context engine
+                let model = session.metadata.model.as_deref().unwrap_or("unknown");
+                let context_length = if session.metadata.last_prompt_tokens > 0 {
+                    Some(session.metadata.last_prompt_tokens * 2)
+                } else {
+                    Some(128_000)
+                };
+                context_engine.on_session_start(&child_id, model, context_length);
+
+                info!(
+                    "Session rotated: {} → {}",
+                    parent_id,
+                    child_id,
+                );
             }
 
             // Sanitize messages before API call
@@ -469,6 +536,8 @@ impl TurnExecutor {
                 }
             }
         }
+        // Note: all code paths inside the loop use `return`, so this point is unreachable.
+        unreachable!("turn execution always returns inside the loop")
     }
 }
 

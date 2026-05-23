@@ -16,10 +16,10 @@ use crate::budget::IterationBudget;
 use crate::callbacks::AgentCallbacks;
 use crate::context::ContextEngine;
 use crate::fallback::FallbackChain;
-use crate::interrupt::{SharedInterrupt, shared_interrupt};
+use crate::interrupt::SharedInterrupt;
 use crate::retry::RetryConfig;
 use crate::turn_executor::{TurnConfig, TurnExecutor};
-use oben_models::{CallMode, Message, SessionStore, StreamDeltaCallback, TransportProvider};
+use oben_models::{CallMode, Message, SessionManagerExt, StreamDeltaCallback, TransportProvider};
 use oben_sessions::SessionManager;
 
 /// Callbacks for interactive_chat — abstracts I/O for CLI/TUI.
@@ -83,7 +83,7 @@ impl ConversationLoop {
         context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
-        store: &mut dyn SessionStore,
+        session_manager: &mut dyn SessionManagerExt,
         session_id: &str,
         user_message: Message,
         call_mode: &CallMode,
@@ -109,7 +109,7 @@ impl ConversationLoop {
             context_engine,
             transport,
             tools,
-            store,
+            session_manager,
             session_id,
             user_message,
             call_mode,
@@ -127,7 +127,7 @@ impl ConversationLoop {
         context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
         tools: &std::sync::Arc<oben_tools::ToolRegistry>,
-        store: &mut dyn SessionStore,
+        session_manager: &mut dyn SessionManagerExt,
         session_id: &str,
         user_message: Message,
         call_mode: &CallMode,
@@ -137,7 +137,7 @@ impl ConversationLoop {
             context_engine,
             transport,
             tools,
-            store,
+            session_manager,
             session_id,
             user_message,
             call_mode,

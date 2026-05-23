@@ -212,6 +212,25 @@ pub trait SessionManagerExt {
         total_tokens: usize,
         estimated_cost_usd: f64,
     );
+
+    /// Split session after compression: end parent, create child with lineage.
+    ///
+    /// After context compression, the parent session is marked ended with
+    /// `end_reason = "compression"` and a new child session is created with
+    /// `parent_session_id` pointing to the parent. The child's title is
+    /// auto-numbered: "chat-123" → "chat-123 (2)".
+    ///
+    /// Returns the child session (which is now the active session).
+    fn split_after_compression(&mut self, parent_id: &str) -> Result<Session, anyhow::Error>;
+
+    /// Get a mutable reference to the currently active session.
+    fn active_session_mut(&mut self) -> Option<&mut Session>;
+
+    /// Get a mutable reference to a session by ID.
+    fn session_mut(&mut self, session_id: &str) -> Option<&mut Session>;
+
+    /// Get a read reference to a session by ID.
+    fn session(&self, session_id: &str) -> Option<&Session>;
 }
 
 /// Entry in the session list view.
