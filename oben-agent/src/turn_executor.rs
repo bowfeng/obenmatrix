@@ -346,8 +346,11 @@ impl TurnExecutor {
                     let tool_calls = &response.tool_calls;
                     let mut text = response.text.to_string();
 
+                    // text.len() is byte count (UTF-8), not char count.
+                    // Slice by chars to avoid cutting mid-character.
+                    let preview: String = text.chars().take(100).collect();
                     tracing::debug!("TurnExecutor: got LLM response text len={}, tool_calls={}, first_100={:?}",
-                        text.len(), tool_calls.len(), &text[..text.len().min(100)]);
+                        text.len(), tool_calls.len(), preview);
 
                     // ── Stream scrubbing (Tier 2): strip thinking blocks & memory context ──
                     let before_scrub = text.clone();
@@ -466,5 +469,51 @@ impl TurnExecutor {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for UTF-8 char boundary slicing bug.
+    ///
+    /// **Bug**: `&text[..text.len().min(100)]` uses **byte count**, not
+    /// **char count**. A Chinese character like "没" is 3 bytes (98-101),
+    /// so byte 100 splits the character in half → panic!
+    ///
+    /// **Fix**: `text.chars().take(100).collect()` iterates char boundaries.
+    #[test]
+    fn test_utf8_char_slice_does_not_panic_with_chinese() {
+        // From the actual crash: byte 100 falls inside "没" (bytes 98-101)
+        let text = "\n\n有一天，一块三分熟的牛排在街上走着，突然看到一块五分熟的牛排，却没有打招呼。\n为什么？\n因为他们**不熟**。😄\n\n还想听程序员专属笑话，还是日常冷笑话？随时点单～";
+
+        // text.len() is byte count; the old code used it to slice → panic
+        assert!(text.len() > 100, "text must be > 100 bytes for the bug to trigger");
+
+        // The OLD buggy code would panic:
+        // let _ = &text[..text.len().min(100)]; // panic: end byte index 100 is not a char boundary
+
+        // The fix: take chars, not bytes → safe
+        let preview: String = text.chars().take(100).collect();
+        assert!(!preview.is_empty());
+        assert!(preview.contains("没")); // "没" is preserved fully
+
+        // Sanity: slicing at actual char boundary never panics
+        let _ = &preview[..preview.len()];
+    }
+
+    #[test]
+    fn test_char_slice_preserves_full_characters() {
+        let text = "你好世界Hello";
+        let preview: String = text.chars().take(4).collect();
+        assert_eq!(preview, "你好世界");
+    }
+
+    #[test]
+    fn test_char_slice_shorter_than_text() {
+        let text = "short";
+        let preview: String = text.chars().take(100).collect();
+        assert_eq!(preview, "short");
     }
 }

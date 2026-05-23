@@ -88,10 +88,4 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **Code it by using TDD, unit test and integration test.**
 
-The modle file is at /Users/ellie/.obenagent/config.yaml, and its content is
-model:
-  kind: Custom
-  base_url: "http://10.0.0.177:8000/v1"
-  model: "qwen35-local"
-  default_model: "qwen35-local"
-  api_key: "sk-local"
+also include live test by using model in ~/.obenagent/config.yaml
