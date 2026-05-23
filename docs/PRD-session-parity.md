@@ -23,7 +23,7 @@ Hermes-agent has a mature, battle-tested session layer. Our Rust port (`oben-ses
 | S.6 | Persistence on error (save session on all exit paths) | 🟡 | ✅ | [#36](https://github.com/bowfeng/obenagent/issues/36) | Match on response before save — error path calls save() then returns |
 | S.7 | Memory Provider abstraction (`MemoryProvider` trait + prefetch/recall + sync) | 🔴 | ❌ | [#31](https://github.com/bowfeng/obenagent/issues/31) | Provider trait, `prefetch_all()`, `sync_all()` |
 | S.8 | Message storage (remove destructive `DELETE FROM messages`) | 🟡 | ✅ | [#35](https://github.com/bowfeng/obenagent/issues/35) | `save_messages()` now delegates to `save_new_messages()`; new `clear_messages()` for compaction |
-| S.9 | **Session rotation on compression** (end old + create new with lineage) | 🔴 | ❌ | [TBD] | `end_session("compression")` → new session ID → `create_session(parent_session_id=old)` → title auto-numbering in lineage → `on_session_start(boundary_reason="compression")` → memory manager `on_session_switch()` |
+| S.9 | **Session rotation on compression** (end old + create new with lineage) | 🔴 | ✅ | [#41](https://github.com/bowfeng/obenagent/pull/42) | `end_session("compression")` → new session ID → `create_session(parent_session_id=old)` → title auto-numbering in lineage → `on_session_start(boundary_reason="compression")` → memory manager `on_session_switch()` |
 
 ---
 
