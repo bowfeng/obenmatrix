@@ -8,8 +8,12 @@
 //! - **`skill_curation`** — Bounded curated memory (MEMORY.md/USER.md) with
 //!   injection scanning and frozen system-prompt snapshots.
 //!   Maps to `tools/memory_tool.py`.
+//! - **`memory_provider`** — Pluggable `MemoryProvider` trait, `BuiltinProvider`,
+//!   `MemoryManager` orchestration, and `StreamingContextScrubber`.
+//!   Maps to `agent/memory_provider.py` + `agent/memory_manager.py`.
 
 pub mod manager;
+pub mod memory_provider;
 pub mod search;
 pub mod skill_curation;
 
