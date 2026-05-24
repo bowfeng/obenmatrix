@@ -280,8 +280,14 @@ pub(crate) struct ManagerInner {
     /// Registered plugin skills: qualified_name → metadata.
     plugin_skills: std::collections::HashMap<String, PluginSkill>,
 
+    /// Slash commands registered by plugins.
+    slash_commands: crate::slash_command::SlashCommandRegistry,
+
     /// CLI commands registered by plugins.
-    plugin_cli_commands: std::collections::HashMap<String, PluginCliCommand>,
+    cli_commands: crate::cli_command::CliCommandRegistry,
+
+    /// Message injector for plugin-injected messages.
+    message_injector: crate::message_injector::MessageInjector,
 
     /// Plugin configuration (enabled/disabled lists).
     config: crate::config::PluginConfig,
@@ -308,13 +314,13 @@ pub struct LoadedPlugin {
     /// Error during loading (if any).
     pub error: Option<String>,
 
-    /// Tools registered by this plugin.
+    /// Tool names registered by this plugin.
     pub tools_registered: Vec<String>,
 
-    /// Hooks registered by this plugin.
+    /// Hook types registered by this plugin.
     pub hooks_registered: Vec<String>,
 
-    /// Commands registered by this plugin.
+    /// Slash commands registered by this plugin.
     pub commands_registered: Vec<String>,
 }
 
@@ -365,7 +371,9 @@ impl PluginManager {
                 hooks: std::collections::HashMap::new(),
                 registered_tools: std::collections::HashSet::new(),
                 plugin_skills: std::collections::HashMap::new(),
-                plugin_cli_commands: std::collections::HashMap::new(),
+                slash_commands: crate::slash_command::SlashCommandRegistry::new(),
+                cli_commands: crate::cli_command::CliCommandRegistry::new(),
+                message_injector: crate::message_injector::MessageInjector::new(),
                 config: crate::config::PluginConfig::default(),
                 discovery_config: crate::discovery::DiscoveryConfig::new(),
                 providers: std::collections::HashMap::new(),
@@ -526,6 +534,7 @@ impl PluginManager {
                 kind: loaded.manifest.kind.clone(),
                 version: loaded.manifest.version.clone(),
                 description: loaded.manifest.description.clone(),
+                author: loaded.manifest.author.clone(),
                 source: loaded.manifest.source.clone(),
                 enabled: loaded.enabled,
                 tools: loaded.tools_registered.len(),
@@ -596,6 +605,111 @@ impl PluginManager {
             description: description.to_string(),
         });
     }
+
+    // -----------------------------------------------------------------------
+    // Phase 3: Slash commands
+    // -----------------------------------------------------------------------
+
+    /// Register a slash command from a plugin.
+    pub fn register_slash_command(&self, cmd: crate::slash_command::SlashCommand) -> Result<()> {
+        self.inner.lock().unwrap().slash_commands.register(cmd)?;
+        Ok(())
+    }
+
+    /// Resolve a slash command invocation.
+    pub fn resolve_slash_command(&self, raw: &str) -> Option<crate::slash_command::SlashCommand> {
+        self.inner.lock().unwrap()
+            .slash_commands
+            .resolve(raw)
+            .map(|(cmd, _)| cmd)
+    }
+
+    /// Execute a slash command with 30s timeout.
+    pub async fn execute_slash_command(&self, raw: &str) -> Result<String> {
+        self.inner.lock().unwrap().slash_commands.execute(raw).await
+    }
+
+    /// List all registered slash commands.
+    pub fn list_slash_commands(&self) -> Vec<crate::slash_command::SlashCommand> {
+        self.inner.lock().unwrap().slash_commands.list_owned()
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3: CLI commands
+    // -----------------------------------------------------------------------
+
+    /// Register a CLI command from a plugin.
+    pub fn register_cli_command_internal(
+        &self,
+        name: &str,
+        description: &str,
+        plugin: &str,
+    ) {
+        self.inner.lock().unwrap().cli_commands.register(name, description, plugin);
+    }
+
+    /// Register a CLI command with setup/handler functions.
+    pub fn register_cli_command_with_fns(
+        &self,
+        name: &str,
+        description: &str,
+        plugin: &str,
+        setup_fn: Option<std::sync::Arc<dyn crate::cli_command::CliCommandSetup + Send + Sync>>,
+        handler_fn: Option<std::sync::Arc<dyn crate::cli_command::CliCommandHandler + Send + Sync>>,
+    ) {
+        self.inner.lock().unwrap().cli_commands
+            .register_with_fns(name, description, plugin, setup_fn, handler_fn);
+    }
+
+    /// List all registered CLI commands.
+    pub fn list_cli_commands(&self) -> Vec<crate::cli_command::CliCommand> {
+        self.inner.lock().unwrap().cli_commands.list_owned()
+    }
+
+    /// Get a registered CLI command by name.
+    pub fn get_cli_command(&self, name: &str) -> Option<crate::cli_command::CliCommand> {
+        self.inner.lock().unwrap().cli_commands.get_owned(name)
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3: Message injection
+    // -----------------------------------------------------------------------
+
+    /// Inject a message into the conversation.
+    pub fn inject_message(
+        &self,
+        role: impl Into<String>,
+        content: impl Into<String>,
+        action: crate::message_injector::MessageAction,
+        plugin: impl Into<String>,
+    ) -> String {
+        self.inner.lock().unwrap().message_injector
+            .inject(role, content, action, plugin)
+    }
+
+    /// Get all unconsumed messages.
+    pub fn get_unconsumed_messages(&self, action: Option<crate::message_injector::MessageAction>) -> Vec<crate::message_injector::InjectedMessage> {
+        self.inner.lock().unwrap().message_injector.get_unconsumed(action)
+    }
+
+    /// Get interrupt messages.
+    pub fn get_interrupt_messages(&self) -> Vec<crate::message_injector::InjectedMessage> {
+        self.inner.lock().unwrap().message_injector.get_interrupt_messages()
+    }
+
+    /// Consume all messages of a given action.
+    pub fn consume_messages(&self, action: crate::message_injector::MessageAction) -> Vec<String> {
+        self.inner.lock().unwrap().message_injector.consume(action)
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3: Introspection
+    // -----------------------------------------------------------------------
+
+    /// Check if debug logging is enabled via OBERN_PLUGINS_DEBUG env var.
+    pub fn debug_logging_enabled() -> bool {
+        std::env::var("OBERN_PLUGINS_DEBUG").is_ok()
+    }
 }
 
 impl Default for PluginManager {
@@ -607,16 +721,29 @@ impl Default for PluginManager {
 /// Plugin metadata for introspection.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PluginInfo {
+    /// Plugin display name.
     pub name: String,
+    /// Plugin key for config lookups.
     pub key: String,
+    /// Plugin kind.
     pub kind: PluginKind,
+    /// Plugin version.
     pub version: String,
+    /// Plugin description.
     pub description: String,
+    /// Plugin author.
+    pub author: String,
+    /// Source where plugin was discovered.
     pub source: PluginSource,
+    /// Whether the plugin is enabled.
     pub enabled: bool,
+    /// Number of tools registered by this plugin.
     pub tools: usize,
+    /// Number of hooks registered by this plugin.
     pub hooks: usize,
+    /// Number of commands registered by this plugin.
     pub commands: usize,
+    /// Error during loading (if any).
     pub error: Option<String>,
 }
 
@@ -660,7 +787,9 @@ mod tests {
                 hooks: std::collections::HashMap::new(),
                 registered_tools: std::collections::HashSet::new(),
                 plugin_skills: std::collections::HashMap::new(),
-                plugin_cli_commands: std::collections::HashMap::new(),
+                slash_commands: crate::slash_command::SlashCommandRegistry::new(),
+                cli_commands: crate::cli_command::CliCommandRegistry::new(),
+                message_injector: crate::message_injector::MessageInjector::new(),
                 config: crate::config::PluginConfig::default(),
                 discovery_config: crate::discovery::DiscoveryConfig::new(),
                 providers: std::collections::HashMap::new(),
