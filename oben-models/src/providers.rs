@@ -67,6 +67,7 @@ pub struct ProviderConfig {
     pub max_tokens: Option<usize>,
     pub temperature: Option<f64>,
     /// Fallback models, tried in order if the primary fails.
+    #[serde(default)]
     pub fallback_models: Vec<String>,
 }
 
