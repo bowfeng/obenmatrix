@@ -10,7 +10,7 @@ Hermes Agent has a full **plugin system** that lets users extend the agent with 
 
 This is a **priority-critical** gap: without it, ObenAgent cannot support third-party extensions, custom provider backends, or user-defined lifecycle hooks.
 
-**Phase 1 progress (#46):** Core infrastructure implemented — `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. 19 unit tests passing. Full 4-source discovery and pip entry-points deferred to Phase 2.
+**Phase 1 progress (#46):** Phase 1 + Phase 2 implemented — `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. Phase 2 added: `ImageGenProvider`/`WebSearchProvider`/`BrowserProvider`/`ContextEngine` provider traits, full 4-source directory scanning with config-driven gating, `PluginConfig` (enabled/disabled lists), thread-local tool whitelist, `pre_tool_call` blocking, `pre_llm_call` context injection, `transform_llm_output` transformation. 44 unit tests passing. Pip entry-points and provider integration with PluginContext deferred to Phase 3.
 
 ---
 
@@ -61,9 +61,9 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **Directory scanning** — Recursively scan plugin directories for `plugin.yaml`, support flat and category layouts (e.g., `image_gen/openai`), depth-capped at 2 segments |
-| ❌ | **Source discovery** — Bundled (repo-shipped), user (config-dir), project (opt-in via env), pip entry-points |
-| ❌ | **Name collision override** — Later sources override earlier ones (user > bundled, project > user) |
+| ✅ #46 | **Directory scanning** — Recursively scan plugin directories for `plugin.yaml`, support flat and category layouts (e.g., `image_gen/openai`), depth-capped at 2 segments |
+| ✅ #46 | **Source discovery** — Bundled (repo-shipped), user (config-dir), project (opt-in via env); pip entry-points deferred to Phase 3 |
+| ✅ #46 | **Name collision override** — Later sources override earlier ones (user > bundled, project > user) |
 
 ### 4. Plugin Kinds — 5 Categories
 
@@ -87,16 +87,16 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 | ✅ #46 | **PluginContext::register_hook()** — Register lifecycle hook callbacks |
 | ✅ #46 | **PluginContext::register_command()** — Register slash commands (in-session `/cmd` with handler, description, args_hint) |
 | ✅ #46 | **PluginContext::register_cli_command()** — Register CLI subcommands (terminal `hermes subcmd` style) |
-| ❌ | **PluginContext::register_skill()** — Register plugin skills with qualified names (plugin:name) |
+| ✅ #46 | **PluginContext::register_skill()** — Register plugin skills with qualified names (plugin:name) |
 | ❌ | **PluginContext::register_platform()** — Register gateway platform adapters |
 | ❌ | **PluginContext::inject_message()** — Inject messages into conversation (interrupt mid-turn or queue when idle) |
 | ❌ | **PluginContext::dispatch_tool()** — Dispatch tool calls through registry with parent agent context |
 | ❌ | **PluginContext::llm** — Host-owned LLM facade for trusted plugins (gated by config) |
 | ❌ | **PluginContext::register_context_engine()** — Replace built-in context compression |
-| ❌ | **PluginContext::register_image_gen_provider()** — Add image generation backends |
-| ❌ | **PluginContext::register_video_gen_provider()** — Add video generation backends |
-| ❌ | **PluginContext::register_web_search_provider()** — Add web search/extract backends |
-| ❌ | **PluginContext::register_browser_provider()** — Add cloud browser backends |
+| ✅ #46 | **PluginContext::register_image_gen_provider()** — Add image generation backends (Phase 2 stub; full provider integration Phase 3) |
+| ✅ #46 | **PluginContext::register_video_gen_provider()** — Add video generation backends (Phase 2 stub; full provider integration Phase 3) |
+| ✅ #46 | **PluginContext::register_web_search_provider()** — Add web search/extract backends (Phase 2 stub; full provider integration Phase 3) |
+| ✅ #46 | **PluginContext::register_browser_provider()** — Add cloud browser backends (Phase 2 stub; full provider integration Phase 3) |
 
 ### 6. Hook System — 17 Lifecycle Hooks
 
@@ -108,9 +108,9 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 |--------|-------------|
 | ✅ #46 | **Hook types** — `pre_tool_call`, `post_tool_call`, `transform_terminal_output`, `transform_tool_result`, `transform_llm_output`, `pre_llm_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `subagent_stop`, `pre_gateway_dispatch`, `pre_approval_request`, `post_approval_response` |
 | ✅ #46 | **invoke_hook()** — Call all callbacks for a hook name, pass kwargs, wrap in try/except (catch_unwind), collect non-None results |
-| ❌ | **pre_tool_call blocking** — First `{"action": "block", "message": "..."}` wins; tool whitelisting per-thread |
-| ❌ | **pre_llm_call context injection** — Return dict/string to inject context into user message (preserves prompt cache) |
-| ❌ | **transform_llm_output** — Replace LLM response text (first non-None wins; for vocabulary/personality transformation) |
+| ✅ #46 | **pre_tool_call blocking** — First `{"action": "block", "message": "..."}` wins; tool whitelisting per-thread |
+| ✅ #46 | **pre_llm_call context injection** — Return dict/string to inject context into user message (preserves prompt cache) |
+| ✅ #46 | **transform_llm_output** — Replace LLM response text (first non-None wins; for vocabulary/personality transformation) |
 
 ### 7. Plugin Tool Whitelisting
 
@@ -120,7 +120,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **Thread-local tool whitelist** — Per-thread allowed tool set, enforced via `get_pre_tool_call_block_message()` |
+| ✅ #46 | **Thread-local tool whitelist** — Per-thread allowed tool set, enforced via `get_pre_tool_call_block_message()` |
 
 ### 8. Plugin Slash Commands
 
