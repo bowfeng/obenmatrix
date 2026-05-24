@@ -122,9 +122,6 @@ pub struct ImageGenOutput {
 
 /// Trait for image generation providers.
 #[async_trait]
-///
-/// Providers implement this to expose image generation capabilities
-/// (e.g., DALL-E, Stable Diffusion, Midjourney).
 pub trait ImageGenProvider: Send + Sync {
     /// Provider identifier (e.g., "openai", "stability").
     fn name(&self) -> &str;
@@ -194,9 +191,6 @@ pub struct WebSearchOutput {
 
 /// Trait for web search providers.
 #[async_trait]
-///
-/// Providers implement this to expose web search capabilities
-/// (e.g., Tavily, SerpAPI, Google Custom Search).
 pub trait WebSearchProvider: Send + Sync {
     /// Provider identifier (e.g., "tavily", "serpapi").
     fn name(&self) -> &str;
@@ -257,9 +251,6 @@ pub struct BrowserOutput {
 
 /// Trait for cloud browser providers.
 #[async_trait]
-///
-/// Providers implement this to expose headless browser capabilities
-/// (e.g., Puppeteer, Playwright, Chrome headless).
 pub trait BrowserProvider: Send + Sync {
     /// Provider identifier (e.g., "puppeteer", "playwright").
     fn name(&self) -> &str;
@@ -309,10 +300,6 @@ pub struct ContextEngineOutput {
 
 /// Trait for context compression engines.
 #[async_trait]
-///
-/// Providers implement this to compress long conversation contexts
-/// while preserving important information (e.g., LLM-based summarization,
-/// keyword extraction, relevance scoring).
 pub trait ContextEngine: Send + Sync {
     /// Engine identifier (e.g., "llm-summarize", "keyword-extract").
     fn name(&self) -> &str;
@@ -335,6 +322,75 @@ pub trait ContextEngine: Send + Sync {
         max_tokens: Option<usize>,
         model: Option<&str>,
     ) -> Result<ContextEngineOutput>;
+
+    /// Optional: get setup schema for UI configuration.
+    fn get_setup_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ModelProvider — custom model provider trait
+// ---------------------------------------------------------------------------
+
+/// Output from a model chat completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCompletionOutput {
+    /// The assistant's response content.
+    pub content: Option<String>,
+    /// Tool calls made by the model.
+    pub tool_calls: Vec<ChatToolCall>,
+    /// Token usage information.
+    pub usage: Option<CompletionUsage>,
+}
+
+/// A tool call from a model completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatToolCall {
+    pub id: String,
+    pub function: ToolCallFunction,
+}
+
+/// The function details of a tool call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Token usage from a completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionUsage {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub total_tokens: usize,
+}
+
+/// Model provider — custom model provider with endpoint and auth.
+#[async_trait]
+pub trait ModelProvider: Send + Sync {
+    /// Provider identifier (e.g., "local", "enterprise", "openrouter").
+    fn name(&self) -> &str;
+
+    /// Whether this provider is configured and has valid credentials.
+    fn is_available(&self) -> bool;
+
+    /// List available models/backends this provider supports.
+    fn list_models(&self) -> Vec<ProviderProfile>;
+
+    /// Get the default model name.
+    fn default_model(&self) -> Option<String> {
+        self.list_models().first().and_then(|m| m.default_model.clone())
+    }
+
+    /// Send a chat completion request.
+    async fn chat_completion(
+        &self,
+        messages: &[serde_json::Value],
+        model: Option<&str>,
+        temperature: Option<f64>,
+        max_tokens: Option<usize>,
+    ) -> Result<ChatCompletionOutput>;
 
     /// Optional: get setup schema for UI configuration.
     fn get_setup_schema(&self) -> Option<serde_json::Value> {
@@ -368,6 +424,10 @@ pub enum ProviderKind {
     /// Context compression engine (LLM summarizer, keyword extractor).
     #[serde(rename = "context_engine")]
     ContextEngine,
+
+    /// Custom model provider (self-hosted, enterprise, etc.).
+    #[serde(rename = "model_provider")]
+    ModelProvider,
 }
 
 impl fmt::Display for ProviderKind {
@@ -378,6 +438,7 @@ impl fmt::Display for ProviderKind {
             Self::WebSearch => write!(f, "web_search"),
             Self::Browser => write!(f, "browser"),
             Self::ContextEngine => write!(f, "context_engine"),
+            Self::ModelProvider => write!(f, "model_provider"),
         }
     }
 }
@@ -392,6 +453,7 @@ impl FromStr for ProviderKind {
             "web_search" => Ok(Self::WebSearch),
             "browser" => Ok(Self::Browser),
             "context_engine" => Ok(Self::ContextEngine),
+            "model_provider" => Ok(Self::ModelProvider),
             _ => Err(anyhow::anyhow!("Unknown provider kind: '{}'", s)),
         }
     }
@@ -399,8 +461,251 @@ impl FromStr for ProviderKind {
 
 /// Check if a provider kind string is valid.
 pub fn is_valid_provider_kind(s: &str) -> bool {
-    matches!(s, "image_gen" | "video_gen" | "web_search" | "browser" | "context_engine")
+    matches!(s, "image_gen" | "video_gen" | "web_search" | "browser" | "context_engine" | "model_provider")
 }
+
+// ---------------------------------------------------------------------------
+// Provider Registries — typed wrappers around Vec<Box<dyn Trait>>
+// ---------------------------------------------------------------------------
+
+/// Registry for image generation providers (non-exclusive).
+pub struct ImageGenRegistry {
+    providers: Vec<Box<dyn ImageGenProvider + Send + Sync>>,
+}
+
+impl ImageGenRegistry {
+    pub fn new() -> Self {
+        Self {
+            providers: Vec::new(),
+        }
+    }
+
+    /// Register a provider.
+    pub fn register(&mut self, provider: Box<dyn ImageGenProvider + Send + Sync>) {
+        self.providers.push(provider);
+    }
+
+    /// Get the first provider (default).
+    pub fn get_default(&self) -> Option<&(dyn ImageGenProvider + Send + Sync)> {
+        self.providers.first().map(|p| p.as_ref())
+    }
+
+    /// Get a specific provider by name.
+    pub fn get_by_name(&self, name: &str) -> Option<&(dyn ImageGenProvider + Send + Sync)> {
+        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+    }
+
+    /// List all registered providers.
+    pub fn list(&self) -> Vec<&(dyn ImageGenProvider + Send + Sync)> {
+        self.providers.iter().map(|p| p.as_ref()).collect()
+    }
+
+    /// Provider count.
+    pub fn len(&self) -> usize { self.providers.len() }
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
+    /// Clear all providers.
+    pub fn clear(&mut self) { self.providers.clear(); }
+}
+
+impl Default for ImageGenRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+/// Registry for video generation providers (non-exclusive).
+pub struct VideoGenRegistry {
+    providers: Vec<Box<dyn ImageGenProvider + Send + Sync>>,
+}
+
+impl VideoGenRegistry {
+    pub fn new() -> Self {
+        Self {
+            providers: Vec::new(),
+        }
+    }
+
+    pub fn register(&mut self, provider: Box<dyn ImageGenProvider + Send + Sync>) {
+        self.providers.push(provider);
+    }
+
+    pub fn get_default(&self) -> Option<&(dyn ImageGenProvider + Send + Sync)> {
+        self.providers.first().map(|p| p.as_ref())
+    }
+
+    pub fn get_by_name(&self, name: &str) -> Option<&(dyn ImageGenProvider + Send + Sync)> {
+        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+    }
+
+    pub fn list(&self) -> Vec<&(dyn ImageGenProvider + Send + Sync)> {
+        self.providers.iter().map(|p| p.as_ref()).collect()
+    }
+
+    pub fn len(&self) -> usize { self.providers.len() }
+    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
+    pub fn clear(&mut self) { self.providers.clear(); }
+}
+
+impl Default for VideoGenRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+/// Registry for web search providers (non-exclusive).
+pub struct WebSearchRegistry {
+    providers: Vec<Box<dyn WebSearchProvider + Send + Sync>>,
+}
+
+impl WebSearchRegistry {
+    pub fn new() -> Self {
+        Self {
+            providers: Vec::new(),
+        }
+    }
+
+    pub fn register(&mut self, provider: Box<dyn WebSearchProvider + Send + Sync>) {
+        self.providers.push(provider);
+    }
+
+    pub fn get_default(&self) -> Option<&(dyn WebSearchProvider + Send + Sync)> {
+        self.providers.first().map(|p| p.as_ref())
+    }
+
+    pub fn get_by_name(&self, name: &str) -> Option<&(dyn WebSearchProvider + Send + Sync)> {
+        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+    }
+
+    pub fn list(&self) -> Vec<&(dyn WebSearchProvider + Send + Sync)> {
+        self.providers.iter().map(|p| p.as_ref()).collect()
+    }
+
+    pub fn len(&self) -> usize { self.providers.len() }
+    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
+    pub fn clear(&mut self) { self.providers.clear(); }
+}
+
+impl Default for WebSearchRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+/// Registry for browser providers (non-exclusive).
+pub struct BrowserRegistry {
+    providers: Vec<Box<dyn BrowserProvider + Send + Sync>>,
+}
+
+impl BrowserRegistry {
+    pub fn new() -> Self {
+        Self {
+            providers: Vec::new(),
+        }
+    }
+
+    pub fn register(&mut self, provider: Box<dyn BrowserProvider + Send + Sync>) {
+        self.providers.push(provider);
+    }
+
+    pub fn get_default(&self) -> Option<&(dyn BrowserProvider + Send + Sync)> {
+        self.providers.first().map(|p| p.as_ref())
+    }
+
+    pub fn get_by_name(&self, name: &str) -> Option<&(dyn BrowserProvider + Send + Sync)> {
+        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+    }
+
+    pub fn list(&self) -> Vec<&(dyn BrowserProvider + Send + Sync)> {
+        self.providers.iter().map(|p| p.as_ref()).collect()
+    }
+
+    pub fn len(&self) -> usize { self.providers.len() }
+    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
+    pub fn clear(&mut self) { self.providers.clear(); }
+}
+
+impl Default for BrowserRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+/// Registry for context compression engines (exclusive — one at a time).
+pub struct ContextEngineRegistry {
+    providers: Vec<Box<dyn ContextEngine + Send + Sync>>,
+}
+
+impl ContextEngineRegistry {
+    pub fn new() -> Self {
+        Self {
+            providers: Vec::new(),
+        }
+    }
+
+    /// Register a provider. In exclusive mode, replaces previous.
+    pub fn register(&mut self, provider: Box<dyn ContextEngine + Send + Sync>) {
+        self.providers.clear();
+        self.providers.push(provider);
+    }
+
+    pub fn get_default(&self) -> Option<&(dyn ContextEngine + Send + Sync)> {
+        self.providers.first().map(|p| p.as_ref())
+    }
+
+    pub fn get_by_name(&self, name: &str) -> Option<&(dyn ContextEngine + Send + Sync)> {
+        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+    }
+
+    pub fn list(&self) -> Vec<&(dyn ContextEngine + Send + Sync)> {
+        self.providers.iter().map(|p| p.as_ref()).collect()
+    }
+
+    pub fn len(&self) -> usize { self.providers.len() }
+    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
+    pub fn clear(&mut self) { self.providers.clear(); }
+}
+
+impl Default for ContextEngineRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+/// Registry for model providers (non-exclusive).
+pub struct ModelProviderRegistry {
+    providers: Vec<Box<dyn ModelProvider + Send + Sync>>,
+}
+
+impl ModelProviderRegistry {
+    pub fn new() -> Self {
+        Self {
+            providers: Vec::new(),
+        }
+    }
+
+    pub fn register(&mut self, provider: Box<dyn ModelProvider + Send + Sync>) {
+        self.providers.push(provider);
+    }
+
+    pub fn get_default(&self) -> Option<&(dyn ModelProvider + Send + Sync)> {
+        self.providers.first().map(|p| p.as_ref())
+    }
+
+    pub fn get_by_name(&self, name: &str) -> Option<&(dyn ModelProvider + Send + Sync)> {
+        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+    }
+
+    pub fn list(&self) -> Vec<&(dyn ModelProvider + Send + Sync)> {
+        self.providers.iter().map(|p| p.as_ref()).collect()
+    }
+
+    pub fn len(&self) -> usize { self.providers.len() }
+    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
+    pub fn clear(&mut self) { self.providers.clear(); }
+}
+
+impl Default for ModelProviderRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+/// Marker types for typed provider registries.
+pub struct ImageGenMarker;
+pub struct VideoGenMarker;
+pub struct WebSearchMarker;
+pub struct BrowserMarker;
+pub struct ContextEngineMarker;
+pub struct ModelProviderMarker;
 
 #[cfg(test)]
 mod tests {
@@ -415,6 +720,7 @@ mod tests {
         assert_eq!(ProviderKind::from_str("web_search").unwrap(), ProviderKind::WebSearch);
         assert_eq!(ProviderKind::from_str("browser").unwrap(), ProviderKind::Browser);
         assert_eq!(ProviderKind::from_str("context_engine").unwrap(), ProviderKind::ContextEngine);
+        assert_eq!(ProviderKind::from_str("model_provider").unwrap(), ProviderKind::ModelProvider);
         assert!(ProviderKind::from_str("invalid").is_err());
     }
 
@@ -425,6 +731,7 @@ mod tests {
         /// then: returns snake_case string
         assert_eq!(ProviderKind::ImageGen.to_string(), "image_gen");
         assert_eq!(ProviderKind::WebSearch.to_string(), "web_search");
+        assert_eq!(ProviderKind::ModelProvider.to_string(), "model_provider");
     }
 
     #[test]
@@ -434,6 +741,7 @@ mod tests {
         /// then: returns true only for valid kinds
         assert!(is_valid_provider_kind("image_gen"));
         assert!(is_valid_provider_kind("web_search"));
+        assert!(is_valid_provider_kind("model_provider"));
         assert!(!is_valid_provider_kind("invalid"));
     }
 
@@ -520,5 +828,98 @@ mod tests {
         assert_eq!(models2.len(), 2);
         assert!(models2.contains(&"v1"));
         assert!(models2.contains(&"default"));
+    }
+
+    // ── Registry Tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_image_gen_registry_register_get() {
+        /// given: a new image gen registry
+        /// when: register() + get_default() are called
+        /// then: returns the registered provider
+        struct MockImageGen;
+        #[async_trait::async_trait]
+        impl ImageGenProvider for MockImageGen {
+            fn name(&self) -> &str { "mock" }
+            fn is_available(&self) -> bool { true }
+            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
+            async fn generate(
+                &self,
+                _prompt: &str, _model: Option<&str>,
+                _width: Option<i32>, _height: Option<i32>, _n: Option<u8>,
+            ) -> Result<ImageGenOutput> {
+                Ok(ImageGenOutput { url: None, data: None, mime_type: "image/png".into(), width: 512, height: 512, error: None })
+            }
+        }
+
+        let mut reg = ImageGenRegistry::new();
+        assert!(reg.is_empty());
+
+        reg.register(Box::new(MockImageGen));
+        assert_eq!(reg.len(), 1);
+
+        let provider = reg.get_default().unwrap();
+        assert_eq!(provider.name(), "mock");
+        assert!(provider.is_available());
+    }
+
+    #[test]
+    fn test_context_engine_registry_exclusive() {
+        /// given: a context engine registry (exclusive)
+        /// when: two providers are registered
+        /// then: only the last one remains
+        struct MockEngine {
+            name_val: String,
+        }
+        impl MockEngine {
+            fn new(name: &str) -> Self { Self { name_val: name.to_string() } }
+        }
+
+        #[async_trait::async_trait]
+        impl ContextEngine for MockEngine {
+            fn name(&self) -> &str { &self.name_val }
+            fn is_available(&self) -> bool { true }
+            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
+            fn compress(
+                &self,
+                _messages: &[serde_json::Value], _max_tokens: Option<usize>, _model: Option<&str>,
+            ) -> Result<ContextEngineOutput> {
+                Ok(ContextEngineOutput {
+                    messages: vec![], summary: "test".into(),
+                    input_count: 0, output_count: 0, tokens_saved: 0,
+                })
+            }
+        }
+
+        let mut reg = ContextEngineRegistry::new();
+        reg.register(Box::new(MockEngine::new("engine-a")));
+        reg.register(Box::new(MockEngine::new("engine-b")));
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.get_default().unwrap().name(), "engine-b");
+    }
+
+    #[test]
+    fn test_get_by_name() {
+        /// given: a registry with multiple providers
+        /// when: get_by_name() is called with each name
+        /// then: returns the matching provider
+        struct MockImageGen { name_val: String }
+        #[async_trait::async_trait]
+        impl ImageGenProvider for MockImageGen {
+            fn name(&self) -> &str { &self.name_val }
+            fn is_available(&self) -> bool { true }
+            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
+            async fn generate(&self, _prompt: &str, _model: Option<&str>, _width: Option<i32>, _height: Option<i32>, _n: Option<u8>) -> Result<ImageGenOutput> {
+                Ok(ImageGenOutput { url: None, data: None, mime_type: "image/png".into(), width: 512, height: 512, error: None })
+            }
+        }
+
+        let mut reg = ImageGenRegistry::new();
+        reg.register(Box::new(MockImageGen { name_val: "a".into() }));
+        reg.register(Box::new(MockImageGen { name_val: "b".into() }));
+
+        assert!(reg.get_by_name("a").is_some());
+        assert!(reg.get_by_name("b").is_some());
+        assert!(reg.get_by_name("c").is_none());
     }
 }

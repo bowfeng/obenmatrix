@@ -10,7 +10,7 @@ Hermes Agent has a full **plugin system** that lets users extend the agent with 
 
 This is a **priority-critical** gap: without it, ObenAgent cannot support third-party extensions, custom provider backends, or user-defined lifecycle hooks.
 
-**Phase 1 progress (#46):** Phase 1 + Phase 2 + Phase 3 implemented — Phase 1: `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. Phase 2: `ImageGenProvider`/`WebSearchProvider`/`BrowserProvider`/`ContextEngine` provider traits, full 4-source directory scanning with config-driven gating, `PluginConfig` (enabled/disabled lists), thread-local tool whitelist, `pre_tool_call` blocking, `pre_llm_call` context injection, `transform_llm_output` transformation. Phase 3: `SlashCommandRegistry` with async handling (30s timeout), `CliCommandRegistry`, `MessageInjector` (append/interrupt/queue), introspection with `OBERN_PLUGINS_DEBUG` logging. 66 unit tests passing. Remaining: plugin skills, pip entry-points, provider integration with PluginContext, TUI toolset grouping.
+**Phase 1 progress (#46):** Phase 1 + Phase 2 + Phase 3 implemented — Phase 1: `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. Phase 2: `ImageGenProvider`/`WebSearchProvider`/`BrowserProvider`/`ContextEngine` provider traits, full 4-source directory scanning with config-driven gating, `PluginConfig` (enabled/disabled lists), thread-local tool whitelist, `pre_tool_call` blocking, `pre_llm_call` context injection, `transform_llm_output` transformation. Phase 3: `SlashCommandRegistry` with async handling (30s timeout), `CliCommandRegistry`, `MessageInjector` (append/interrupt/queue), introspection with `OBERN_PLUGINS_DEBUG` logging. 66 unit tests passing. Remaining: plugin skills, pip entry-points, provider integration with PluginContext (trait implementation wiring), TUI toolset integration.
 
 ---
 
@@ -88,11 +88,11 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 | ✅ #46 | **PluginContext::register_command()** — Register slash commands (in-session `/cmd` with handler, description, args_hint) |
 | ✅ #46 | **PluginContext::register_cli_command()** — Register CLI subcommands (terminal `hermes subcmd` style) |
 | ✅ #46 | **PluginContext::register_skill()** — Register plugin skills with qualified names (plugin:name) |
-| ❌ | **PluginContext::register_platform()** — Register gateway platform adapters |
+| ✅ | **PluginContext::register_platform()** — Register gateway platform adapters |
 | ✅ #50 | **PluginContext::inject_message()** — Inject messages into conversation (interrupt mid-turn or queue when idle) |
-| ❌ | **PluginContext::dispatch_tool()** — Dispatch tool calls through registry with parent agent context |
-| ❌ | **PluginContext::llm** — Host-owned LLM facade for trusted plugins (gated by config) |
-| ❌ | **PluginContext::register_context_engine()** — Replace built-in context compression |
+| ✅ | **PluginContext::dispatch_tool()** — Dispatch tool calls through registry with parent agent context |
+| ✅ #52 | **PluginContext::llm** — Host-owned LLM facade for trusted plugins (gated by config) |
+| ✅ #52 | **PluginContext::register_context_engine()** — Replace built-in context compression |
 | ✅ #46 | **PluginContext::register_image_gen_provider()** — Add image generation backends (Phase 2 stub; full provider integration Phase 3) |
 | ✅ #46 | **PluginContext::register_video_gen_provider()** — Add video generation backends (Phase 2 stub; full provider integration Phase 3) |
 | ✅ #46 | **PluginContext::register_web_search_provider()** — Add web search/extract backends (Phase 2 stub; full provider integration Phase 3) |
@@ -131,8 +131,8 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 | Status | Description |
 |--------|-------------|
 | ✅ #50 | **Plugin slash command registry
-| ❌ | **Async command handling** — Await async handlers, with 30s timeout, threaded fallback when no running loop |
-| ❌ | **Command resolution** — `resolve_command()` with conflict check against built-in commands |
+| ✅ | **Async command handling** — Await async handlers, with 30s timeout, threaded fallback when no running loop |
+|  | **Command resolution** — `resolve_command()` with conflict check against built-in commands |
 
 ### 9. Plugin Skills — Qualified Names
 
@@ -142,8 +142,8 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **Plugin skill registry** — Qualified name → {path, plugin, bare_name, description} |
-| ❌ | **Skill lookup** — `find_plugin_skill(qualified_name)`, `list_plugin_skills(plugin_name)` |
+|  | **Plugin skill registry** — Qualified name → {path, plugin, bare_name, description} |
+|  | **Skill lookup** — `find_plugin_skill(qualified_name)`, `list_plugin_skills(plugin_name)` |
 
 ### 10. Plugin CLI Commands
 
@@ -163,13 +163,13 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **Image gen provider registry** — `ImageGenProvider` trait with `name`, `display_name`, `is_available()`, `list_models()`, `default_model()`, `get_setup_schema()`, `generate()` |
-| ❌ | **Video gen provider registry** — `VideoGenProvider` trait similar to ImageGenProvider |
-| ❌ | **Web search provider registry** — `WebSearchProvider` for search/extract backends |
-| ❌ | **Browser provider registry** — `BrowserProvider` for cloud browser backends |
+|  | **Image gen provider registry** — `ImageGenProvider` trait with `name`, `display_name`, `is_available()`, `list_models()`, `default_model()`, `get_setup_schema()`, `generate()` |
+| ✅ | **Video gen provider registry** — `VideoGenProvider` trait similar to ImageGenProvider |
+| ✅ | **Web search provider registry** — `WebSearchProvider` for search/extract backends |
+| ✅ | **Browser provider registry** — `BrowserProvider` for cloud browser backends |
 | ✅ | **Memory provider registry** — `MemoryProvider` exclusive provider (one active at a time) | `MemoryManager::add_provider()` enforces builtin + 1 external max |
-| ❌ | **Context engine registry** — `ContextEngine` exclusive engine (one active at a time, replaces built-in) |
-| ❌ | **Model provider registry** — `ProviderProfile` for custom model providers |
+| ✅ #52 | **Context engine registry** — `ContextEngine` exclusive engine (one active at a time, replaces built-in) |
+| ✅ #52 | **Model provider registry** — `ProviderProfile` for custom model providers |
 
 ### 12. Plugin Configuration & Enable/Disable
 
@@ -179,9 +179,9 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **Enabled plugins config** — `plugins.enabled` allow-list (None = nothing enabled) |
-| ❌ | **Disabled plugins config** — `plugins.disabled` deny-list (always enforced) |
-| ❌ | **Plugin load gating** — Bundled backend/platform auto-load; user plugins gated by enabled list; exclusive handled by category discovery |
+|  | **Enabled plugins config** — `plugins.enabled` allow-list (None = nothing enabled) |
+| ✅ | **Disabled plugins config** — `plugins.disabled` deny-list (always enforced) |
+| ✅ | **Plugin load gating** — Bundled backend/platform auto-load; user plugins gated by enabled list; exclusive handled by category discovery |
 
 ### 13. Plugin Introspection & Debugging
 
@@ -202,7 +202,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **Plugin toolset grouping** — Group plugin tool names by toolset, map back to owning plugin |
+| ✅ #52 | **Plugin toolset grouping** — Group plugin tool names by toolset, map back to owning plugin |
 
 ---
 
@@ -233,7 +233,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 **Phase 3 (extensibility):** Plugin skills, slash commands, CLI commands, inject_message, tool whitelisting
 
-**Phase 4 (polish):** Plugin introspection, debug logging, toolset grouping, pip entry-point scanning
+**Phase 4 (polish):** Plugin introspection ✅ #52, debug logging ✅ #52, toolset grouping ✅ #52, pip entry-point scanning
 
 ---
 

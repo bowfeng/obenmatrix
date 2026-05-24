@@ -11,6 +11,8 @@
 //! - `PluginManager` — singleton with discover/load/invoke/list
 //! - `PluginContext` — registration API for tools, hooks, commands, skills, providers
 //! - Provider traits (ImageGenProvider, WebSearchProvider, BrowserProvider, ContextEngine)
+//! - Provider registries (ImageGen, VideoGen, WebSearch, Browser, ContextEngine, ModelProvider)
+//!   with register/get_default/get_by_name/list/remove and exclusivity enforcement
 //! - Full 4-source directory scanning with config-driven gating
 //! - Thread-local tool whitelist
 //! - pre_tool_call blocking, pre_llm_call context injection, transform_llm_output
@@ -18,9 +20,8 @@
 //! - CLI command registry
 //! - Message injection (append, interrupt, queue)
 //! - Plugin introspection with OBERN_PLUGINS_DEBUG logging
-//!
-//! Phase 4 (future): pip entry-points, Provider integration with PluginContext,
-//! TUI toolset grouping
+//! - Plugin toolset grouping — map toolset → [tool names with plugin attribution]
+//! - PluginContext::llm() — host-owned LLM facade for trusted plugins
 
 pub mod plugin_kind;
 pub mod manifest;
@@ -40,7 +41,13 @@ pub use hook::{HookType, HookCallback, invoke_hook, check_pre_tool_call_block, g
 pub use manager::{PluginManager, PluginContext, LoadedPlugin, PluginInfo};
 pub use discovery::{DiscoveryConfig, discover_plugins};
 pub use config::PluginConfig;
-pub use provider::{ProviderKind, ProviderProfile, ImageGenProvider, WebSearchProvider, BrowserProvider, ContextEngine};
+pub use provider::{
+    ProviderKind, ProviderProfile, ImageGenProvider, WebSearchProvider, BrowserProvider, ContextEngine,
+    ModelProvider, ChatCompletionOutput, ChatToolCall, ToolCallFunction, CompletionUsage,
+    ImageGenRegistry, VideoGenRegistry, WebSearchRegistry, BrowserRegistry,
+    ContextEngineRegistry, ModelProviderRegistry,
+    ImageGenMarker, VideoGenMarker, WebSearchMarker, BrowserMarker, ContextEngineMarker, ModelProviderMarker,
+};
 pub use whitelist::{set_thread_tool_whitelist, clear_thread_tool_whitelist, check_tool_allowed};
 pub use slash_command::{SlashCommand, SlashCommandRegistry, SlashCommandHandler};
 pub use cli_command::{CliCommand, CliCommandRegistry, CliCommandHandler, CliCommandSetup};

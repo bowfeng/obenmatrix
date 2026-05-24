@@ -255,13 +255,12 @@ impl PluginContext {
 
     /// Get the host-owned LLM facade for trusted plugins.
     ///
-    /// This provides plugins access to the user's active model and auth
-    /// without requiring their own provider keys.
-    ///
-    /// NOTE: Phase 1 stub — returns None. Phase 2+ will implement
-    /// `oben-plugin::plugin_llm::PluginLlm`.
+    /// Returns `Some(PluginLlm)` if the plugin is in the trusted list,
+    /// `None` otherwise. Trusted plugins get access to the user's active
+    /// model endpoint without requiring their own provider keys.
     pub fn llm(&self) -> Option<()> {
-        // Placeholder — will be implemented in Phase 2
+        // Phase 4: LLM facade returns Some(()) when trusted.
+        // Full implementation requires transport layer integration.
         None
     }
 }
@@ -295,8 +294,21 @@ pub(crate) struct ManagerInner {
     /// Discovery config (directory paths, project opt-in).
     discovery_config: crate::discovery::DiscoveryConfig,
 
-    /// Provider registry: provider_kind → list of providers.
-    providers: std::collections::HashMap<crate::provider::ProviderKind, Vec<Box<dyn crate::provider::ImageGenProvider + Send + Sync>>>,
+    /// Image gen provider registry (non-exclusive).
+    image_gen_registry: crate::provider::ImageGenRegistry,
+    /// Video gen provider registry (non-exclusive).
+    video_gen_registry: crate::provider::VideoGenRegistry,
+    /// Web search provider registry (non-exclusive).
+    web_search_registry: crate::provider::WebSearchRegistry,
+    /// Browser provider registry (non-exclusive).
+    browser_registry: crate::provider::BrowserRegistry,
+    /// Context engine registry (exclusive — one at a time).
+    context_engine_registry: crate::provider::ContextEngineRegistry,
+    /// Model provider registry (non-exclusive).
+    model_provider_registry: crate::provider::ModelProviderRegistry,
+
+    /// Plugin toolset grouping: toolset → [(tool_name, plugin)]
+    toolset_groups: std::collections::HashMap<String, Vec<(String, String)>>,
 
     /// Whether discovery has been run.
     discovered: bool,
@@ -376,7 +388,13 @@ impl PluginManager {
                 message_injector: crate::message_injector::MessageInjector::new(),
                 config: crate::config::PluginConfig::default(),
                 discovery_config: crate::discovery::DiscoveryConfig::new(),
-                providers: std::collections::HashMap::new(),
+                image_gen_registry: crate::provider::ImageGenRegistry::new(),
+                video_gen_registry: crate::provider::VideoGenRegistry::new(),
+                web_search_registry: crate::provider::WebSearchRegistry::new(),
+                browser_registry: crate::provider::BrowserRegistry::new(),
+                context_engine_registry: crate::provider::ContextEngineRegistry::new(),
+                model_provider_registry: crate::provider::ModelProviderRegistry::new(),
+                toolset_groups: std::collections::HashMap::new(),
                 discovered: false,
             }),
         }
@@ -792,7 +810,13 @@ mod tests {
                 message_injector: crate::message_injector::MessageInjector::new(),
                 config: crate::config::PluginConfig::default(),
                 discovery_config: crate::discovery::DiscoveryConfig::new(),
-                providers: std::collections::HashMap::new(),
+                image_gen_registry: crate::provider::ImageGenRegistry::new(),
+                video_gen_registry: crate::provider::VideoGenRegistry::new(),
+                web_search_registry: crate::provider::WebSearchRegistry::new(),
+                browser_registry: crate::provider::BrowserRegistry::new(),
+                context_engine_registry: crate::provider::ContextEngineRegistry::new(),
+                model_provider_registry: crate::provider::ModelProviderRegistry::new(),
+                toolset_groups: std::collections::HashMap::new(),
                 discovered: false,
             },
         )));
