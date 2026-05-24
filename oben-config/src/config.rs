@@ -5,6 +5,7 @@ use oben_models::ProviderConfig;
 
 /// All application settings, stored in ~/.obenagent/config.yaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub model: ProviderConfig,
     pub temperature: Option<f64>,
@@ -21,13 +22,26 @@ pub struct AppConfig {
 pub struct ToolsConfig {
     pub enabled: Vec<String>,
     /// Auto-enable tools by category.
+    #[serde(default)]
     pub auto_detect: bool,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self { enabled: vec![], auto_detect: true }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillsConfig {
     pub enabled: Vec<String>,
     pub auto_use: Vec<String>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self { enabled: vec![], auto_use: vec![] }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,12 +65,34 @@ pub struct DisplayConfig {
     pub code_block_language: bool,
 }
 
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            spinner_style: "dots".to_string(),
+            theme: "dark".to_string(),
+            code_block_language: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextConfig {
     /// Max messages to keep in context before compression.
+    #[serde(default)]
     pub max_messages: Option<usize>,
     /// Compression method: "summary", "token_count", "none".
+    #[serde(default = "default_compression")]
     pub compression: String,
+}
+
+fn default_compression() -> String {
+    "summary".to_string()
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self { max_messages: Some(100), compression: "summary".to_string() }
+    }
 }
 
 impl Default for AppConfig {
@@ -177,6 +213,27 @@ mod tests {
         let restored: AppConfig = serde_yaml::from_str(&content).unwrap();
         assert_eq!(restored.model.kind, config.model.kind);
         assert_eq!(restored.temperature, config.temperature);
+    }
+
+    #[test]
+    fn test_minimal_config_deserialize() {
+        // User's actual config only has model settings.
+        // All other fields should use defaults.
+        let yaml = r#"model:
+  kind: Custom
+  base_url: "http://10.0.0.177:8000/v1"
+  model: "qwen35-local"
+  default_model: "qwen35-local"
+  api_key: "sk-local"
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.model.kind, oben_models::ProviderKind::Custom);
+        assert_eq!(config.model.model, "qwen35-local");
+        assert_eq!(config.model.base_url.as_deref(), Some("http://10.0.0.177:8000/v1"));
+        assert_eq!(config.tools.enabled, Vec::<String>::new());
+        assert!(config.tools.auto_detect);
+        assert_eq!(config.display.theme, "dark");
+        assert_eq!(config.context.compression, "summary");
     }
 }
 
