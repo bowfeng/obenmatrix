@@ -34,6 +34,7 @@ pub mod whitelist;
 pub mod slash_command;
 pub mod cli_command;
 pub mod message_injector;
+pub mod mock_provider;
 
 pub use plugin_kind::PluginKind;
 pub use manifest::{PluginManifest, PluginSource, parse_manifest};
@@ -52,3 +53,6 @@ pub use whitelist::{set_thread_tool_whitelist, clear_thread_tool_whitelist, chec
 pub use slash_command::{SlashCommand, SlashCommandRegistry, SlashCommandHandler};
 pub use cli_command::{CliCommand, CliCommandRegistry, CliCommandHandler, CliCommandSetup};
 pub use message_injector::{MessageInjector, MessageAction, InjectedMessage};
+pub use mock_provider::{
+    MockImageGenProvider, MockWebSearchProvider, MockBrowserProvider, MockContextEngine, MockModelProvider,
+};

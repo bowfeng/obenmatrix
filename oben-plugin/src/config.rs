@@ -1,6 +1,6 @@
-//! Plugin configuration — enabled/disabled lists, load gating.
+//! Plugin configuration — enabled/disabled lists, provider selection, load gating.
 //!
-//! Maps to Hermes' `plugins.enabled` and `plugins.disabled` config
+//! Maps to Hermes' `plugins.enabled`, `plugins.disabled`, and provider config
 /// values in config.yaml.
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,10 @@ use std::fs;
 /// plugins:
 ///   enabled: []        # empty = auto-load only; list = explicit allow
 ///   disabled: []       # always blocked
+/// image_gen:
+///   provider: "mock"   # which provider to use
+/// web_search:
+///   provider: "tavily"
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginConfig {
@@ -23,21 +27,62 @@ pub struct PluginConfig {
 
     /// Always blocked, regardless of enabled list.
     pub disabled: Vec<String>,
+
+    /// Provider selection by category. Keys like "image_gen", "web_search",
+    /// "browser", etc. Values are provider names to use.
+    #[serde(default)]
+    pub providers: std::collections::HashMap<String, String>,
 }
 
 impl PluginConfig {
     /// Parse plugin config from a TOML/YAML file.
     ///
-    /// Looks for a `plugins:` section in the config file.
+    /// Looks for `plugins:` and `providers:` sections in the config file.
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let content = fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Cannot read config file {}: {}", path.display(), e))?;
 
-        // Parse as YAML
+        // Parse as full YAML with plugins + providers sections
         if let Ok(map) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+            // Build a config with plugins + providers sections
+            let mut config = Self::default();
+            
+            // Parse plugins section
             if let Some(plugins) = map.get("plugins") {
-                let config: Result<Self, _> = serde_yaml::from_value(plugins.clone());
-                return config.map_err(|e| anyhow::anyhow!("Failed to parse plugins config: {}", e));
+                if let Some(plugins_map) = plugins.as_mapping() {
+                    for (k, v) in plugins_map {
+                        let key = k.as_str().unwrap_or("");
+                        if key == "enabled" {
+                            if let Some(enabled) = v.as_sequence() {
+                                config.enabled = Some(enabled.iter()
+                                    .filter_map(|val| val.as_str().map(String::from))
+                                    .collect());
+                            }
+                        } else if key == "disabled" {
+                            if let Some(disabled) = v.as_sequence() {
+                                config.disabled = disabled.iter()
+                                    .filter_map(|val| val.as_str().map(String::from))
+                                    .collect();
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Parse providers section
+            if let Some(providers) = map.get("providers") {
+                if let Some(providers_map) = providers.as_mapping() {
+                    for (k, v) in providers_map {
+                        if let (Some(key), Some(val)) = (k.as_str(), v.as_str()) {
+                            config.providers.insert(key.to_string(), val.to_string());
+                        }
+                    }
+                }
+            }
+            
+            // Check if we parsed anything
+            if config.enabled.is_some() || !config.disabled.is_empty() || !config.providers.is_empty() {
+                return Ok(config);
             }
         }
 
@@ -57,6 +102,17 @@ impl PluginConfig {
             Some(&self.disabled),
         )
     }
+
+    /// Get the configured provider name for a category (e.g. "image_gen").
+    /// Returns None if no provider is configured for this category.
+    pub fn get_provider(&self, category: &str) -> Option<&str> {
+        self.providers.get(category).map(|s| s.as_str())
+    }
+
+    /// Check if a specific provider is configured for a category.
+    pub fn has_provider(&self, category: &str, provider_name: &str) -> bool {
+        self.providers.get(category).map(|s| s.as_str()) == Some(provider_name)
+    }
 }
 
 #[cfg(test)]
@@ -75,18 +131,20 @@ mod tests {
 
     #[test]
     fn test_plugin_config_yaml_parse() {
-        /// given: YAML config with plugins section
+        /// given: YAML config with plugins and providers sections
         /// when: PluginConfig::from_file() is called
-        /// then: parsed config has correct enabled/disabled lists
+        /// then: parsed config has correct enabled/disabled lists and provider selections
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.yaml");
         fs::write(
             &config_path,
             r#"
-name: test-agent
 plugins:
   enabled: ["plugin-a", "plugin-b"]
   disabled: ["broken-plugin"]
+providers:
+  image_gen: mock
+  web_search: tavily
 "#,
         )
         .unwrap();
@@ -94,6 +152,9 @@ plugins:
         let config = PluginConfig::from_file(&config_path).unwrap();
         assert_eq!(config.enabled, Some(vec!["plugin-a".into(), "plugin-b".into()]));
         assert_eq!(config.disabled, vec!["broken-plugin".to_string()]);
+        assert_eq!(config.get_provider("image_gen"), Some("mock"));
+        assert_eq!(config.get_provider("web_search"), Some("tavily"));
+        assert_eq!(config.get_provider("browser"), None);
     }
 
     #[test]

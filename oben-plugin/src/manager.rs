@@ -263,6 +263,172 @@ impl PluginContext {
         // Full implementation requires transport layer integration.
         None
     }
+
+    // ── Provider Registration ───────────────────────────────────────────
+
+    /// Register an image generation provider.
+    pub fn register_image_gen_provider(
+        &self,
+        provider: Box<dyn crate::provider::ImageGenProvider + Send + Sync>,
+    ) {
+        let name = provider.name().to_string();
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let mut mgr = manager.lock().unwrap();
+        mgr.image_gen_registry.register(provider);
+        debug!(
+            "Plugin {} registered image gen provider: {}",
+            self.manifest.name, name
+        );
+    }
+
+    /// Register a video generation provider.
+    pub fn register_video_gen_provider(
+        &self,
+        provider: Box<dyn crate::provider::ImageGenProvider + Send + Sync>,
+    ) {
+        let name = provider.name().to_string();
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let mut mgr = manager.lock().unwrap();
+        mgr.video_gen_registry.register(provider);
+        debug!(
+            "Plugin {} registered video gen provider: {}",
+            self.manifest.name, name
+        );
+    }
+
+    /// Register a web search provider.
+    pub fn register_web_search_provider(
+        &self,
+        provider: Box<dyn crate::provider::WebSearchProvider + Send + Sync>,
+    ) {
+        let name = provider.name().to_string();
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let mut mgr = manager.lock().unwrap();
+        mgr.web_search_registry.register(provider);
+        debug!(
+            "Plugin {} registered web search provider: {}",
+            self.manifest.name, name
+        );
+    }
+
+    /// Register a browser provider.
+    pub fn register_browser_provider(
+        &self,
+        provider: Box<dyn crate::provider::BrowserProvider + Send + Sync>,
+    ) {
+        let name = provider.name().to_string();
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let mut mgr = manager.lock().unwrap();
+        mgr.browser_registry.register(provider);
+        debug!(
+            "Plugin {} registered browser provider: {}",
+            self.manifest.name, name
+        );
+    }
+
+    /// Register a context engine (exclusive — replaces previous).
+    pub fn register_context_engine(
+        &self,
+        engine: Box<dyn crate::provider::ContextEngine + Send + Sync>,
+    ) {
+        let name = engine.name().to_string();
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let mut mgr = manager.lock().unwrap();
+        mgr.context_engine_registry.register(engine);
+        debug!(
+            "Plugin {} registered context engine: {}",
+            self.manifest.name, name
+        );
+    }
+
+    /// Register a model provider.
+    pub fn register_model_provider(
+        &self,
+        provider: Box<dyn crate::provider::ModelProvider + Send + Sync>,
+    ) {
+        let name = provider.name().to_string();
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let mut mgr = manager.lock().unwrap();
+        mgr.model_provider_registry.register(provider);
+        debug!(
+            "Plugin {} registered model provider: {}",
+            self.manifest.name, name
+        );
+    }
+
+    // ── Provider Retrieval ──────────────────────────────────────────────
+    /// Note: These return owned clones. For live references, use the
+    /// PluginManager directly via `PluginManager::get()` or `PluginContext`'s
+    /// weak reference chain.
+
+    /// Get info about the default image gen provider by configured name.
+    pub fn get_image_gen_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let inner = manager.lock().unwrap();
+        let profile = match name {
+            Some(n) => inner.image_gen_registry.get_by_name(n).map(|p| {
+                p.list_models().into_iter().next()
+            }).flatten(),
+            None => inner.image_gen_registry.get_default().map(|p| {
+                p.list_models().into_iter().next()
+            }).flatten(),
+        };
+        profile
+    }
+
+    /// Get info about the default web search provider by configured name.
+    pub fn get_web_search_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let inner = manager.lock().unwrap();
+        let profile = match name {
+            Some(n) => inner.web_search_registry.get_by_name(n).map(|p| {
+                p.list_models().into_iter().next()
+            }).flatten(),
+            None => inner.web_search_registry.get_default().map(|p| {
+                p.list_models().into_iter().next()
+            }).flatten(),
+        };
+        profile
+    }
+
+    /// Get info about the default browser provider by configured name.
+    pub fn get_browser_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let inner = manager.lock().unwrap();
+        let profile = match name {
+            Some(n) => inner.browser_registry.get_by_name(n).map(|p| {
+                p.list_models().into_iter().next()
+            }).flatten(),
+            None => inner.browser_registry.get_default().map(|p| {
+                p.list_models().into_iter().next()
+            }).flatten(),
+        };
+        profile
+    }
+
+    /// Get info about the active context engine (if any).
+    pub fn get_context_engine(&self) -> Option<crate::provider::ProviderProfile> {
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let inner = manager.lock().unwrap();
+        inner.context_engine_registry.get_default().map(|p| {
+            p.list_models().into_iter().next()
+        }).flatten()
+    }
+
+    /// Get info about the default model provider by configured name.
+    pub fn get_model_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
+        let manager = self.manager.upgrade().expect("PluginManager no longer exists");
+        let inner = manager.lock().unwrap();
+        let profile = match name {
+            Some(n) => inner.model_provider_registry.get_by_name(n).map(|p| {
+                p.list_models().into_iter().next()
+            }).flatten(),
+            None => inner.model_provider_registry.get_default().map(|p| {
+                p.list_models().into_iter().next()
+            }).flatten(),
+        };
+        profile
+    }
 }
 
 /// Inner state for PluginManager (hidden behind Mutex).
@@ -728,6 +894,53 @@ impl PluginManager {
     pub fn debug_logging_enabled() -> bool {
         std::env::var("OBERN_PLUGINS_DEBUG").is_ok()
     }
+
+    // ── Provider Registry Introspection (for full trait impl wiring) ────
+
+    /// List all registered image gen provider names.
+    pub fn list_image_gen_providers(&self) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.image_gen_registry.list()
+            .into_iter()
+            .map(|p| p.name().to_string())
+            .collect()
+    }
+
+    /// List all registered web search provider names.
+    pub fn list_web_search_providers(&self) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.web_search_registry.list()
+            .into_iter()
+            .map(|p| p.name().to_string())
+            .collect()
+    }
+
+    /// List all registered browser provider names.
+    pub fn list_browser_providers(&self) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.browser_registry.list()
+            .into_iter()
+            .map(|p| p.name().to_string())
+            .collect()
+    }
+
+    /// List all registered context engine names.
+    pub fn list_context_engines(&self) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.context_engine_registry.list()
+            .into_iter()
+            .map(|p| p.name().to_string())
+            .collect()
+    }
+
+    /// List all registered model provider names.
+    pub fn list_model_providers(&self) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.model_provider_registry.list()
+            .into_iter()
+            .map(|p| p.name().to_string())
+            .collect()
+    }
 }
 
 impl Default for PluginManager {
@@ -792,6 +1005,7 @@ mod tests {
             requires_env: vec![],
             provides_tools: vec![],
             provides_hooks: vec![],
+            provides_providers: vec![],
             source: PluginSource::Bundled,
             path: Some("/test".to_string()),
             kind: PluginKind::Standalone,

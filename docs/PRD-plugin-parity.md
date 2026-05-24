@@ -10,7 +10,7 @@ Hermes Agent has a full **plugin system** that lets users extend the agent with 
 
 This is a **priority-critical** gap: without it, ObenAgent cannot support third-party extensions, custom provider backends, or user-defined lifecycle hooks.
 
-**Phase 1 progress (#46):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Phase 1: `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. Phase 2: `ImageGenProvider`/`WebSearchProvider`/`BrowserProvider`/`ContextEngine` provider traits, full 4-source directory scanning with config-driven gating, `PluginConfig` (enabled/disabled lists), thread-local tool whitelist, `pre_tool_call` blocking, `pre_llm_call` context injection, `transform_llm_output` transformation. Phase 3: `SlashCommandRegistry` with async handling (30s timeout), `CliCommandRegistry`, `MessageInjector` (append/interrupt/queue), introspection with `OBERN_PLUGINS_DEBUG` logging, plugin skill registry+lookup, command resolution, `plugins.enabled` config. Phase 4: Provider registries (`ImageGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ContextEngineRegistry` exclusive, `ModelProviderRegistry`), `ModelProvider` trait + output types, `PluginContext::register_context_engine()`, toolset grouping API. 69 unit tests passing. Remaining: pip entry-points, provider integration with PluginContext (trait impl wiring), TUI toolset grouping (consumer side).
+**Phase 1 progress (#46):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Phase 1: `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. Phase 2: `ImageGenProvider`/`WebSearchProvider`/`BrowserProvider`/`ContextEngine` provider traits, full 4-source directory scanning with config-driven gating, `PluginConfig` (enabled/disabled lists), thread-local tool whitelist, `pre_tool_call` blocking, `pre_llm_call` context injection, `transform_llm_output` transformation. Phase 3: `SlashCommandRegistry` with async handling (30s timeout), `CliCommandRegistry`, `MessageInjector` (append/interrupt/queue), introspection with `OBERN_PLUGINS_DEBUG` logging, plugin skill registry+lookup, command resolution, `plugins.enabled` config. Phase 4: Provider registries (`ImageGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ContextEngineRegistry` exclusive, `ModelProviderRegistry`), `ModelProvider` trait + output types, `PluginContext::register_context_engine()`, toolset grouping API, config-driven provider selection, `provides_providers` manifest field, mock provider implementations demonstrating full trait impl wiring. 77 unit tests passing. Remaining: pip entry-points, TUI toolset grouping (consumer side).
 
 ---
 
@@ -93,10 +93,10 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 | ✅ | **PluginContext::dispatch_tool()** — Dispatch tool calls through registry with parent agent context |
 | ✅ #52 | **PluginContext::llm** — Host-owned LLM facade for trusted plugins (gated by config) |
 | ✅ #52 | **PluginContext::register_context_engine()** — Replace built-in context compression |
-| ✅ #46 | **PluginContext::register_image_gen_provider()** — Add image generation backends (Phase 2 stub; full provider integration Phase 3) |
+| ✅ #53 | **PluginContext::register_image_gen_provider()** — Register image gen providers + `get_image_gen_provider()` by name |
 | ✅ #46 | **PluginContext::register_video_gen_provider()** — Add video generation backends (Phase 2 stub; full provider integration Phase 3) |
-| ✅ #46 | **PluginContext::register_web_search_provider()** — Add web search/extract backends (Phase 2 stub; full provider integration Phase 3) |
-| ✅ #46 | **PluginContext::register_browser_provider()** — Add cloud browser backends (Phase 2 stub; full provider integration Phase 3) |
+| ✅ #53 | **PluginContext::register_web_search_provider()** — Register web search providers + `get_web_search_provider()` by name |
+| ✅ #53 | **PluginContext::register_browser_provider()** — Register browser providers + `get_browser_provider()` by name |
 
 ### 6. Hook System — 17 Lifecycle Hooks
 
@@ -163,13 +163,13 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-|  | **Image gen provider registry** — `ImageGenProvider` trait with `name`, `display_name`, `is_available()`, `list_models()`, `default_model()`, `get_setup_schema()`, `generate()` |
+| ✅ #53 | **Image gen provider registry** — `ImageGenProvider` trait with `name`, `display_name`, `is_available()`, `list_models()`, `default_model()`, `get_setup_schema()`, `generate()` + `MockImageGenProvider` impl |
 | ✅ | **Video gen provider registry** — `VideoGenProvider` trait similar to ImageGenProvider |
-| ✅ | **Web search provider registry** — `WebSearchProvider` for search/extract backends |
-| ✅ | **Browser provider registry** — `BrowserProvider` for cloud browser backends |
+| ✅ #53 | **Web search provider registry** — `WebSearchProvider` for search/extract backends + `MockWebSearchProvider` impl |
+| ✅ #53 | **Browser provider registry** — `BrowserProvider` for cloud browser backends + `MockBrowserProvider` impl |
 | ✅ | **Memory provider registry** — `MemoryProvider` exclusive provider (one active at a time) | `MemoryManager::add_provider()` enforces builtin + 1 external max |
-| ✅ #52 | **Context engine registry** — `ContextEngine` exclusive engine (one active at a time, replaces built-in) |
-| ✅ #52 | **Model provider registry** — `ProviderProfile` for custom model providers |
+| ✅ #53 | **Context engine registry** — `ContextEngine` exclusive engine (one active at a time, replaces built-in) + `MockContextEngine` impl |
+| ✅ #53 | **Model provider registry** — `ProviderProfile` for custom model providers + `MockModelProvider` impl |
 
 ### 12. Plugin Configuration & Enable/Disable
 

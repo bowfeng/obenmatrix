@@ -96,6 +96,10 @@ pub struct PluginManifest {
     #[serde(default)]
     pub provides_hooks: Vec<String>,
 
+    /// Provider types this plugin provides (e.g. ["image_gen", "web_search"]).
+    #[serde(default)]
+    pub provides_providers: Vec<String>,
+
     /// Where this plugin was discovered.
     #[serde(default)]
     pub source: PluginSource,
@@ -205,6 +209,10 @@ impl PluginManifest {
             ),
             provides_hooks: Self::parse_string_list(
                 data.get("provides_hooks")
+                    .and_then(|v| v.as_sequence()),
+            ),
+            provides_providers: Self::parse_string_list(
+                data.get("provides_providers")
                     .and_then(|v| v.as_sequence()),
             ),
             source,
@@ -351,6 +359,8 @@ provides_tools:
   - test_tool
 provides_hooks:
   - pre_tool_call
+provides_providers:
+  - image_gen
 kind: standalone
 "#,
         );
@@ -363,6 +373,7 @@ kind: standalone
         assert_eq!(manifest.requires_env, vec!["TEST_API_KEY"]);
         assert_eq!(manifest.provides_tools, vec!["test_tool"]);
         assert_eq!(manifest.provides_hooks, vec!["pre_tool_call"]);
+        assert_eq!(manifest.provides_providers, vec!["image_gen"]);
         assert_eq!(manifest.kind, PluginKind::Standalone);
         assert_eq!(manifest.source, PluginSource::Bundled);
     }
