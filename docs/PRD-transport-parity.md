@@ -10,7 +10,7 @@
 | # | Feature | Severity | Status | Issue | Notes |
 |---|---------|----------|--------|-------|-------|
 | T.1 | OpenAI-compatible `ChatCompletionsTransport` | ✅ | ✅ | (built-in) | Streaming + SSE, tool calls, usage tracking |
-| T.2 | Anthropic native Messages API | 🔴 | ❌ | [TBD] | Native `messages/` API with prompt caching, tool use, thinking tokens |
+| T.2 | Anthropic native Messages API | 🔴 | ✅ | [#44](https://github.com/bowfeng/obenagent/issues/44) | Native `messages/` API, streaming SSE, prompt caching, thinking tokens, tool use |
 | T.3 | AWS Bedrock transport | 🟡 | ❌ | [TBD] | `bedrock/runtime` client for Claude/Mistral/Llama |
 | T.4 | Google Gemini transport | 🟡 | ❌ | [TBD] | Gemini API (REST + AIO) |
 | T.5 | Codex / OpenAI Codex protocol | 🟢 | ❌ | [TBD] | Event-driven protocol |

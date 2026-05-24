@@ -4,6 +4,8 @@
 
 pub mod base;
 pub mod chat_completions;
+pub mod anthropic_messages;
 
 pub use base::*;
 pub use chat_completions::*;
+pub use anthropic_messages::*;
