@@ -1,0 +1,27 @@
+[package]
+name = "oben-plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Plugin infrastructure for oben-agent — discovery, loading, hooks, providers"
+
+[dependencies]
+oben-models = { path = "../oben-models" }
+oben-tools = { path = "../oben-tools" }
+
+anyhow.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+dirs.workspace = true
+once_cell.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

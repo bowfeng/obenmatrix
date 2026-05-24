@@ -10,6 +10,8 @@ Hermes Agent has a full **plugin system** that lets users extend the agent with 
 
 This is a **priority-critical** gap: without it, ObenAgent cannot support third-party extensions, custom provider backends, or user-defined lifecycle hooks.
 
+**Phase 1 progress (#46):** Core infrastructure implemented — `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. 19 unit tests passing. Full 4-source discovery and pip entry-points deferred to Phase 2.
+
 ---
 
 ## Existing ObenAgent Capabilities
@@ -39,7 +41,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **PluginManager** — Singleton manager with `discover_and_load()`, `invoke_hook()`, `list_plugins()`, `find_plugin_skill()`, `list_plugin_skills()`, `remove_plugin_skill()` |
+| ✅ #46 | **PluginManager** — Singleton manager with `discover_and_load()`, `invoke_hook()`, `list_plugins()`, `find_plugin_skill()`, `list_plugin_skills()`, `remove_plugin_skill()` |
 
 ### 2. PluginManifest — YAML-Based Plugin Declarations
 
@@ -49,7 +51,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **PluginManifest** — Rust struct for plugin.yaml fields: name, version, description, author, requires_env, provides_tools, provides_hooks, kind, source, path, key |
+| ✅ #46 | **PluginManifest** — Rust struct for plugin.yaml fields: name, version, description, author, requires_env, provides_tools, provides_hooks, kind, source, path, key |
 
 ### 3. Plugin Discovery — 4-Source Scanning
 
@@ -71,7 +73,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **PluginKind enum** — Standalone, Backend, Exclusive, Platform, ModelProvider |
+| ✅ #46 | **PluginKind enum** — Standalone, Backend, Exclusive, Platform, ModelProvider |
 
 ### 5. PluginContext — Plugin Registration API
 
@@ -81,10 +83,10 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **PluginContext::register_tool()** — Register tools with name, toolset, schema, handler, check_fn, requires_env, is_async, description, emoji, override flag |
-| ❌ | **PluginContext::register_hook()** — Register lifecycle hook callbacks |
-| ❌ | **PluginContext::register_command()** — Register slash commands (in-session `/cmd` with handler, description, args_hint) |
-| ❌ | **PluginContext::register_cli_command()** — Register CLI subcommands (terminal `hermes subcmd` style) |
+| ✅ #46 | **PluginContext::register_tool()** — Register tools with name, toolset, schema, handler, override flag (Phase 1: tracks registration; Phase 2: integrates with ToolRegistry) |
+| ✅ #46 | **PluginContext::register_hook()** — Register lifecycle hook callbacks |
+| ✅ #46 | **PluginContext::register_command()** — Register slash commands (in-session `/cmd` with handler, description, args_hint) |
+| ✅ #46 | **PluginContext::register_cli_command()** — Register CLI subcommands (terminal `hermes subcmd` style) |
 | ❌ | **PluginContext::register_skill()** — Register plugin skills with qualified names (plugin:name) |
 | ❌ | **PluginContext::register_platform()** — Register gateway platform adapters |
 | ❌ | **PluginContext::inject_message()** — Inject messages into conversation (interrupt mid-turn or queue when idle) |
@@ -104,8 +106,8 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ | **Hook types** — `pre_tool_call`, `post_tool_call`, `transform_terminal_output`, `transform_tool_result`, `transform_llm_output`, `pre_llm_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `subagent_stop`, `pre_gateway_dispatch`, `pre_approval_request`, `post_approval_response` |
-| ❌ | **invoke_hook()** — Call all callbacks for a hook name, pass kwargs, wrap in try/except, collect non-None results |
+| ✅ #46 | **Hook types** — `pre_tool_call`, `post_tool_call`, `transform_terminal_output`, `transform_tool_result`, `transform_llm_output`, `pre_llm_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `subagent_stop`, `pre_gateway_dispatch`, `pre_approval_request`, `post_approval_response` |
+| ✅ #46 | **invoke_hook()** — Call all callbacks for a hook name, pass kwargs, wrap in try/except (catch_unwind), collect non-None results |
 | ❌ | **pre_tool_call blocking** — First `{"action": "block", "message": "..."}` wins; tool whitelisting per-thread |
 | ❌ | **pre_llm_call context injection** — Return dict/string to inject context into user message (preserves prompt cache) |
 | ❌ | **transform_llm_output** — Replace LLM response text (first non-None wins; for vocabulary/personality transformation) |

@@ -14,6 +14,7 @@ members = [
     "oben-tui",
     "oben-cli",
     "oben-scenario-test",
+    "oben-plugin",
 ]
 resolver = "2"
 

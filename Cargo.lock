@@ -1940,6 +1940,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "oben-plugin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dirs",
+ "oben-models",
+ "oben-tools",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "oben-scenario-test"
 version = "0.1.0"
 dependencies = [
