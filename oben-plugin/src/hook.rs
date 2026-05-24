@@ -248,6 +248,115 @@ pub fn is_valid_hook_type(s: &str) -> bool {
     HookType::from_str(s).is_ok()
 }
 
+// ---------------------------------------------------------------------------
+// pre_tool_call blocking — first block message wins
+// ---------------------------------------------------------------------------
+
+/// Process pre_tool_call results and return the first blocking message if any.
+///
+/// Returns `Some(BlockAction)` if any callback wants to block the tool call,
+/// or `None` if all callbacks passed (no blocking).
+///
+/// The blocking format matches Hermes:
+/// `{"action": "block", "message": "...", "allowed_tools": [...]}`
+pub fn check_pre_tool_call_block(results: &[Value]) -> Option<BlockAction> {
+    for result in results {
+        if let Some(action) = result.get("action") {
+            if let Some("block") = action.as_str() {
+                return Some(BlockAction {
+                    message: result.get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Tool call blocked")
+                        .to_string(),
+                    tool: result.get("tool")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    allowed: result.get("allowed_tools")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(String::from)
+                            .collect())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Action returned by pre_tool_call when a tool call is blocked.
+#[derive(Debug, Clone)]
+pub struct BlockAction {
+    pub message: String,
+    pub tool: String,
+    pub allowed: Vec<String>,
+}
+
+impl BlockAction {
+    /// Convert to JSON for return to the agent loop.
+    pub fn to_json(&self) -> Value {
+        serde_json::json!({
+            "action": "block",
+            "tool": self.tool,
+            "message": self.message,
+            "allowed_tools": self.allowed
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// pre_llm_call context injection — concatenate all context results
+// ---------------------------------------------------------------------------
+
+/// Process pre_llm_call results and return injected context.
+///
+/// Returns a concatenated string of all non-None results.
+/// Returns None if no callbacks returned context.
+///
+/// The injected context is prepended to the user message,
+/// preserving the prompt cache prefix.
+pub fn get_pre_llm_call_context(results: &[Value]) -> Option<String> {
+    let contexts: Vec<String> = results
+        .iter()
+        .filter_map(|v| {
+            // Context can be a string or a dict with "context" key
+            if let Some(s) = v.as_str() {
+                if s.is_empty() { None } else { Some(s.to_string()) }
+            } else if let Some(obj) = v.as_object() {
+                obj.get("context")
+                    .and_then(|c| c.as_str())
+                    .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if contexts.is_empty() {
+        None
+    } else {
+        Some(contexts.join("\n\n"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// transform_llm_output — first non-None wins
+// ---------------------------------------------------------------------------
+
+/// Process transform_llm_output results and return the first transformed text.
+///
+/// Returns `Some(text)` if any callback returned a replacement,
+/// or `None` if no transformations were applied.
+pub fn get_transform_llm_output(results: &[Value]) -> Option<String> {
+    results.iter().find_map(|v| {
+        v.as_str().and_then(|s| {
+            if s.is_empty() { None } else { Some(s.to_string()) }
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
