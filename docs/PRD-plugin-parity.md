@@ -165,7 +165,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 | ❌ | **Video gen provider registry** — `VideoGenProvider` trait similar to ImageGenProvider |
 | ❌ | **Web search provider registry** — `WebSearchProvider` for search/extract backends |
 | ❌ | **Browser provider registry** — `BrowserProvider` for cloud browser backends |
-| ❌ | **Memory provider registry** — `MemoryProvider` exclusive provider (one active at a time) |
+| ✅ | **Memory provider registry** — `MemoryProvider` exclusive provider (one active at a time) | `MemoryManager::add_provider()` enforces builtin + 1 external max |
 | ❌ | **Context engine registry** — `ContextEngine` exclusive engine (one active at a time, replaces built-in) |
 | ❌ | **Model provider registry** — `ProviderProfile` for custom model providers |
 
