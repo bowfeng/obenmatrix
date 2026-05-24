@@ -191,8 +191,22 @@ impl AppConfig {
         Self::config_dir().join("config.yaml")
     }
 
+    /// Read from `~/.obenagent/config.yaml` (legacy/standard path).
+    pub fn config_dir_legacy() -> PathBuf {
+        let home = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("~"));
+        home.join(".obenagent")
+    }
+
+    /// Read from `~/.obenagent/config.yaml` (legacy/standard path).
+    pub fn config_path_legacy() -> PathBuf {
+        Self::config_dir_legacy().join("config.yaml")
+    }
+
+    /// Load config from `~/.obenagent/config.yaml`.
     pub fn load() -> anyhow::Result<Self> {
-        let path = Self::config_path();
+        let path = Self::config_path_legacy();
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -202,7 +216,7 @@ impl AppConfig {
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
-        let dir = Self::config_dir();
+        let dir = Self::config_dir_legacy();
         std::fs::create_dir_all(&dir)?;
         let content = serde_yaml::to_string(self)?;
         std::fs::write(dir.join("config.yaml"), content)?;

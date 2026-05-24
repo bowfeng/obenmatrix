@@ -6,6 +6,7 @@
 /// For transport-level live tests, see `live_transport.rs`.
 
 use anyhow::Result;
+use oben_config::AppConfig;
 use oben_models::{CallMode, Message, TransportProvider};
 use oben_transport::chat_completions::ChatCompletionsTransport;
 use oben_sessions::SessionDB;
@@ -14,21 +15,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 fn get_live_config() -> (String, String, String, String) {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let config_path = PathBuf::from(&home).join(".obenagent/config.yaml");
-    let config_content = std::fs::read_to_string(&config_path)
-        .unwrap_or_else(|_| {
-            std::fs::read_to_string(
-                PathBuf::from(&home).join(".obenagent/config.yaml")
-            ).unwrap_or_else(|_| {
-                "model:\n  kind: Custom\n  base_url: http://10.0.0.177:8000/v1\n  model: qwen35-local\n  default_model: qwen35-local\n  api_key: dummy-token"
-                    .to_string()
-            })
-        });
-    let config: serde_yaml::Value = serde_yaml::from_str(&config_content).unwrap();
-    let base_url = config["model"]["base_url"].as_str().unwrap_or("http://10.0.0.177:8000/v1").to_string();
-    let model = config["model"]["model"].as_str().unwrap_or("qwen35-local").to_string();
-    let api_key = config["model"]["api_key"].as_str().unwrap_or("dummy-token").to_string();
+    let config = AppConfig::load().expect("Failed to load config");
+    let base_url = config.model.base_url.clone();
+    let model = config.model.model.clone();
+    let api_key = config.model.api_key.unwrap_or_default();
     let system_prompt = "You are a helpful assistant.".to_string();
     (base_url, model, api_key, system_prompt)
 }
