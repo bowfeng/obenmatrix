@@ -10,7 +10,7 @@ Hermes Agent has a full **plugin system** that lets users extend the agent with 
 
 This is a **priority-critical** gap: without it, ObenAgent cannot support third-party extensions, custom provider backends, or user-defined lifecycle hooks.
 
-**Phase 1 progress (#46):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Phase 1: `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. Phase 2: `ImageGenProvider`/`WebSearchProvider`/`BrowserProvider`/`ContextEngine` provider traits, full 4-source directory scanning with config-driven gating, `PluginConfig` (enabled/disabled lists), thread-local tool whitelist, `pre_tool_call` blocking, `pre_llm_call` context injection, `transform_llm_output` transformation. Phase 3: `SlashCommandRegistry` with async handling (30s timeout), `CliCommandRegistry`, `MessageInjector` (append/interrupt/queue), introspection with `OBERN_PLUGINS_DEBUG` logging. Phase 4: Provider registries (`ImageGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ContextEngineRegistry` exclusive, `ModelProviderRegistry`), `ModelProvider` trait + output types, `PluginContext::register_context_engine()`, toolset grouping API. 69 unit tests passing. Remaining: plugin skills (qualified names), pip entry-points, provider integration with PluginContext (trait impl wiring), TUI toolset grouping (consumer side).
+**Phase 1 progress (#46):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Phase 1: `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. Phase 2: `ImageGenProvider`/`WebSearchProvider`/`BrowserProvider`/`ContextEngine` provider traits, full 4-source directory scanning with config-driven gating, `PluginConfig` (enabled/disabled lists), thread-local tool whitelist, `pre_tool_call` blocking, `pre_llm_call` context injection, `transform_llm_output` transformation. Phase 3: `SlashCommandRegistry` with async handling (30s timeout), `CliCommandRegistry`, `MessageInjector` (append/interrupt/queue), introspection with `OBERN_PLUGINS_DEBUG` logging, plugin skill registry+lookup, command resolution, `plugins.enabled` config. Phase 4: Provider registries (`ImageGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ContextEngineRegistry` exclusive, `ModelProviderRegistry`), `ModelProvider` trait + output types, `PluginContext::register_context_engine()`, toolset grouping API. 69 unit tests passing. Remaining: pip entry-points, provider integration with PluginContext (trait impl wiring), TUI toolset grouping (consumer side).
 
 ---
 
@@ -132,7 +132,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 |--------|-------------|
 | ✅ #50 | **Plugin slash command registry
 | ✅ | **Async command handling** — Await async handlers, with 30s timeout, threaded fallback when no running loop |
-|  | **Command resolution** — `resolve_command()` with conflict check against built-in commands |
+| ✅ #50 | **Command resolution** — `resolve_command()` (alias to `SlashCommandRegistry::resolve()`) with conflict check via `reserve_builtin()` |
 
 ### 9. Plugin Skills — Qualified Names
 
@@ -142,8 +142,8 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-|  | **Plugin skill registry** — Qualified name → {path, plugin, bare_name, description} |
-|  | **Skill lookup** — `find_plugin_skill(qualified_name)`, `list_plugin_skills(plugin_name)` |
+| ✅ #50 | **Plugin skill registry** — Qualified name → `PluginSkill { path, plugin, bare_name, description }` stored in `ManagerInner.plugin_skills` |
+| ✅ #50 | **Skill lookup** — `find_plugin_skill()`, `list_plugin_skills()` |
 
 ### 10. Plugin CLI Commands
 
@@ -179,7 +179,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-|  | **Enabled plugins config** — `plugins.enabled` allow-list (None = nothing enabled) |
+| ✅ #46 | **Enabled plugins config** — `plugins.enabled` allow-list (None or empty = all pass except disabled) |
 | ✅ | **Disabled plugins config** — `plugins.disabled` deny-list (always enforced) |
 | ✅ | **Plugin load gating** — Bundled backend/platform auto-load; user plugins gated by enabled list; exclusive handled by category discovery |
 
@@ -231,7 +231,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 **Phase 2 (provider system):** Provider traits (image_gen, web_search, memory, context_engine), provider registry, provider selection via config
 
-**Phase 3 (extensibility):** Plugin skills, slash commands, CLI commands, inject_message, tool whitelisting
+**Phase 3 (extensibility):** Plugin skills ✅ #50, slash commands, CLI commands, inject_message, tool whitelisting
 
 **Phase 4 (polish):** Plugin introspection ✅ #52, debug logging ✅ #52, toolset grouping ✅ #52, pip entry-point scanning
 
@@ -285,10 +285,10 @@ The plugin system is a **crate-level addition** — likely `oben-plugin` or `obe
 | 2 | — | **Hook system** — 17 hook types, invoke_hook, pre_tool_call blocking, context injection | priority-critical | Row 7 |
 | 3 | — | **Provider traits** — ImageGenProvider, VideoGenProvider, WebSearchProvider, BrowserProvider, MemoryProvider, ContextEngine | priority-high | Row 11 |
 | 4 | — | **Provider registry** — Register/lookup pluggable backends, config-driven selection | priority-high | Row 11 |
-| 5 | — | **Plugin config** — enabled/disabled lists, load gating by kind/source | priority-high | Row 12 |
+| 5 | — | **Plugin config** — enabled/disabled lists ✅, load gating by kind/source | priority-high | Row 12 |
 | 6 | — | **Plugin slash commands** — /cmd registration, async handling, TUI integration | priority-high | Row 8 |
 | 7 | — | **Tool whitelisting** — Thread-local per-thread tool restriction | priority-high | Row 7 |
-| 8 | — | **Plugin skills** — Qualified names, lookup, system prompt integration | priority-medium | Row 9 |
+| 8 | — | **Plugin skills** — Qualified names, lookup ✅ #50, system prompt integration | priority-medium | Row 9 |
 | 9 | — | **Plugin CLI commands** — hermes subcmd registration | priority-medium | Row 10 |
 | 10 | — | **Plugin introspection** — list_plugins, debug logging | priority-low | Row 13 |
 | 11 | — | **Plugin toolsets** — TUI grouping, attribution | priority-low | Row 14 |
