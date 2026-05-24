@@ -283,6 +283,15 @@ pub(crate) struct ManagerInner {
     /// CLI commands registered by plugins.
     plugin_cli_commands: std::collections::HashMap<String, PluginCliCommand>,
 
+    /// Plugin configuration (enabled/disabled lists).
+    config: crate::config::PluginConfig,
+
+    /// Discovery config (directory paths, project opt-in).
+    discovery_config: crate::discovery::DiscoveryConfig,
+
+    /// Provider registry: provider_kind → list of providers.
+    providers: std::collections::HashMap<crate::provider::ProviderKind, Vec<Box<dyn crate::provider::ImageGenProvider + Send + Sync>>>,
+
     /// Whether discovery has been run.
     discovered: bool,
 }
@@ -357,6 +366,9 @@ impl PluginManager {
                 registered_tools: std::collections::HashSet::new(),
                 plugin_skills: std::collections::HashMap::new(),
                 plugin_cli_commands: std::collections::HashMap::new(),
+                config: crate::config::PluginConfig::default(),
+                discovery_config: crate::discovery::DiscoveryConfig::new(),
+                providers: std::collections::HashMap::new(),
                 discovered: false,
             }),
         }
@@ -371,8 +383,7 @@ impl PluginManager {
 
     /// Discover and load plugins.
     ///
-    /// Phase 1: Scans bundled + user directories for `plugin.yaml` files.
-    /// Phase 2+: Adds project dir, pip entry-points, name collision override.
+    /// Phase 2: Full 4-source scanning with config-driven gating.
     pub fn discover_and_load(&mut self, _force: bool) -> Result<()> {
         let mut mgr = self.inner.lock().unwrap();
 
@@ -384,15 +395,17 @@ impl PluginManager {
             mgr.plugins.clear();
             mgr.hooks.clear();
             mgr.registered_tools.clear();
+            mgr.plugins.iter_mut().for_each(|(_, p)| {
+                p.enabled = false;
+                p.error = Some("re-discovered".to_string());
+            });
             mgr.discovered = false;
         }
 
-        // Phase 1: Scan bundled + user directories
-        let manifests = Self::scan_directories();
+        // Phase 2: Full 4-source discovery
+        let discovered = crate::discovery::discover_plugins(&mgr.discovery_config)?;
 
-        for manifest in manifests {
-            let key = manifest.lookup_key().to_string();
-
+        for (key, manifest) in discovered {
             // Skip exclusive plugins (they have their own discovery)
             if manifest.kind.is_exclusive() {
                 let loaded = LoadedPlugin {
@@ -407,20 +420,42 @@ impl PluginManager {
                 continue;
             }
 
+            // Config gating: enabled/disabled lists
+            let enabled = crate::discovery::is_plugin_enabled(
+                &manifest,
+                mgr.config.enabled.as_ref(),
+                Some(&mgr.config.disabled),
+            );
+
+            if !enabled {
+                let loaded = LoadedPlugin {
+                    manifest: Arc::new(manifest.clone()),
+                    enabled: false,
+                    error: Some("not enabled in config".to_string()),
+                    tools_registered: vec![],
+                    hooks_registered: vec![],
+                    commands_registered: vec![],
+                };
+                mgr.plugins.insert(key, loaded);
+                continue;
+            }
+
             // Auto-load bundled backends/platforms
             let should_load = match manifest.source {
                 PluginSource::Bundled => manifest.kind.auto_load_when_bundled(),
-                _ => false, // User/project plugins need opt-in
+                PluginSource::User => enabled, // User plugins gated by enabled list
+                PluginSource::Project => enabled, // Project plugins opt-in
+                _ => false,
             };
 
             if should_load {
                 Self::load_plugin(&mut mgr, manifest);
             } else {
-                // Record but don't load (needs opt-in)
+                // Track but don't load
                 let loaded = LoadedPlugin {
-                    manifest: Arc::new(manifest.clone()),
+                    manifest: Arc::new(manifest),
                     enabled: false,
-                    error: Some("not enabled in config".to_string()),
+                    error: Some("not auto-loading".to_string()),
                     tools_registered: vec![],
                     hooks_registered: vec![],
                     commands_registered: vec![],
@@ -431,24 +466,12 @@ impl PluginManager {
 
         mgr.discovered = true;
         info!(
-            "Plugin discovery complete: {} found",
-            mgr.plugins.len()
+            "Plugin discovery complete: {} found, {} enabled",
+            mgr.plugins.len(),
+            mgr.plugins.values().filter(|p| p.enabled).count()
         );
 
         Ok(())
-    }
-
-    /// Scan bundled + user directories for plugin manifests.
-    fn scan_directories() -> Vec<PluginManifest> {
-        let manifests = Vec::new();
-
-        // Phase 1: Scan bundled + user directories only
-        // Full Phase 2: Also scan project dir, pip entry-points
-
-        // TODO: Implement actual directory scanning
-        // For now, return empty — Phase 2 will implement discovery
-
-        manifests
     }
 
     /// Load a plugin module and call its `register(ctx)` function.
@@ -638,6 +661,9 @@ mod tests {
                 registered_tools: std::collections::HashSet::new(),
                 plugin_skills: std::collections::HashMap::new(),
                 plugin_cli_commands: std::collections::HashMap::new(),
+                config: crate::config::PluginConfig::default(),
+                discovery_config: crate::discovery::DiscoveryConfig::new(),
+                providers: std::collections::HashMap::new(),
                 discovered: false,
             },
         )));

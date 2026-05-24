@@ -67,7 +67,7 @@ impl PluginSource {
 /// - `source`: where it was discovered
 /// - `path`: filesystem path to plugin directory
 /// - `key`: path-derived key for config lookups (e.g. "image_gen/openai")
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginManifest {
     /// Unique plugin name.
     pub name: String,
@@ -251,6 +251,10 @@ impl PluginManifest {
         if let Some(parent) = plugin_dir.parent() {
             if let Some(category_dir) = parent.file_name() {
                 let category = category_dir.to_string_lossy();
+                // Skip hidden directories (e.g., temp dirs like .tmpXXX)
+                if category.starts_with('.') {
+                    return default_key.to_string();
+                }
                 // Check if the parent itself has a plugin.yaml (then it's a nested category)
                 if !parent.join("plugin.yaml").exists() && !parent.join("plugin.yml").exists() {
                     let name = plugin_dir

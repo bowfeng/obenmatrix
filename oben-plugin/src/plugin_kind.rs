@@ -38,6 +38,12 @@ pub enum PluginKind {
     ModelProvider,
 }
 
+impl Default for PluginKind {
+    fn default() -> Self {
+        PluginKind::Standalone
+    }
+}
+
 impl PluginKind {
     /// Returns all valid plugin kind variants.
     pub fn all() -> &'static [Self] {
