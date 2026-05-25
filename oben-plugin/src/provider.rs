@@ -276,6 +276,64 @@ pub trait BrowserProvider: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// VideoGenProvider — video generation backend trait
+// ---------------------------------------------------------------------------
+
+/// Output from a video generation request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoGenOutput {
+    /// URL to the generated video.
+    pub url: Option<String>,
+
+    /// Base64-encoded video data (if URL not available).
+    pub data: Option<String>,
+
+    /// MIME type of the video (e.g., "video/mp4").
+    pub mime_type: String,
+
+    /// Duration in seconds.
+    pub duration: i32,
+
+    /// Video format (e.g., "mp4", "webm").
+    pub format: String,
+
+    /// Error message if generation failed.
+    pub error: Option<String>,
+}
+
+/// Trait for video generation providers.
+#[async_trait]
+pub trait VideoGenProvider: Send + Sync {
+    /// Provider identifier (e.g., "sora", "runway").
+    fn name(&self) -> &str;
+
+    /// Whether this provider is configured and has valid credentials.
+    fn is_available(&self) -> bool;
+
+    /// List available models/backends this provider supports.
+    fn list_models(&self) -> Vec<ProviderProfile>;
+
+    /// Get the default model name.
+    fn default_model(&self) -> Option<String> {
+        self.list_models().first().and_then(|m| m.default_model.clone())
+    }
+
+    /// Generate a video from a text prompt.
+    async fn generate_video(
+        &self,
+        prompt: &str,
+        model: Option<&str>,
+        duration: Option<i32>,
+        format: Option<&str>,
+    ) -> Result<VideoGenOutput>;
+
+    /// Optional: get setup schema for UI configuration.
+    fn get_setup_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ContextEngine — context compression/summarization trait
 // ---------------------------------------------------------------------------
 
@@ -514,7 +572,7 @@ impl Default for ImageGenRegistry {
 
 /// Registry for video generation providers (non-exclusive).
 pub struct VideoGenRegistry {
-    providers: Vec<Box<dyn ImageGenProvider + Send + Sync>>,
+    providers: Vec<Box<dyn VideoGenProvider + Send + Sync>>,
 }
 
 impl VideoGenRegistry {
@@ -524,19 +582,19 @@ impl VideoGenRegistry {
         }
     }
 
-    pub fn register(&mut self, provider: Box<dyn ImageGenProvider + Send + Sync>) {
+    pub fn register(&mut self, provider: Box<dyn VideoGenProvider + Send + Sync>) {
         self.providers.push(provider);
     }
 
-    pub fn get_default(&self) -> Option<&(dyn ImageGenProvider + Send + Sync)> {
+    pub fn get_default(&self) -> Option<&(dyn VideoGenProvider + Send + Sync)> {
         self.providers.first().map(|p| p.as_ref())
     }
 
-    pub fn get_by_name(&self, name: &str) -> Option<&(dyn ImageGenProvider + Send + Sync)> {
+    pub fn get_by_name(&self, name: &str) -> Option<&(dyn VideoGenProvider + Send + Sync)> {
         self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
     }
 
-    pub fn list(&self) -> Vec<&(dyn ImageGenProvider + Send + Sync)> {
+    pub fn list(&self) -> Vec<&(dyn VideoGenProvider + Send + Sync)> {
         self.providers.iter().map(|p| p.as_ref()).collect()
     }
 
@@ -921,5 +979,101 @@ mod tests {
         assert!(reg.get_by_name("a").is_some());
         assert!(reg.get_by_name("b").is_some());
         assert!(reg.get_by_name("c").is_none());
+    }
+
+    // ── VideoGenProvider Tests ───────────────────────────────────────
+
+    #[test]
+    fn test_provider_kind_video_gen() {
+        /// given: "video_gen" string
+        /// when: ProviderKind::from_str() is called
+        /// then: returns ProviderKind::VideoGen
+        assert_eq!(ProviderKind::from_str("video_gen").unwrap(), ProviderKind::VideoGen);
+        assert_eq!(ProviderKind::VideoGen.to_string(), "video_gen");
+        assert!(is_valid_provider_kind("video_gen"));
+    }
+
+    #[test]
+    fn test_video_gen_output_fields() {
+        /// given: video generation output fields
+        /// when: VideoGenOutput is constructed
+        /// then: all fields are accessible
+        let output = VideoGenOutput {
+            url: Some("https://example.com/vid.mp4".into()),
+            data: None,
+            mime_type: "video/mp4".into(),
+            duration: 30,
+            format: "mp4".into(),
+            error: None,
+        };
+        assert_eq!(output.url.unwrap(), "https://example.com/vid.mp4");
+        assert_eq!(output.duration, 30);
+        assert_eq!(output.format, "mp4");
+    }
+
+    #[test]
+    fn test_video_gen_registry_uses_correct_trait() {
+        /// given: a VideoGenProvider mock
+        /// when: registered via VideoGenRegistry
+        /// then: VideoGenRegistry wraps Box<dyn VideoGenProvider>, not ImageGenProvider
+        struct MockVideoGen;
+        #[async_trait::async_trait]
+        impl VideoGenProvider for MockVideoGen {
+            fn name(&self) -> &str { "mock-video" }
+            fn is_available(&self) -> bool { true }
+            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
+            async fn generate_video(
+                &self, _prompt: &str, _model: Option<&str>,
+                _duration: Option<i32>, _format: Option<&str>,
+            ) -> Result<VideoGenOutput> {
+                Ok(VideoGenOutput {
+                    url: Some("https://example.com/test.mp4".into()),
+                    data: None, mime_type: "video/mp4".into(),
+                    duration: 15, format: "mp4".into(), error: None,
+                })
+            }
+        }
+
+        let mut reg = VideoGenRegistry::new();
+        assert!(reg.is_empty());
+
+        reg.register(Box::new(MockVideoGen));
+        assert_eq!(reg.len(), 1);
+
+        let provider = reg.get_default().unwrap();
+        assert_eq!(provider.name(), "mock-video");
+        assert!(provider.is_available());
+    }
+
+    #[test]
+    fn test_video_gen_registry_get_by_name() {
+        /// given: a registry with two VideoGenProviders
+        /// when: get_by_name() is called
+        /// then: returns the matching provider
+        struct MockVideoGen { name_val: String }
+        #[async_trait::async_trait]
+        impl VideoGenProvider for MockVideoGen {
+            fn name(&self) -> &str { &self.name_val }
+            fn is_available(&self) -> bool { true }
+            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
+            async fn generate_video(
+                &self, _prompt: &str, _model: Option<&str>,
+                _duration: Option<i32>, _format: Option<&str>,
+            ) -> Result<VideoGenOutput> {
+                Ok(VideoGenOutput {
+                    url: Some("https://example.com/".into()),
+                    data: None, mime_type: "video/mp4".into(),
+                    duration: 0, format: "mp4".into(), error: None,
+                })
+            }
+        }
+
+        let mut reg = VideoGenRegistry::new();
+        reg.register(Box::new(MockVideoGen { name_val: "runway".into() }));
+        reg.register(Box::new(MockVideoGen { name_val: "sora".into() }));
+
+        assert!(reg.get_by_name("runway").is_some());
+        assert!(reg.get_by_name("sora").is_some());
+        assert!(reg.get_by_name("pika").is_none());
     }
 }

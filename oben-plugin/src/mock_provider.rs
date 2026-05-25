@@ -8,7 +8,8 @@ use async_trait::async_trait;
 
 use crate::provider::{
     BrowserOutput, BrowserProvider, ContextEngine, ContextEngineOutput, ImageGenOutput, ImageGenProvider,
-    ModelProvider, ProviderProfile, SearchResult, WebSearchOutput, WebSearchProvider,
+    ModelProvider, ProviderProfile, SearchResult, VideoGenOutput, VideoGenProvider, WebSearchOutput,
+    WebSearchProvider,
 };
 
 // ────────────────────────────────────────────────────────────────────────
@@ -264,6 +265,66 @@ impl ContextEngine for MockContextEngine {
             input_count: messages.len(),
             output_count: messages.len(),
             tokens_saved: 0,
+        })
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// MockVideoGenProvider — Demonstrates VideoGenProvider trait impl
+// ────────────────────────────────────────────────────────────────────────
+
+/// A mock video generation provider that returns deterministic results.
+pub struct MockVideoGenProvider {
+    name_val: String,
+    available: bool,
+}
+
+impl MockVideoGenProvider {
+    pub fn new(name: &str, available: bool) -> Self {
+        Self {
+            name_val: name.to_string(),
+            available,
+        }
+    }
+}
+
+#[async_trait]
+impl VideoGenProvider for MockVideoGenProvider {
+    fn name(&self) -> &str {
+        &self.name_val
+    }
+
+    fn is_available(&self) -> bool {
+        self.available
+    }
+
+    fn list_models(&self) -> Vec<ProviderProfile> {
+        vec![ProviderProfile {
+            name: self.name_val.clone(),
+            display_name: format!("Mock {}", self.name_val),
+            description: "Mock video generation provider for testing".to_string(),
+            models: vec!["mock-video-v1".into()],
+            default_model: Some("mock-video-v1".into()),
+            requires_env: vec![],
+            is_available: self.available,
+            config: None,
+        }]
+    }
+
+    async fn generate_video(
+        &self,
+        prompt: &str,
+        _model: Option<&str>,
+        _duration: Option<i32>,
+        _format: Option<&str>,
+    ) -> Result<VideoGenOutput> {
+        Ok(VideoGenOutput {
+            url: Some(format!("https://mock.provider/{}.mp4", prompt.chars().take(8).collect::<String>())),
+            data: None,
+            mime_type: "video/mp4".to_string(),
+            duration: 30,
+            format: "mp4".to_string(),
+            error: None,
         })
     }
 }

@@ -10,7 +10,7 @@ Hermes Agent has a full **plugin system** that lets users extend the agent with 
 
 This is a **priority-critical** gap: without it, ObenAgent cannot support third-party extensions, custom provider backends, or user-defined lifecycle hooks.
 
-**Phase 1 progress (#46):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Phase 1: `PluginManager` singleton, `PluginManifest` YAML parsing, `PluginKind` enum, `HookType` enum (17 types), `invoke_hook()`, `PluginContext` registration API, `PluginSource` enum. Phase 2: `ImageGenProvider`/`WebSearchProvider`/`BrowserProvider`/`ContextEngine` provider traits, full 4-source directory scanning with config-driven gating, `PluginConfig` (enabled/disabled lists), thread-local tool whitelist, `pre_tool_call` blocking, `pre_llm_call` context injection, `transform_llm_output` transformation. Phase 3: `SlashCommandRegistry` with async handling (30s timeout), `CliCommandRegistry`, `MessageInjector` (append/interrupt/queue), introspection with `OBERN_PLUGINS_DEBUG` logging, plugin skill registry+lookup, command resolution, `plugins.enabled` config. Phase 4: Provider registries (`ImageGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ContextEngineRegistry` exclusive, `ModelProviderRegistry`), `ModelProvider` trait + output types, `PluginContext::register_context_engine()`, toolset grouping API, config-driven provider selection, `provides_providers` manifest field, mock provider implementations demonstrating full trait impl wiring. 77 unit tests passing. Remaining: pip entry-points, TUI toolset grouping (consumer side).
+**Phase 1-4 progress (#46, #50, #52, #53):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Core plugin infrastructure, provider traits (ImageGen/VideoGen/WebSearch/Browser/ContextEngine/ModelProvider), registries (ImageGenRegistry, VideoGenRegistry, WebSearchRegistry, BrowserRegistry, ContextEngineRegistry, ModelProviderRegistry), hook system, slash commands, CLI commands, slash command resolution, plugin skill registry, message injection, toolset grouping, ModelProvider trait, mock providers, `provides_providers` manifest field. 77 unit tests passing. **Phase 4 remaining gaps:** video_gen trait missing (VideoGenRegistry uses wrong ImageGenProvider trait), `remove()` method on non-exclusive registries, config-driven provider selection wiring, builtin provider registration on startup, LLM facade trust-gating, toolset grouping return format fix, integration tests.
 
 ---
 
@@ -203,6 +203,50 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 | Status | Description |
 |--------|-------------|
 | ✅ #52 | **Plugin toolset grouping** — Group plugin tool names by toolset, map back to owning plugin |
+
+### 15. VideoGen Provider Trait (Bug: uses ImageGenProvider)
+
+| Severity | Description |
+|----------|-------------|
+| **priority-high** | `VideoGenRegistry` wraps `Box<dyn ImageGenProvider + Send + Sync>` instead of `Box<dyn VideoGenProvider + Send + Sync>`. The `VideoGenProvider` trait is declared in the parity spec but only duplicated as an `ImageGenProvider` — it has no own `generate_video()` method, no `video_gen` `ProviderKind` value, and no `VideoGenOutput` type. |
+
+| Status | Description |
+|--------|-------------|
+| ❌ #55 | **VideoGenProvider trait** — Full trait with `video_gen` `ProviderKind`, `VideoGenOutput { url, data, mime_type, duration, format }`, `generate_video(prompt, model, duration, format)` |
+| ❌ #55 | **Fix VideoGenRegistry** — Wrap `Box<dyn VideoGenProvider>` instead of `Box<dyn ImageGenProvider>` |
+
+### 16. Registry Methods (remove, config-driven selection, builtin registration)
+
+| Severity | Description |
+|----------|-------------|
+| **priority-high** | Non-exclusive registries (`ImageGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ModelProviderRegistry`) are missing `remove(name)` — cannot unregister individual providers. Providers are never wired to `AppConfig` fields like `image_gen.provider = "openai"`. No builtin provider registration on startup (registries are empty by default). |
+
+| Status | Description |
+|--------|-------------|
+| ❌ #56 | **`remove()` on non-exclusive registries** — Add `remove()` to `ImageGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ModelProviderRegistry` |
+| ❌ #57 | **Config-driven provider selection** — Wire `AppConfig` fields (`image_gen.provider`, `web_search.provider`, etc.) to registry lookups via `get_by_name(kind, config_value)` |
+| ❌ #58 | **Builtin provider registration on startup** — Register builtin/default providers into registries when `PluginManager::new()` is called |
+
+### 17. Plugin LLM Facade Trust-Gating
+
+| Severity | Description |
+|----------|-------------|
+| **priority-high** | `PluginContext::llm()` returns `&Transport` directly without any trust-check. Hermes gates LLM access behind a `trusted_plugins` allow-list in config. |
+
+| Status | Description |
+|--------|-------------|
+| ❌ #59 | **LLM facade trust-gating** — Check `trusted_plugins` config (whitelist) before returning transport; log warning for untrusted access; return `Option<&Transport>` or `Result` instead of bare `&` |
+
+### 18. Toolset Grouping Return Format
+
+| Severity | Description |
+|----------|-------------|
+| **priority-medium** | Currently returns `HashMap<String, Vec<Tool>>` instead of the Hermes format: `HashMap<String, Vec<String>>` (tool names only) with plugin attribution separate. No `get_tools_in_toolset()` query. |
+
+| Status | Description |
+|--------|-------------|
+| ❌ #60 | **Toolset grouping return format fix** — Return `HashMap<String, Vec<String>>` (names only) + separate plugin attribution map |
+| ❌ #60 | **Tool lookup by name from toolset** — `get_tools_in_toolset(toolset_name) -> Vec<String>` |
 
 ---
 

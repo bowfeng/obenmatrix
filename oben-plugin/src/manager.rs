@@ -284,7 +284,7 @@ impl PluginContext {
     /// Register a video generation provider.
     pub fn register_video_gen_provider(
         &self,
-        provider: Box<dyn crate::provider::ImageGenProvider + Send + Sync>,
+        provider: Box<dyn crate::provider::VideoGenProvider + Send + Sync>,
     ) {
         let name = provider.name().to_string();
         let manager = self.manager.upgrade().expect("PluginManager no longer exists");
