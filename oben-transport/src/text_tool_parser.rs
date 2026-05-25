@@ -68,16 +68,19 @@ pub fn parse_tool_calls_from_text(text: &str) -> Vec<TransportToolCall> {
     // Handles both `"terminal" {"command": "ls"}` and garbled output like
     // `It "terminal"analyze" "arguments"{}"` where we find the tool name in quotes
     // and then look for the nearest JSON object after it.
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
+    //
+    // We scan by bytes (not chars) because we only care about ASCII characters
+    // (`"`, `{`, `}`), so byte indices are valid for slicing `text`.
+    let bytes = text.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
     while i < len {
         // Look for a quoted word that could be a tool name
-        if chars[i] == '"' {
+        if bytes[i] == b'"' {
             // Find the end of the quoted string
             let start = i + 1;
             let mut end = start;
-            while end < len && chars[end] != '"' {
+            while end < len && bytes[end] != b'"' {
                 end += 1;
             }
             if end < len {
@@ -90,8 +93,8 @@ pub fn parse_tool_calls_from_text(text: &str) -> Vec<TransportToolCall> {
                     let after_quote = end + 1;
                     // Skip past trailing quotes or other chars that might appear
                     let mut j = after_quote;
-                    while j < len && chars[j] == '"' { j += 1; }
-                    if j < len && chars[j] == '{' {
+                    while j < len && bytes[j] == b'"' { j += 1; }
+                    if j < len && bytes[j] == b'{' {
                         if let Some(args_str) = extract_json_object(&text[j..]) {
                             if let Ok(args) = serde_json::from_str::<serde_json::Value>(args_str) {
                                 if seen.insert(word.to_string()) {

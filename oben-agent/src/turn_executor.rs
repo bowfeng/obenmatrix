@@ -310,8 +310,12 @@ impl TurnExecutor {
             let transport_ref = transport;
             let callbacks_ref = &config.callbacks;
 
-            // Always stream — clone Arc<Mutex> for each retry attempt.
-            let cb_shared = shared_cb.as_ref().unwrap().clone();
+            // Clone the callback for this retry attempt, or use a no-op when
+            // not in streaming mode (no_stream / no-stream CLI flag).
+            let cb_shared = match &shared_cb {
+                Some(cb) => cb.clone(),
+                None => Arc::new(std::sync::Mutex::new(Box::new(|_text: &str| {}) as oben_models::StreamDeltaCallback)),
+            };
             let response = retry_with_backoff(&config.retry_config, || {
                 let transport_ref = transport_ref;
                 let messages = session.messages.clone();
