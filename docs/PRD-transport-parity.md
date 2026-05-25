@@ -14,7 +14,7 @@
 | T.3 | AWS Bedrock transport | 🟡 | ❌ | [TBD] | `bedrock/runtime` client for Claude/Mistral/Llama |
 | T.4 | Google Gemini transport | 🟡 | ❌ | [TBD] | Gemini API (REST + AIO) |
 | T.5 | Codex / OpenAI Codex protocol | 🟢 | ❌ | [TBD] | Event-driven protocol |
-| T.6 | Transport trait + registry pattern | 🟡 | ❌ | [TBD] | `get_transport("anthropic_messages")` dispatch, auto-registration |
+| T.6 | Transport trait + registry pattern | 🟡 | ✅ (#63) | [63](https://github.com/bowfeng/obenagent/issues/63) | `register_transport()`, `get_transport()`, `unregister_transport()`, `list_transport_names()`, lazy auto-discovery of built-in transports |
 
 ---
 
