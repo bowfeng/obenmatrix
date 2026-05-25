@@ -532,6 +532,25 @@ impl AnthropicMessagesTransport {
             None, // thinking not configured in ProviderConfig yet
         )
     }
+
+    /// Create from a ProviderConfig without tools.
+    pub fn from_config(
+        config: &oben_models::ProviderConfig,
+        system_prompt: impl Into<String>,
+    ) -> Self {
+        let base_url = Self::resolve_base_url(config);
+        let api_key = config.api_key.clone().unwrap_or_default();
+        let max_tokens = config.max_tokens.unwrap_or(4096);
+        Self::new(
+            base_url,
+            api_key,
+            &config.model,
+            system_prompt,
+            config.temperature,
+            Some(max_tokens),
+            None,
+        )
+    }
 }
 
 /// Build the static parts of the request template for Anthropic API.

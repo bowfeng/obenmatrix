@@ -1,39 +1,37 @@
 /// Live session tests — verifies the session layer (SQLite persistence,
 /// concurrency, schema, FTS5, titles) with a real LLM server as the
 /// source of messages.
-///
-/// For mock-based session tests, see `oben-sessions/tests/`.
-/// For transport-level live tests, see `live_transport.rs`.
 
 use anyhow::Result;
 use oben_config::AppConfig;
-use oben_models::{CallMode, Message, TransportProvider};
-use oben_transport::chat_completions::ChatCompletionsTransport;
+use oben_models::{CallMode, Message, ProviderConfig, TransportProvider};
+use oben_transport::Transport;
 use oben_sessions::SessionDB;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
 
-fn get_live_config() -> (String, String, String, String) {
+fn get_provider_config() -> ProviderConfig {
     let config = AppConfig::load().expect("Failed to load config");
-    let base_url = config.model.base_url.clone();
-    let model = config.model.model.clone();
-    let api_key = config.model.api_key.unwrap_or_default();
-    let system_prompt = "You are a helpful assistant.".to_string();
-    (base_url, model, api_key, system_prompt)
+    let mut pc = ProviderConfig::new(
+        config.model.kind.clone(),
+        config.model.model.clone(),
+    );
+    pc.api_key = config.model.api_key.clone();
+    pc.base_url = config.model.base_url.clone();
+    pc.temperature = config.model.temperature;
+    pc.default_model = config.model.default_model.clone();
+    pc.max_tokens = config.model.max_tokens;
+    pc.fallback_models = config.model.fallback_models.clone();
+    pc
 }
 
-/// Live test: full round-trip through transport → LLM → session persistence.
-/// Uses the real LLM to drive a conversation and verifies the session
-/// directory is created.
+/// Live test: full round-trip through transport -> LLM -> session persistence.
 #[tokio::test]
 async fn test_live_full_roundtrip() -> Result<()> {
     let session_id = format!("live-rt-{}", uuid::Uuid::new_v4());
-
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let pc = get_provider_config();
+    let transport = Transport::from_config(&pc, "You are a helpful assistant.");
 
     let messages = vec![Message::user("live roundtrip test")];
     let resp = transport
@@ -46,30 +44,24 @@ async fn test_live_full_roundtrip() -> Result<()> {
 
     eprintln!("✅ Full roundtrip: session={}, text_len={}", session_id, resp.text.len());
 
-    // Verify the home session directory exists (session layer was created)
     let home = std::env::var("HOME").unwrap_or_default();
     let state_path = PathBuf::from(&home).join(".obenagent").join("state.db");
 
     if state_path.exists() {
         eprintln!("  state.db exists at {}", state_path.display());
     } else {
-        eprintln!("  ⚠️  state.db not at default path (transport succeeded, session dir managed by Gateway)");
+        eprintln!("  state.db not at default path (transport succeeded, session dir managed by Gateway)");
     }
 
     Ok(())
 }
 
 /// Live test: concurrent writes to the same session.
-/// 5 threads make chat requests to the same session ID.
-/// Verifies no SQLite lock errors occur under concurrent gateway access.
 #[tokio::test]
 async fn test_live_concurrent_writes() -> Result<()> {
     let session_id = format!("concurrent-{}", uuid::Uuid::new_v4());
-
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = Arc::new(ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    ));
+    let pc = get_provider_config();
+    let transport = Arc::new(Transport::from_config(&pc, "You are a helpful assistant."));
 
     let num_threads = 5;
     let mut handles = Vec::with_capacity(num_threads);
@@ -109,23 +101,16 @@ async fn test_live_concurrent_writes() -> Result<()> {
     }
 
     assert_eq!(successes, num_threads, "All {} threads should succeed", num_threads);
-
     eprintln!("✅ Concurrent writes: {}/{} succeeded", successes, num_threads);
     Ok(())
 }
 
 /// Live test: session persistence and resume.
-/// 1. Create a session and get a response
-/// 2. Continue in the same session with another message
-/// 3. Verify the session has multiple messages
 #[tokio::test]
 async fn test_live_session_persistence() -> Result<()> {
     let session_id = format!("persist-{}", uuid::Uuid::new_v4());
-
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let pc = get_provider_config();
+    let transport = Transport::from_config(&pc, "You are a helpful assistant.");
 
     // Turn 1
     let resp1 = transport
@@ -146,17 +131,12 @@ async fn test_live_session_persistence() -> Result<()> {
 }
 
 /// Live test: FTS5 search after live conversation.
-/// Verifies that messages written during a live LLM turn are searchable.
 #[tokio::test]
 async fn test_live_fts5_search() -> Result<()> {
     let session_id = format!("search-{}", uuid::Uuid::new_v4());
+    let pc = get_provider_config();
+    let transport = Transport::from_config(&pc, "You are a helpful assistant.");
 
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
-
-    // Make a request with a unique search term
     let unique_term = format!("unique-ftsext-{}", uuid::Uuid::new_v4());
     let resp = transport
         .chat(&[Message::user(&unique_term)], &CallMode::Fresh(session_id.clone()))
@@ -164,27 +144,23 @@ async fn test_live_fts5_search() -> Result<()> {
 
     assert!(!resp.text.trim().is_empty(), "Should get a response");
 
-    // Verify the home session directory exists
     let home = std::env::var("HOME").unwrap_or_default();
     let default_state_path = PathBuf::from(&home).join(".obenagent").join("state.db");
 
     if default_state_path.exists() {
         eprintln!("✅ FTS5 search: session persisted, state.db exists at {}", default_state_path.display());
     } else {
-        eprintln!("⚠️  Session persisted (transport succeeded), state.db not found at default path");
+        eprintln!("⚠️ Session persisted (transport succeeded), state.db not found at default path");
     }
 
     Ok(())
 }
 
 /// Live test: title management with sanitization.
-/// Creates sessions with various title inputs and verifies they persist.
 #[tokio::test]
 async fn test_live_title_management() -> Result<()> {
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let pc = get_provider_config();
+    let transport = Transport::from_config(&pc, "You are a helpful assistant.");
 
     let titles = vec![
         "normal-title",
@@ -206,7 +182,6 @@ async fn test_live_title_management() -> Result<()> {
 }
 
 /// Live test: SQLite concurrency — tests the write concurrency fix directly.
-/// Uses BEGIN IMMEDIATE + jittered retry to handle concurrent writes.
 #[test]
 fn test_live_sqlite_concurrent_writes() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
@@ -214,7 +189,6 @@ fn test_live_sqlite_concurrent_writes() -> Result<()> {
 
     let db = Arc::new(SessionDB::new(&db_path)?);
 
-    // Create a session shared by all threads
     let session = db.get_or_create_session("concurrent-sqlite")?;
     let sid = session.id.clone();
 
@@ -256,7 +230,6 @@ fn test_live_sqlite_concurrent_writes() -> Result<()> {
         errors, successes, num_threads);
     assert_eq!(successes, num_threads);
 
-    // Verify all messages were persisted
     let loaded = db.load_messages(&sid)?;
     assert_eq!(loaded.len(), num_threads * msgs_per_thread,
         "Expected {} messages, got {}", num_threads * msgs_per_thread, loaded.len());
@@ -266,20 +239,17 @@ fn test_live_sqlite_concurrent_writes() -> Result<()> {
     Ok(())
 }
 
-/// Live test: schema expansion — verifies new columns exist in SQLite.
+/// Live test: schema expansion.
 #[test]
 fn test_live_schema_expansion() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
     let db_path = temp_dir.path().join("state.db");
 
-    // Create a new DB — should auto-create all columns from SCHEMA_SQL
     let db = SessionDB::new(&db_path)?;
 
-    // Create a session
     let session = db.get_or_create_session("schema-test")?;
     let sid = session.id.clone();
 
-    // Save messages
     let messages = vec![
         Message::user("schema test user"),
         Message::assistant("schema test assistant"),
@@ -297,23 +267,18 @@ fn test_live_schema_expansion() -> Result<()> {
 }
 
 /// Live test: memory tool integration.
-/// Tests cross-turn memory via LLM — add memory in turn 1, read in turn 2.
 #[tokio::test]
 async fn test_live_memory_tool() -> Result<()> {
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let pc = get_provider_config();
+    let transport = Transport::from_config(&pc, "You are a helpful assistant.");
 
     let session_id = format!("memory-{}", uuid::Uuid::new_v4());
 
-    // Turn 1: add memory
     let resp = transport
         .chat(&[Message::user("remember: user prefers dark mode")], &CallMode::Fresh(session_id.clone()))
         .await?;
     assert!(!resp.text.trim().is_empty(), "Should get a response about memory");
 
-    // Turn 2: recall memory
     let resp2 = transport
         .chat(&[Message::user("what do you know about me?")], &CallMode::Incremental(session_id.clone()))
         .await?;
