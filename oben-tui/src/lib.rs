@@ -108,7 +108,7 @@ impl App {
         let assembled = oben_agent::system_prompt::build_system_prompt(
             &identity, &self.tool_names, &skills_dirs, None, None, Some(&volatile),
         );
-        let transport = oben_transport::ChatCompletionsTransport::from_config_with_tools(
+        let transport = oben_transport::Transport::from_config_with_tools(
             &self.config.model, &assembled.prompt,
             self.tools.list_tools().iter().map(|t| (*t).clone()).collect(),
         );

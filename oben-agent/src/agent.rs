@@ -34,7 +34,7 @@ pub struct AgentConfig {
     /// System prompt for the agent.
     pub system_prompt: String,
     /// Transport for LLM calls.
-    pub transport: oben_transport::ChatCompletionsTransport,
+    pub transport: oben_transport::Transport,
     /// Registered tools.
     pub tools: std::sync::Arc<oben_tools::ToolRegistry>,
     /// Skills directories.
@@ -56,7 +56,7 @@ pub struct AgentConfig {
 /// An interactive agent — owns all resources, delegates to ConversationLoop.
 pub struct Agent {
     /// Transport — owned by Agent, shared across sessions.
-    transport: Arc<oben_transport::ChatCompletionsTransport>,
+    transport: oben_transport::Transport,
     /// Tools registry — owned by Agent.
     tools: Arc<oben_tools::ToolRegistry>,
     /// Skills dirs — owned by Agent.
@@ -85,7 +85,7 @@ impl Agent {
     /// Create a new agent. Does NOT own a tokio runtime.
     pub fn new(config: AgentConfig) -> Result<Self> {
         let mut agent = Self {
-            transport: Arc::new(config.transport),
+            transport: config.transport,
             tools: config.tools,
             skills_dirs: config.skills_dirs,
             system_prompt: config.system_prompt.clone(),

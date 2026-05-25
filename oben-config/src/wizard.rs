@@ -25,27 +25,44 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
         .default(0)
         .interact()?;
 
-    let kind = match selected {
-        0 => oben_models::ProviderKind::OpenRouter,
-        1 => oben_models::ProviderKind::OpenAI,
-        2 => oben_models::ProviderKind::Anthropic,
-        3 => oben_models::ProviderKind::Bedrock,
-        4 => oben_models::ProviderKind::Gemini,
+    let (selected_provider, base_url) = match selected {
+        0 => ("openrouter".to_string(), None),
+        1 => ("openai".to_string(), None),
+        2 => ("anthropic".to_string(), None),
+        3 => ("bedrock".to_string(), None),
+        4 => ("gemini".to_string(), None),
         5 => {
             config.model.base_url = Some("http://localhost:1234/v1".to_string());
-            oben_models::ProviderKind::Custom
+            ("custom".to_string(), Some("http://localhost:1234/v1".to_string()))
         }
         6 => {
             let url: String = Input::new()
                 .with_prompt("Custom API base URL")
                 .default("http://localhost:1234/v1".to_string())
                 .interact()?;
-            config.model.base_url = Some(url);
-            oben_models::ProviderKind::Custom
+            config.model.base_url = Some(url.clone());
+            ("custom".to_string(), Some(url))
         }
         _ => unreachable!(),
     };
-    config.model.kind = kind;
+
+    // Resolve through the provider registry so aliases map to canonical kind + transport
+    let provider_info = oben_models::provider_registry::resolve_provider_info(&selected_provider)
+        .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", selected_provider))?;
+
+    if base_url.is_none() && !provider_info.base_url.is_empty() {
+        config.model.base_url = Some(provider_info.base_url.to_string());
+    }
+
+    // Map canonical name back to ProviderKind enum
+    config.model.kind = match provider_info.canonical {
+        "openai" => oben_models::ProviderKind::OpenAI,
+        "anthropic" => oben_models::ProviderKind::Anthropic,
+        "openrouter" => oben_models::ProviderKind::OpenRouter,
+        "bedrock" => oben_models::ProviderKind::Bedrock,
+        "gemini" => oben_models::ProviderKind::Gemini,
+        _ => oben_models::ProviderKind::Custom,
+    };
 
     // Step 2: Model name
     let model: String = Input::new()
@@ -102,7 +119,7 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
 /// Detect max_tokens from the LLM provider and return it if found.
 fn detect_max_tokens(config: &oben_models::ProviderConfig) -> Option<usize> {
     let rt = tokio::runtime::Runtime::new().ok()?;
-    let transport = oben_transport::ChatCompletionsTransport::from_config(config, "");
+    let transport = oben_transport::Transport::from_config(config, "");
     let result = rt.block_on(async { transport.find_model(&config.model).await });
 
     match result {

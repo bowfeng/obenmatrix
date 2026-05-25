@@ -1,24 +1,29 @@
-/// Live transport tests — verifies the ChatCompletionsTransport works with
+/// Live transport tests — verifies the Transport dispatcher works with
 /// a real LLM server. These tests require a configured LLM server at
 /// `~/.obenagent/config.yaml`.
-///
-/// For mock-based transport tests, see `oben-transport/tests/integration.rs`.
 
 use anyhow::Result;
 use oben_config::AppConfig;
-use oben_models::{CallMode, Message, TransportProvider, StreamDeltaCallback};
-use oben_transport::chat_completions::ChatCompletionsTransport;
+use oben_models::{CallMode, Message, ProviderConfig, TransportProvider, StreamDeltaCallback};
+use oben_transport::Transport;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Get the live LLM configuration from the config file.
-fn get_live_config() -> (String, String, String, String) {
+/// Get a ProviderConfig from the config file.
+fn get_provider_config() -> (ProviderConfig, String) {
     let config = AppConfig::load().expect("Failed to load config");
-    let base_url = config.model.base_url.clone();
-    let model = config.model.model.clone();
-    let api_key = config.model.api_key.unwrap_or_default();
+    let mut pc = ProviderConfig::new(
+        config.model.kind.clone(),
+        config.model.model.clone(),
+    );
+    pc.api_key = config.model.api_key.clone();
+    pc.base_url = config.model.base_url.clone();
+    pc.temperature = config.model.temperature;
+    pc.default_model = config.model.default_model.clone();
+    pc.max_tokens = config.model.max_tokens;
+    pc.fallback_models = config.model.fallback_models.clone();
     let system_prompt = "You are a helpful assistant.".to_string();
-    (base_url, model, api_key, system_prompt)
+    (pc, system_prompt)
 }
 
 // =============================================================================
@@ -154,10 +159,8 @@ fn test_scrub_preserves_real_llm_responses() {
 /// This is the simplest check that the wire protocol works.
 #[tokio::test]
 async fn test_live_chat_simple() -> Result<()> {
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let (config, system_prompt) = get_provider_config();
+    let transport = Transport::from_config(&config, system_prompt);
 
     let messages = vec![Message::user("hello")];
     let resp = transport
@@ -178,7 +181,7 @@ async fn test_live_chat_simple() -> Result<()> {
 /// Live test: transport with a large system prompt (as the binary actually sends).
 #[tokio::test]
 async fn test_live_chat_with_large_system_prompt() -> Result<()> {
-    let (base_url, model, api_key, _system_prompt) = get_live_config();
+    let (config, _system_prompt) = get_provider_config();
 
     let large_system_prompt = format!(
         "You are an AI agent that helps users accomplish complex tasks.\n\
@@ -197,9 +200,7 @@ async fn test_live_chat_with_large_system_prompt() -> Result<()> {
          You MUST use your tools to take action.",
     );
 
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, large_system_prompt,
-    );
+    let transport = Transport::from_config(&config, large_system_prompt);
 
     let messages = vec![Message::user("hello")];
     let resp = transport
@@ -221,10 +222,8 @@ async fn test_live_chat_with_large_system_prompt() -> Result<()> {
 /// and that the final response matches the callback accumulation.
 #[tokio::test]
 async fn test_live_stream_chat() -> Result<()> {
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let (config, system_prompt) = get_provider_config();
+    let transport = Transport::from_config(&config, system_prompt);
 
     let messages = vec![Message::user("tell me a short greeting")];
     let captured = Arc::new(std::sync::Mutex::new(String::new()));
@@ -256,10 +255,8 @@ async fn test_live_stream_chat() -> Result<()> {
 /// Live test: model returns tool calls (e.g., shell command execution).
 #[tokio::test]
 async fn test_live_chat_with_tool_calls_response() -> Result<()> {
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let (config, system_prompt) = get_provider_config();
+    let transport = Transport::from_config(&config, system_prompt);
 
     let messages = vec![Message::user("run ls -la")];
     let resp = transport
@@ -287,10 +284,9 @@ async fn test_live_chat_with_tool_calls_response() -> Result<()> {
 /// Verifies no connection pool or rate-limit errors.
 #[tokio::test]
 async fn test_live_concurrent_requests() -> Result<()> {
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = Arc::new(ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    ));
+    let (config, system_prompt) = get_provider_config();
+    // Create a shared transport wrapping - transport is already Send + Sync
+    let transport = Arc::new(Transport::from_config(&config, system_prompt));
 
     let num_threads = 5;
     let mut handles = Vec::with_capacity(num_threads);
@@ -325,8 +321,6 @@ async fn test_live_concurrent_requests() -> Result<()> {
         for e in &errors {
             eprintln!("  {}", e);
         }
-        // Connection pool exhaustion is acceptable in high-concurrency scenarios
-        // with a single transport instance. But 0% failure is ideal.
         eprintln!("  {}/{} succeeded (connection pool or rate limiting may affect others)", successes, num_threads);
     } else {
         assert_eq!(successes, num_threads, "All {} threads should succeed", num_threads);
@@ -337,13 +331,10 @@ async fn test_live_concurrent_requests() -> Result<()> {
 }
 
 /// Live test: streaming with tool calls (SSE containing tool delta chunks).
-/// This test sends a prompt that is likely to trigger a tool call.
 #[tokio::test]
 async fn test_live_stream_chat_with_tool_calls() -> Result<()> {
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let (config, system_prompt) = get_provider_config();
+    let transport = Transport::from_config(&config, system_prompt);
 
     let messages = vec![Message::user("list files and print their sizes")];
     let captured = Arc::new(std::sync::Mutex::new(String::new()));
@@ -364,7 +355,6 @@ async fn test_live_stream_chat_with_tool_calls() -> Result<()> {
     eprintln!("  tool_calls.len={}", resp.tool_calls.len());
     eprintln!("  response preview='{}'", &resp.text[..resp.text.len().min(100)]);
 
-    // Either text or tool calls are acceptable
     assert!(!resp.text.is_empty() || !resp.tool_calls.is_empty(),
         "Should have either text or tool calls");
 
@@ -372,14 +362,10 @@ async fn test_live_stream_chat_with_tool_calls() -> Result<()> {
 }
 
 /// Live test: long-running streaming response (stress test SSE parsing).
-/// Sends a prompt that generates a long response, verifying the stream
-/// parser doesn't lose content.
 #[tokio::test]
 async fn test_live_long_stream_response() -> Result<()> {
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let (config, system_prompt) = get_provider_config();
+    let transport = Transport::from_config(&config, system_prompt);
 
     let messages = vec![Message::user("write a detailed explanation of HTTP/2 multiplexing, about 200 words")];
     let captured = Arc::new(std::sync::Mutex::new(String::new()));
@@ -394,7 +380,6 @@ async fn test_live_long_stream_response() -> Result<()> {
 
     let captured_text = captured.lock().unwrap().clone();
 
-    // Should get a substantial response (200+ words)
     assert!(resp.text.len() > 500, "Expected a long response, got {} chars", resp.text.len());
     assert_eq!(resp.text, captured_text, "Stream text should match callback capture");
 
@@ -403,13 +388,10 @@ async fn test_live_long_stream_response() -> Result<()> {
 }
 
 /// Live test: verify token counting in streaming responses.
-/// Some LLM servers include usage info in the final SSE delta.
 #[tokio::test]
 async fn test_live_stream_with_usage() -> Result<()> {
-    let (base_url, model, api_key, system_prompt) = get_live_config();
-    let transport = ChatCompletionsTransport::new(
-        base_url, api_key, model, system_prompt,
-    );
+    let (config, system_prompt) = get_provider_config();
+    let transport = Transport::from_config(&config, system_prompt);
 
     let messages = vec![Message::user("say hello briefly")];
     let captured = Arc::new(std::sync::Mutex::new(String::new()));
@@ -431,7 +413,6 @@ async fn test_live_stream_with_usage() -> Result<()> {
 
     assert!(resp.text.len() > 0, "Should get a response");
 
-    // Usage tracking is best-effort — some servers don't include it
     if let Some(tokens) = resp.tokens_used {
         assert!(tokens > 0, "Tokens should be positive when reported");
     }
