@@ -630,6 +630,18 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
             });
         }
 
+        // Fallback: if no structured tool_calls, try parsing text content
+        if tool_calls.is_empty() && !final_text.trim().is_empty() {
+            let fallback = super::text_tool_parser::parse_tool_calls_from_text(&final_text);
+            if !fallback.is_empty() {
+                tracing::debug!(
+                    "Fallback: parsed {} tool call(s) from text content",
+                    fallback.len()
+                );
+            }
+            tool_calls = fallback;
+        }
+
         Ok(TransportResponse {
             text: final_text,
             tool_calls,
