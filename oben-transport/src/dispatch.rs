@@ -4,7 +4,7 @@
 use anyhow::Result;
 use oben_models::{
     CallMode, Message,
-    providers::{ProviderConfig, TransportProvider, TransportResponse, TransportToolCall},
+    providers::{ProviderConfig, TransportProvider, TransportResponse},
     Tool,
 };
 
