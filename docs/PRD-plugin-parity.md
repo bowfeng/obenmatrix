@@ -10,7 +10,7 @@ Hermes Agent has a full **plugin system** that lets users extend the agent with 
 
 This is a **priority-critical** gap: without it, ObenAgent cannot support third-party extensions, custom provider backends, or user-defined lifecycle hooks.
 
-**Phase 1-4 progress (#46, #50, #52, #53):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Core plugin infrastructure, provider traits (ImageGen/VideoGen/WebSearch/Browser/ContextEngine/ModelProvider), registries (ImageGenRegistry, VideoGenRegistry, WebSearchRegistry, BrowserRegistry, ContextEngineRegistry, ModelProviderRegistry), hook system, slash commands, CLI commands, slash command resolution, plugin skill registry, message injection, toolset grouping, ModelProvider trait, mock providers, `provides_providers` manifest field. 77 unit tests passing. **Phase 4 remaining gaps:** video_gen trait missing (VideoGenRegistry uses wrong ImageGenProvider trait), `remove()` method on non-exclusive registries, config-driven provider selection wiring, builtin provider registration on startup, LLM facade trust-gating, toolset grouping return format fix, integration tests.
+**Phase 1-4 progress (#46, #50, #52, #53):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Core plugin infrastructure, provider traits (ImageGen/VideoGen/WebSearch/Browser/ContextEngine/ModelProvider), registries (ImageGenRegistry, VideoGenRegistry, WebSearchRegistry, BrowserRegistry, ContextEngineRegistry, ModelProviderRegistry), hook system, slash commands, CLI commands, slash command resolution, plugin skill registry, message injection, toolset grouping, ModelProvider trait, mock providers, `provides_providers` manifest field. 77 unit tests passing. **Phase 4 remaining gaps:** video_gen trait missing (VideoGenRegistry uses wrong ImageGenProvider trait), config-driven provider selection wiring, builtin provider registration on startup, LLM facade trust-gating, toolset grouping return format fix, integration tests.
 
 ---
 
@@ -219,11 +219,11 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Severity | Description |
 |----------|-------------|
-| **priority-high** | Non-exclusive registries (`ImageGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ModelProviderRegistry`) are missing `remove(name)` — cannot unregister individual providers. Providers are never wired to `AppConfig` fields like `image_gen.provider = "openai"`. No builtin provider registration on startup (registries are empty by default). |
+| **priority-high** | Non-exclusive registries are missing `remove(name)` — cannot unregister individual providers. Providers are never wired to `AppConfig` fields like `image_gen.provider = "openai"`. No builtin provider registration on startup (registries are empty by default). |
 
 | Status | Description |
 |--------|-------------|
-| ❌ #56 | **`remove()` on non-exclusive registries** — Add `remove()` to `ImageGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ModelProviderRegistry` |
+| ✅ #62 | **`remove()` on registries** — Add `remove()` to `ImageGenRegistry`, `VideoGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ModelProviderRegistry` |
 | ❌ #57 | **Config-driven provider selection** — Wire `AppConfig` fields (`image_gen.provider`, `web_search.provider`, etc.) to registry lookups via `get_by_name(kind, config_value)` |
 | ❌ #58 | **Builtin provider registration on startup** — Register builtin/default providers into registries when `PluginManager::new()` is called |
 
