@@ -74,7 +74,7 @@ impl Panel for ConfigPanel {
                         if let Err(e) = config.save() {
                             app.status = format!("Save failed: {}", e);
                         } else {
-                            app.status = "Config saved to ~/.obenagent/config.yaml".to_string();
+                            app.status = "Config saved to ~/.obenalien/config.yaml".to_string();
                             app.config = config;
                         }
                     }

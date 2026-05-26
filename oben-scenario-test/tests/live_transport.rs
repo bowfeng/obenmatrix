@@ -1,6 +1,6 @@
 /// Live transport tests — verifies the Transport dispatcher works with
 /// a real LLM server. These tests require a configured LLM server at
-/// `~/.obenagent/config.yaml`.
+/// `~/.obenalien/config.yaml`.
 
 use anyhow::Result;
 use oben_config::AppConfig;

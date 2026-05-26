@@ -20,9 +20,9 @@ use crate::plugin_kind::{parse_plugin_kind, PluginKind};
 pub enum PluginSource {
     /// Bundled with the agent repository (`<repo>/plugins/<name>/`).
     Bundled,
-    /// User plugins (`~/.obenagent/plugins/<name>/`).
+    /// User plugins (`~/.obenalien/plugins/<name>/`).
     User,
-    /// Project plugins (`./.obenagent/plugins/<name>/`, opt-in).
+    /// Project plugins (`./.obenalien/plugins/<name>/`, opt-in).
     Project,
     /// Pip-installed plugins via entry points.
     Entrypoint,

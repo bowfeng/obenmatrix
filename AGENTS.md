@@ -193,14 +193,14 @@ If any NO → Stop, rethink, rewrite plan
 |------|----------|---------------|---------|--------|
 | **Unit** | `src/*.rs` with `#[cfg(test)]` | Pure logic, no I/O | No | None |
 | **Integration** | `tests/*.rs` | API boundaries, mocks | No | None |
-| **Live** | `oben-scenario-test/tests/*.rs` | Full stack, real LLM | Yes | `~/.obenagent/config.yaml` |
+| **Live** | `oben-scenario-test/tests/*.rs` | Full stack, real LLM | Yes | `~/.obenalien/config.yaml` |
 
 **CRITICAL RULES:**
 - Unit tests live **INSIDE** the source file, not separate
 - Integration tests use **mocks only** - never real network
-- Live tests read model config from `~/.obenagent/config.yaml`
+- Live tests read model config from `~/.obenalien/config.yaml`
 
-**Live test config format (`~/.obenagent/config.yaml`):**
+**Live test config format (`~/.obenalien/config.yaml`):**
 ```yaml
 model:
   provider: "openai"  # or "anthropic", "local"
@@ -286,12 +286,12 @@ fn test_mock_prefetch_order() {
 // 3. LIVE TEST - in oben-scenario-test/tests/live_memory.rs
 /// Tests real memory with actual LLM.
 ///
-/// given: config at ~/.obenagent/config.yaml
+/// given: config at ~/.obenalien/config.yaml
 /// when: agent stores and recalls memory
 /// then: recalled content matches stored
 #[test]
 fn test_live_memory_recall() {
-    let config = load_config("~/.obenagent/config.yaml");
+    let config = load_config("~/.obenalien/config.yaml");
     // Real LLM call, full stack
 }
 ```
@@ -389,7 +389,7 @@ gh pr merge #42 --merge --delete-branch
 gh issue close 42 --comment "✅ MemoryProvider trait implemented with prefetch/recall.
 - Added unit tests in src/memory/provider.rs
 - Added integration tests with mocks
-- Added live tests (reads from ~/.obenagent/config.yaml)
+- Added live tests (reads from ~/.obenalien/config.yaml)
 - **Parity file updated:** docs/PRD-memory-parity.md row 3 now ✅ (included in PR #42)
 - Behavior matches Hermes-Agent reference
 
@@ -477,7 +477,7 @@ Integration test (tests/session_tests.rs):
 
 Live test (oben-scenario-test/tests/live_session.rs):
 ```rust
-/// given: config from ~/.obenagent/config.yaml
+/// given: config from ~/.obenalien/config.yaml
 /// when: tool returns error
 /// then: session can be restored with previous state
 ```
@@ -563,7 +563,7 @@ mod tests {
 // Live test in oben-scenario-test/tests/live_session.rs
 #[test]
 fn test_live_session_error_recovery() {
-    let config = load_config("~/.obenagent/config.yaml");
+    let config = load_config("~/.obenalien/config.yaml");
     // Real LLM error scenario
 }
 ```
@@ -748,7 +748,7 @@ cargo test --all        # Same problem
 - ❌ Writing `impl` before a failing test
 - ❌ Putting unit test in `tests/` instead of `src/*.rs`
 - ❌ Putting network call in integration test (use mocks)
-- ❌ Running live test without `~/.obenagent/config.yaml`
+- ❌ Running live test without `~/.obenalien/config.yaml`
 - ❌ Fixing bug without `docs/{area}-bug.md`
 - ❌ Fixing bug without reproducing test
 - ❌ Guessing behavior without checking Hermes source
@@ -874,7 +874,7 @@ Did you just write `impl` without tests?
 - Branches are deleted after merge
 - Unit tests live inside source files
 - Integration tests use mocks only
-- Live tests read from `~/.obenagent/config.yaml`
+- Live tests read from `~/.obenalien/config.yaml`
 - Every bug fix has `docs/{area}-bug.md` with coverage gap analysis
 - Every PR includes tests written before implementation
 - You check Hermes source before asking questions

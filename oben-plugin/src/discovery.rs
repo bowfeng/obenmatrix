@@ -2,8 +2,8 @@
 //!
 //! Maps to Hermes' `_discover_plugins()` which scans:
 //! 1. Bundled plugins: `<repo>/plugins/<name>/`
-//! 2. User plugins: `~/.obenagent/plugins/<name>/`
-//! 3. Project plugins: `./.obenagent/plugins/<name>/` (opt-in)
+//! 2. User plugins: `~/.obenalien/plugins/<name>/`
+//! 3. Project plugins: `./.obenalien/plugins/<name>/` (opt-in)
 //! 4. (Phase 3) Pip entry-points: `importlib.metadata`
 //!
 //! Later sources override earlier ones on name collision.
@@ -20,10 +20,10 @@ pub struct DiscoveryConfig {
     /// Root directory for bundled plugins.
     pub bundled_dir: Option<PathBuf>,
 
-    /// User plugins directory (default: ~/.obenagent/plugins/).
+    /// User plugins directory (default: ~/.obenalien/plugins/).
     pub user_dir: Option<PathBuf>,
 
-    /// Project plugins directory (default: ./.obenagent/plugins/).
+    /// Project plugins directory (default: ./.obenalien/plugins/).
     pub project_dir: Option<PathBuf>,
 
     /// Whether to enable project directory scanning (opt-in).
@@ -42,10 +42,10 @@ impl Default for DiscoveryConfig {
 }
 
 impl DiscoveryConfig {
-    /// Create a default discovery config with user dir from ~/.obenagent/plugins/.
+    /// Create a default discovery config with user dir from ~/.obenalien/plugins/.
     pub fn new() -> Self {
         let user_dir = dirs::config_dir()
-            .map(|d| d.join("obenagent").join("plugins"));
+            .map(|d| d.join("openalien").join("plugins"));
 
         Self {
             user_dir,

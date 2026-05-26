@@ -72,7 +72,7 @@ impl TodoStore {
 
     fn get_path() -> std::path::PathBuf {
         if let Ok(home) = std::env::var("HOME") {
-            Path::new(&home).join(".config/obenagent/todo.json")
+            Path::new(&home).join(".config/obenalien/todo.json")
         } else {
             Path::new(".").join("todo.json")
         }

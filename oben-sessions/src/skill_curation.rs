@@ -82,7 +82,7 @@ pub fn scan_memory_content(content: &str) -> Option<String> {
         (r"(?i)cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)", "read_secrets"),
         (r"authorized_keys", "ssh_backdoor"),
         (r"(?:\$HOME/\.ssh|\~/\.ssh)", "ssh_access"),
-        (r"(?:\$HOME/\.obenagent|\~/\.obenagent)", "oben_env"),
+        (r"(?:\$HOME/\.obenalien|\~/\.obenalien)", "oben_env"),
     ];
 
     for (pattern, pid) in patterns {
@@ -113,8 +113,8 @@ pub struct MemoryStore {
 impl MemoryStore {
     pub fn new() -> Self {
         let memory_dir = dirs::home_dir()
-            .map(|d| d.join(".obenagent").join("memories"))
-            .unwrap_or_else(|| PathBuf::from("~/.obenagent/memories"));
+            .map(|d| d.join(".obenalien").join("memories"))
+            .unwrap_or_else(|| PathBuf::from("~/.obenalien/memories"));
 
         Self {
             memory_entries: Vec::new(),

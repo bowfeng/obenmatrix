@@ -86,7 +86,7 @@
 ## Workspace Structure
 
 ```
-obenagent/               # Root workspace (binary — thin wrapper)
+obenalien/               # Root workspace (binary — thin wrapper)
 ├── Cargo.toml           # Workspace config + root package
 ├── src/main.rs          # Binary entry point → delegates to oben-cli
 │
@@ -136,7 +136,7 @@ obenagent/               # Root workspace (binary — thin wrapper)
 │   └── table.rs         # Table formatter for CLI output
 │
 ├──oben-config/          # Configuration
-│   ├── config.rs        # AppConfig (YAML-based, ~/.obenagent/config.yaml)
+│   ├── config.rs        # AppConfig (YAML-based, ~/.obenalien/config.yaml)
 │   ├── defaults.rs      # Default system prompt, provider defaults
 │   └── wizard.rs        # Interactive setup wizard (clap + dialoguer)
 │
@@ -241,7 +241,7 @@ Used `Arc<Mutex<F>>` in `run_turn_with_streaming` to share callbacks across stre
 ### M3: Goal Loop ✅
 - Autonomous agent loop with plan parsing, judge verdict, state machine
 - Plan in system prompt, immune to context truncation
-- `obenagent agent` subcommand
+- `obenalien agent` subcommand
 
 ### M4: Skills & Curator ✅
 - 25 built-in skill categories matching Hermes Agent's `skills/` layout

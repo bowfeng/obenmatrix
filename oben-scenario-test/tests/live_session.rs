@@ -45,7 +45,7 @@ async fn test_live_full_roundtrip() -> Result<()> {
     eprintln!("✅ Full roundtrip: session={}, text_len={}", session_id, resp.text.len());
 
     let home = std::env::var("HOME").unwrap_or_default();
-    let state_path = PathBuf::from(&home).join(".obenagent").join("state.db");
+    let state_path = PathBuf::from(&home).join(".obenalien").join("state.db");
 
     if state_path.exists() {
         eprintln!("  state.db exists at {}", state_path.display());
@@ -145,7 +145,7 @@ async fn test_live_fts5_search() -> Result<()> {
     assert!(!resp.text.trim().is_empty(), "Should get a response");
 
     let home = std::env::var("HOME").unwrap_or_default();
-    let default_state_path = PathBuf::from(&home).join(".obenagent").join("state.db");
+    let default_state_path = PathBuf::from(&home).join(".obenalien").join("state.db");
 
     if default_state_path.exists() {
         eprintln!("✅ FTS5 search: session persisted, state.db exists at {}", default_state_path.display());

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use oben_models::ProviderConfig;
 
-/// All application settings, stored in ~/.obenagent/config.yaml.
+/// All application settings, stored in ~/.config/obenalien/config.yaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -241,27 +241,27 @@ impl AppConfig {
     pub fn config_dir() -> PathBuf {
         dirs::config_dir()
             .map(|d| d.join("oben"))
-            .unwrap_or_else(|| PathBuf::from("~/.obenagent"))
+            .unwrap_or_else(|| PathBuf::from("~/.config/obenalien"))
     }
 
     pub fn config_path() -> PathBuf {
         Self::config_dir().join("config.yaml")
     }
 
-    /// Read from `~/.obenagent/config.yaml` (legacy/standard path).
+    /// Read from `~/.obenalien/config.yaml` (legacy/standard path).
     pub fn config_dir_legacy() -> PathBuf {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("~"));
-        home.join(".obenagent")
+        home.join(".config/obenalien")
     }
 
-    /// Read from `~/.obenagent/config.yaml` (legacy/standard path).
+    /// Read from `~/.config/obenalien/config.yaml` (legacy/standard path).
     pub fn config_path_legacy() -> PathBuf {
         Self::config_dir_legacy().join("config.yaml")
     }
 
-    /// Load config from `~/.obenagent/config.yaml`.
+    /// Load config from `~/.obenalien/config.yaml`.
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::config_path_legacy();
         if !path.exists() {

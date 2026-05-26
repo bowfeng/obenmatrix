@@ -2,7 +2,7 @@
 
 **Scope:** LLM provider support, model normalization, transport dispatch, auth methods, API payload attributes  
 **Hermes Reference:** `/Users/ellie/workspace/hermes-agent/hermes_cli/providers.py`, `model_catalog.py`, `model_normalize.py`, `agent/transports/`, `hermes_cli/config.py`  
-**obenagent Reference:** `oben-models/src/providers.rs`, `oben-transport/src/`, `oben-config/src/config.rs`
+**obenalien Reference:** `oben-models/src/providers.rs`, `oben-transport/src/`, `oben-config/src/config.rs`
 
 ---
 
@@ -22,7 +22,7 @@
 | # | Feature | Severity | Status | Issue | Notes |
 |---|---------|----------|--------|-------|-------|
 | M.1 | OpenAI-compatible transport (`openai_chat`) | ✅ | ✅ | (built-in) | OpenRouter, OpenAI, NovitaAI, vLLM, custom endpoints |
-| M.2 | Anthropic Messages API | 🔴 | ✅ | [#44](https://github.com/bowfeng/obenagent/issues/44) | Native `messages/` API with prompt caching, tool use, thinking tokens |
+| M.2 | Anthropic Messages API | 🔴 | ✅ | [#44](https://github.com/bowfeng/obenalien/issues/44) | Native `messages/` API with prompt caching, tool use, thinking tokens |
 | M.3 | AWS Bedrock native transport | 🟡 | ❌ | [TBD] | `bedrock/runtime` Converse API (oben supports OpenAI-compatible endpoint only) |
 | M.4 | Google Gemini transport | 🟡 | ❌ | [TBD] | Gemini API (REST + AIO), Gemini thinking_config |
 | M.5 | Codex protocol | 🟢 | ❌ | [TBD] | OpenAI Codex, XAI event-driven protocol |
@@ -34,7 +34,7 @@
 
 ### B. Built-in Provider List
 
-| # | Provider | Severity | Hermes | obenagent | Notes |
+| # | Provider | Severity | Hermes | obenalien | Notes |
 |---|----------|----------|--------|-----------|-------|
 | P.1 | OpenRouter | ✅ | ✅ | ✅ | OpenAI-compatible |
 | P.2 | OpenAI | 🟡 | ✅ | ✅ | OpenAI-compatible |
@@ -69,7 +69,7 @@
 
 ### C. Transport / Protocol Support
 
-| # | Transport | Severity | Hermes | obenagent | Notes |
+| # | Transport | Severity | Hermes | obenalien | Notes |
 |---|-----------|----------|--------|-----------|-------|
 | T.1 | `openai_chat` (Chat Completions) | ✅ | ✅ | ✅ | Streaming + SSE, tool calls, usage, per-session request cache |
 | T.2 | `anthropic_messages` | 🔴 | ✅ | ✅ | Native `messages/` API, streaming SSE, prompt caching, thinking tokens, tool use |
@@ -80,7 +80,7 @@
 
 These are fields in the JSON body sent to the `/v1/chat/completions` endpoint.
 
-| # | Attribute | Severity | Hermes | obenagent | Hermes Usage |
+| # | Attribute | Severity | Hermes | obenalien | Hermes Usage |
 |---|-----------|----------|--------|-----------|-------------|
 | PL.1 | `model` | ✅ | ✅ | ✅ | Provider model name (normalized via `model_normalize.py`) |
 | PL.2 | `messages` | ✅ | ✅ | ✅ | System, user, assistant, tool messages (with Codex sanitization) |
@@ -107,7 +107,7 @@ These are fields in the JSON body sent to the `/v1/chat/completions` endpoint.
 
 These are provider-specific fields that control LLM reasoning/thinking behavior.
 
-| # | Attribute | Severity | Hermes | obenagent | Notes |
+| # | Attribute | Severity | Hermes | obenalien | Notes |
 |---|-----------|----------|--------|-----------|-------|
 | TH.1 | `reasoning_effort` (OpenAI-compatible) | 🟡 | ✅ | ❌ | Top-level: `"low"`, `"medium"`, `"high"`, `"xhigh"` — used by DeepSeek, LM Studio, Kimi, Tencent, GitHub |
 | PL.16 | `reasoning.enabled` / `reasoning.effort` (OpenRouter extra_body) | 🟡 | ✅ | ❌ | `extra_body.reasoning = {"enabled": true, "effort": "medium"}` (OpenRouter) |
@@ -120,7 +120,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 
 ### F. Anthropic Payload (separate transport)
 
-| # | Attribute | Severity | Hermes | obenagent | Notes |
+| # | Attribute | Severity | Hermes | obenalien | Notes |
 |---|-----------|----------|--------|-----------|-------|
 | A.1 | `system` (top-level) | 🔴 | ✅ | ✅ | `AnthropicRequest.system` field, not in messages array |
 | A.2 | `max_tokens` | 🔴 | ✅ | ✅ | `AnthropicRequest.max_tokens` (required, not optional) |
@@ -131,7 +131,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 
 ### G. Model Name Normalization
 
-| # | Feature | Severity | Hermes | obenagent | Notes |
+| # | Feature | Severity | Hermes | obenalien | Notes |
 |---|---------|----------|--------|-----------|-------|
 | N.1 | Aggregator `vendor/model` format | 🟡 | ✅ | ❌ | `claude-sonnet-4.6` → `anthropic/claude-sonnet-4.6` |
 | N.2 | Dots → hyphens (Anthropic) | 🟡 | ✅ | ❌ | `claude-sonnet-4.6` → `claude-sonnet-4-6` |
@@ -143,7 +143,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 
 ### H. Authentication
 
-| # | Auth Method | Severity | Hermes | obenagent | Notes |
+| # | Auth Method | Severity | Hermes | obenalien | Notes |
 |---|-------------|----------|--------|-----------|-------|
 | A.1 | API Key (Bearer) | ✅ | ✅ | ✅ | |
 | A.2 | OAuth Device Code | 🟢 | ✅ | ❌ | Nous Portal, etc. |
@@ -154,7 +154,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 
 ### I. Model Catalog & Discovery
 
-| # | Feature | Severity | Hermes | obenagent | Notes |
+| # | Feature | Severity | Hermes | obenalien | Notes |
 |---|---------|----------|--------|-----------|-------|
 | C.1 | Remote model catalog | 🟢 | ✅ | ❌ | `models.dev` manifest, 24h disk cache, per-provider overrides |
 | C.2 | Curated model lists | 🟢 | ✅ | ❌ | OpenRouter/Nous curated models, pricing, cache pricing |

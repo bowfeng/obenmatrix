@@ -24,7 +24,7 @@ edition = "2021"
 rust-version = "1.80"
 license = "MIT"
 authors = ["Nous Research"]
-repository = "https://github.com/bowfeng/obenagent"
+repository = "https://github.com/bowfeng/obenalien"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full", "tracing", "rt-multi-thread"] }
@@ -54,7 +54,7 @@ tempfile = "3"
 ctor = "0.2"
 
 [package]
-name = "obenagent"
+name = "obenalien"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

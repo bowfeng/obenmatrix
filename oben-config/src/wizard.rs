@@ -110,7 +110,7 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
     // Save
     config.save()?;
 
-    println!("\n✅ Configuration saved to ~/.obenagent/config.yaml\n");
+    println!("\n✅ Configuration saved to ~/.obenalien/config.yaml\n");
     println!("You can re-run this wizard anytime with: `oben setup`\n");
 
     Ok(())

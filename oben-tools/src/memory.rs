@@ -158,9 +158,9 @@ impl MemoryStore {
     }
 
     fn get_memory_dir() -> std::path::PathBuf {
-        // Use XDG_CONFIG_HOME or default to ~/.config/obenagent/memories
+        // Use XDG_CONFIG_HOME or default to ~/.config/obenalien/memories
         if let Ok(home) = std::env::var("HOME") {
-            Path::new(&home).join(".config/obenagent/memories")
+            Path::new(&home).join(".config/obenalien/memories")
         } else {
             Path::new(".").join("memories")
         }

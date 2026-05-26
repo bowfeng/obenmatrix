@@ -9,7 +9,7 @@ use tracing::debug;
 
 /// A CLI subcommand registered by a plugin.
 ///
-/// CLI commands are invoked as `obenagent <subcommand>` in the terminal.
+/// CLI commands are invoked as `obenalien <subcommand>` in the terminal.
 /// They have setup and handler functions.
 #[derive(Clone)]
 pub struct CliCommand {
