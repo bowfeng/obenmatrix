@@ -166,10 +166,20 @@ impl BaseTransport {
 
 impl BaseTransport {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        BaseTransport::with_timeout(base_url, api_key, model, None)
+    }
+
+    pub fn with_timeout(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        timeout_s: Option<u64>,
+    ) -> Self {
         // Optimized HTTP client: connection pooling, keep-alive, Nagle disabled
         // for lower-latency small-message workloads (LLM API calls).
+        let timeout = timeout_s.unwrap_or(120);
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(timeout))
             .pool_max_idle_per_host(20)
             .pool_idle_timeout(std::time::Duration::from_secs(90))
             .tcp_nodelay(true)

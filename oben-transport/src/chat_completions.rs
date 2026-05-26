@@ -524,7 +524,7 @@ impl ChatCompletionsTransport {
         let system_prompt = system_prompt.into();
         let template = build_request_template(config, system_prompt.clone(), tool_defs.clone());
         let stream_template = build_stream_request_template(config, system_prompt, tool_defs);
-        let base = BaseTransport::new(base_url, api_key, &config.model);
+        let base = BaseTransport::with_timeout(base_url, api_key, &config.model, config.timeout);
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -540,7 +540,7 @@ impl ChatCompletionsTransport {
     ) -> Self {
         let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();
-        let base = BaseTransport::new(base_url, api_key, config.model.clone());
+        let base = BaseTransport::with_timeout(base_url, api_key, config.model.clone(), config.timeout);
         let system_prompt = system_prompt.into();
         let template = build_request_template(config, system_prompt.clone(), Vec::new());
         let stream_template = build_stream_request_template(config, system_prompt, Vec::new());
