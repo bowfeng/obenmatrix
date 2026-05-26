@@ -30,7 +30,7 @@
 | M.7 | Provider catalog (models.dev) | 🟡 | ❌ | [TBD] | Provider definitions + metadata from models.dev (109+ providers), 24h disk cache |
 | M.8 | User-defined providers (`providers:`) | 🟡 | ❌ | [TBD] | Allow arbitrary provider definitions in config |
 | M.9 | Custom providers list | 🟢 | ❌ | [TBD] | `custom_providers:` list in config |
-| M.10 | Provider alias system | 🟡 | ❌ | [TBD] | 50+ aliases: `claude`→`anthropic`, `gpt`→`openai`, `glm`→`zai`, `qwen`→`alibaba`, etc. |
+| M.10 | Provider alias system | 🟡 | ✅ (#22) | [TBD] | 50+ aliases: `claude`→`anthropic`, `gpt`→`openai`, `glm`→`zai`, `qwen`→`alibaba`, etc. |
 
 ### B. Built-in Provider List
 
@@ -43,29 +43,29 @@
 | P.5 | Google Gemini | 🟢 | ✅ | ❌ | Missing transport |
 | P.6 | LM Studio | 🟢 | ✅ | ✅ | OpenAI-compatible |
 | P.7 | Custom | ✅ | ✅ | ✅ | User-defined base_url |
-| P.8 | Nous Portal | 🟢 | ✅ | ❌ | OpenAI-compatible aggregator |
+| P.8 | Nous Portal | 🟢 | ✅ | ✅ | OpenAI-compatible aggregator |
 | P.9 | Azure Foundry | 🟢 | ✅ | ❌ | Supports OpenAI + Anthropic modes |
-| P.10 | NVIDIA (NIM) | 🟢 | ✅ | ❌ | OpenAI-compatible |
-| P.11 | Vercel AI Gateway | 🟢 | ✅ | ❌ | Aggregator |
-| P.12 | OpenCode Zen | 🟢 | ✅ | ❌ | Aggregator |
+| P.10 | NVIDIA (NIM) | 🟢 | ✅ | ✅ | OpenAI-compatible |
+| P.11 | Vercel AI Gateway | 🟢 | ✅ | ✅ | Aggregator |
+| P.12 | OpenCode Zen | 🟢 | ✅ | ✅ | Aggregator |
 | P.13 | OpenCode Go | 🟢 | ✅ | ❌ | Aggregator |
-| P.14 | KiloCode | 🟢 | ✅ | ❌ | Aggregator |
-| P.15 | HuggingFace | 🟢 | ✅ | ❌ | Aggregator |
+| P.14 | KiloCode | 🟢 | ✅ | ✅ | Aggregator |
+| P.15 | HuggingFace | 🟢 | ✅ | ✅ | Aggregator |
 | P.16 | NovitaAI | 🟢 | ✅ | ✅ | OpenAI-compatible |
 | P.17 | XAI (Grok) | 🟢 | ✅ | ❌ | Codex protocol |
 | P.18 | Arcee | 🟢 | ✅ | ❌ | OpenAI-compatible |
 | P.19 | GMI Cloud | 🟢 | ✅ | ❌ | OpenAI-compatible |
 | P.20 | GitHub Copilot | 🟢 | ✅ | ❌ | Codex protocol |
 | P.21 | OpenAI Codex | 🟢 | ✅ | ❌ | Codex protocol |
-| P.22 | **阿里云/Qwen** | 🟡 | ✅ | ❌ | DashScope, Alibaba, Qwen Portal; `alibaba` provider |
-| P.23 | **智谱/Zai** | 🟡 | ✅ | ❌ | GLM models; `zai` provider |
-| P.24 | **阶跃/StepFun** | 🟡 | ✅ | ❌ | `stepfun` provider |
-| P.25 | **MiniMax** | 🟡 | ✅ | ❌ | `minimax` / `minimax-oauth` / `minimax-cn` providers |
-| P.26 | **腾讯 TokenHub** | 🟡 | ✅ | ❌ | `tencent-tokenhub` provider |
-| P.27 | **小米 MiMo** | 🟡 | ✅ | ❌ | `xiaomi` provider |
-| P.28 | **Kimi (Moonshot)** | 🟡 | ✅ | ❌ | `kimi-for-coding` provider; reasoning_effort + thinking_config |
+| P.22 | **阿里云/Qwen** | 🟡 | ✅ | ✅ | DashScope, Alibaba, Qwen Portal; `alibaba` provider |
+| P.23 | **智谱/Zai** | 🟡 | ✅ | ✅ | GLM models; `zai` provider |
+| P.24 | **阶跃/StepFun** | 🟡 | ✅ | ✅ | `stepfun` provider |
+| P.25 | **MiniMax** | 🟡 | ✅ | ✅ | `minimax` / `minimax-oauth` / `minimax-cn` providers |
+| P.26 | **腾讯 TokenHub** | 🟡 | ✅ | ✅ | `tencent-tokenhub` provider |
+| P.27 | **小米 MiMo** | 🟡 | ✅ | ✅ | `xiaomi` provider |
+| P.28 | **Kimi (Moonshot)** | 🟡 | ✅ | ✅ | `kimi-for-coding` provider; reasoning_effort + thinking_config |
 
-**国内 8 家核心提供商全部缺失。**
+**国内核心提供商全部支持（P.8-P.15 aggregators + P.22-P.28 国内 7 家）**
 
 ### C. Transport / Protocol Support
 
@@ -113,7 +113,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 | PL.16 | `reasoning.enabled` / `reasoning.effort` (OpenRouter extra_body) | 🟡 | ✅ | ❌ | `extra_body.reasoning = {"enabled": true, "effort": "medium"}` (OpenRouter) |
 | PL.17 | `extra_body.thinking.type` | 🟡 | ✅ | ❌ | Kimi: `{"type": "enabled"}` / `{"type": "disabled"}` |
 | PL.18 | `thinking_config` (Gemini OpenAI-compatible) | 🟡 | ✅ | ❌ | `{includeThoughts: true, thinkingLevel: "low"/"medium"/"high", thinkingBudget: N}` |
-| PL.19 | `prompt_cache` | 🔴 | ✅ | ❌ | Anthropic prompt caching (`cache_markers` in messages, `cache_ttl` config) |
+| PL.19 | `prompt_cache` | 🔴 | ✅ | ✅ | Anthropic prompt caching (`cache_markers` in messages, `cache_ttl` config) |
 | PL.20 | `anthropic_max_output` | 🟢 | ✅ | ❌ | Max output tokens for Claude via OpenRouter/Nous |
 | PL.21 | `ollama_num_ctx` | 🟢 | ✅ | ❌ | Ollama context window override |
 | PL.22 | Developer role swap | 🟢 | ✅ | ❌ | System→developer role for GPT-5/Codex models |
@@ -133,13 +133,13 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 
 | # | Feature | Severity | Hermes | obenalien | Notes |
 |---|---------|----------|--------|-----------|-------|
-| N.1 | Aggregator `vendor/model` format | 🟡 | ✅ | ❌ | `claude-sonnet-4.6` → `anthropic/claude-sonnet-4.6` |
-| N.2 | Dots → hyphens (Anthropic) | 🟡 | ✅ | ❌ | `claude-sonnet-4.6` → `claude-sonnet-4-6` |
-| N.3 | DeepSeek canonical mapping | 🟡 | ✅ | ❌ | `deepseek-r1` → `deepseek-reasoner`, `deepseek-v3` → `deepseek-chat` |
-| N.4 | Copilot model handling | 🟢 | ✅ | ❌ | Special Copilot API model name mapping |
-| N.5 | Provider prefix stripping | 🟡 | ✅ | ❌ | Auto-strip matching `provider/model` on native providers |
-| N.6 | Case normalization | 🟢 | ✅ | ❌ | e.g. Xiaomi requires lowercase |
-| N.7 | Vendor prefix detection | 🟡 | ✅ | ❌ | Detect `claude` → `anthropic`, `gpt` → `openai`, etc. |
+| N.1 | Aggregator `vendor/model` format | 🟡 | ✅ | ✅ | `claude-sonnet-4.6` → `anthropic/claude-sonnet-4.6` |
+| N.2 | Dots → hyphens (Anthropic) | 🟡 | ✅ | ✅ | `claude-sonnet-4.6` → `claude-sonnet-4-6` |
+| N.3 | DeepSeek canonical mapping | 🟡 | ✅ | ✅ | `deepseek-r1` → `deepseek-reasoner`, `deepseek-v3` → `deepseek-chat` |
+| N.4 | Copilot model handling | 🟢 | ✅ | ✅ | Special Copilot API model name mapping |
+| N.5 | Provider prefix stripping | 🟡 | ✅ | ✅ | Auto-strip matching `provider/model` on native providers |
+| N.6 | Case normalization | 🟢 | ✅ | ✅ | e.g. Xiaomi requires lowercase |
+| N.7 | Vendor prefix detection | 🟡 | ✅ | ✅ | Detect `claude` → `anthropic`, `gpt` → `openai`, etc. |
 
 ### H. Authentication
 
