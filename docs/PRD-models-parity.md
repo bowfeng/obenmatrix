@@ -91,12 +91,12 @@ These are fields in the JSON body sent to the `/v1/chat/completions` endpoint.
 | PL.7 | `top_k` | 🟢 | ✅ | ✅ | Native API support (Qwen, Gemini) |
 | PL.8 | `frequency_penalty` | 🟢 | ✅ | ✅ | OpenAI-compatible per-call override |
 | PL.9 | `presence_penalty` | 🟢 | ✅ | ✅ | OpenAI-compatible per-call override |
-| PL.10 | `logit_bias` | 🟢 | ✅ | ❌ | OpenAI-compatible per-call override |
+| PL.10 | `logit_bias` | 🟢 | ✅ | ✅ | OpenAI-compatible per-call override |
 | PL.11 | `stop_sequences` | 🟢 | ✅ | ✅ | Stop sequence control |
 | PL.12 | `response_format` | 🟡 | ✅ | ✅ | JSON mode (`{"type": "json_object"}`) |
 | PL.13 | `tool_choice` | 🟡 | ✅ | ✅ | `auto`, `required`, `none`, `{"type": "function", "function": {"name": "x"}}` |
 | PL.14 | `stream_options` | 🟢 | ✅ | ✅ | `include_usage: true` (oben has this hardcoded) |
-| PL.15 | `timeout` | 🟢 | ✅ | ❌ | Per-call timeout override |
+| PL.15 | `timeout` | 🟢 | ✅ | ✅ | Per-call timeout override (BaseTransport.with_timeout) |
 | PL.16 | `service_tier` | 🟢 | ✅ | ✅ | Priority Processing for OpenAI (`"auto"`, `"priority"`, `"default"`) |
 | PL.17 | `provider_preferences` | 🟢 | ✅ | ✅ | OpenRouter provider routing (`extra_body.provider`) |
 | PL.18 | `extra_body` | 🟡 | ✅ | ✅ | Provider-specific fields: `reasoning`, `thinking`, `google`, plugins, tags, vl_high_resolution |
