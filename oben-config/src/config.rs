@@ -268,7 +268,18 @@ impl AppConfig {
             return Ok(Self::default());
         }
         let content = std::fs::read_to_string(&path)?;
-        let config: Self = serde_yaml::from_str(&content)?;
+        let mut config: Self = serde_yaml::from_str(&content)?;
+        // Merge AppConfig-level overrides into ProviderConfig
+        if let Some(t) = config.temperature {
+            config.model.temperature = Some(t);
+        }
+        if let Some(m) = config.max_tokens {
+            config.model.max_tokens = Some(m);
+        }
+        if let Some(i) = config.max_iterations {
+            // max_iterations is an AppConfig-level setting, not per-provider
+            let _ = i;
+        }
         Ok(config)
     }
 

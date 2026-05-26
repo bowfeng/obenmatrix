@@ -446,12 +446,6 @@ pub struct AnthropicMessagesTransport {
     cached: std::sync::Mutex<std::collections::HashMap<String, AnthropicCachedRequest>>,
     template: std::sync::Arc<serde_json::Value>,
     stream_template: std::sync::Arc<serde_json::Value>,
-    /// Per-call temperature override (from config or provider settings)
-    temperature: Option<f64>,
-    /// Per-call max_tokens override (required for Anthropic)
-    max_tokens: Option<usize>,
-    /// Per-call thinking config (for Claude thinking tokens)
-    thinking: Option<AnthropicThinking>,
 }
 
 impl AnthropicMessagesTransport {
@@ -460,22 +454,18 @@ impl AnthropicMessagesTransport {
         api_key: impl Into<String>,
         model: impl Into<String>,
         system_prompt: impl Into<String>,
-        temperature: Option<f64>,
-        max_tokens: Option<usize>,
-        thinking: Option<AnthropicThinking>,
     ) -> Self {
-        let base = BaseTransport::new(base_url, api_key, model);
+        let model: String = model.into();
+        let base = BaseTransport::new(base_url, api_key, model.clone());
         let system_prompt = system_prompt.into();
-        let template = build_anthropic_request_template(&base, system_prompt.clone(), Vec::new());
-        let stream_template = build_anthropic_stream_request_template(&base, system_prompt.clone(), Vec::new());
+        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, model.clone());
+        let template = build_anthropic_request_template(&config, system_prompt.clone(), Vec::new());
+        let stream_template = build_anthropic_stream_request_template(&config, system_prompt, Vec::new());
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
             template: std::sync::Arc::new(template),
             stream_template: std::sync::Arc::new(stream_template),
-            temperature,
-            max_tokens,
-            thinking,
         }
     }
 
@@ -486,23 +476,19 @@ impl AnthropicMessagesTransport {
         model: impl Into<String>,
         system_prompt: impl Into<String>,
         tools: Vec<oben_models::Tool>,
-        temperature: Option<f64>,
-        max_tokens: Option<usize>,
-        thinking: Option<AnthropicThinking>,
     ) -> Self {
-        let base = BaseTransport::new(base_url, api_key, model);
+        let model: String = model.into();
+        let base = BaseTransport::new(base_url, api_key, model.clone());
         let system_prompt = system_prompt.into();
+        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, model.clone());
         let tool_defs: Vec<AnthropicTool> = tools.iter().map(tool_to_anthropic).collect();
-        let template = build_anthropic_request_template(&base, system_prompt.clone(), tool_defs.clone());
-        let stream_template = build_anthropic_stream_request_template(&base, system_prompt.clone(), tool_defs);
+        let template = build_anthropic_request_template(&config, system_prompt.clone(), tool_defs.clone());
+        let stream_template = build_anthropic_stream_request_template(&config, system_prompt, tool_defs);
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
             template: std::sync::Arc::new(template),
             stream_template: std::sync::Arc::new(stream_template),
-            temperature,
-            max_tokens,
-            thinking,
         }
     }
 
@@ -520,17 +506,17 @@ impl AnthropicMessagesTransport {
     ) -> Self {
         let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();
-        let max_tokens = config.max_tokens.unwrap_or(4096);
-        Self::with_tools(
-            base_url,
-            api_key,
-            &config.model,
-            system_prompt,
-            tools,
-            config.temperature,
-            Some(max_tokens),
-            None, // thinking not configured in ProviderConfig yet
-        )
+        let tool_defs: Vec<AnthropicTool> = tools.iter().map(tool_to_anthropic).collect();
+        let system_prompt = system_prompt.into();
+        let template = build_anthropic_request_template(config, system_prompt.clone(), tool_defs.clone());
+        let stream_template = build_anthropic_stream_request_template(config, system_prompt, tool_defs);
+        let base = BaseTransport::new(base_url, api_key, config.model.clone());
+        Self {
+            base,
+            cached: std::sync::Mutex::new(std::collections::HashMap::new()),
+            template: std::sync::Arc::new(template),
+            stream_template: std::sync::Arc::new(stream_template),
+        }
     }
 
     /// Create from a ProviderConfig without tools.
@@ -540,39 +526,85 @@ impl AnthropicMessagesTransport {
     ) -> Self {
         let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();
-        let max_tokens = config.max_tokens.unwrap_or(4096);
-        Self::new(
-            base_url,
-            api_key,
-            &config.model,
-            system_prompt,
-            config.temperature,
-            Some(max_tokens),
-            None,
-        )
+        let system_prompt = system_prompt.into();
+        let template = build_anthropic_request_template(config, system_prompt.clone(), Vec::new());
+        let stream_template = build_anthropic_stream_request_template(config, system_prompt, Vec::new());
+        let base = BaseTransport::new(base_url, api_key, config.model.clone());
+        Self {
+            base,
+            cached: std::sync::Mutex::new(std::collections::HashMap::new()),
+            template: std::sync::Arc::new(template),
+            stream_template: std::sync::Arc::new(stream_template),
+        }
     }
 }
 
 /// Build the static parts of the request template for Anthropic API.
 fn build_anthropic_request_template(
-    base: &BaseTransport,
+    config: &oben_models::ProviderConfig,
     system_prompt: impl Into<String>,
     tools: Vec<AnthropicTool>,
 ) -> serde_json::Value {
-    let max_tokens = 4096; // default
+    let max_tokens = config.max_tokens.unwrap_or(4096);
     let mut req = json!({
-        "model": base.model,
+        "model": config.model,
         "max_tokens": max_tokens,
         "system": system_prompt.into(),
         "messages": serde_json::Value::Array(vec![]),
-        "temperature": 0.7,
     });
+
+    if let Some(t) = config.temperature {
+        req["temperature"] = json!(t);
+    }
+    if let Some(p) = config.top_p {
+        req["top_p"] = json!(p);
+    }
+    if let Some(ss) = &config.stop_sequences {
+        req["stop_sequences"] = serde_json::Value::Array(ss.iter().map(|s| serde_json::Value::String(s.clone())).collect());
+    }
+    // Anthropic tool_choice (different from OpenAI's)
+    if let Some(tc) = &config.tool_choice {
+        req["tool_choice"] = match tc {
+            oben_models::ToolChoice::None => json!({"type": "none"}),
+            oben_models::ToolChoice::Auto => json!({"type": "auto"}),
+            oben_models::ToolChoice::Any => json!({"type": "any"}),
+            oben_models::ToolChoice::Tool { name } => json!({"type": "tool", "name": name}),
+        };
+    } else {
+        req["tool_choice"] = json!({"type": "auto"});
+    }
+    // Anthropic thinking tokens (Claude 3.5+)
+    let b = &config.extra_body;
+    if let Some(re) = &b.reasoning_effort {
+        let effort_str = match re {
+            oben_models::ReasoningEffort::Low => "low",
+            oben_models::ReasoningEffort::Medium => "medium",
+            oben_models::ReasoningEffort::High => "high",
+            oben_models::ReasoningEffort::XHigh => "xhigh",
+        };
+        req["thinking_config"] = json!({
+            "type": "enabled",
+            "effort": effort_str,
+            "budget_tokens": max_tokens.saturating_sub(1024),
+        });
+    }
+    if let Some(am) = &b.anthropic_max_output {
+        req["max_tokens"] = json!(am);
+    }
+    if let Some(tc) = &b.thinking_config {
+        req["thinking_config"] = tc.clone();
+    }
+    // Cache control marker for Anthropic
+    if let Some(cc) = &config.cache_control {
+        if !cc.strategy.is_empty() {
+            req["prompt_cache_key"] = serde_json::json!(cc.model.as_ref().unwrap_or(&String::from("default")));
+        }
+    }
 
     if !tools.is_empty() {
         req["tools"] = serde_json::Value::Array(
             tools.iter().map(|t| serde_json::to_value(t).unwrap_or_default()).collect(),
         );
-        req["tool_choice"] = json!({"type": "auto"});
     }
 
     req
@@ -580,12 +612,12 @@ fn build_anthropic_request_template(
 
 /// Build the streaming request template for Anthropic API.
 fn build_anthropic_stream_request_template(
-    base: &BaseTransport,
+    config: &oben_models::ProviderConfig,
     system_prompt: impl Into<String>,
     tools: Vec<AnthropicTool>,
 ) -> serde_json::Value {
-    let req = build_anthropic_request_template(base, system_prompt, tools);
-    // Anthropic streaming adds `stream: true`
+    let mut req = build_anthropic_request_template(config, system_prompt, tools);
+    req["stream"] = json!(true);
     req
 }
 
@@ -1328,16 +1360,16 @@ mod tests {
 
     #[test]
     fn test_build_anthropic_request_template() {
-        /// given: base transport with system prompt and tools
+        /// given: a ProviderConfig with system prompt and tools
         /// when: build_anthropic_request_template is called
         /// then: returns valid request with system, model, max_tokens, tools
-        let base = BaseTransport::new("https://api.anthropic.com/v1", "sk-test", "claude-sonnet-4-20250514");
+        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
         let tool = AnthropicTool {
             name: "shell".to_string(),
             description: Some("Execute command".to_string()),
             input_schema: json!({"type": "object"}),
         };
-        let template = build_anthropic_request_template(&base, "You are helpful", vec![tool]);
+        let template = build_anthropic_request_template(&config, "You are helpful", vec![tool]);
         assert_eq!(template["model"], "claude-sonnet-4-20250514");
         assert_eq!(template["max_tokens"], 4096);
         assert_eq!(template["system"], "You are helpful");

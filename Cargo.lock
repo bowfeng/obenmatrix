@@ -2098,7 +2098,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "obenagent"
+name = "obenalien"
 version = "0.1.0"
 dependencies = [
  "oben-cli",

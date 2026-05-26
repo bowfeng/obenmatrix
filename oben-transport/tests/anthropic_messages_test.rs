@@ -24,9 +24,6 @@ fn make_transport(mock_url: &str, api_key: &str) -> AnthropicMessagesTransport {
         api_key,
         "claude-sonnet-4-20250514",
         "You are a helpful assistant",
-        Some(0.7),
-        Some(4096),
-        None, // no thinking config
     )
 }
 

@@ -55,6 +55,77 @@ pub struct ModelListResponse {
     pub data: Vec<ModelInfo>,
 }
 
+/// Response format option for OpenAI-compatible APIs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    Text,
+    Json,
+    JsonSchema { schema: serde_json::Value },
+}
+
+/// Tool choice mode for provider APIs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolChoice {
+    None,
+    Auto,
+    Any,
+    /// Force a specific tool by name.
+    Tool { name: String },
+}
+
+/// Reasoning effort level for providers that support extended thinking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+    XHigh,
+}
+
+/// Prompt caching configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheControl {
+    /// Provider name for cache key (e.g. "openrouter").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model name for cache key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Caching strategy: "ephemeral" works for most providers.
+    #[serde(default = "default_cache_strategy", skip_serializing_if = "is_default_cache")]
+    pub strategy: String,
+}
+
+fn default_cache_strategy() -> String {
+    "ephemeral".to_string()
+}
+
+fn is_default_cache(s: &String) -> bool {
+    *s == "ephemeral"
+}
+
+/// Additional provider-specific fields to merge into the request body.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExtraBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic_max_output: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_config: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ollama_num_ctx: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
 /// Configuration for an LLM provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -72,6 +143,52 @@ pub struct ProviderConfig {
     /// Tool definitions as JSON (passed through to transport).
     #[serde(default)]
     pub tools_json: Option<serde_json::Value>,
+    // --- API Payload Attributes ---
+    /// Top-p sampling cutoff.
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    /// Top-k sampling cutoff.
+    #[serde(default)]
+    pub top_k: Option<usize>,
+    /// Frequency penalty for OpenAI-compatible APIs.
+    #[serde(default)]
+    pub frequency_penalty: Option<f64>,
+    /// Presence penalty for OpenAI-compatible APIs.
+    #[serde(default)]
+    pub presence_penalty: Option<f64>,
+    /// Stop sequences.
+    #[serde(default)]
+    pub stop_sequences: Option<Vec<String>>,
+    /// Response format (JSON mode, structured schema).
+    #[serde(default)]
+    pub response_format: Option<ResponseFormat>,
+    /// Tool choice strategy for providers that support it.
+    #[serde(default)]
+    pub tool_choice: Option<ToolChoice>,
+    /// Per-call reasoning effort level (DeepSeek, LM Studio, Kimi, etc.). Injected into extra_body for providers that support it natively.
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// HTTP request timeout in seconds (for external API clients, not used internally).
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    /// Service tier for providers with tiered pricing (OpenAI: "default", "flex", "auto").
+    #[serde(default)]
+    pub service_tier: Option<String>,
+    /// Provider preferences for routing (AWS Bedrock multi-region).
+    #[serde(default)]
+    pub provider_preferences: Option<String>,
+    /// User ID for provider tracking (OpenRouter).
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// Per-call metadata for tagging/tracking.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    /// Anthropic cache_control marker for prompt caching.
+    #[serde(default)]
+    pub cache_control: Option<CacheControl>,
+    /// Extra arbitrary fields to merge into the request body.
+    #[serde(default)]
+    pub extra_body: ExtraBody,
 }
 
 impl ProviderConfig {
@@ -87,6 +204,21 @@ impl ProviderConfig {
             temperature: None,
             fallback_models: vec![],
             tools_json: None,
+            top_p: None,
+            top_k: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop_sequences: None,
+            response_format: None,
+            tool_choice: None,
+            reasoning_effort: None,
+            timeout: None,
+            service_tier: None,
+            provider_preferences: None,
+            user_id: None,
+            metadata: None,
+            cache_control: None,
+            extra_body: ExtraBody::default(),
         }
     }
 }

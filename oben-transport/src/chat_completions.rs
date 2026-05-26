@@ -6,7 +6,7 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use serde_json::json;
 use tracing::debug;
-use oben_models::{Message, MessageRole, Tool, TransportResponse, TransportToolCall};
+use oben_models::{Message, MessageRole, ReasoningEffort, Tool, TransportResponse, TransportToolCall};
 
 use super::base::{BaseTransport, ChatResponse};
 
@@ -296,19 +296,111 @@ struct StreamUsage {
 /// The system prompt is NOT embedded here — it must be in messages[0]
 /// (prepended by `SystemPromptConfig::build_and_prepend`).
 fn build_request_template(
-    base: &BaseTransport,
+    config: &oben_models::ProviderConfig,
     system_prompt: impl Into<String>,
     tools: Vec<serde_json::Value>,
 ) -> serde_json::Value {
     let mut req = json!({
-        "model": base.model,
+        "model": config.model,
         "messages": serde_json::Value::Array(vec![json!({
             "role": "system",
             "content": system_prompt.into(),
         })]),
-        "temperature": 0.7,
-        "max_tokens": 8192,
     });
+
+    if let Some(t) = config.temperature {
+        req["temperature"] = json!(t);
+    }
+    if let Some(m) = config.max_tokens {
+        req["max_tokens"] = json!(m);
+    }
+    if let Some(p) = config.top_p {
+        req["top_p"] = json!(p);
+    }
+    if let Some(k) = config.top_k {
+        req["top_k"] = json!(k);
+    }
+    if let Some(fp) = config.frequency_penalty {
+        req["frequency_penalty"] = json!(fp);
+    }
+    if let Some(pp) = config.presence_penalty {
+        req["presence_penalty"] = json!(pp);
+    }
+    if let Some(ss) = &config.stop_sequences {
+        req["stop"] = serde_json::Value::Array(ss.iter().map(|s| serde_json::Value::String(s.clone())).collect());
+    }
+    if let Some(rf) = &config.response_format {
+        req["response_format"] = match rf {
+            oben_models::ResponseFormat::Text => json!({"type": "text"}),
+            oben_models::ResponseFormat::Json => json!({"type": "json_object"}),
+            oben_models::ResponseFormat::JsonSchema { schema } => json!({"type": "json_schema", "json_schema": schema}),
+        };
+    }
+    if let Some(tc) = &config.tool_choice {
+        req["tool_choice"] = match tc {
+            oben_models::ToolChoice::None => json!({"type": "none"}),
+            oben_models::ToolChoice::Auto => json!({"type": "auto"}),
+            oben_models::ToolChoice::Any => json!({"type": "any"}),
+            oben_models::ToolChoice::Tool { name } => json!({"type": "function", "function": {"name": name}}),
+        };
+    }
+    if let Some(re) = &config.reasoning_effort {
+        req["reasoning_effort"] = json!(match re {
+            oben_models::ReasoningEffort::Low => "low",
+            oben_models::ReasoningEffort::Medium => "medium",
+            oben_models::ReasoningEffort::High => "high",
+            oben_models::ReasoningEffort::XHigh => "xhigh",
+        });
+    }
+    if let Some(st) = &config.service_tier {
+        req["service_tier"] = json!(st);
+    }
+    if let Some(up) = &config.provider_preferences {
+        req["provider_preferences"] = json!(up);
+    }
+    if let Some(uid) = &config.user_id {
+        req["user"] = json!(uid);
+    }
+    if let Some(md) = &config.metadata {
+        req["metadata"] = md.clone();
+    }
+    let b = &config.extra_body;
+    if let Some(v) = &b.anthropic_max_output {
+        req["anthropic_max_output"] = json!(v);
+    }
+    if let Some(t) = &b.thinking {
+        req["thinking"] = json!(t);
+    }
+    if b.thinking.is_some() || b.thinking_config.is_some() {
+        if let Some(tc) = &b.thinking_config {
+            req["thinking_config"] = tc.clone();
+            let mut eb = serde_json::Map::new();
+            eb.insert("reasoning".into(), json!({"enabled": b.thinking.unwrap_or_default(), "effort": match &b.reasoning_effort {
+                Some(re) => match re {
+                    ReasoningEffort::Low => "low",
+                    ReasoningEffort::Medium => "medium",
+                    ReasoningEffort::High => "high",
+                    ReasoningEffort::XHigh => "xhigh",
+                },
+                None => "medium",
+            }}));
+            eb.insert("thinking_config".into(), tc.clone());
+            req["extra_body"] = json!(serde_json::Value::Object(eb));
+        }
+    }
+    if let Some(ollama_ctx) = &b.ollama_num_ctx {
+        req["num_ctx"] = json!(ollama_ctx);
+    }
+    if let Some(uid) = &b.user_id {
+        if config.user_id.is_none() {
+            req["user"] = json!(uid);
+        }
+    }
+    if let Some(md) = &b.metadata {
+        if config.metadata.is_none() {
+            req["metadata"] = md.clone();
+        }
+    }
 
     if !tools.is_empty() {
         req["tools"] = serde_json::Value::Array(tools);
@@ -320,21 +412,13 @@ fn build_request_template(
 /// The system prompt is NOT embedded here — it must be in messages[0]
 /// (prepended by `SystemPromptConfig::build_and_prepend`).
 fn build_stream_request_template(
-    base: &BaseTransport,
+    config: &oben_models::ProviderConfig,
     system_prompt: impl Into<String>,
     tools: Vec<serde_json::Value>,
 ) -> serde_json::Value {
-    let mut req = json!({
-        "model": base.model,
-        "messages": serde_json::Value::Array(vec![json!({
-            "role": "system",
-            "content": system_prompt.into(),
-        })]),
-        "temperature": 0.7,
-        "max_tokens": 8192,
-        "stream": true,
-        "stream_options": {"include_usage": true},
-    });
+    let mut req = build_request_template(config, system_prompt, vec![]);
+    req["stream"] = json!(true);
+    req["stream_options"] = json!({"include_usage": true});
 
     if !tools.is_empty() {
         req["tools"] = serde_json::Value::Array(tools);
@@ -359,13 +443,12 @@ pub struct ChatCompletionsTransport {
 
 impl ChatCompletionsTransport {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>, system_prompt: impl Into<String>) -> Self {
-        let base = BaseTransport::new(base_url, api_key, model);
+        let base = BaseTransport::new(base_url, api_key, model.into());
         let system_prompt = system_prompt.into();
-        // No tools passed — empty list. This constructor is used by callers
-        // that don't have a tool registry (e.g. wizard, CLI one-shot).
         let tools: Vec<serde_json::Value> = Vec::new();
-        let template = build_request_template(&base, system_prompt.clone(), tools.clone());
-        let stream_template = build_stream_request_template(&base, system_prompt.clone(), tools);
+        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Custom, "model-placeholder");
+        let template = build_request_template(&config, system_prompt.clone(), tools.clone());
+        let stream_template = build_stream_request_template(&config, system_prompt, tools);
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -382,11 +465,13 @@ impl ChatCompletionsTransport {
         system_prompt: impl Into<String>,
         tools: Vec<Tool>,
     ) -> Self {
-        let base = BaseTransport::new(base_url, api_key, model);
+        let model: String = model.into();
+        let base = BaseTransport::new(base_url, api_key, model.clone());
         let system_prompt = system_prompt.into();
         let tool_defs: Vec<serde_json::Value> = tools.iter().map(tool_to_openai).collect();
-        let template = build_request_template(&base, system_prompt.clone(), tool_defs.clone());
-        let stream_template = build_stream_request_template(&base, system_prompt.clone(), tool_defs);
+        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Custom, model);
+        let template = build_request_template(&config, system_prompt.clone(), tool_defs.clone());
+        let stream_template = build_stream_request_template(&config, system_prompt, tool_defs);
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -416,14 +501,36 @@ impl ChatCompletionsTransport {
     ) -> Self {
         let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();
-        Self::with_tools(base_url, api_key, &config.model, system_prompt, tools)
+        let tool_defs: Vec<serde_json::Value> = tools.iter().map(tool_to_openai).collect();
+        let system_prompt = system_prompt.into();
+        let template = build_request_template(config, system_prompt.clone(), tool_defs.clone());
+        let stream_template = build_stream_request_template(config, system_prompt, tool_defs);
+        let base = BaseTransport::new(base_url, api_key, &config.model);
+        Self {
+            base,
+            cached: std::sync::Mutex::new(std::collections::HashMap::new()),
+            template: std::sync::Arc::new(template),
+            stream_template: std::sync::Arc::new(stream_template),
+        }
     }
 
     /// Create from a ProviderConfig without tools.
-    pub fn from_config(config: &oben_models::ProviderConfig, system_prompt: impl Into<String>) -> Self {
+    pub fn from_config(
+        config: &oben_models::ProviderConfig,
+        system_prompt: impl Into<String>,
+    ) -> Self {
         let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();
-        Self::new(base_url, api_key, &config.model, system_prompt)
+        let base = BaseTransport::new(base_url, api_key, config.model.clone());
+        let system_prompt = system_prompt.into();
+        let template = build_request_template(config, system_prompt.clone(), Vec::new());
+        let stream_template = build_stream_request_template(config, system_prompt, Vec::new());
+        Self {
+            base,
+            cached: std::sync::Mutex::new(std::collections::HashMap::new()),
+            template: std::sync::Arc::new(template),
+            stream_template: std::sync::Arc::new(stream_template),
+        }
     }
 
     /// Fetch the list of available models from the provider.
