@@ -480,17 +480,33 @@ impl ChatCompletionsTransport {
         }
     }
 
-    /// Resolve the base URL for a provider config (cached).
+    /// Resolve the base URL for a provider config.
+    ///
+    /// Resolution order:
+    /// 1. Provider-specific env var (e.g. `OPENAI_BASE_URL`)
+    /// 2. Registry default base URL from `PROVIDER_META`
+    /// 3. `config.base_url`
+    /// 4. Empty string
     fn resolve_base_url(config: &oben_models::ProviderConfig) -> String {
-        match config.kind {
-            oben_models::ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
-            oben_models::ProviderKind::OpenAI => "https://api.openai.com/v1".to_string(),
-            oben_models::ProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
-            oben_models::ProviderKind::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
-            oben_models::ProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1".to_string(),
-            oben_models::ProviderKind::LMStudio => "http://localhost:1234/v1".to_string(),
-            oben_models::ProviderKind::Custom => config.base_url.clone().unwrap_or_default(),
+        // Step 1: Provider-specific env var for custom base URL
+        if let Some(env_var_name) = config.kind.base_url_env_var() {
+            if let Ok(url) = std::env::var(env_var_name) {
+                let url = url.trim().to_string();
+                if !url.is_empty() {
+                    return url;
+                }
+            }
         }
+
+        // Step 2: Registry default base URL
+        if let Some(default_url) = config.kind.default_base_url() {
+            if !default_url.is_empty() {
+                return default_url.to_string();
+            }
+        }
+
+        // Step 3: Config-level override
+        config.base_url.clone().unwrap_or_default()
     }
 
     /// Create from a ProviderConfig, with tools for structured tool calling.

@@ -43,7 +43,8 @@ impl Transport {
     /// Create a transport instance from a ProviderConfig (legacy, non-registry).
     ///
     /// Routes to the correct transport type based on `config.kind`:
-    /// - `Anthropic` -> `AnthropicMessagesTransport` (native /v1/messages)
+    /// - `Anthropic, MiniMax, MiniMaxOAuth, MiniMaxCN` -> `AnthropicMessagesTransport`
+    ///   (native /v1/messages protocol)
     /// - Everything else -> `ChatCompletionsTransport` (OpenAI-compatible /v1/chat/completions)
     ///
     /// **NOTE:** Prefer `from_config_with_tools_via_registry()` for new code.
@@ -54,7 +55,10 @@ impl Transport {
         let system_prompt = system_prompt.into();
 
         match config.kind {
-            oben_models::ProviderKind::Anthropic => {
+            ProviderKind::Anthropic
+            | ProviderKind::MiniMax
+            | ProviderKind::MiniMaxOAuth
+            | ProviderKind::MiniMaxCN => {
                 Self::Anthropic {
                     transport: AnthropicMessagesTransport::from_config(config, system_prompt),
                 }
@@ -76,7 +80,10 @@ impl Transport {
         let system_prompt = system_prompt.into();
 
         match config.kind {
-            oben_models::ProviderKind::Anthropic => {
+            ProviderKind::Anthropic
+            | ProviderKind::MiniMax
+            | ProviderKind::MiniMaxOAuth
+            | ProviderKind::MiniMaxCN => {
                 Self::Anthropic {
                     transport: AnthropicMessagesTransport::from_config_with_tools(
                         config, system_prompt, tools,
@@ -99,7 +106,7 @@ impl Transport {
     /// and plugins can register custom transports at runtime.
     ///
     /// Routes to the correct transport based on `config.kind`:
-    /// - `Anthropic` -> `anthropic_messages` registry entry
+    /// - `Anthropic, MiniMax, MiniMaxOAuth, MiniMaxCN` -> `anthropic_messages` registry entry
     /// - Everything else -> `chat_completions` registry entry
     ///
     /// Tools are serialized into the config before creation.
@@ -117,7 +124,10 @@ impl Transport {
         }.flatten();
 
         let transport_name = match config_with_tools.kind {
-            oben_models::ProviderKind::Anthropic => "anthropic_messages",
+            ProviderKind::Anthropic
+            | ProviderKind::MiniMax
+            | ProviderKind::MiniMaxOAuth
+            | ProviderKind::MiniMaxCN => "anthropic_messages",
             _ => "chat_completions",
         };
 
@@ -134,7 +144,10 @@ impl Transport {
                     transport_name
                 );
                 match config_with_tools.kind {
-                    oben_models::ProviderKind::Anthropic => {
+                    ProviderKind::Anthropic
+                    | ProviderKind::MiniMax
+                    | ProviderKind::MiniMaxOAuth
+                    | ProviderKind::MiniMaxCN => {
                         Arc::new(AnthropicMessagesTransport::from_config_with_tools(
                             &config_with_tools, sp, tools_vec,
                         )) as Arc<dyn TransportProvider + Send + Sync>

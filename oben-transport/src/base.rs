@@ -367,15 +367,42 @@ mod tests {
 
     fn resolve_provider_url(kind: &ProviderKind, base_url: Option<String>) -> String {
         match kind {
-            ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
             ProviderKind::OpenAI => "https://api.openai.com/v1".to_string(),
+            ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
             ProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
             ProviderKind::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
             ProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1".to_string(),
             ProviderKind::LMStudio => "http://localhost:1234/v1".to_string(),
-            ProviderKind::Custom => base_url.unwrap_or_default(),
+            // MiniMax variants use AnthropicMessagesTransport (dispatched in dispatch.rs)
+            // Included here for enum exhaustiveness.
+            ProviderKind::MiniMax
+            | ProviderKind::MiniMaxOAuth
+            | ProviderKind::MiniMaxCN => base_url.clone().unwrap_or_default(),
+            // All other new providers: use base_url parameter
+            ProviderKind::DeepSeek
+            | ProviderKind::Alibaba
+            | ProviderKind::AlibabaCodingPlan
+            | ProviderKind::StepFun
+            | ProviderKind::TencentTokenHub
+            | ProviderKind::XAI
+            | ProviderKind::XAIOAuth
+            | ProviderKind::NVIDIA
+            | ProviderKind::Nous
+            | ProviderKind::Vercel
+            | ProviderKind::OpenCode
+            | ProviderKind::OpenCodeGo
+            | ProviderKind::Kilo
+            | ProviderKind::HuggingFace
+            | ProviderKind::Novita
+            | ProviderKind::Xiaomi
+            | ProviderKind::Arcee
+            | ProviderKind::GMI
+            | ProviderKind::OllamaCloud
+            | ProviderKind::Local
+            | ProviderKind::Custom => base_url.unwrap_or_default(),
         }
     }
+
 
     #[test]
     fn test_from_config_url_resolution() {

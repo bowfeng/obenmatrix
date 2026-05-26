@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Controls how the transport builds the message JSON for a call.
 ///
@@ -15,7 +15,10 @@ pub enum CallMode {
 }
 
 /// LLM provider backend.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Supports `ProviderAlias` deserialization so config values like
+/// `claude`, `gpt`, `deepseek`, `qwen` etc. are normalized to canonical providers.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProviderKind {
     OpenAI,
     OpenRouter,
@@ -23,7 +26,221 @@ pub enum ProviderKind {
     Bedrock,
     Gemini,
     LMStudio,
+    DeepSeek,
+    Alibaba,
+    AlibabaCodingPlan,
+    StepFun,
+    MiniMax,
+    MiniMaxOAuth,
+    MiniMaxCN,
+    TencentTokenHub,
+    XAI,
+    XAIOAuth,
+    NVIDIA,
+    Nous,
+    Vercel,
+    OpenCode,
+    OpenCodeGo,
+    Kilo,
+    HuggingFace,
+    Novita,
+    Xiaomi,
+    Arcee,
+    GMI,
+    OllamaCloud,
+    Local,
     Custom,
+}
+
+impl Serialize for ProviderKind {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderKind {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        Ok(Self::from_alias(&name))
+    }
+}
+
+impl ProviderKind {
+    /// Canonical name string.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProviderKind::OpenAI => "openai",
+            ProviderKind::OpenRouter => "openrouter",
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::Bedrock => "bedrock",
+            ProviderKind::Gemini => "gemini",
+            ProviderKind::LMStudio => "lmstudio",
+            ProviderKind::DeepSeek => "deepseek",
+            ProviderKind::Alibaba => "alibaba",
+            ProviderKind::AlibabaCodingPlan => "alibaba-coding-plan",
+            ProviderKind::StepFun => "stepfun",
+            ProviderKind::MiniMax => "minimax",
+            ProviderKind::MiniMaxOAuth => "minimax-oauth",
+            ProviderKind::MiniMaxCN => "minimax-cn",
+            ProviderKind::TencentTokenHub => "tencent-tokenhub",
+            ProviderKind::XAI => "xai",
+            ProviderKind::XAIOAuth => "xai-oauth",
+            ProviderKind::NVIDIA => "nvidia",
+            ProviderKind::Nous => "nous",
+            ProviderKind::Vercel => "vercel",
+            ProviderKind::OpenCode => "opencode",
+            ProviderKind::OpenCodeGo => "opencode-go",
+            ProviderKind::Kilo => "kilo",
+            ProviderKind::HuggingFace => "huggingface",
+            ProviderKind::Novita => "novita",
+            ProviderKind::Xiaomi => "xiaomi",
+            ProviderKind::Arcee => "arcee",
+            ProviderKind::GMI => "gmi",
+            ProviderKind::OllamaCloud => "ollama-custom",
+            ProviderKind::Local => "local",
+            ProviderKind::Custom => "custom",
+        }
+    }
+
+    /// Resolve an alias (or canonical name) to its canonical ProviderKind.
+    ///
+    /// Supports 50+ aliases including: `claude`, `gpt`, `deepseek`, `qwen`,
+    /// `glm`, `grok`, `minimax`, `tokenhub`, `mimo`, `arcee`, `gmi`, `mimo`, etc.
+    pub fn from_alias(name: &str) -> Self {
+        let normalized = name.trim().to_lowercase();
+        if normalized.is_empty() {
+            return ProviderKind::Custom;
+        }
+
+        // Check alias table (from provider_registry.rs)
+        for (alias, canonical) in crate::provider_registry::ALIAS_CANONICAL_PAIRS {
+            if *alias == normalized {
+                return canonical_to_kind(canonical);
+            }
+        }
+
+        ProviderKind::Custom
+    }
+
+    /// Check if this provider supports streaming chat.
+    pub fn supports_streaming(&self) -> bool {
+        matches!(
+            self,
+            ProviderKind::OpenAI
+                | ProviderKind::OpenRouter
+                | ProviderKind::Anthropic
+                | ProviderKind::Bedrock
+                | ProviderKind::Gemini
+                | ProviderKind::LMStudio
+                | ProviderKind::DeepSeek
+                | ProviderKind::Alibaba
+                | ProviderKind::AlibabaCodingPlan
+                | ProviderKind::StepFun
+                | ProviderKind::MiniMax
+                | ProviderKind::MiniMaxOAuth
+                | ProviderKind::MiniMaxCN
+                | ProviderKind::TencentTokenHub
+                | ProviderKind::XAI
+                | ProviderKind::XAIOAuth
+                | ProviderKind::NVIDIA
+                | ProviderKind::Nous
+                | ProviderKind::Vercel
+                | ProviderKind::OpenCode
+                | ProviderKind::OpenCodeGo
+                | ProviderKind::Kilo
+                | ProviderKind::HuggingFace
+                | ProviderKind::Novita
+                | ProviderKind::Xiaomi
+                | ProviderKind::Arcee
+                | ProviderKind::GMI
+                | ProviderKind::OllamaCloud
+                | ProviderKind::Local
+        )
+    }
+
+    /// Check if this provider uses Anthropic-compatible protocol.
+    pub fn is_anthropic_protocol(&self) -> bool {
+        matches!(
+            self,
+            ProviderKind::Anthropic | ProviderKind::MiniMax | ProviderKind::MiniMaxOAuth | ProviderKind::MiniMaxCN
+        )
+    }
+
+    /// Check if this provider is a domestic Chinese provider.
+    pub fn is_domestic_china(&self) -> bool {
+        matches!(
+            self,
+            ProviderKind::Alibaba
+                | ProviderKind::AlibabaCodingPlan
+                | ProviderKind::StepFun
+                | ProviderKind::MiniMax
+                | ProviderKind::MiniMaxOAuth
+                | ProviderKind::MiniMaxCN
+                | ProviderKind::TencentTokenHub
+                | ProviderKind::Xiaomi
+        )
+    }
+
+    /// Returns the default base URL for this provider from the registry.
+    ///
+    /// Returns `None` for providers with no hardcoded default (e.g. OpenAI).
+    /// The caller should additionally check env vars, then fall back
+    /// to `config.base_url`.
+    pub fn default_base_url(&self) -> Option<&'static str> {
+        use crate::provider_registry::PROVIDER_META;
+        PROVIDER_META
+            .iter()
+            .find(|(id, _, _)| *id == self.as_str())
+            .map(|(_, _, base_url)| *base_url)
+            .filter(|url| !url.is_empty())
+    }
+
+    /// Returns None if this is a local/overridable provider that does not auto-detect.
+    pub fn base_url_env_var(&self) -> Option<&'static str> {
+        use crate::provider_registry::resolve_base_url_env_var;
+        resolve_base_url_env_var(self.as_str())
+    }
+}
+
+fn canonical_to_kind(canonical: &str) -> ProviderKind {
+    match canonical {
+        "openai" => ProviderKind::OpenAI,
+        "openrouter" => ProviderKind::OpenRouter,
+        "anthropic" => ProviderKind::Anthropic,
+        "bedrock" => ProviderKind::Bedrock,
+        "gemini" | "google-gemini-cli" => ProviderKind::Gemini,
+        "lmstudio" => ProviderKind::LMStudio,
+        "deepseek" => ProviderKind::DeepSeek,
+        "alibaba" => ProviderKind::Alibaba,
+        "alibaba-coding-plan" => ProviderKind::AlibabaCodingPlan,
+        "stepfun" => ProviderKind::StepFun,
+        "minimax" => ProviderKind::MiniMax,
+        "minimax-oauth" => ProviderKind::MiniMaxOAuth,
+        "minimax-cn" => ProviderKind::MiniMaxCN,
+        "tencent-tokenhub" => ProviderKind::TencentTokenHub,
+        "xai" => ProviderKind::XAI,
+        "xai-oauth" => ProviderKind::XAIOAuth,
+        "nvidia" => ProviderKind::NVIDIA,
+        "nous" => ProviderKind::Nous,
+        "vercel" | "ai-gateway" | "aigateway" | "vercel-ai-gateway" => ProviderKind::Vercel,
+        "opencode" | "opencode-zen" | "zen" => ProviderKind::OpenCode,
+        "opencode-go" | "go" | "opencode-go-sub" => ProviderKind::OpenCodeGo,
+        "kilo" | "kilocode" | "kilo-code" | "kilo-gateway" => ProviderKind::Kilo,
+        "huggingface" | "hf" | "hugging-face" | "huggingface-hub" => ProviderKind::HuggingFace,
+        "novita" | "novita-ai" | "novitaai" => ProviderKind::Novita,
+        "xiaomi" | "mimo" | "xiaomi-mimo" => ProviderKind::Xiaomi,
+        "arcee" | "arcee-ai" | "arceeai" => ProviderKind::Arcee,
+        "gmi" | "gmi-cloud" | "gmicloud" => ProviderKind::GMI,
+        "ollama-custom" | "ollama" | "ollama-cloud" => ProviderKind::OllamaCloud,
+        "local" | "vllm" | "llamacpp" | "llama.cpp" | "llama-cpp" => ProviderKind::Local,
+        _ => ProviderKind::Custom,
+    }
 }
 
 /// A model returned from `/v1/models` API.

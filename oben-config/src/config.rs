@@ -261,7 +261,7 @@ impl AppConfig {
         Self::config_dir_legacy().join("config.yaml")
     }
 
-    /// Load config from `~/.obenalien/config.yaml`.
+    /// Load config from `~/.config/obenalien/config.yaml`.
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::config_path_legacy();
         if !path.exists() {
@@ -269,17 +269,33 @@ impl AppConfig {
         }
         let content = std::fs::read_to_string(&path)?;
         let mut config: Self = serde_yaml::from_str(&content)?;
-        // Merge AppConfig-level overrides into ProviderConfig
+
         if let Some(t) = config.temperature {
             config.model.temperature = Some(t);
         }
         if let Some(m) = config.max_tokens {
             config.model.max_tokens = Some(m);
         }
-        if let Some(i) = config.max_iterations {
-            // max_iterations is an AppConfig-level setting, not per-provider
-            let _ = i;
+
+        if config.model.api_key.as_ref().map_or(true, |v| v.trim().is_empty()) {
+            if let Some(key) =
+                oben_models::provider_registry::resolve_api_key_from_env(config.model.kind.as_str())
+            {
+                config.model.api_key = Some(key);
+            }
         }
+
+        if config.model.base_url.as_ref().map_or(true, |v| v.trim().is_empty()) {
+            if let Some(env_var) = config.model.kind.base_url_env_var() {
+                if let Ok(val) = std::env::var(env_var) {
+                    let val = val.trim().to_string();
+                    if !val.is_empty() {
+                        config.model.base_url = Some(val);
+                    }
+                }
+            }
+        }
+
         Ok(config)
     }
 

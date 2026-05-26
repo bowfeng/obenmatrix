@@ -31,7 +31,7 @@ pub struct ProviderInfo<'a> {
 /// Alias list: (human-friendly name, provider canonical id)
 ///
 /// Maps to `HERMES_OVERLAYS` + `ALIASES` from `providers.py`.
-const ALIAS_CANONICAL_PAIRS: &[(&str, &str)] = &[
+pub const ALIAS_CANONICAL_PAIRS: &[(&str, &str)] = &[
     // Anthropic
     ("anthropic", "anthropic"),
     ("claude", "anthropic"),
@@ -167,7 +167,7 @@ const ALIAS_CANONICAL_PAIRS: &[(&str, &str)] = &[
 
 /// Provider-specific metadata for known providers.
 /// Maps to `HERMES_OVERLAYS` from `providers.py`.
-const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
+pub(crate) const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
     ("anthropic", TransportType::AnthropicMessages, "https://api.anthropic.com/v1"),
     ("openai", TransportType::OpenAIChat, ""),
     ("openrouter", TransportType::OpenAIChat, "https://openrouter.ai/api/v1"),
@@ -200,6 +200,109 @@ const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
     ("ollama-custom", TransportType::OpenAIChat, "https://ollama.com/v1"),
     ("local", TransportType::OpenAIChat, ""),
 ];
+
+/// Canonical provider API key environment variable fallback chains.
+///
+/// Each entry maps a canonical provider name to an ordered list of env vars to
+/// try.  The first non-empty value wins.  An empty slice means the provider has
+/// no env-var fallback (OAuth-based, cloud-only, or local).
+const PROVIDER_API_KEY_CHAINS: &[(&str, &'static [&'static str])] = &[
+    ("openai",            &["OPENAI_API_KEY", "OPENAI_TOKEN"]),
+    ("openrouter",        &["OPENROUTER_API_KEY"]),
+    ("anthropic",         &["ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]),
+    ("bedrock",           &[]),
+    ("google-gemini-cli", &["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+    ("lmstudio",          &["LM_API_KEY"]),
+    ("deepseek",          &["DEEPSEEK_API_KEY"]),
+    ("alibaba",           &["DASHSCOPE_API_KEY"]),
+    ("alibaba-coding-plan", &["ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"]),
+    ("stepfun",           &["STEPFUN_API_KEY"]),
+    ("minimax",           &["MINIMAX_API_KEY"]),
+    ("minimax-oauth",     &[]),
+    ("minimax-cn",        &["MINIMAX_CN_API_KEY"]),
+    ("tencent-tokenhub",  &["TOKENHUB_API_KEY"]),
+    ("xai",               &["XAI_API_KEY"]),
+    ("xai-oauth",         &[]),
+    ("nvidia",            &["NVIDIA_API_KEY"]),
+    ("nous",              &[]),
+    ("vercel",            &["AI_GATEWAY_API_KEY"]),
+    ("opencode",          &["OPENCODE_ZEN_API_KEY"]),
+    ("opencode-go",       &["OPENCODE_GO_API_KEY"]),
+    ("kilo",              &["KILOCODE_API_KEY"]),
+    ("huggingface",       &["HF_TOKEN"]),
+    ("novita",            &["NOVITA_API_KEY"]),
+    ("xiaomi",            &["XIAOMI_API_KEY"]),
+    ("arcee",             &["ARCEEAI_API_KEY"]),
+    ("gmi",               &["GMI_API_KEY"]),
+    ("ollama-custom",     &["OLLAMA_API_KEY"]),
+    ("local",             &[]),
+    ("custom",            &[]),
+];
+
+/// Provider base URL environment variable mapping.
+///
+/// Maps canonical provider names to the env var that may hold a custom base URL.
+const PROVIDER_BASE_URL_ENV_VARS: &[(&str, &str)] = &[
+    ("openai", "OPENAI_BASE_URL"),
+    ("openrouter", "OPENROUTER_BASE_URL"),
+    ("anthropic", "ANTHROPIC_BASE_URL"),
+    ("bedrock", "BEDROCK_BASE_URL"),
+    ("google-gemini-cli", "GEMINI_BASE_URL"),
+    ("lmstudio", "LM_BASE_URL"),
+    ("deepseek", "DEEPSEEK_BASE_URL"),
+    ("alibaba", "DASHSCOPE_BASE_URL"),
+    ("alibaba-coding-plan", "ALIBABA_CODING_PLAN_BASE_URL"),
+    ("stepfun", "STEPFUN_BASE_URL"),
+    ("minimax", "MINIMAX_BASE_URL"),
+    ("minimax-cn", "MINIMAX_CN_BASE_URL"),
+    ("tencent-tokenhub", "TOKENHUB_BASE_URL"),
+    ("xai", "XAI_BASE_URL"),
+    ("xai-oauth", "XAI_BASE_URL"),
+    ("nvidia", "NVIDIA_BASE_URL"),
+    ("vercel", "AI_GATEWAY_BASE_URL"),
+    ("opencode", "OPENCODE_ZEN_BASE_URL"),
+    ("opencode-go", "OPENCODE_GO_BASE_URL"),
+    ("kilo", "KILOCODE_BASE_URL"),
+    ("huggingface", "HF_BASE_URL"),
+    ("novita", "NOVITA_BASE_URL"),
+    ("xiaomi", "XIAOMI_BASE_URL"),
+    ("arcee", "ARCEE_BASE_URL"),
+    ("gmi", "GMI_BASE_URL"),
+    ("ollama-custom", "OLLAMA_BASE_URL"),
+];
+
+/// Look up the API key env var chain for a canonical provider name.
+pub fn resolve_api_key_env_chain(canonical: &str) -> &'static [&'static str] {
+    PROVIDER_API_KEY_CHAINS
+        .iter()
+        .find(|(id, _)| *id == canonical)
+        .map(|(_, chain)| *chain)
+        .unwrap_or(&[])
+}
+
+/// Resolve an API key for a canonical provider from environment variables.
+///
+/// Iterates the chain in priority order; returns the first non-empty value or
+/// `None` if none are set or the provider has no env-var chain.
+pub fn resolve_api_key_from_env(canonical: &str) -> Option<String> {
+    for env_var in resolve_api_key_env_chain(canonical) {
+        if let Ok(val) = std::env::var(env_var) {
+            let val = val.trim().to_string();
+            if !val.is_empty() {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+/// Return the env var name for a provider's base URL, if configured.
+pub fn resolve_base_url_env_var(canonical: &str) -> Option<&str> {
+    PROVIDER_BASE_URL_ENV_VARS
+        .iter()
+        .find(|(id, _)| *id == canonical)
+        .map(|(_, var_name)| *var_name)
+}
 
 /// Resolve a provider name (or alias) to its canonical provider info.
 ///
@@ -238,14 +341,38 @@ pub fn resolve_provider_info(name: &str) -> Option<ProviderInfo<'_>> {
 /// transport depends on the user-provided base URL.
 pub fn provider_kind_to_transport(kind: crate::providers::ProviderKind) -> Option<TransportType> {
     Some(match kind {
+        crate::providers::ProviderKind::Anthropic |
+        crate::providers::ProviderKind::MiniMax |
+        crate::providers::ProviderKind::MiniMaxOAuth |
+        crate::providers::ProviderKind::MiniMaxCN => TransportType::AnthropicMessages,
+        crate::providers::ProviderKind::Bedrock => TransportType::BedrockConverse,
+        crate::providers::ProviderKind::XAI |
+        crate::providers::ProviderKind::XAIOAuth => TransportType::CodexResponses,
         crate::providers::ProviderKind::OpenAI |
         crate::providers::ProviderKind::OpenRouter |
+        crate::providers::ProviderKind::Gemini |
         crate::providers::ProviderKind::LMStudio |
-        crate::providers::ProviderKind::Custom => TransportType::OpenAIChat,
-        crate::providers::ProviderKind::Anthropic => TransportType::AnthropicMessages,
-        crate::providers::ProviderKind::Bedrock => TransportType::BedrockConverse,
-        crate::providers::ProviderKind::Gemini => TransportType::OpenAIChat,
+        crate::providers::ProviderKind::Custom |
+        crate::providers::ProviderKind::DeepSeek |
+        crate::providers::ProviderKind::Alibaba |
+        crate::providers::ProviderKind::AlibabaCodingPlan |
+        crate::providers::ProviderKind::StepFun |
+        crate::providers::ProviderKind::TencentTokenHub |
+        crate::providers::ProviderKind::NVIDIA |
+        crate::providers::ProviderKind::Nous |
+        crate::providers::ProviderKind::Vercel |
+        crate::providers::ProviderKind::OpenCode |
+        crate::providers::ProviderKind::OpenCodeGo |
+        crate::providers::ProviderKind::Kilo |
+        crate::providers::ProviderKind::HuggingFace |
+        crate::providers::ProviderKind::Novita |
+        crate::providers::ProviderKind::Xiaomi |
+        crate::providers::ProviderKind::Arcee |
+        crate::providers::ProviderKind::GMI |
+        crate::providers::ProviderKind::OllamaCloud |
+        crate::providers::ProviderKind::Local => TransportType::OpenAIChat,
     })
+
 }
 
 #[cfg(test)]
