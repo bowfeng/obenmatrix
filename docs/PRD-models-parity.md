@@ -85,23 +85,23 @@ These are fields in the JSON body sent to the `/v1/chat/completions` endpoint.
 | PL.1 | `model` | ✅ | ✅ | ✅ | Provider model name (normalized via `model_normalize.py`) |
 | PL.2 | `messages` | ✅ | ✅ | ✅ | System, user, assistant, tool messages (with Codex sanitization) |
 | PL.3 | `tools` | ✅ | ✅ | ✅ | OpenAI function call format; Moonshot tool sanitization |
-| PL.4 | `temperature` | 🟡 | ✅ | ❌ | Per-provider fixed temperature (Anthropic, Kimi omit); config override |
+| PL.4 | `temperature` | 🟡 | ✅ | ✅ | Per-provider fixed temperature (Anthropic, Kimi omit); config override |
 | PL.5 | `max_tokens` | ✅ | ✅ | ✅ | `max_completion_tokens` for OpenAI; `max_tokens` for others |
-| PL.6 | `top_p` | 🟢 | ✅ | ❌ | Per-provider override |
-| PL.7 | `top_k` | 🟢 | ✅ | ❌ | Native API support (Qwen, Gemini) |
-| PL.8 | `frequency_penalty` | 🟢 | ✅ | ❌ | OpenAI-compatible per-call override |
-| PL.9 | `presence_penalty` | 🟢 | ✅ | ❌ | OpenAI-compatible per-call override |
+| PL.6 | `top_p` | 🟢 | ✅ | ✅ | Per-provider override |
+| PL.7 | `top_k` | 🟢 | ✅ | ✅ | Native API support (Qwen, Gemini) |
+| PL.8 | `frequency_penalty` | 🟢 | ✅ | ✅ | OpenAI-compatible per-call override |
+| PL.9 | `presence_penalty` | 🟢 | ✅ | ✅ | OpenAI-compatible per-call override |
 | PL.10 | `logit_bias` | 🟢 | ✅ | ❌ | OpenAI-compatible per-call override |
-| PL.11 | `stop_sequences` | 🟢 | ✅ | ❌ | Stop sequence control |
-| PL.12 | `response_format` | 🟡 | ✅ | ❌ | JSON mode (`{"type": "json_object"}`) |
-| PL.13 | `tool_choice` | 🟡 | ✅ | ❌ | `auto`, `required`, `none`, `{"type": "function", "function": {"name": "x"}}` |
+| PL.11 | `stop_sequences` | 🟢 | ✅ | ✅ | Stop sequence control |
+| PL.12 | `response_format` | 🟡 | ✅ | ✅ | JSON mode (`{"type": "json_object"}`) |
+| PL.13 | `tool_choice` | 🟡 | ✅ | ✅ | `auto`, `required`, `none`, `{"type": "function", "function": {"name": "x"}}` |
 | PL.14 | `stream_options` | 🟢 | ✅ | ✅ | `include_usage: true` (oben has this hardcoded) |
 | PL.15 | `timeout` | 🟢 | ✅ | ❌ | Per-call timeout override |
-| PL.16 | `service_tier` | 🟢 | ✅ | ❌ | Priority Processing for OpenAI (`"auto"`, `"priority"`, `"default"`) |
-| PL.17 | `provider_preferences` | 🟢 | ✅ | ❌ | OpenRouter provider routing (`extra_body.provider`) |
-| PL.18 | `extra_body` | 🟡 | ✅ | ❌ | Provider-specific fields: `reasoning`, `thinking`, `google`, plugins, tags, vl_high_resolution |
-| PL.19 | `user_id` | 🟢 | ✅ | ❌ | OpenRouter usage tracking |
-| PL.20 | `metadata` | 🟡 | ✅ | ❌ | Per-call metadata (Qwen session metadata, request tagging) |
+| PL.16 | `service_tier` | 🟢 | ✅ | ✅ | Priority Processing for OpenAI (`"auto"`, `"priority"`, `"default"`) |
+| PL.17 | `provider_preferences` | 🟢 | ✅ | ✅ | OpenRouter provider routing (`extra_body.provider`) |
+| PL.18 | `extra_body` | 🟡 | ✅ | ✅ | Provider-specific fields: `reasoning`, `thinking`, `google`, plugins, tags, vl_high_resolution |
+| PL.19 | `user_id` | 🟢 | ✅ | ✅ | OpenRouter usage tracking |
+| PL.20 | `metadata` | 🟡 | ✅ | ✅ | Per-call metadata (Qwen session metadata, request tagging) |
 
 ### E. Thinking / Reasoning Configuration
 
@@ -109,13 +109,13 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 
 | # | Attribute | Severity | Hermes | obenalien | Notes |
 |---|-----------|----------|--------|-----------|-------|
-| TH.1 | `reasoning_effort` (OpenAI-compatible) | 🟡 | ✅ | ❌ | Top-level: `"low"`, `"medium"`, `"high"`, `"xhigh"` — used by DeepSeek, LM Studio, Kimi, Tencent, GitHub |
-| PL.16 | `reasoning.enabled` / `reasoning.effort` (OpenRouter extra_body) | 🟡 | ✅ | ❌ | `extra_body.reasoning = {"enabled": true, "effort": "medium"}` (OpenRouter) |
-| PL.17 | `extra_body.thinking.type` | 🟡 | ✅ | ❌ | Kimi: `{"type": "enabled"}` / `{"type": "disabled"}` |
-| PL.18 | `thinking_config` (Gemini OpenAI-compatible) | 🟡 | ✅ | ❌ | `{includeThoughts: true, thinkingLevel: "low"/"medium"/"high", thinkingBudget: N}` |
+| TH.1 | `reasoning_effort` (OpenAI-compatible) | 🟡 | ✅ | ✅ | Top-level: `"low"`, `"medium"`, `"high"`, `"xhigh"` — used by DeepSeek, LM Studio, Kimi, Tencent, GitHub |
+| PL.16 | `reasoning.enabled` / `reasoning.effort` (OpenRouter extra_body) | 🟡 | ✅ | ✅ | `extra_body.reasoning = {"enabled": true, "effort": "medium"}` (OpenRouter) |
+| PL.17 | `extra_body.thinking.type` | 🟡 | ✅ | ✅ | Kimi: `{"type": "enabled"}` / `{"type": "disabled"}` |
+| PL.18 | `thinking_config` (Gemini OpenAI-compatible) | 🟡 | ✅ | ✅ | `{includeThoughts: true, thinkingLevel: "low"/"medium"/"high", thinkingBudget: N}` |
 | PL.19 | `prompt_cache` | 🔴 | ✅ | ✅ | Anthropic prompt caching (`cache_markers` in messages, `cache_ttl` config) |
-| PL.20 | `anthropic_max_output` | 🟢 | ✅ | ❌ | Max output tokens for Claude via OpenRouter/Nous |
-| PL.21 | `ollama_num_ctx` | 🟢 | ✅ | ❌ | Ollama context window override |
+| PL.20 | `anthropic_max_output` | 🟢 | ✅ | ✅ | Max output tokens for Claude via OpenRouter/Nous |
+| PL.21 | `ollama_num_ctx` | 🟢 | ✅ | ✅ | Ollama context window override |
 | PL.22 | Developer role swap | 🟢 | ✅ | ❌ | System→developer role for GPT-5/Codex models |
 
 ### F. Anthropic Payload (separate transport)
