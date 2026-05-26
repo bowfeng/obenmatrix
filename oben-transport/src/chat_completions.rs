@@ -364,6 +364,9 @@ fn build_request_template(
     if let Some(md) = &config.metadata {
         req["metadata"] = md.clone();
     }
+    if let Some(lb) = &config.logit_bias {
+        req["logit_bias"] = lb.clone();
+    }
     let b = &config.extra_body;
     if let Some(v) = &b.anthropic_max_output {
         req["anthropic_max_output"] = json!(v);

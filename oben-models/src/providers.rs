@@ -415,6 +415,9 @@ pub struct ProviderConfig {
     /// Per-call metadata for tagging/tracking.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+    /// Logit bias adjustment for provider-specific token weighting.
+    #[serde(default)]
+    pub logit_bias: Option<serde_json::Value>,
     /// Anthropic cache_control marker for prompt caching.
     #[serde(default)]
     pub cache_control: Option<CacheControl>,
@@ -449,6 +452,7 @@ impl ProviderConfig {
             provider_preferences: None,
             user_id: None,
             metadata: None,
+            logit_bias: None,
             cache_control: None,
             extra_body: ExtraBody::default(),
         }
