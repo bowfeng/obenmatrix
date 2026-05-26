@@ -204,9 +204,7 @@ impl Transport {
     pub async fn list_models(&self) -> Result<oben_models::ModelListResponse> {
         match self {
             Transport::OpenAIChat { transport } => transport.list_models().await,
-            Transport::Anthropic { .. } => {
-                Err(anyhow::anyhow!("list_models not yet implemented for Anthropic transport"))
-            }
+            Transport::Anthropic { transport } => transport.list_models().await,
         }
     }
 
@@ -214,9 +212,7 @@ impl Transport {
     pub async fn find_model(&self, model_id: &str) -> Result<Option<oben_models::ModelInfo>> {
         match self {
             Transport::OpenAIChat { transport } => transport.find_model(model_id).await,
-            Transport::Anthropic { .. } => {
-                Err(anyhow::anyhow!("find_model not yet implemented for Anthropic transport"))
-            }
+            Transport::Anthropic { transport } => transport.find_model(model_id).await,
         }
     }
 }

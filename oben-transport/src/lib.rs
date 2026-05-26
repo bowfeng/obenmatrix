@@ -6,6 +6,7 @@ pub mod anthropic_messages;
 pub mod text_tool_parser;
 pub mod dispatch;
 pub mod registry;
+pub mod model_normalize;
 
 pub use base::*;
 pub use chat_completions::*;

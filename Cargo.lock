@@ -2047,6 +2047,7 @@ dependencies = [
  "eventsource-stream",
  "futures-util",
  "oben-models",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

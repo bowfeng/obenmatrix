@@ -539,6 +539,69 @@ impl AnthropicMessagesTransport {
     }
 }
 
+/// Model response from Anthropic `/v1/models` endpoint.
+#[derive(Debug, Deserialize)]
+pub struct AnthropicModelInfo {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub model_type: String,
+    pub display_name: Option<String>,
+    pub max_tokens: Option<i64>,
+    pub max_input_tokens: Option<i64>,
+}
+
+impl AnthropicMessagesTransport {
+    /// Fetch the list of available models from Anthropic.
+    pub async fn list_models(&self) -> Result<oben_models::ModelListResponse> {
+        let url = format!("{}/models", self.base.base_url);
+        debug!("Fetching Anthropic models from: {}", url);
+
+        let mut req = self.base.client.get(&url);
+        req = req.header("anthropic-version", "2023-06-01");
+        if !self.base.api_key.is_empty() {
+            req = req.header("x-api-key", &self.base.api_key);
+        }
+
+        let response = req.send().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await?;
+            return Err(anyhow!("Anthropic API error {}: {}", status, body));
+        }
+
+        #[derive(Deserialize)]
+        struct Inner {
+            data: Vec<AnthropicModelInfo>,
+        }
+        let resp: Inner = response.json().await?;
+        let models: Vec<oben_models::ModelInfo> = resp
+            .data
+            .into_iter()
+            .filter(|m| m.id.starts_with("claude"))
+            .map(|m| oben_models::ModelInfo {
+                id: m.id,
+                object: m.model_type,
+                created: 0,
+                owned_by: "anthropic".to_string(),
+                max_model_len: m.max_input_tokens.map(|v| v as usize),
+                root: None,
+                parent: None,
+            })
+            .collect();
+
+        Ok(oben_models::ModelListResponse {
+            object: "list".to_string(),
+            data: models,
+        })
+    }
+
+    /// Find a specific model by ID from Anthropic.
+    pub async fn find_model(&self, model_id: &str) -> Result<Option<oben_models::ModelInfo>> {
+        let list = self.list_models().await?;
+        Ok(list.data.into_iter().find(|m| m.id == model_id))
+    }
+}
+
 /// Build the static parts of the request template for Anthropic API.
 fn build_anthropic_request_template(
     config: &oben_models::ProviderConfig,
