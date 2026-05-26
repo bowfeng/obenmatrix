@@ -172,10 +172,10 @@ pub(crate) const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
     ("openai", TransportType::OpenAIChat, ""),
     ("openrouter", TransportType::OpenAIChat, "https://openrouter.ai/api/v1"),
     ("google-gemini-cli", TransportType::OpenAIChat, "cloudcode-pa://google"),
-    ("zai", TransportType::OpenAIChat, ""),
-    ("kimi-for-coding", TransportType::OpenAIChat, ""),
+    ("zai", TransportType::OpenAIChat, "https://open.bigmodel.cn/api/paas/v4/"),
+    ("kimi-for-coding", TransportType::OpenAIChat, "https://api.moonshot.cn/v1"),
     ("deepseek", TransportType::OpenAIChat, ""),
-    ("alibaba", TransportType::OpenAIChat, ""),
+    ("alibaba", TransportType::OpenAIChat, "https://dashscope.aliyuncs.com/compatible-mode/v1"),
     ("alibaba-coding-plan", TransportType::OpenAIChat, ""),
     ("stepfun", TransportType::OpenAIChat, "https://api.stepfun.ai/step_plan/v1"),
     ("minimax", TransportType::AnthropicMessages, ""),
@@ -185,7 +185,7 @@ pub(crate) const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
     ("xai", TransportType::CodexResponses, ""),
     ("xai-oauth", TransportType::CodexResponses, ""),
     ("nvidia", TransportType::OpenAIChat, "https://integrate.api.nvidia.com/v1"),
-    ("bedrock", TransportType::BedrockConverse, ""),
+    ("baidu", TransportType::OpenAIChat, "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/"),
     ("lmstudio", TransportType::OpenAIChat, "http://127.0.0.1:1234/v1"),
     ("nous", TransportType::OpenAIChat, "https://inference-api.nousresearch.com/v1"),
     ("vercel", TransportType::OpenAIChat, ""),
@@ -235,6 +235,9 @@ const PROVIDER_API_KEY_CHAINS: &[(&str, &'static [&'static str])] = &[
     ("arcee",             &["ARCEEAI_API_KEY"]),
     ("gmi",               &["GMI_API_KEY"]),
     ("ollama-custom",     &["OLLAMA_API_KEY"]),
+    ("zai",               &["GLM_API_KEY", "ZAI_API_KEY"]),
+    ("kimi",              &["MOONSHOT_API_KEY"]),
+    ("baidu",             &["BAIDU_API_KEY"]),
     ("local",             &[]),
     ("custom",            &[]),
 ];
@@ -269,6 +272,9 @@ const PROVIDER_BASE_URL_ENV_VARS: &[(&str, &str)] = &[
     ("arcee", "ARCEE_BASE_URL"),
     ("gmi", "GMI_BASE_URL"),
     ("ollama-custom", "OLLAMA_BASE_URL"),
+    ("zai", "GLM_BASE_URL"),
+    ("kimi", "KIMI_BASE_URL"),
+    ("baidu", "BAIDU_BASE_URL"),
 ];
 
 /// Look up the API key env var chain for a canonical provider name.
@@ -370,7 +376,10 @@ pub fn provider_kind_to_transport(kind: crate::providers::ProviderKind) -> Optio
         crate::providers::ProviderKind::Arcee |
         crate::providers::ProviderKind::GMI |
         crate::providers::ProviderKind::OllamaCloud |
-        crate::providers::ProviderKind::Local => TransportType::OpenAIChat,
+            crate::providers::ProviderKind::Local |
+            crate::providers::ProviderKind::Zai |
+            crate::providers::ProviderKind::Kimi |
+            crate::providers::ProviderKind::Baidu => TransportType::OpenAIChat,
     })
 
 }

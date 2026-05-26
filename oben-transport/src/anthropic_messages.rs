@@ -493,10 +493,37 @@ impl AnthropicMessagesTransport {
     }
 
     fn resolve_base_url(config: &oben_models::ProviderConfig) -> String {
-        match config.kind {
-            oben_models::ProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
-            _ => "https://api.anthropic.com/v1".to_string(), // fallback
+        // Step 1: Provider-specific base URL from config
+        if let Some(url) = &config.base_url {
+            if !url.trim().is_empty() {
+                return url.clone();
+            }
         }
+
+        // Step 2: Provider-specific base URL env var override
+        if let Some(env_var_name) = config.kind.base_url_env_var() {
+            if let Ok(url) = std::env::var(env_var_name) {
+                let url = url.trim().to_string();
+                if !url.is_empty() {
+                    return url;
+                }
+            }
+        }
+
+        // Step 3: Provider registry default base URL
+        if let Some(default_url) = config.kind.default_base_url() {
+            if !default_url.is_empty() {
+                return default_url.to_string();
+            }
+        }
+
+        // Step 4: MiniMax OAuth default
+        if matches!(config.kind, oben_models::ProviderKind::MiniMaxOAuth) {
+            return "https://api.minimax.io/anthropic".to_string();
+        }
+
+        // Step 5: Anthropic default fallback
+        "https://api.anthropic.com/v1".to_string()
     }
 
     pub fn from_config_with_tools(

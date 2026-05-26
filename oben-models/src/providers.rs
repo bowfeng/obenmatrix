@@ -33,6 +33,9 @@ pub enum ProviderKind {
     MiniMax,
     MiniMaxOAuth,
     MiniMaxCN,
+    Zai,
+    Kimi,
+    Baidu,
     TencentTokenHub,
     XAI,
     XAIOAuth,
@@ -89,6 +92,9 @@ impl ProviderKind {
             ProviderKind::MiniMaxOAuth => "minimax-oauth",
             ProviderKind::MiniMaxCN => "minimax-cn",
             ProviderKind::TencentTokenHub => "tencent-tokenhub",
+            ProviderKind::Zai => "zai",
+            ProviderKind::Kimi => "kimi-for-coding",
+            ProviderKind::Baidu => "baidu",
             ProviderKind::XAI => "xai",
             ProviderKind::XAIOAuth => "xai-oauth",
             ProviderKind::NVIDIA => "nvidia",
@@ -159,8 +165,11 @@ impl ProviderKind {
                 | ProviderKind::Xiaomi
                 | ProviderKind::Arcee
                 | ProviderKind::GMI
-                | ProviderKind::OllamaCloud
+                |             ProviderKind::OllamaCloud
                 | ProviderKind::Local
+                | ProviderKind::Zai
+                | ProviderKind::Kimi
+                | ProviderKind::Baidu
         )
     }
 
@@ -184,6 +193,9 @@ impl ProviderKind {
                 | ProviderKind::MiniMaxCN
                 | ProviderKind::TencentTokenHub
                 | ProviderKind::Xiaomi
+                | ProviderKind::Zai
+                | ProviderKind::Kimi
+                | ProviderKind::Baidu
         )
     }
 
@@ -224,6 +236,9 @@ fn canonical_to_kind(canonical: &str) -> ProviderKind {
         "minimax-oauth" => ProviderKind::MiniMaxOAuth,
         "minimax-cn" => ProviderKind::MiniMaxCN,
         "tencent-tokenhub" => ProviderKind::TencentTokenHub,
+        "zai" => ProviderKind::Zai,
+        "kimi" | "kimi-for-coding" => ProviderKind::Kimi,
+        "baidu" | "baidu-wenxin" => ProviderKind::Baidu,
         "xai" => ProviderKind::XAI,
         "xai-oauth" => ProviderKind::XAIOAuth,
         "nvidia" => ProviderKind::NVIDIA,

@@ -399,6 +399,9 @@ mod tests {
             | ProviderKind::GMI
             | ProviderKind::OllamaCloud
             | ProviderKind::Local
+            | ProviderKind::Zai
+            | ProviderKind::Kimi
+            | ProviderKind::Baidu
             | ProviderKind::Custom => base_url.unwrap_or_default(),
         }
     }

@@ -54,7 +54,7 @@ impl SetupPanel {
             ProviderKind::Bedrock => 3,
             ProviderKind::Gemini => 4,
             ProviderKind::LMStudio => 5,
-            ProviderKind::Custom => 5,
+            _ => 5, // All new providers default to LMStudio/index 5
         };
         let max_iter_str = config.max_iterations.map(|v| v.to_string()).unwrap_or("50".to_string());
         let compression = config.context.compression.clone();
