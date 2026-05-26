@@ -69,6 +69,9 @@ pub struct ProviderConfig {
     /// Fallback models, tried in order if the primary fails.
     #[serde(default)]
     pub fallback_models: Vec<String>,
+    /// Tool definitions as JSON (passed through to transport).
+    #[serde(default)]
+    pub tools_json: Option<serde_json::Value>,
 }
 
 impl ProviderConfig {
@@ -83,6 +86,7 @@ impl ProviderConfig {
             max_tokens: None,
             temperature: None,
             fallback_models: vec![],
+            tools_json: None,
         }
     }
 }
@@ -123,6 +127,14 @@ impl<T: TransportProvider + ?Sized + Send + Sync> TransportProvider for std::syn
     fn estimate_tokens(&self, messages: &[super::Message]) -> usize {
         (**self).estimate_tokens(messages)
     }
+
+    async fn list_models(&self) -> Result<ModelListResponse> {
+        (**self).list_models().await
+    }
+
+    async fn find_model(&self, model_id: &str) -> Result<Option<ModelInfo>> {
+        (**self).find_model(model_id).await
+    }
 }
 
 /// Trait for LLM transport implementations.
@@ -158,5 +170,15 @@ pub trait TransportProvider: Send + Sync {
                 }
             }
         }).sum()
+    }
+
+    /// Fetch the list of available models from the provider.
+    async fn list_models(&self) -> Result<ModelListResponse> {
+        Err(anyhow::anyhow!("list_models not implemented"))
+    }
+
+    /// Find a specific model by ID from the provider.
+    async fn find_model(&self, _model_id: &str) -> Result<Option<ModelInfo>> {
+        Err(anyhow::anyhow!("find_model not implemented"))
     }
 }

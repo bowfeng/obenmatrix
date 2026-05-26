@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use oben_models::providers::{ProviderConfig, TransportProvider};
-use oben_models::{CallMode, Message, StreamDeltaCallback};
+
 
 use super::{
     anthropic_messages::AnthropicMessagesTransport,
@@ -46,6 +46,7 @@ struct TransportRegistry {
 
 struct RegistryEntry {
     factory: TransportFactory,
+    #[allow(dead_code)]
     source: TransportSource,
 }
 
@@ -71,20 +72,35 @@ impl TransportRegistry {
 
 // ── Built-in transport discovery ─────────────────────────────────────────────
 
+/// Discover and register all built-in transports.
+///
+/// Called lazily on first `get_transport()` call.
 fn discover_builtin_transports(reg: &mut TransportRegistry) {
     reg.register(
         "chat_completions",
         Box::new(|config: &ProviderConfig, system_prompt: &str| {
-            Arc::new(ChatCompletionsTransport::from_config(config, system_prompt))
-                as Arc<dyn TransportProvider + Send + Sync>
+            let tools: Vec<oben_models::Tool> = config
+                .tools_json
+                .as_ref()
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            Arc::new(ChatCompletionsTransport::from_config_with_tools(
+                config, system_prompt, tools,
+            )) as Arc<dyn TransportProvider + Send + Sync>
         }),
         TransportSource::Builtin,
     );
     reg.register(
         "anthropic_messages",
         Box::new(|config: &ProviderConfig, system_prompt: &str| {
-            Arc::new(AnthropicMessagesTransport::from_config(config, system_prompt))
-                as Arc<dyn TransportProvider + Send + Sync>
+            let tools: Vec<oben_models::Tool> = config
+                .tools_json
+                .as_ref()
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            Arc::new(AnthropicMessagesTransport::from_config_with_tools(
+                config, system_prompt, tools,
+            )) as Arc<dyn TransportProvider + Send + Sync>
         }),
         TransportSource::Builtin,
     );
@@ -152,8 +168,6 @@ mod tests {
 
     use oben_models::providers::{ProviderConfig, TransportProvider, TransportResponse};
     use oben_models::{CallMode, Message, MessageContent, MessageRole, StreamDeltaCallback};
-    use crate::anthropic_messages::AnthropicMessagesTransport;
-    use crate::chat_completions::ChatCompletionsTransport;
     use super::*;
     use oben_models::ProviderKind;
 

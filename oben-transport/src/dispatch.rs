@@ -1,20 +1,33 @@
 /// Unified transport dispatcher — selects the right LLM transport implementation
 /// based on the ProviderKind in the config.
+///
+/// Maps to `agent/transports/__init__.py` from Hermes-Agent.
+///
+/// Architecture:
+///
+/// ```ignore
+/// Transport (enum)
+/// ├── from_config_with_tools_via_registry(...) — registry-based creation
+/// ├── list_models() — fetch available models
+/// └── find_model(id) — find a specific model
+/// ```
+
+use std::sync::Arc;
 
 use anyhow::Result;
 use oben_models::{
-    CallMode, Message,
+    CallMode, Message, ProviderKind,
     providers::{ProviderConfig, TransportProvider, TransportResponse},
     Tool,
 };
 
 use super::{
     anthropic_messages::AnthropicMessagesTransport,
-    base::BaseTransport,
     chat_completions::ChatCompletionsTransport,
+    registry,
 };
 
-/// Unified transport enum — wraps ChatCompletionsTransport + AnthropicMessagesTransport.
+/// Internal transport enum — wraps ChatCompletionsTransport + AnthropicMessagesTransport.
 pub enum Transport {
     /// OpenAI-compatible API (Chat Completions).
     OpenAIChat {
@@ -27,11 +40,13 @@ pub enum Transport {
 }
 
 impl Transport {
-    /// Create a transport instance from a ProviderConfig.
+    /// Create a transport instance from a ProviderConfig (legacy, non-registry).
     ///
     /// Routes to the correct transport type based on `config.kind`:
     /// - `Anthropic` -> `AnthropicMessagesTransport` (native /v1/messages)
     /// - Everything else -> `ChatCompletionsTransport` (OpenAI-compatible /v1/chat/completions)
+    ///
+    /// **NOTE:** Prefer `from_config_with_tools_via_registry()` for new code.
     pub fn from_config(
         config: &ProviderConfig,
         system_prompt: impl Into<String>,
@@ -52,7 +67,7 @@ impl Transport {
         }
     }
 
-    /// Create a transport with tools for structured tool calling.
+    /// Create a transport with tools for structured tool calling (legacy, non-registry).
     pub fn from_config_with_tools(
         config: &ProviderConfig,
         system_prompt: impl Into<String>,
@@ -78,19 +93,65 @@ impl Transport {
         }
     }
 
+    /// Create a transport via the global registry, with tools for structured tool calling.
+    ///
+    /// Uses the registry pattern (T.6) — built-in transports are discovered lazily,
+    /// and plugins can register custom transports at runtime.
+    ///
+    /// Routes to the correct transport based on `config.kind`:
+    /// - `Anthropic` -> `anthropic_messages` registry entry
+    /// - Everything else -> `chat_completions` registry entry
+    ///
+    /// Tools are serialized into the config before creation.
+    pub fn from_config_with_tools_via_registry(
+        config: &ProviderConfig,
+        system_prompt: &str,
+        tools: &[Tool],
+    ) -> Arc<dyn TransportProvider + Send + Sync> {
+        // Serialize tools into the config for transport creation
+        let mut config_with_tools = config.clone();
+        config_with_tools.tools_json = if tools.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_value(tools).ok())
+        }.flatten();
+
+        let transport_name = match config_with_tools.kind {
+            oben_models::ProviderKind::Anthropic => "anthropic_messages",
+            _ => "chat_completions",
+        };
+
+        let sp = system_prompt.to_string();
+        let tools_vec: Vec<Tool> = config_with_tools
+            .tools_json
+            .as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        registry::get_transport(transport_name, &config_with_tools, &sp)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "Transport '{}' not found in registry, falling back to direct construction",
+                    transport_name
+                );
+                match config_with_tools.kind {
+                    oben_models::ProviderKind::Anthropic => {
+                        Arc::new(AnthropicMessagesTransport::from_config_with_tools(
+                            &config_with_tools, sp, tools_vec,
+                        )) as Arc<dyn TransportProvider + Send + Sync>
+                    }
+                    _ => {
+                        Arc::new(ChatCompletionsTransport::from_config_with_tools(
+                            &config_with_tools, sp, tools_vec,
+                        )) as Arc<dyn TransportProvider + Send + Sync>
+                    }
+                }
+            })
+    }
+
     /// Get the provider kind this transport is configured for.
     pub fn provider_kind(&self) -> oben_models::ProviderKind {
         match self {
-            Transport::OpenAIChat { transport } => {
-                // Infer from base URL of the inner BaseTransport
-                let t = transport;
-                use oben_models::ProviderKind;
-                // Try to infer from the config that was used to create this transport.
-                // Since we don't store it, we check internal state.
-                // Fallback: this should never be needed in practice since the
-                // original ProviderKind was used to construct the right variant.
-                ProviderKind::Custom
-            }
+            Transport::OpenAIChat { transport: _ } => ProviderKind::Custom,
             Transport::Anthropic { .. } => oben_models::ProviderKind::Anthropic,
         }
     }
@@ -144,8 +205,6 @@ impl Transport {
         match self {
             Transport::OpenAIChat { transport } => transport.list_models().await,
             Transport::Anthropic { .. } => {
-                // AnthropicMessagesTransport doesn't expose list_models yet.
-                // TODO: implement via base_url/api_key from config
                 Err(anyhow::anyhow!("list_models not yet implemented for Anthropic transport"))
             }
         }
@@ -184,9 +243,9 @@ mod tests {
 
     #[test]
     fn build_anthropic_config_creates_anthropic_transport() {
-        /// given: ProviderConfig with ProviderKind::Anthropic
-        /// when: Transport::from_config is called
-        /// then: returns Transport::Anthropic variant
+        // given: ProviderConfig with ProviderKind::Anthropic
+        // when: Transport::from_config is called
+        // then: returns Transport::Anthropic variant
         let config = make_anthropic_config();
         let transport = Transport::from_config(&config, "test prompt");
         assert!(matches!(transport, Transport::Anthropic { .. }));
@@ -195,9 +254,9 @@ mod tests {
 
     #[test]
     fn build_openai_config_creates_openai_transport() {
-        /// given: ProviderConfig with ProviderKind::OpenAI
-        /// when: Transport::from_config is called
-        /// then: returns Transport::OpenAIChat variant
+        // given: ProviderConfig with ProviderKind::OpenAI
+        // when: Transport::from_config is called
+        // then: returns Transport::OpenAIChat variant
         let config = make_openai_config();
         let transport = Transport::from_config(&config, "test prompt");
         assert!(matches!(transport, Transport::OpenAIChat { .. }));
@@ -205,11 +264,35 @@ mod tests {
 
     #[test]
     fn build_custom_config_creates_openai_transport() {
-        /// given: ProviderConfig with ProviderKind::Custom
-        /// when: Transport::from_config is called
-        /// then: returns Transport::OpenAIChat variant
+        // given: ProviderConfig with ProviderKind::Custom
+        // when: Transport::from_config is called
+        // then: returns Transport::OpenAIChat variant
         let config = make_custom_config();
         let transport = Transport::from_config(&config, "test prompt");
         assert!(matches!(transport, Transport::OpenAIChat { .. }));
+    }
+
+    #[test]
+    fn registry_method_returns_trait_object() {
+        // given: ProviderConfig with ProviderKind::OpenAI
+        // when: Transport::from_config_with_tools_via_registry is called
+        // then: returns Arc<dyn TransportProvider> with correct name
+        let config = make_openai_config();
+        let transport = Transport::from_config_with_tools_via_registry(
+            &config, "test prompt", &[],
+        );
+        assert_eq!(transport.name(), "chat-completions");
+    }
+
+    #[test]
+    fn registry_method_anthropic_returns_trait_object() {
+        // given: ProviderConfig with ProviderKind::Anthropic
+        // when: Transport::from_config_with_tools_via_registry is called
+        // then: returns Arc<dyn TransportProvider> named "anthropic-messages"
+        let config = make_anthropic_config();
+        let transport = Transport::from_config_with_tools_via_registry(
+            &config, "test prompt", &[],
+        );
+        assert_eq!(transport.name(), "anthropic-messages");
     }
 }

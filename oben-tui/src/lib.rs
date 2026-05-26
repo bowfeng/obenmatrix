@@ -108,9 +108,9 @@ impl App {
         let assembled = oben_agent::system_prompt::build_system_prompt(
             &identity, &self.tool_names, &skills_dirs, None, None, Some(&volatile),
         );
-        let transport = oben_transport::Transport::from_config_with_tools(
+        let transport = oben_transport::Transport::from_config_with_tools_via_registry(
             &self.config.model, &assembled.prompt,
-            self.tools.list_tools().iter().map(|t| (*t).clone()).collect(),
+            &self.tools.list_tools().iter().map(|t| (*t).clone()).collect::<Vec<oben_models::Tool>>(),
         );
         self.chat = Some(Agent::new(AgentConfig {
             system_prompt: assembled.prompt,

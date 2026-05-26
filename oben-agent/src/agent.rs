@@ -33,8 +33,8 @@ use crate::system_prompt_cache::SystemPromptCache;
 pub struct AgentConfig {
     /// System prompt for the agent.
     pub system_prompt: String,
-    /// Transport for LLM calls.
-    pub transport: oben_transport::Transport,
+    /// Transport for LLM calls — a trait object so the registry can return any registered transport.
+    pub transport: std::sync::Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
     /// Registered tools.
     pub tools: std::sync::Arc<oben_tools::ToolRegistry>,
     /// Skills directories.
@@ -56,7 +56,7 @@ pub struct AgentConfig {
 /// An interactive agent — owns all resources, delegates to ConversationLoop.
 pub struct Agent {
     /// Transport — owned by Agent, shared across sessions.
-    transport: oben_transport::Transport,
+    transport: std::sync::Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
     /// Tools registry — owned by Agent.
     tools: Arc<oben_tools::ToolRegistry>,
     /// Skills dirs — owned by Agent.

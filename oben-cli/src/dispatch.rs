@@ -13,8 +13,6 @@ use oben_agent::{CompactContextEngine, ContextEngine};
 use clap::Parser;
 use crate::cli::{Cli, Commands, ConfigCommand, ModelsCommand, SessionsCommand};
 use oben_models::{Session, SessionStore};
-use oben_models::provider_registry::resolve_provider_info;
-use oben_models::{ProviderConfig, ProviderKind};
 
 /// In-memory session store - no SQLite, no persistence, just a single
 /// session holding a `Vec<Message>`. Perfect for one-shot CLI commands.
@@ -398,11 +396,11 @@ fn create_transport(
     config: &oben_config::AppConfig,
     system_prompt: &str,
     tools: &oben_tools::ToolRegistry,
-) -> oben_transport::Transport {
+) -> std::sync::Arc<dyn oben_models::TransportProvider + Send + Sync> {
     let tool_defs = collect_tool_defs(tools);
-    oben_transport::Transport::from_config_with_tools(
+    oben_transport::Transport::from_config_with_tools_via_registry(
         &config.model,
         system_prompt,
-        tool_defs,
+        &tool_defs,
     )
 }
