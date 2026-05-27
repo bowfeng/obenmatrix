@@ -24,7 +24,7 @@
 | M.1 | OpenAI-compatible transport (`openai_chat`) | ✅ | ✅ | (built-in) | OpenRouter, OpenAI, NovitaAI, vLLM, custom endpoints |
 | M.2 | Anthropic Messages API | 🔴 | ✅ | [#44](https://github.com/bowfeng/oben-alien/issues/44) | Native `messages/` API with prompt caching, tool use, thinking tokens |
 | M.3 | AWS Bedrock native transport | 🟡 | ❌ | [TBD] | `bedrock/runtime` Converse API (oben supports OpenAI-compatible endpoint only) |
-| M.4 | Google Gemini transport | 🟡 | ❌ | [TBD] | Gemini API (REST + AIO), Gemini thinking_config |
+| M.4 | Google Gemini transport | 🟡 | ✅ | [#68](https://github.com/bowfeng/oben-alien/issues/68) | Gemini native API (REST + AIO), thinking_config |
 | M.5 | Codex protocol | 🟢 | ❌ | [TBD] | OpenAI Codex, XAI event-driven protocol |
 | M.6 | Provider dispatch registry | 🟡 | ✅ | `dispatch.rs::uses_anthropic_protocol()` delegates to `provider_kind_to_transport()` |
 | M.7 | Provider catalog (models.dev) | 🟡 | ✅ | CatalogManifest with 24h disk cache, fetch, validation |  |  |  | |

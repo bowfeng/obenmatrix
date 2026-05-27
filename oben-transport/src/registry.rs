@@ -21,6 +21,7 @@ use oben_models::providers::{ProviderConfig, TransportProvider};
 use super::{
     anthropic_messages::AnthropicMessagesTransport,
     chat_completions::ChatCompletionsTransport,
+    gemini::GeminiMessagesTransport,
 };
 
 /// Transport factory function: builds an Arc<dyn TransportProvider> from config + system prompt.
@@ -104,7 +105,29 @@ fn discover_builtin_transports(reg: &mut TransportRegistry) {
         }),
         TransportSource::Builtin,
     );
-    // Future: "bedrock_converse", "gemini", "codex_responses"
+    // Future: "bedrock_converse", "codex_responses"
+    reg.register(
+        "gemini_native",
+        Box::new(|config: &ProviderConfig, system_prompt: &str| {
+            let base_url = config
+                .base_url
+                .as_deref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string());
+            let model = config.model.to_string();
+            let tools: Vec<oben_models::Tool> = config
+                .tools_json
+                .as_ref()
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let api_key = oben_models::resolve_api_key_from_env("google-gemini")
+                .or_else(|| oben_models::resolve_api_key_from_env("google-gemini-cli"))
+                .unwrap_or(String::new());
+            Arc::new(GeminiMessagesTransport::new(api_key, base_url, model)
+                .with_tools(tools)) as Arc<dyn TransportProvider + Send + Sync>
+        }),
+        TransportSource::Builtin,
+    );
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -299,7 +322,8 @@ mod tests {
         let names = reg.names();
         assert!(names.contains(&"anthropic_messages".to_string()));
         assert!(names.contains(&"chat_completions".to_string()));
-        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"gemini_native".to_string()));
+        assert_eq!(names.len(), 3);
     }
 
     // ── Live integration test with test transport ──────────────────────────────

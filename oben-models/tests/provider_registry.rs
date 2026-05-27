@@ -255,8 +255,18 @@ fn anthropic_has_very_long_alias() {
 fn gemini_resolve() {
     /// given: "gemini-cli" alias
     /// when: resolve_provider_info is called
-    /// then: resolves to google-gemini-cli
+    /// then: resolves to google-gemini (native API key auth)
     let info = resolve_provider_info("gemini-cli");
+    assert!(info.is_some());
+    assert_eq!(info.clone().unwrap().canonical, "google-gemini");
+}
+
+#[test]
+fn gemini_oauth_resolve() {
+    /// given: "gemini-oauth" alias (OAuth/CloudCode variant)
+    /// when: resolve_provider_info is called
+    /// then: resolves to google-gemini-cli
+    let info = resolve_provider_info("gemini-oauth");
     assert!(info.is_some());
     assert_eq!(info.unwrap().canonical, "google-gemini-cli");
 }
