@@ -125,6 +125,7 @@ impl Transport {
         let kind = config_with_tools.kind.clone();
         let transport_name = match provider_kind_to_transport(kind.clone()) {
             Some(oben_models::TransportType::AnthropicMessages) => "anthropic_messages",
+            Some(oben_models::TransportType::GeminiNative) => "gemini_native",
             _ => "chat_completions",
         };
 

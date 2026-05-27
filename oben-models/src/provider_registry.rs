@@ -7,6 +7,7 @@ pub enum TransportType {
     AnthropicMessages,
     BedrockConverse,
     CodexResponses,
+    GeminiNative,
 }
 
 impl TransportType {
@@ -16,6 +17,7 @@ impl TransportType {
             TransportType::AnthropicMessages => "anthropic_messages",
             TransportType::BedrockConverse => "bedrock_converse",
             TransportType::CodexResponses => "codex_responses",
+            TransportType::GeminiNative => "gemini_native",
         }
     }
 }
@@ -42,9 +44,11 @@ pub const ALIAS_CANONICAL_PAIRS: &[(&str, &str)] = &[
     ("gpt", "openai"),
     // Gemini
     ("google-gemini-cli", "google-gemini-cli"),
-    ("gemini", "google-gemini-cli"),
-    ("gemini-cli", "google-gemini-cli"),
+    ("gemini", "google-gemini"),
+    ("gemini-cli", "google-gemini"),
     ("gemini-oauth", "google-gemini-cli"),
+    ("google-gemini", "google-gemini"),
+    ("google-gemini-native", "google-gemini"),
     // OpenRouter
     ("openrouter", "openrouter"),
     // Nous Portal
@@ -171,6 +175,7 @@ pub(crate) const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
     ("anthropic", TransportType::AnthropicMessages, "https://api.anthropic.com/v1"),
     ("openai", TransportType::OpenAIChat, ""),
     ("openrouter", TransportType::OpenAIChat, "https://openrouter.ai/api/v1"),
+    ("google-gemini", TransportType::GeminiNative, "https://generativelanguage.googleapis.com/v1beta"),
     ("google-gemini-cli", TransportType::OpenAIChat, "cloudcode-pa://google"),
     ("zai", TransportType::OpenAIChat, "https://open.bigmodel.cn/api/paas/v4/"),
     ("kimi-for-coding", TransportType::OpenAIChat, "https://api.moonshot.cn/v1"),
@@ -211,6 +216,7 @@ const PROVIDER_API_KEY_CHAINS: &[(&str, &'static [&'static str])] = &[
     ("openrouter",        &["OPENROUTER_API_KEY"]),
     ("anthropic",         &["ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]),
     ("bedrock",           &[]),
+    ("google-gemini",     &["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
     ("google-gemini-cli", &["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
     ("lmstudio",          &["LM_API_KEY"]),
     ("deepseek",          &["DEEPSEEK_API_KEY"]),
@@ -250,6 +256,7 @@ const PROVIDER_BASE_URL_ENV_VARS: &[(&str, &str)] = &[
     ("openrouter", "OPENROUTER_BASE_URL"),
     ("anthropic", "ANTHROPIC_BASE_URL"),
     ("bedrock", "BEDROCK_BASE_URL"),
+    ("google-gemini", "GEMINI_BASE_URL"),
     ("google-gemini-cli", "GEMINI_BASE_URL"),
     ("lmstudio", "LM_BASE_URL"),
     ("deepseek", "DEEPSEEK_BASE_URL"),
@@ -354,9 +361,9 @@ pub fn provider_kind_to_transport(kind: crate::providers::ProviderKind) -> Optio
         crate::providers::ProviderKind::Bedrock => TransportType::BedrockConverse,
         crate::providers::ProviderKind::XAI |
         crate::providers::ProviderKind::XAIOAuth => TransportType::CodexResponses,
+        crate::providers::ProviderKind::Gemini => TransportType::GeminiNative,
         crate::providers::ProviderKind::OpenAI |
         crate::providers::ProviderKind::OpenRouter |
-        crate::providers::ProviderKind::Gemini |
         crate::providers::ProviderKind::LMStudio |
         crate::providers::ProviderKind::Custom |
         crate::providers::ProviderKind::DeepSeek |
@@ -422,6 +429,7 @@ mod tests {
         assert_eq!(TransportType::OpenAIChat.as_str(), "openai_chat");
         assert_eq!(TransportType::BedrockConverse.as_str(), "bedrock_converse");
         assert_eq!(TransportType::CodexResponses.as_str(), "codex_responses");
+        assert_eq!(TransportType::GeminiNative.as_str(), "gemini_native");
     }
 
     #[test]
@@ -466,5 +474,6 @@ mod tests {
         // All others → OpenAIChat
         assert_eq!(provider_kind_to_transport(ProviderKind::OpenAI), Some(TransportType::OpenAIChat));
         assert_eq!(provider_kind_to_transport(ProviderKind::Custom), Some(TransportType::OpenAIChat));
+        assert_eq!(provider_kind_to_transport(ProviderKind::Gemini), Some(TransportType::GeminiNative));
     }
 }
