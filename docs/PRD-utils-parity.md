@@ -13,7 +13,7 @@
 | U.2 | Terminal spinner / progress | ✅ | ✅ | (built-in) | `oben-utils/terminal.rs` |
 | U.3 | Path security | ✅ | ✅ | (built-in) | `oben-utils/path_security.rs` |
 | U.4 | Table formatter | ✅ | ✅ | (built-in) | `oben-utils/table.rs` |
-| U.5 | **Rate limit tracker** | 🟢 | ❌ | [TBD] | per-provider rate limiting |
+| U.5 | **Rate limit tracker** | 🟢 | ✅ | [#100](https://github.com/bowfeng/oben-alien/pull/100) | per-provider rate limiting (`PR #100`, implemented inline) |
 | U.6 | **Usage pricing** | 🟡 | ❌ | [TBD] | cost estimation per call |
 | U.7 | **Credential management** | 🟡 | ❌ | [TBD] | credential sources, credential pool |
 | U.8 | **Redact / sanitize** | 🟢 | ✅ | [TBD] | PII redaction (`PR #99`, implemented inline) |
