@@ -16,13 +16,13 @@
 | U.5 | **Rate limit tracker** | 🟢 | ❌ | [TBD] | per-provider rate limiting |
 | U.6 | **Usage pricing** | 🟡 | ❌ | [TBD] | cost estimation per call |
 | U.7 | **Credential management** | 🟡 | ❌ | [TBD] | credential sources, credential pool |
-| U.8 | **Redact / sanitize** | 🟢 | ❌ | [TBD] | PII redaction |
-| U.9 | **URL safety** | 🟢 | ❌ | [TBD] | URL validation |
-| U.10 | **File safety** | 🟢 | ❌ | [TBD] | safe file operations |
+| U.8 | **Redact / sanitize** | 🟢 | ✅ | [TBD] | PII redaction (`PR #99`, implemented inline) |
+| U.9 | **URL safety** | 🟢 | ✅ | [TBD] | URL validation (`PR #99`, implemented inline) |
+| U.10 | **File safety** | 🟢 | ✅ | [TBD] | safe file operations (`PR #99`, implemented inline) |
 | U.11 | **Checkpoint system** | 🟡 | ❌ | [TBD] | save/restore state |
 | U.12 | **Trajectory compressor** | 🟡 | ❌ | [TBD] | conversation compression |
-| U.13 | **Debug helpers** | 🟡 | ❌ | [TBD] | debugging utilities |
-| U.14 | **Clipboard** | 🟢 | ❌ | [TBD] | clipboard integration |
+| U.13 | **Debug helpers** | 🟡 | ✅ | [TBD] | debugging utilities (`PR #99`, implemented inline) |
+| U.14 | **Clipboard** | 🟢 | ✅ | [TBD] | clipboard integration (`PR #99`, implemented inline) |
 | U.15 | **Security advisories** | 🟢 | ❌ | [TBD] | CVE checks |
 
 ---
