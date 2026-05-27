@@ -150,7 +150,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 | A.3 | OAuth External | 🟢 | ✅ | ❌ | Copilot, Gemini, XAI |
 | A.4 | External Process | 🟢 | ✅ | ❌ | Copilot ACP |
 | A.5 | AWS SDK Credentials | 🟡 | ✅ | ❌ | Bedrock |
-| A.6 | Env var fallback chain | 🟡 | ✅ | ❌ | Multiple env vars per provider (e.g. `ANTHROPIC_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`) |
+| A.6 | Env var fallback chain | 🟡 | ✅ | ✅ | Multiple env vars per provider (OPENAI_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, etc.) |
 
 ### I. Model Catalog & Discovery
 
