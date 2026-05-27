@@ -44,17 +44,17 @@
 | P.6 | LM Studio | 🟢 | ✅ | ✅ | OpenAI-compatible |
 | P.7 | Custom | ✅ | ✅ | ✅ | User-defined base_url |
 | P.8 | Nous Portal | 🟢 | ✅ | ✅ | OpenAI-compatible aggregator |
-| P.9 | Azure Foundry | 🟢 | ✅ | ❌ | Supports OpenAI + Anthropic modes |
+| P.9 | Azure Foundry | 🟢 | ✅ | ✅ | Supports OpenAI + Anthropic modes |
 | P.10 | NVIDIA (NIM) | 🟢 | ✅ | ✅ | OpenAI-compatible |
 | P.11 | Vercel AI Gateway | 🟢 | ✅ | ✅ | Aggregator |
 | P.12 | OpenCode Zen | 🟢 | ✅ | ✅ | Aggregator |
-| P.13 | OpenCode Go | 🟢 | ✅ | ❌ | Aggregator |
+| P.13 | OpenCode Go | 🟢 | ✅ | ✅ | OpenAI-compatible aggregator |
 | P.14 | KiloCode | 🟢 | ✅ | ✅ | Aggregator |
 | P.15 | HuggingFace | 🟢 | ✅ | ✅ | Aggregator |
 | P.16 | NovitaAI | 🟢 | ✅ | ✅ | OpenAI-compatible |
 | P.17 | XAI (Grok) | 🟢 | ✅ | ❌ | Codex protocol |
-| P.18 | Arcee | 🟢 | ✅ | ❌ | OpenAI-compatible |
-| P.19 | GMI Cloud | 🟢 | ✅ | ❌ | OpenAI-compatible |
+| P.18 | Arcee | 🟢 | ✅ | ✅ | OpenAI-compatible |
+| P.19 | GMI Cloud | 🟢 | ✅ | ✅ | OpenAI-compatible |
 | P.20 | GitHub Copilot | 🟢 | ✅ | ❌ | Codex protocol |
 | P.21 | OpenAI Codex | 🟢 | ✅ | ❌ | Codex protocol |
 | P.22 | **阿里云/Qwen** | 🟡 | ✅ | ✅ | DashScope, Alibaba, Qwen Portal; `alibaba` provider |
