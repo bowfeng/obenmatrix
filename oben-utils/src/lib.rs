@@ -10,6 +10,7 @@ pub mod file_safety;
 pub mod debug;
 pub mod clipboard;
 pub mod rate_limit;
+pub mod pricing;
 
 pub use logging::*;
 pub use terminal::*;
