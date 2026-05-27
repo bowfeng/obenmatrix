@@ -1933,9 +1933,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "dirs",
+ "once_cell",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tracing",
  "uuid",
 ]
 
@@ -2738,6 +2742,7 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

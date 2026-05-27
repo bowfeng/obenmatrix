@@ -8,6 +8,7 @@ pub mod skills;
 pub mod session;
 pub mod providers;
 pub mod provider_registry;
+pub mod model_catalog;
 
 pub use messages::*;
 pub use tools::*;
@@ -15,3 +16,4 @@ pub use skills::*;
 pub use session::*;
 pub use providers::*;
 pub use provider_registry::*;
+pub use model_catalog::*;

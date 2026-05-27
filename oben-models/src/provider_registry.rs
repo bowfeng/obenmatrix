@@ -384,6 +384,34 @@ pub fn provider_kind_to_transport(kind: crate::providers::ProviderKind) -> Optio
 
 }
 
+
+/// Look up a model in the remote catalog.
+///
+/// Falls back to the static PROVIDER_META when the remote catalog
+/// has no matching entry (which is the common case since the catalog
+/// only covers a few providers).
+pub fn resolve_catalog_model(model_id: &str) -> Option<ModelCatalogInfo> {
+    let catalog = crate::CatalogManifest::get();
+    let remote = catalog.find_model(model_id)?;
+    let canonical = remote.id.split('/').next()?;
+    let transport = provider_kind_to_transport(
+        crate::providers::ProviderKind::from_alias(canonical)
+    ).unwrap_or(TransportType::OpenAIChat);
+    Some(ModelCatalogInfo {
+        model_id: remote.id.clone(),
+        description: remote.description.clone(),
+        transport,
+    })
+}
+
+/// Model info resolved from the remote catalog.
+#[derive(Debug, Clone)]
+pub struct ModelCatalogInfo {
+    pub model_id: String,
+    pub description: Option<String>,
+    pub transport: TransportType,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
