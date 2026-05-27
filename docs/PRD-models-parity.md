@@ -28,8 +28,8 @@
 | M.5 | Codex protocol | 🟢 | ❌ | [TBD] | OpenAI Codex, XAI event-driven protocol |
 | M.6 | Provider dispatch registry | 🟡 | ✅ | `dispatch.rs::uses_anthropic_protocol()` delegates to `provider_kind_to_transport()` |
 | M.7 | Provider catalog (models.dev) | 🟡 | ❌ | [TBD] | Provider definitions + metadata from models.dev (109+ providers), 24h disk cache |
-| M.8 | User-defined providers (`providers:`) | 🟡 | ❌ | [TBD] | Allow arbitrary provider definitions in config |
-| M.9 | Custom providers list | 🟢 | ❌ | [TBD] | `custom_providers:` list in config |
+| M.8 | User-defined providers (providers:) | 🟡 | ✅ | AppConfig.providers: Vec<ProviderConfig> |  |  |  | |
+| M.9 | Custom providers list | 🟢 | ✅ | AppConfig.custom_providers: Vec<String> |  |  |  | |
 | M.10 | Provider alias system | 🟡 | ✅ (#22) | [TBD] | 50+ aliases: `claude`→`anthropic`, `gpt`→`openai`, `glm`→`zai`, `qwen`→`alibaba`, etc. |
 
 ### B. Built-in Provider List
