@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use oben_models::{
-    CallMode, Message, ProviderKind,
+    provider_kind_to_transport, CallMode, Message, ProviderKind,
     providers::{ProviderConfig, TransportProvider, TransportResponse},
     Tool,
 };
@@ -39,6 +39,16 @@ pub enum Transport {
     },
 }
 
+/// Determine whether a provider kind routes to the Anthropic-messages protocol.
+///
+/// Delegates to `provider_kind_to_transport` from `oben_models::provider_registry`.
+fn uses_anthropic_protocol(kind: &ProviderKind) -> bool {
+    matches!(
+        provider_kind_to_transport(kind.clone()),
+        Some(oben_models::TransportType::AnthropicMessages)
+    )
+}
+
 impl Transport {
     /// Create a transport instance from a ProviderConfig (legacy, non-registry).
     ///
@@ -54,19 +64,13 @@ impl Transport {
     ) -> Self {
         let system_prompt = system_prompt.into();
 
-        match config.kind {
-            ProviderKind::Anthropic
-            | ProviderKind::MiniMax
-            | ProviderKind::MiniMaxOAuth
-            | ProviderKind::MiniMaxCN => {
-                Self::Anthropic {
-                    transport: AnthropicMessagesTransport::from_config(config, system_prompt),
-                }
+        if uses_anthropic_protocol(&config.kind) {
+            Self::Anthropic {
+                transport: AnthropicMessagesTransport::from_config(config, system_prompt),
             }
-            _ => {
-                Self::OpenAIChat {
-                    transport: ChatCompletionsTransport::from_config(config, system_prompt),
-                }
+        } else {
+            Self::OpenAIChat {
+                transport: ChatCompletionsTransport::from_config(config, system_prompt),
             }
         }
     }
@@ -79,23 +83,17 @@ impl Transport {
     ) -> Self {
         let system_prompt = system_prompt.into();
 
-        match config.kind {
-            ProviderKind::Anthropic
-            | ProviderKind::MiniMax
-            | ProviderKind::MiniMaxOAuth
-            | ProviderKind::MiniMaxCN => {
-                Self::Anthropic {
-                    transport: AnthropicMessagesTransport::from_config_with_tools(
-                        config, system_prompt, tools,
-                    ),
-                }
+        if uses_anthropic_protocol(&config.kind) {
+            Self::Anthropic {
+                transport: AnthropicMessagesTransport::from_config_with_tools(
+                    config, system_prompt, tools,
+                ),
             }
-            _ => {
-                Self::OpenAIChat {
-                    transport: ChatCompletionsTransport::from_config_with_tools(
-                        config, system_prompt, tools,
-                    ),
-                }
+        } else {
+            Self::OpenAIChat {
+                transport: ChatCompletionsTransport::from_config_with_tools(
+                    config, system_prompt, tools,
+                ),
             }
         }
     }
@@ -123,11 +121,10 @@ impl Transport {
             Some(serde_json::to_value(tools).ok())
         }.flatten();
 
-        let transport_name = match config_with_tools.kind {
-            ProviderKind::Anthropic
-            | ProviderKind::MiniMax
-            | ProviderKind::MiniMaxOAuth
-            | ProviderKind::MiniMaxCN => "anthropic_messages",
+        // Clone `kind` before the match to keep `config_with_tools` intact for later.
+        let kind = config_with_tools.kind.clone();
+        let transport_name = match provider_kind_to_transport(kind.clone()) {
+            Some(oben_models::TransportType::AnthropicMessages) => "anthropic_messages",
             _ => "chat_completions",
         };
 
@@ -143,20 +140,14 @@ impl Transport {
                     "Transport '{}' not found in registry, falling back to direct construction",
                     transport_name
                 );
-                match config_with_tools.kind {
-                    ProviderKind::Anthropic
-                    | ProviderKind::MiniMax
-                    | ProviderKind::MiniMaxOAuth
-                    | ProviderKind::MiniMaxCN => {
-                        Arc::new(AnthropicMessagesTransport::from_config_with_tools(
-                            &config_with_tools, sp, tools_vec,
-                        )) as Arc<dyn TransportProvider + Send + Sync>
-                    }
-                    _ => {
-                        Arc::new(ChatCompletionsTransport::from_config_with_tools(
-                            &config_with_tools, sp, tools_vec,
-                        )) as Arc<dyn TransportProvider + Send + Sync>
-                    }
+                if uses_anthropic_protocol(&kind) {
+                    Arc::new(AnthropicMessagesTransport::from_config_with_tools(
+                        &config_with_tools, sp, tools_vec,
+                    )) as Arc<dyn TransportProvider + Send + Sync>
+                } else {
+                    Arc::new(ChatCompletionsTransport::from_config_with_tools(
+                        &config_with_tools, sp, tools_vec,
+                    )) as Arc<dyn TransportProvider + Send + Sync>
                 }
             })
     }
