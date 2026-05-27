@@ -116,7 +116,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 | PL.19 | `prompt_cache` | 🔴 | ✅ | ✅ | Anthropic prompt caching (`cache_markers` in messages, `cache_ttl` config) |
 | PL.20 | `anthropic_max_output` | 🟢 | ✅ | ✅ | Max output tokens for Claude via OpenRouter/Nous |
 | PL.21 | `ollama_num_ctx` | 🟢 | ✅ | ✅ | Ollama context window override |
-| PL.22 | Developer role swap | 🟢 | ✅ | ❌ | System→developer role for GPT-5/Codex models |
+| PL.22 | Developer role swap | 🟢 | ✅ | ✅ | System→developer role for gpt-5/codex models |
 
 ### F. Anthropic Payload (separate transport)
 
@@ -126,7 +126,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 | A.2 | `max_tokens` | 🔴 | ✅ | ✅ | `AnthropicRequest.max_tokens` (required, not optional) |
 | A.3 | `tool_choice` | 🟡 | ✅ | ✅ | `AnthropicToolChoice` enum: auto, any, tool, detector |
 | A.4 | `thinking` (thinking tokens) | 🔴 | ✅ | ✅ | `AnthropicThinking` struct (struct defined, wired via config TBD) |
-| A.5 | Prompt caching markers | 🔴 | ✅ | ❌ | `<cache_control>` in messages |
+| A.5 | Prompt caching markers | 🔴 | ✅ | ✅ | `<cache_control>` in system message content blocks |
 | A.6 | `stop_sequences` | 🟢 | ✅ | ✅ | `AnthropicRequest.stop_sequences` field |
 
 ### G. Model Name Normalization
