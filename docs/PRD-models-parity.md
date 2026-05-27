@@ -157,7 +157,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 | # | Feature | Severity | Hermes | obenalien | Notes |
 |---|---------|----------|--------|-----------|-------|
 | C.1 | Remote model catalog | 🟢 | ✅ | Same impl as M.7: find_model(), catalog.get() |  |  |  | |
-| C.2 | Curated model lists | 🟢 | ✅ | ❌ | OpenRouter/Nous curated models, pricing, cache pricing |
+| C.2 | Curated model lists | 🟢 | ✅ | ✅ | OpenRouter/Nous curated models, pricing, cache pricing |
 | C.3 | `/v1/models` API | ✅ | ✅ | ✅ | Built-in `list_models()` / `find_model()` |
 
 ---

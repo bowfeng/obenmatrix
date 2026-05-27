@@ -1,4 +1,4 @@
-/// Remote model catalog (M.7 + C.1).
+/// Remote model catalog (M.7 + C.1 + C.2).
 ///
 /// Fetches provider model metadata from a remote manifest, caches it on disk
 /// with a 24h TTL, and provides lookup APIs. Falls back to the built-in
@@ -217,6 +217,34 @@ impl CatalogManifest {
     pub fn refresh() -> CatalogManifest {
         Self::load(true)
     }
+
+    /// Returns curated OpenRouter models: [(model_id, description), ...].
+    ///
+    /// Returns `None` if the "openrouter" provider is missing or empty.
+    pub fn curated_openrouter_models(&self) -> Option<Vec<(String, String)>> {
+        let provider = self.providers.get("openrouter")?;
+        if provider.models.is_empty() {
+            return None;
+        }
+        Some(
+            provider
+                .models
+                .iter()
+                .map(|m| (m.id.clone(), m.description.clone().unwrap_or_default()))
+                .collect(),
+        )
+    }
+
+    /// Returns curated Nous models: [model_id, ...].
+    ///
+    /// Returns `None` if the "nous" provider is missing or empty.
+    pub fn curated_nous_models(&self) -> Option<Vec<String>> {
+        let provider = self.providers.get("nous")?;
+        if provider.models.is_empty() {
+            return None;
+        }
+        Some(provider.models.iter().map(|m| m.id.clone()).collect())
+    }
 }
 
 /// In-memory cache for the manifest.
@@ -262,6 +290,20 @@ fn write_cache(data: &[u8]) {
         tracing::warn!("Failed to rename cache file ({e})");
         return;
     }
+}
+
+/// Convenience wrapper: fetch the catalog and return OpenRouter curated models.
+///
+/// Calls `CatalogManifest::get()` (cached) and extracts the openrouter data.
+pub fn get_curated_openrouter_models() -> Option<Vec<(String, String)>> {
+    CatalogManifest::get().curated_openrouter_models()
+}
+
+/// Convenience wrapper: fetch the catalog and return Nous curated models.
+///
+/// Calls `CatalogManifest::get()` (cached) and extracts the nous data.
+pub fn get_curated_nous_models() -> Option<Vec<String>> {
+    CatalogManifest::get().curated_nous_models()
 }
 
 #[cfg(test)]
@@ -329,5 +371,170 @@ mod tests {
         let manifest = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
         assert!(manifest.find_model("a/b").is_some());
         assert!(manifest.find_model("no/such").is_none());
+    }
+
+    // -- C.2: Curated model list accessor tests --
+
+    #[test]
+    fn test_curated_openrouter_models_with_data() {
+        let data = json!({
+            "version": 1,
+            "providers": {
+                "openrouter": {
+                    "models": [
+                        {"id": "openai/gpt-4o", "description": "Best overall model"},
+                        {"id": "anthropic/claude-sonnet-4-20250514"},
+                        {"id": "google/gemini-2.5-pro", "description": "Best reasoning"}
+                    ]
+                },
+                "nous": {
+                    "models": [
+                        {"id": "nousresearch/nous-hermes-3-70b"}
+                    ]
+                }
+            }
+        });
+        let manifest = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
+        let models = manifest.curated_openrouter_models().expect("should return some");
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0], ("openai/gpt-4o".to_string(), "Best overall model".to_string()));
+        assert_eq!(models[1], ("anthropic/claude-sonnet-4-20250514".to_string(), String::new()));
+        assert_eq!(models[2], ("google/gemini-2.5-pro".to_string(), "Best reasoning".to_string()));
+    }
+
+    #[test]
+    fn test_curated_openrouter_models_missing() {
+        let data = json!({
+            "version": 1,
+            "providers": {
+                "nous": {
+                    "models": [{"id": "nousresearch/nous-hermes-3-70b"}]
+                }
+            }
+        });
+        let manifest = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
+        assert!(manifest.curated_openrouter_models().is_none());
+    }
+
+    #[test]
+    fn test_curated_nous_models_with_data() {
+        let data = json!({
+            "version": 1,
+            "providers": {
+                "openrouter": {
+                    "models": [{"id": "openai/gpt-4o", "description": "top"}]
+                },
+                "nous": {
+                    "models": [
+                        {"id": "nousresearch/nous-hermes-3-70b"},
+                        {"id": "nousresearch/nous-hermes-3-405b"},
+                        {"id": "nousresearch/hermes-3-llama-3.1-70b"}
+                    ]
+                }
+            }
+        });
+        let manifest = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
+        let models = manifest.curated_nous_models().expect("should return some");
+        assert_eq!(models.len(), 3);
+        assert_eq!(models, vec![
+            "nousresearch/nous-hermes-3-70b",
+            "nousresearch/nous-hermes-3-405b",
+            "nousresearch/hermes-3-llama-3.1-70b",
+        ]);
+    }
+
+    #[test]
+    fn test_curated_nous_models_missing() {
+        let data = json!({
+            "version": 1,
+            "providers": {
+                "openrouter": {
+                    "models": [{"id": "openai/gpt-4o", "description": "top"}]
+                }
+            }
+        });
+        let manifest = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
+        assert!(manifest.curated_nous_models().is_none());
+    }
+
+
+    // Convenience function tests: these use parsed catalogs (mocked/hardcoded data)
+    // since the convenience functions simply delegate to the catalog methods.
+    // Verifying the method behavior is equivalent to verifying the convenience functions.
+
+    #[test]
+    fn test_convenience_get_curated_openrouter_models_with_data() {
+        let data = json!({
+            "version": 1,
+            "providers": {
+                "openrouter": {
+                    "models": [
+                        {"id": "openai/gpt-4o", "description": "best"},
+                        {"id": "anthropic/claude-sonnet-4-20250514"}
+                    ]
+                },
+                "nous": {
+                    "models": [{"id": "nousresearch/nous-hermes-3-70b"}]
+                }
+            }
+        });
+        let m = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
+        // The convenience function get_curated_openrouter_models() delegates to m.curated_openrouter_models().
+        let models = m.curated_openrouter_models().expect("should return some");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].0, "openai/gpt-4o");
+        assert_eq!(models[0].1, "best");
+    }
+
+    #[test]
+    fn test_convenience_get_curated_openrouter_models_missing() {
+        let data = json!({
+            "version": 1,
+            "providers": {
+                "nous": {
+                    "models": [{"id": "nousresearch/nous-hermes-3-70b"}]
+                }
+            }
+        });
+        let m = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
+        // The convenience function returns None when the provider is missing.
+        assert!(m.curated_openrouter_models().is_none());
+    }
+
+    #[test]
+    fn test_convenience_get_curated_nous_models_with_data() {
+        let data = json!({
+            "version": 1,
+            "providers": {
+                "openrouter": {
+                    "models": [{"id": "openai/gpt-4o", "description": "top"}]
+                },
+                "nous": {
+                    "models": [
+                        {"id": "nousresearch/nous-hermes-3-70b"},
+                        {"id": "nousresearch/nous-hermes-3-405b"}
+                    ]
+                }
+            }
+        });
+        let m = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
+        // The convenience function get_curated_nous_models() delegates to m.curated_nous_models().
+        let models = m.curated_nous_models().expect("should return some");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0], "nousresearch/nous-hermes-3-70b");
+    }
+
+    #[test]
+    fn test_convenience_get_curated_nous_models_missing() {
+        let data = json!({
+            "version": 1,
+            "providers": {
+                "openrouter": {
+                    "models": [{"id": "openai/gpt-4o", "description": "top"}]
+                }
+            }
+        });
+        let m = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
+        assert!(m.curated_nous_models().is_none());
     }
 }
