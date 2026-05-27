@@ -636,10 +636,30 @@ fn build_anthropic_request_template(
     tools: Vec<AnthropicTool>,
 ) -> serde_json::Value {
     let max_tokens = config.max_tokens.unwrap_or(4096);
+    let sp = system_prompt.into();
+
+    // When cache_control is configured, build the system field as a content
+    // blocks array with cache_control markers. Otherwise keep the legacy
+    // plain-string format.
+    let system_value: serde_json::Value = if let Some(cc) = &config.cache_control {
+        let strategy = if cc.strategy.is_empty() {
+            "ephemeral".to_string()
+        } else {
+            cc.strategy.clone()
+        };
+        json!([{
+            "type": "text",
+            "text": sp,
+            "cache_control": {"type": strategy}
+        }])
+    } else {
+        json!(sp)
+    };
+
     let mut req = json!({
         "model": config.model,
         "max_tokens": max_tokens,
-        "system": system_prompt.into(),
+        "system": system_value,
         "messages": serde_json::Value::Array(vec![]),
     });
 
@@ -1537,3 +1557,68 @@ mod tests {
         );
     }
 }
+    // ── Cache control marker tests ─────────────────────────────────────
+
+    #[test]
+    fn test_system_prompt_with_cache_control() {
+        // given: a ProviderConfig with cache_control enabled
+        // when: build_anthropic_request_template is called
+        // then: system is a content blocks array with cache_control marker
+        let mut config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
+        config.cache_control = Some(oben_models::CacheControl {
+            provider: None,
+            model: None,
+            strategy: "ephemeral".to_string(),
+        });
+        let template = build_anthropic_request_template(&config, "You are helpful", Vec::new());
+        assert_eq!(template["model"], "claude-sonnet-4-20250514");
+        assert!(template["system"].is_array());
+        assert_eq!(template["system"][0]["type"], "text");
+        assert_eq!(template["system"][0]["text"], "You are helpful");
+        assert_eq!(template["system"][0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_system_prompt_without_cache_control() {
+        // given: a ProviderConfig without cache_control
+        // when: build_anthropic_request_template is called
+        // then: system is a plain string (legacy format preserved)
+        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
+        let template = build_anthropic_request_template(&config, "You are helpful", Vec::new());
+        assert!(template["system"].is_string());
+        assert_eq!(template["system"], "You are helpful");
+    }
+
+    #[test]
+    fn test_system_prompt_cache_control_empty_strategy() {
+        // given: a ProviderConfig with cache_control but empty strategy
+        // when: build_anthropic_request_template is called
+        // then: system defaults to "ephemeral" strategy
+        let mut config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
+        config.cache_control = Some(oben_models::CacheControl {
+            provider: None,
+            model: None,
+            strategy: "".to_string(),
+        });
+        let template = build_anthropic_request_template(&config, "You are helpful", Vec::new());
+        assert!(template["system"].is_array());
+        assert_eq!(template["system"][0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_stream_template_inherits_cache_control() {
+        // given: a ProviderConfig with cache_control enabled
+        // when: build_anthropic_stream_request_template is called
+        // then: system is a content blocks array with cache_control marker, and stream=true
+        let mut config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
+        config.cache_control = Some(oben_models::CacheControl {
+            provider: None,
+            model: None,
+            strategy: "ephemeral".to_string(),
+        });
+        let stream_template = build_anthropic_stream_request_template(&config, "You are helpful", Vec::new());
+        assert!(stream_template["system"].is_array());
+        assert_eq!(stream_template["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(stream_template["stream"], true);
+    }
+

@@ -10,6 +10,13 @@ use oben_models::{Message, MessageRole, ReasoningEffort, Tool, TransportResponse
 
 use super::base::{BaseTransport, ChatResponse};
 
+/// For GPT-5 and Codex models, the API expects "developer" instead of "system".
+/// Returns `true` if the model name should use "developer" role.
+fn swap_system_to_developer(model: &str) -> bool {
+    let lower = model.to_lowercase();
+    lower.contains("gpt-5") || lower.contains("codex")
+}
+
 /// Convert an `oben_models::Tool` into OpenAI API tool format:
 /// `{ "type": "function", "function": { "name": ..., "description": ..., "parameters": ... } }`
 fn tool_to_openai(tool: &Tool) -> serde_json::Value {
@@ -300,10 +307,11 @@ fn build_request_template(
     system_prompt: impl Into<String>,
     tools: Vec<serde_json::Value>,
 ) -> serde_json::Value {
+    let system_role = if swap_system_to_developer(&config.model) { "developer" } else { "system" };
     let mut req = json!({
         "model": config.model,
         "messages": serde_json::Value::Array(vec![json!({
-            "role": "system",
+            "role": system_role,
             "content": system_prompt.into(),
         })]),
     });
