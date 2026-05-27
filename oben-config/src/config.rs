@@ -16,6 +16,8 @@ pub struct AppConfig {
     pub gateway: Option<GatewayConfig>,
     pub display: DisplayConfig,
     pub context: ContextConfig,
+    pub providers: Vec<ProviderConfig>,
+    pub custom_providers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +125,8 @@ impl Default for AppConfig {
                 max_messages: Some(100),
                 compression: "summary".to_string(),
             },
+            providers: Vec::new(),
+            custom_providers: Vec::new(),
         }
     }
 }
@@ -234,6 +238,17 @@ mod tests {
         assert!(config.tools.auto_detect);
         assert_eq!(config.display.theme, "dark");
         assert_eq!(config.context.compression, "summary");
+    }
+
+    #[test]
+    fn test_providers_field_serializes_empty() {
+        let config = AppConfig::default();
+        assert!(config.providers.is_empty());
+        assert!(config.custom_providers.is_empty());
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert!(restored.providers.is_empty());
+        assert!(restored.custom_providers.is_empty());
     }
 }
 
