@@ -27,7 +27,7 @@
 | M.4 | Google Gemini transport | 🟡 | ❌ | [TBD] | Gemini API (REST + AIO), Gemini thinking_config |
 | M.5 | Codex protocol | 🟢 | ❌ | [TBD] | OpenAI Codex, XAI event-driven protocol |
 | M.6 | Provider dispatch registry | 🟡 | ✅ | `dispatch.rs::uses_anthropic_protocol()` delegates to `provider_kind_to_transport()` |
-| M.7 | Provider catalog (models.dev) | 🟡 | ❌ | [TBD] | Provider definitions + metadata from models.dev (109+ providers), 24h disk cache |
+| M.7 | Provider catalog (models.dev) | 🟡 | ✅ | CatalogManifest with 24h disk cache, fetch, validation |  |  |  | |
 | M.8 | User-defined providers (providers:) | 🟡 | ✅ | AppConfig.providers: Vec<ProviderConfig> |  |  |  | |
 | M.9 | Custom providers list | 🟢 | ✅ | AppConfig.custom_providers: Vec<String> |  |  |  | |
 | M.10 | Provider alias system | 🟡 | ✅ (#22) | [TBD] | 50+ aliases: `claude`→`anthropic`, `gpt`→`openai`, `glm`→`zai`, `qwen`→`alibaba`, etc. |
@@ -156,7 +156,7 @@ These are provider-specific fields that control LLM reasoning/thinking behavior.
 
 | # | Feature | Severity | Hermes | obenalien | Notes |
 |---|---------|----------|--------|-----------|-------|
-| C.1 | Remote model catalog | 🟢 | ✅ | ❌ | `models.dev` manifest, 24h disk cache, per-provider overrides |
+| C.1 | Remote model catalog | 🟢 | ✅ | Same impl as M.7: find_model(), catalog.get() |  |  |  | |
 | C.2 | Curated model lists | 🟢 | ✅ | ❌ | OpenRouter/Nous curated models, pricing, cache pricing |
 | C.3 | `/v1/models` API | ✅ | ✅ | ✅ | Built-in `list_models()` / `find_model()` |
 
