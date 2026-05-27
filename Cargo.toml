@@ -24,7 +24,7 @@ edition = "2021"
 rust-version = "1.80"
 license = "MIT"
 authors = ["Nous Research"]
-repository = "https://github.com/bowfeng/obenalien"
+repository = "https://github.com/bowfeng/oben-alien"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full", "tracing", "rt-multi-thread"] }
