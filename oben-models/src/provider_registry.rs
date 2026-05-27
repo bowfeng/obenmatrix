@@ -419,4 +419,24 @@ mod tests {
             Some(TransportType::BedrockConverse)
         );
     }
+    #[test]
+    fn provider_kind_map_all_variants() {
+        use crate::providers::ProviderKind;
+
+        // Anthropic/MiniMax family → AnthropicMessages
+        assert_eq!(provider_kind_to_transport(ProviderKind::Anthropic), Some(TransportType::AnthropicMessages));
+        assert_eq!(provider_kind_to_transport(ProviderKind::MiniMax), Some(TransportType::AnthropicMessages));
+        assert_eq!(provider_kind_to_transport(ProviderKind::MiniMaxOAuth), Some(TransportType::AnthropicMessages));
+        assert_eq!(provider_kind_to_transport(ProviderKind::MiniMaxCN), Some(TransportType::AnthropicMessages));
+
+        // Bedrock → BedrockConverse
+        assert_eq!(provider_kind_to_transport(ProviderKind::Bedrock), Some(TransportType::BedrockConverse));
+
+        // XAI → CodexResponses
+        assert_eq!(provider_kind_to_transport(ProviderKind::XAI), Some(TransportType::CodexResponses));
+
+        // All others → OpenAIChat
+        assert_eq!(provider_kind_to_transport(ProviderKind::OpenAI), Some(TransportType::OpenAIChat));
+        assert_eq!(provider_kind_to_transport(ProviderKind::Custom), Some(TransportType::OpenAIChat));
+    }
 }
