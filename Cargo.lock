@@ -2060,6 +2060,8 @@ dependencies = [
  "anyhow",
  "chrono",
  "cron",
+ "lazy_static",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

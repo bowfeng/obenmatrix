@@ -19,7 +19,9 @@ chrono.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
+lazy_static = "1.4"
 cron = { workspace = true }
+regex = { workspace = true }
 tokio = { workspace = true, features = ["sync", "fs", "time", "macros", "signal"] }
 tracing-subscriber = { workspace = true, default-features = true, features = ["fmt"] }
 
