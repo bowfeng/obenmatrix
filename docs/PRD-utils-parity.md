@@ -23,7 +23,7 @@
 | U.12 | **Trajectory compressor** | 🟡 | ✅ ([#104](https://github.com/bowfeng/oben-alien/pull/104)) | `trajectory_compressor.py` | CompressionConfig, TrajectoryMetrics, AggregateMetrics, SummaryGenerator trait, NoopSummarizer, compress_trajectory, process_entry, protected regions, token counting heuristic |
 | U.13 | **Debug helpers** | 🟡 | ✅ | [TBD] | debugging utilities (`PR #99`, implemented inline) |
 | U.14 | **Clipboard** | 🟢 | ✅ | [TBD] | clipboard integration (`PR #99`, implemented inline) |
-| U.15 | **Security advisories** | 🟢 | ❌ | [TBD] | CVE checks |
+| U.15 | **Security advisories** | 🟢 | ✅ ([#105](https://github.com/bowfeng/oben-alien/pull/105)) | `security_advisories.py`, `osv_check.py` | Advisory catalog (Severity, Advisory, CompromisedPackage), detect_compromised with closure lookup, banner/render helpers, severity labels, OSV malware check for MCP extensions (npx/uvx/pipx ecosystem parsing) |
 
 ---
 
