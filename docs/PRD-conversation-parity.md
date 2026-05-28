@@ -21,8 +21,8 @@
 | C.10 | Iteration budget with 80%/90% warnings | 🟡 | ✅ | [#25](https://github.com/bowfeng/oben-alien/issues/25) | `IterationBudget` with threshold alerts |
 | C.11 | Cross-thread interrupt + steer | 🟡 | ✅ | [#25](https://github.com/bowfeng/oben-alien/issues/25) | `InterruptState` with atomic flag |
 | C.12 | Message sanitization (thinking-only drop, user merge) | 🟡 | ✅ | [#25](https://github.com/bowfeng/oben-alien/issues/25) | `MessageSanitizer` |
-| C.13 | **Prompt caching** (Anthropic prompt cache hints) | 🟡 | ❌ | [TBD] | `cache_type: "ephemeral"` hints, cache hit tracking |
-| C.14 | **Streaming context scrubber** (split `<memory-context>` across deltas) | 🟡 | ❌ | [TBD] | Stateful scrubber for partial tags |
+| C.13 | **Prompt caching** (Anthropic prompt cache hints) | 🟡 | ✅ | — | `cache_type: "ephemeral"` and `prompt_cache_key` in `oben-transport/src/anthropic_messages.rs` |
+| C.14 | **Streaming context scrubber** (split `<memory-context>` across deltas) | 🟡 | ✅ | — | `StreamingContextScrubber` state machine in `oben-sessions/src/memory_provider.rs:516-664` |
 | C.15 | **Turn nudge** (periodic memory review prompt) | 🟢 | ✅ | [#47](https://github.com/bowfeng/oben-alien/issues/47) | `on_turn_start()` turns-based nudge interval, default 10 turns |
 
 ---

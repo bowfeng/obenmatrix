@@ -19,6 +19,7 @@ oben-transport = { path = "../oben-transport" }
 oben-utils = { path = "../oben-utils" }
 oben-gateway = { path = "../oben-gateway" }
 oben-tui = { path = "../oben-tui" }
+oben-cron = { path = "../oben-cron" }
 
 clap = { workspace = true, features = ["derive"] }
 anyhow = { workspace = true }

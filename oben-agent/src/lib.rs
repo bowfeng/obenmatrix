@@ -51,3 +51,4 @@ pub use stream_processor::*;
 pub use system_prompt::*;
 pub use system_prompt_cache::*;
 pub use turn_executor::*;
+pub use nudge::NudgeConfig;

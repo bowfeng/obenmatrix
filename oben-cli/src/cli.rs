@@ -59,6 +59,57 @@ pub enum Commands {
     },
     /// Start the terminal UI
     Tui,
+    /// Manage scheduled cron tasks
+    Cron {
+        #[command(subcommand)]
+        action: Option<CronCommand>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CronCommand {
+    /// List all scheduled jobs
+    List {
+        /// Show disabled/paused jobs too
+        #[arg(long)]
+        all: bool,
+    },
+    /// Create a new cron job
+    Create {
+        /// Schedule: "30m", "every 30m", "0 9 * * *", or ISO timestamp
+        #[arg(short, long)]
+        schedule: String,
+        /// Prompt/question for the agent
+        #[arg(short, long)]
+        prompt: Option<String>,
+        /// Job name
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Run N times (default: forever)
+        #[arg(short, long)]
+        repeat: Option<u32>,
+    },
+    /// Pause a cron job by ID
+    Pause {
+        /// Job ID
+        id: String,
+    },
+    /// Resume a paused cron job by ID
+    Resume {
+        /// Job ID
+        id: String,
+    },
+    /// Remove a cron job by ID
+    Remove {
+        /// Job ID
+        id: String,
+    },
+    /// Run the cron tick manually
+    Tick,
+    /// Start the cron daemon process
+    Start,
+    /// Show daemon info
+    Info,
 }
 
 #[derive(Subcommand)]

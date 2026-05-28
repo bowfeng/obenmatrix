@@ -11,7 +11,8 @@ use tracing::info;
 use oben_agent::{CompactContextEngine, ContextEngine};
 
 use clap::Parser;
-use crate::cli::{Cli, Commands, ConfigCommand, ModelsCommand, SessionsCommand};
+use crate::cli::{Cli, Commands, ConfigCommand, CronCommand, ModelsCommand, SessionsCommand};
+use oben_cron::{CronJob, CronStore};
 use oben_models::{Session, SessionStore};
 
 /// In-memory session store - no SQLite, no persistence, just a single
@@ -76,6 +77,17 @@ pub async fn run_cli() -> Result<()> {
         }
         Commands::Models { action } => run_models(action).await,
         Commands::Tui => oben_tui::run_tui().await,
+        Commands::Cron { action } => match action {
+            None => cron_list(false),
+            Some(CronCommand::List { all }) => cron_list(all),
+            Some(CronCommand::Create { schedule, prompt, name, repeat }) => cron_create(&schedule, prompt.as_deref(), name.as_deref(), repeat),
+            Some(CronCommand::Pause { id }) => cron_pause(&id),
+            Some(CronCommand::Resume { id }) => cron_resume(&id),
+            Some(CronCommand::Remove { id }) => cron_remove(&id),
+            Some(CronCommand::Tick) => cron_tick(),
+            Some(CronCommand::Start) => cron_start(),
+            Some(CronCommand::Info) => cron_info(),
+        },
     }
 }
 
@@ -114,6 +126,7 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         fallback_models: vec![],
         callbacks: oben_agent::AgentCallbacks::default(),
         concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
+        nudge_config: None,
     })?;
 
     let callbacks = oben_agent::ChatCallbacks::for_cli();
@@ -140,6 +153,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         fallback_models: vec![],
         callbacks: oben_agent::AgentCallbacks::default(),
         concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
+        nudge_config: None,
     })?;
 
     let response = agent.turn(prompt, stream, stream.then(|| {
@@ -403,4 +417,243 @@ fn create_transport(
         system_prompt,
         &tool_defs,
     )
+}
+
+// ── Cron ───────────────────────────────────────────────────────────────────
+
+fn cron_store() -> std::sync::Arc<CronStore> {
+    let dir = CronStore::default_path();
+    std::sync::Arc::new(CronStore::new(dir).unwrap_or_else(|e| {
+        eprintln!("Error initializing cron store: {}", e);
+        std::process::exit(1)
+    }))
+}
+
+fn cron_list(all: bool) -> Result<()> {
+    let store = cron_store();
+    let jobs = store.list_jobs(all);
+    if jobs.is_empty() {
+        println!("No cron jobs.");
+    } else {
+        println!("Cron jobs ({}):\n", jobs.len());
+        for job in &jobs {
+            let status = match (&job.state, job.enabled) {
+                (oben_cron::JobState::Completed, _) => "✅ completed",
+                (oben_cron::JobState::Error, _) => "❌ error",
+                (oben_cron::JobState::Paused, true) => "⏸️  paused",
+                (oben_cron::JobState::Scheduled, true) => "▶️  active",
+                (oben_cron::JobState::Scheduled, false) => "⏸️  paused (disabled)",
+                _ => "❓ unknown",
+            };
+            let next_run = job.next_run_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "N/A".to_string());
+            let last_run = job.last_run_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "never".to_string());
+            let error_str = if let Some(ref err) = job.last_error {
+                format!("\n    Error: {}", err)
+            } else {
+                String::new()
+            };
+            println!("  {} {} — {}\n    Schedule: {}\n    Created: {}\n    Next: {}\n    Last run: {}{}",
+                job.id,
+                job.name,
+                status,
+                job.schedule,
+                job.created_at.format("%Y-%m-%d %H:%M"),
+                next_run,
+                last_run,
+                error_str,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cron_create(schedule: &str, prompt: Option<&str>, name: Option<&str>, repeat: Option<u32>) -> Result<()> {
+    let store = cron_store();
+    let prompt_text = prompt.unwrap_or("Check for updates and summarize anything new.");
+    let job_name = name.unwrap_or("untitled").to_string();
+    let job = CronJob::new(job_name, prompt_text.to_string(), schedule, repeat)?;
+    store.create(job.clone())?;
+    println!("Created cron job '{}':", job.id);
+    println!("  Name: {}", job.name);
+    println!("  Schedule: {}", job.schedule);
+    if let Some(next) = job.next_run_at {
+        println!("  Next run: {}", next.format("%Y-%m-%d %H:%M"));
+    }
+    Ok(())
+}
+
+fn cron_pause(id: &str) -> Result<()> {
+    let store = cron_store();
+    store.pause(id)?;
+    println!("Paused job '{}'.", id);
+    Ok(())
+}
+
+fn cron_resume(id: &str) -> Result<()> {
+    let store = cron_store();
+    store.resume(id)?;
+    println!("Resumed job '{}'.", id);
+    Ok(())
+}
+
+fn cron_remove(id: &str) -> Result<()> {
+    let store = cron_store();
+    store.remove(id)?;
+    println!("Removed job '{}'.", id);
+    Ok(())
+}
+
+/// Run the cron tick manually — process all due jobs.
+fn cron_tick() -> Result<()> {
+    let store = cron_store();
+    let due = store.get_due_jobs();
+    if due.is_empty() {
+        println!("No jobs due.");
+    } else {
+        let now = chrono::Utc::now();
+        
+        let ober_exec = oben_cron::cron_exec_binary();
+        
+        println!("cron tick at {}: running {} due job(s)...",
+            now.format("%H:%M:%S"), due.len());
+        for job in &due {
+            let prompt = job.prompt.clone();
+            match store.advance_job(&job.id, &ober_exec) {
+                Ok(()) => println!("  Job '{}' advanced to next run", job.id),
+                Err(e) => println!("  Job '{}': error: {}", job.id, e),
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── Cron daemon management ────────────────────────────────────────────
+
+fn cron_pid_path() -> std::path::PathBuf {
+    CronStore::default_path().join("cron.pid")
+}
+
+/// Check if the cron daemon process is running by reading the PID file.
+pub fn is_cron_running() -> Option<u32> {
+    let pid_path = cron_pid_path();
+    if !pid_path.exists() {
+        return None;
+    }
+    let pid: u32 = std::fs::read_to_string(&pid_path)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+
+    // Check if process exists by sending signal 0
+    let res = std::process::Command::new("kill")
+        .args(&["-0", &pid.to_string()])
+        .output();
+    match res {
+        Ok(out) if out.status.success() => Some(pid),
+        Ok(_) => None,
+        Err(_) => None,
+    }
+}
+
+fn find_cron_binary() -> Option<std::path::PathBuf> {
+    let candidates = [
+        "target/debug/oben-cron",
+        "target/release/oben-cron",
+    ];
+    for c in &candidates {
+        let p = std::path::PathBuf::from(c);
+        if p.exists() { return Some(p); }
+    }
+    let out = std::process::Command::new("which")
+        .args(&["oben-cron"])
+        .output().ok()?;
+    if out.status.success() && !out.stdout.is_empty() {
+        let path = std::str::from_utf8(&out.stdout).ok()?.trim().to_string();
+        let p = std::path::PathBuf::from(path);
+        if p.exists() { return Some(p); }
+    }
+    None
+}
+
+/// Start the cron daemon as a background process.
+/// The daemon process becomes its own process group (not a child).
+pub fn cron_start() -> Result<()> {
+    let pid_path = cron_pid_path();
+
+    // Already running?
+    if let Some(_pid) = is_cron_running() {
+        println!("Cron daemon is already running (PID {})", _pid);
+        return Ok(());
+    }
+
+    let binary = match find_cron_binary() {
+        Some(b) => b,
+        None => {
+            println!("oben-cron binary not found; building...");
+            let output = std::process::Command::new("cargo")
+                .args(&["build", "--package", "oben-cron"])
+                .output().map_err(|e| anyhow::anyhow!("Failed to run cargo: {}", e))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!("{}", stderr);
+                anyhow::bail!("Build of oben-cron failed");
+            }
+            std::path::PathBuf::from("target/debug/oben-cron")
+        }
+    };
+
+    println!("Starting cron daemon...");
+    let mut child = std::process::Command::new(&binary)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())  // detach from stdin
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to start cron daemon: {}", e))?;
+
+    let started_pid = child.id();
+
+    // Wait for PID file to be written
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if is_cron_running().is_some() {
+            let _ = child.kill(); // daemon now has its own PID file
+            println!("Cron daemon started (PID {}).", started_pid);
+            return Ok(());
+        }
+    }
+
+    let _ = child.kill();
+    anyhow::bail!("Cron daemon started but PID file was not written.");
+}
+
+fn cron_info() -> Result<()> {
+    let pid_path = cron_pid_path();
+    
+    if let Some(pid) = is_cron_running() {
+        println!("Cron daemon: active (PID {})", pid);
+        println!("  PID file: {:?}", pid_path);
+        if pid_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&pid_path) {
+                println!("  PID file contents: {}", content.trim());
+            }
+        }
+        // Show job count
+        let store = CronStore::new(CronStore::default_path()).ok();
+        if let Some(s) = store {
+            let jobs = s.list_jobs(false);
+            println!("  Active jobs: {}", jobs.len());
+            let all_jobs = s.list_jobs(true);
+            println!("  Total jobs: {}", all_jobs.len());
+        }
+    } else {
+        println!("Cron daemon: inactive (not running)");
+        if pid_path.exists() {
+            println!("  Stale PID file exists: {:?}", pid_path);
+            let _ = std::fs::remove_file(&pid_path);
+            println!("  Removed stale PID file.");
+        }
+    }
+    
+    Ok(())
 }

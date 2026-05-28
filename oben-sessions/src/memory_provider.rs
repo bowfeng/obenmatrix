@@ -2,7 +2,7 @@
 //!
 //! Architecture:
 //!
-//! ```
+//! ```text
 //! MemoryProvider (trait)
 //! ├── BuiltinProvider { MemoryStore }  — always present
 //! └── ExternalProvider (pluggable)      — registered via config

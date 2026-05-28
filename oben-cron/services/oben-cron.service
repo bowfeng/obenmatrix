@@ -1,0 +1,28 @@
+[Unit]
+Description=Oben Alien Cron Scheduler
+Documentation=https://github.com/bowfeng/oben-alien
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=<BIN_PATH>/oben-cron
+WorkingDirectory=<HOME>
+PIDFile=<PID_PATH>/cron.pid
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=oben-cron
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

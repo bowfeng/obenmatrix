@@ -28,7 +28,7 @@
 | TL.17 | **Voice** (STT/TTS) | 🟡 | ❌ | [TBD] | Whisper, Edge TTS, ElevenLabs |
 | TL.18 | **Image generation** (FLUX, DALL-E, Midjourney) | 🟡 | ❌ | [TBD] | `image_gen_provider.py` |
 | TL.19 | **MCP integration** | 🟢 | ❌ | [TBD] | `mcp_oauth.py`, `mcp_tool.py` |
-| TL.20 | **Cron scheduler** | 🟢 | ❌ | [TBD] | Scheduled task delivery |
+| TL.20 | **Cron scheduler** | 🟢 | ✅ (#63) | [#63](https://github.com/.../63) `oben-cron/` | Schedule parsing (duration/interval/ISO/cron), JSON persistence, daemon |
 | TL.21 | **Delegate tool** | 🟡 | ❌ | [TBD] | Subagent delegation (`delegate_tool.py`) |
 | TL.22 | **Kanban tools** | 🟡 | ❌ | [TBD] | Task management board |
 | TL.23 | **Computer use** | 🟡 | ❌ | [TBD] | `computer_use_tool.py` — macOS GUI control |

@@ -123,6 +123,7 @@ impl App {
             fallback_models: vec![],
             callbacks: oben_agent::AgentCallbacks::default(),
             concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
+            nudge_config: None,
         })?);
         Ok(())
     }
@@ -163,6 +164,8 @@ impl App {
             gateway: self.config.gateway.clone(),
             display: self.config.display.clone(),
             context: self.config.context.clone(),
+            providers: self.config.providers.clone(),
+            custom_providers: self.config.custom_providers.clone(),
         });
         self.panels.insert(PanelId::Setup, Box::new(panel));
     }
