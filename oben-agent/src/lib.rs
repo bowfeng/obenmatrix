@@ -30,6 +30,7 @@ pub mod stream_processor;
 pub mod system_prompt;
 pub mod system_prompt_cache;
 pub mod turn_executor;
+pub mod nudge;
 
 pub use agent::*;
 pub use budget::*;

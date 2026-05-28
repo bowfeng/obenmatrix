@@ -23,7 +23,7 @@
 | C.12 | Message sanitization (thinking-only drop, user merge) | 🟡 | ✅ | [#25](https://github.com/bowfeng/oben-alien/issues/25) | `MessageSanitizer` |
 | C.13 | **Prompt caching** (Anthropic prompt cache hints) | 🟡 | ❌ | [TBD] | `cache_type: "ephemeral"` hints, cache hit tracking |
 | C.14 | **Streaming context scrubber** (split `<memory-context>` across deltas) | 🟡 | ❌ | [TBD] | Stateful scrubber for partial tags |
-| C.15 | **Turn nudge** (periodic memory review prompt) | 🟢 | ❌ | [TBD] | `on_turn_start()` turns-based nudge interval |
+| C.15 | **Turn nudge** (periodic memory review prompt) | 🟢 | ✅ | [#47](https://github.com/bowfeng/oben-alien/issues/47) | `on_turn_start()` turns-based nudge interval, default 10 turns |
 
 ---
 

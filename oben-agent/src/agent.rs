@@ -14,13 +14,13 @@
 //! - Fallback model chain (Tier 2)
 //! - Rich callback system (Tier 2)
 //! - Activity tracking (Tier 2)
-//! - System prompt prefix caching (Tier 2)
 //! - Concurrent tool dispatch (Tier 2)
+//! - Nudge / background review (Tier 2)
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
-use oben_models::StreamDeltaCallback;
+use oben_models::{CallMode, Message, StreamDeltaCallback};
 use oben_sessions::SessionManager;
 
 use crate::callbacks::AgentCallbacks;
@@ -28,6 +28,7 @@ use crate::conversation::{ChatCallbacks, ConversationLoop};
 use crate::fallback::FallbackChain;
 use crate::interrupt::InterruptState;
 use crate::system_prompt_cache::SystemPromptCache;
+use crate::nudge::NudgeConfig;
 
 /// Configuration for building an `Agent`.
 pub struct AgentConfig {
@@ -51,6 +52,9 @@ pub struct AgentConfig {
     pub callbacks: AgentCallbacks,
     /// Concurrent dispatch configuration.
     pub concurrent_dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
+    /// Nudge / background memory review config (tier-2).
+    /// Set `memory_nudge_interval` to 0 to disable.
+    pub nudge_config: Option<NudgeConfig>,
 }
 
 /// An interactive agent — owns all resources, delegates to ConversationLoop.
@@ -79,6 +83,10 @@ pub struct Agent {
     prompt_cache: SystemPromptCache,
     /// Concurrent dispatch config.
     dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
+    /// Nudge / background memory review config.
+    nudge_config: NudgeConfig,
+    /// User turns elapsed since last nudge review.
+    turns_since_nudge: usize,
 }
 
 impl Agent {
@@ -97,6 +105,8 @@ impl Agent {
             callbacks: config.callbacks,
             prompt_cache: SystemPromptCache::new(),
             dispatch_config: config.concurrent_dispatch_config,
+            nudge_config: config.nudge_config.unwrap_or_default(),
+            turns_since_nudge: 0,
         };
         // Initialize the prompt cache with the initial system prompt.
         // The cache will be updated on each compaction/session change.
@@ -336,7 +346,130 @@ impl Agent {
             &mut self.call_mode,
             stream,
             callbacks,
+            &self.nudge_config,
         ).await
+    }
+
+    /// Run a background memory/skill review turn (nudge).
+    ///
+    /// This is the internal implementation of C.15 — the "turn nudge" that
+    /// automatically reviews conversation history and optionally updates
+    /// MEMORY.md / USER.md via the memory tool.
+    ///
+    /// Mirrors Hermes' `_spawn_background_review` + `_run_review_in_thread`:
+    /// executes a bounded review turn on the same agent with a custom
+    /// prompt. The result is delivered via the provided callback.
+    pub async fn trigger_nudge(
+        &mut self,
+        user_message: &str,
+        memory_interval: usize,
+        skill_interval: usize,
+        on_complete: impl FnOnce(bool, String) + Send + 'static,
+    ) {
+        // Quick-exit if nudge is disabled.
+        if memory_interval == 0 && skill_interval == 0 {
+            return;
+        }
+
+        let has_memory_tool = !self
+            .session_manager
+            .active_session()
+            .map(|s| s.messages.iter().any(|m| !m.tool_calls.is_none()))
+            .unwrap_or(true);
+
+        if !has_memory_tool {
+            on_complete(false, "Nudge skipped: no memory tools available.".to_string());
+            return;
+        }
+
+        // Build the nudge prompt (mirrors Hermes _MEMORY_REVIEW_PROMPT).
+        let prompt = self.build_nudge_prompt(memory_interval > 0, skill_interval > 0);
+
+        let budget = crate::budget::IterationBudget::new(16);
+        let turn_options = crate::conversation::TurnOptions {
+            retry_config: Default::default(),
+            budget: Some(budget),
+            interrupt: None,
+            callbacks: None, // suppress user-facing callbacks during review
+            fallback: None,
+        };
+
+        let sid = self.resolve_session();
+        let call_mode = self.call_mode.clone().unwrap_or(CallMode::Fresh(sid.clone()));
+
+        let review_msg = Message::user(&prompt);
+        let response_text = ConversationLoop::execute_turn_with_options(
+            &mut self.context_engine,
+            &self.transport,
+            &self.tools,
+            &mut self.session_manager,
+            &sid,
+            review_msg,
+            &call_mode,
+            None,
+            turn_options,
+        ).await;
+
+        let result = match response_text {
+            Ok(text) => {
+                let text_lower = text.to_lowercase();
+                let is_noop = text_lower.contains("nothing to")
+                    || text_lower.contains("nothing worth")
+                    || text_lower.contains("no changes needed");
+
+                let updated = !is_noop;
+                let summary = if is_noop {
+                    "Review: nothing worth saving this session.".to_string()
+                } else {
+                    "Review: checked memory — may have updated.".to_string()
+                };
+                on_complete(updated, summary);
+            }
+            Err(e) => {
+                tracing::info!("Nudge review failed (non-fatal): {}", e);
+                on_complete(false, format!("Review failed: {}", e));
+            }
+        };
+    }
+
+    fn build_nudge_prompt(&self, memory_enabled: bool, skill_enabled: bool) -> String {
+        if memory_enabled && skill_enabled {
+            format!(
+                "Review the conversation above and consider the following:\n\n\
+                 MEMORY REVIEW:\n\
+                 1. Has the user revealed things about themselves — their persona, desires, \
+                 preferences, or personal details worth remembering?\n\
+                 2. Has the user expressed expectations about how you should behave, their work \
+                 style, or ways they want you to operate?\n\n\
+                 SKILL REVIEW:\n\
+                 3. Were there repetitive tasks or workflows that could be turned into reusable \
+                 skills or shortcuts?\n\
+                 4. Are there patterns in how the user works that could be encoded as skills?\n\n\
+                 If anything is worth saving, use the memory tool. \
+                 If any skills should be created, note that for the user. \
+                 If nothing is worth saving or creating, just say 'Nothing to save.' and stop."
+            )
+        } else if memory_enabled {
+            format!(
+                "Review the conversation above and consider saving to memory if appropriate.\n\n\
+                 Focus on:\n\
+                 1. Has the user revealed things about themselves — their persona, desires, \
+                 preferences, or personal details worth remembering?\n\
+                 2. Has the user expressed expectations about how you should behave, their work \
+                 style, or ways they want you to operate?\n\n\
+                 If something stands out, save it using the memory tool. \
+                 If nothing is worth saving, just say 'Nothing to save.' and stop."
+            )
+        } else if skill_enabled {
+            format!(
+                "Review the conversation above. Were there repetitive tasks or workflows that \
+                 could be turned into reusable skills or shortcuts? Are there patterns in how \
+                 the user works that could be encoded as skills? If so, note these for the user. \
+                 If not, just say 'Nothing to note.' and stop."
+            )
+        } else {
+            "Review the conversation and note anything worth saving.".into()
+        }
     }
 }
 
