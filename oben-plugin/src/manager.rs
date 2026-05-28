@@ -86,6 +86,14 @@ impl PluginContext {
             if let Some(loaded) = mgr.plugins.get_mut(self.manifest.lookup_key()) {
                 loaded.tools_registered.push(name.to_string());
             }
+
+            // Toolset grouping — tool name only
+            let entries = mgr.toolset_groups.entry(toolset.to_string()).or_default();
+            if !entries.contains(&name.to_string()) {
+                entries.push(name.to_string());
+            }
+            // Tool -> plugin attribution
+            mgr.tool_to_plugin.insert(name.to_string(), self.manifest.lookup_key().to_string());
         }
 
         debug!(
@@ -253,15 +261,38 @@ impl PluginContext {
         Ok(())
     }
 
-    /// Get the host-owned LLM facade for trusted plugins.
+    /// Check if this plugin is trusted to access the LLM facade.
     ///
-    /// Returns `Some(PluginLlm)` if the plugin is in the trusted list,
-    /// `None` otherwise. Trusted plugins get access to the user's active
-    /// model endpoint without requiring their own provider keys.
-    pub fn llm(&self) -> Option<()> {
-        // Phase 4: LLM facade returns Some(()) when trusted.
-        // Full implementation requires transport layer integration.
-        None
+    /// Returns true if the plugin is in the `trusted_plugins` config list,
+    /// or if it is a builtin provider.
+    ///
+    /// Builtin providers (oben-image-gen, video-gen, web-search, browser, model-provider)
+    /// are always trusted.
+    pub fn is_trusted(&self) -> bool {
+        if let Some(manager) = self.manager.upgrade() {
+            let inner = manager.lock().unwrap();
+            let config = &inner.config;
+            let key = self.manifest.lookup_key();
+
+            let builtin_name = key.to_lowercase();
+            let is_builtin = [
+                "oben-image-gen", "oben-video-gen", "oben-web-search",
+                "oben-browser", "oben-model-provider",
+            ].contains(&builtin_name.as_str());
+
+            let trusted = is_builtin || config.is_trusted(key);
+
+            if !trusted && PluginManager::debug_logging_enabled() {
+                warn!(
+                    "Plugin '{}' (key={}) is not in trusted_plugins list",
+                    self.manifest.name, key
+                );
+            }
+
+            trusted
+        } else {
+            false
+        }
     }
 
     // ── Provider Registration ───────────────────────────────────────────
@@ -356,16 +387,23 @@ impl PluginContext {
         );
     }
 
-    // ── Provider Retrieval ──────────────────────────────────────────────
+    // ── Provider Retrieval (config-driven selection) ────────────────────
     /// Note: These return owned clones. For live references, use the
     /// PluginManager directly via `PluginManager::get()` or `PluginContext`'s
     /// weak reference chain.
+    ///
+    /// Config-driven selection: when `name` is None, checks `config.providers`
+    /// map for a configured provider name (e.g., "image_gen" -> "openai"),
+    /// falls back to first registered provider.
 
     /// Get info about the default image gen provider by configured name.
     pub fn get_image_gen_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
         let manager = self.manager.upgrade().expect("PluginManager no longer exists");
         let inner = manager.lock().unwrap();
-        let profile = match name {
+        
+        let target = name.or_else(|| inner.config.get_provider("image_gen"));
+        
+        let profile = match target {
             Some(n) => inner.image_gen_registry.get_by_name(n).map(|p| {
                 p.list_models().into_iter().next()
             }).flatten(),
@@ -380,7 +418,10 @@ impl PluginContext {
     pub fn get_web_search_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
         let manager = self.manager.upgrade().expect("PluginManager no longer exists");
         let inner = manager.lock().unwrap();
-        let profile = match name {
+        
+        let target = name.or_else(|| inner.config.get_provider("web_search"));
+        
+        let profile = match target {
             Some(n) => inner.web_search_registry.get_by_name(n).map(|p| {
                 p.list_models().into_iter().next()
             }).flatten(),
@@ -395,7 +436,10 @@ impl PluginContext {
     pub fn get_browser_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
         let manager = self.manager.upgrade().expect("PluginManager no longer exists");
         let inner = manager.lock().unwrap();
-        let profile = match name {
+        
+        let target = name.or_else(|| inner.config.get_provider("browser"));
+        
+        let profile = match target {
             Some(n) => inner.browser_registry.get_by_name(n).map(|p| {
                 p.list_models().into_iter().next()
             }).flatten(),
@@ -410,16 +454,20 @@ impl PluginContext {
     pub fn get_context_engine(&self) -> Option<crate::provider::ProviderProfile> {
         let manager = self.manager.upgrade().expect("PluginManager no longer exists");
         let inner = manager.lock().unwrap();
-        inner.context_engine_registry.get_default().map(|p| {
+        let profile = inner.context_engine_registry.get_default().map(|p| {
             p.list_models().into_iter().next()
-        }).flatten()
+        }).flatten();
+        profile
     }
 
     /// Get info about the default model provider by configured name.
     pub fn get_model_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
         let manager = self.manager.upgrade().expect("PluginManager no longer exists");
         let inner = manager.lock().unwrap();
-        let profile = match name {
+        
+        let target = name.or_else(|| inner.config.get_provider("model_provider"));
+        
+        let profile = match target {
             Some(n) => inner.model_provider_registry.get_by_name(n).map(|p| {
                 p.list_models().into_iter().next()
             }).flatten(),
@@ -473,8 +521,12 @@ pub(crate) struct ManagerInner {
     /// Model provider registry (non-exclusive).
     model_provider_registry: crate::provider::ModelProviderRegistry,
 
-    /// Plugin toolset grouping: toolset → [(tool_name, plugin)]
-    toolset_groups: std::collections::HashMap<String, Vec<(String, String)>>,
+    /// Plugin toolset grouping: toolset -> tool names only.
+    /// Separate from toolset_groups: each tool maps to its owning plugin via 
+    /// `tool_to_plugin` (tool_name -> plugin).
+    toolset_groups: std::collections::HashMap<String, Vec<String>>,
+    /// Maps each registered tool name to its owning plugin name.
+    tool_to_plugin: std::collections::HashMap<String, String>,
 
     /// Whether discovery has been run.
     discovered: bool,
@@ -541,9 +593,9 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
-    /// Create a new PluginManager.
+    /// Create a new PluginManager and register builtin providers.
     pub fn new() -> Self {
-        Self {
+        let mgr = Self {
             inner: Mutex::new(ManagerInner {
                 plugins: std::collections::HashMap::new(),
                 hooks: std::collections::HashMap::new(),
@@ -561,9 +613,12 @@ impl PluginManager {
                 context_engine_registry: crate::provider::ContextEngineRegistry::new(),
                 model_provider_registry: crate::provider::ModelProviderRegistry::new(),
                 toolset_groups: std::collections::HashMap::new(),
+                tool_to_plugin: std::collections::HashMap::new(),
                 discovered: false,
             }),
-        }
+        };
+        mgr.register_builtin_providers();
+        mgr
     }
 
     /// Return the global PluginManager singleton.
@@ -887,6 +942,32 @@ impl PluginManager {
     }
 
     // -----------------------------------------------------------------------
+    // Helper methods for tests
+    // -----------------------------------------------------------------------
+
+    /// Register an image gen provider directly into the registry (test helper).
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn register_image_gen_provider_for_test(
+        &self, provider: Box<dyn crate::provider::ImageGenProvider + Send + Sync>,
+    ) {
+        let name = provider.name().to_string();
+        let mut mgr = self.inner.lock().unwrap();
+        mgr.image_gen_registry.register(provider);
+        debug!("Test helper registered image gen provider: {}", name);
+    }
+
+    /// Register a web search provider directly into the registry (test helper).
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn register_web_search_provider_for_test(
+        &self, provider: Box<dyn crate::provider::WebSearchProvider + Send + Sync>,
+    ) {
+        let name = provider.name().to_string();
+        let mut mgr = self.inner.lock().unwrap();
+        mgr.web_search_registry.register(provider);
+        debug!("Test helper registered web search provider: {}", name);
+    }
+
+    // -----------------------------------------------------------------------
     // Phase 3: Introspection
     // -----------------------------------------------------------------------
 
@@ -895,9 +976,82 @@ impl PluginManager {
         std::env::var("OBERN_PLUGINS_DEBUG").is_ok()
     }
 
-    // ── Provider Registry Introspection (for full trait impl wiring) ────
+    /// Register builtin mock providers into each registry on startup.
+    /// These act as fallback providers so the system always has at least
+    /// one provider per type available without requiring external plugins.
+    fn register_builtin_providers(&self) {
+        let mut inner = self.inner.lock().unwrap();
 
-    /// List all registered image gen provider names.
+        inner.image_gen_registry.register(Box::new(
+            crate::mock_provider::MockImageGenProvider::new("oben-image-gen", true),
+        ));
+        inner.video_gen_registry.register(Box::new(
+            crate::mock_provider::MockVideoGenProvider::new("oben-video-gen", true),
+        ));
+        inner.web_search_registry.register(Box::new(
+            crate::mock_provider::MockWebSearchProvider::new("oben-web-search", true),
+        ));
+        inner.browser_registry.register(Box::new(
+            crate::mock_provider::MockBrowserProvider::new("oben-browser", true),
+        ));
+        inner.model_provider_registry.register(Box::new(
+            crate::mock_provider::MockModelProvider::new("oben-model-provider", true),
+        ));
+
+        debug!("Registered builtin providers: image-gen, video-gen, web-search, browser, model-provider");
+    }
+
+    /// Inject the application configuration into this plugin manager.
+    /// This sets up discovery config, provider selection, trusted plugins,
+    /// and the enabled/disabled lists.
+    pub fn set_config(&mut self, config: crate::config::PluginConfig) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.config = config;
+        debug!("Plugin manager config updated");
+    }
+
+    /// Config-driven provider selection — use config.providers map when name is None.
+    pub fn get_image_gen_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
+        let inner = self.inner.lock().unwrap();
+        let target = name.or_else(|| inner.config.get_provider("image_gen"));
+        let profile = match target {
+            Some(n) => inner.image_gen_registry.get_by_name(n).and_then(|p| {
+                p.list_models().into_iter().next()
+            }),
+            None => inner.image_gen_registry.get_default().and_then(|p| {
+                p.list_models().into_iter().next()
+            }),
+        };
+        profile
+    }
+
+    pub fn get_web_search_provider(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
+        let inner = self.inner.lock().unwrap();
+        let target = name.or_else(|| inner.config.get_provider("web_search"));
+        let profile = match target {
+            Some(n) => inner.web_search_registry.get_by_name(n).and_then(|p| {
+                p.list_models().into_iter().next()
+            }),
+            None => inner.web_search_registry.get_default().and_then(|p| {
+                p.list_models().into_iter().next()
+            }),
+        };
+        profile
+    }
+
+    pub fn get_browser_profile(&self, name: Option<&str>) -> Option<crate::provider::ProviderProfile> {
+        let inner = self.inner.lock().unwrap();
+        let target = name.or_else(|| inner.config.get_provider("browser"));
+        let profile = match target {
+            Some(n) => inner.browser_registry.get_by_name(n).and_then(|p| {
+                p.list_models().into_iter().next()
+            }),
+            None => inner.browser_registry.get_default().and_then(|p| {
+                p.list_models().into_iter().next()
+            }),
+        };
+        profile
+    }
     pub fn list_image_gen_providers(&self) -> Vec<String> {
         let inner = self.inner.lock().unwrap();
         inner.image_gen_registry.list()
@@ -940,6 +1094,50 @@ impl PluginManager {
             .into_iter()
             .map(|p| p.name().to_string())
             .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3: Toolset grouping (returned formats fixed to Hermes parity)
+    // -----------------------------------------------------------------------
+
+    /// Get all toolset groupings: toolset -> [tool names].
+    ///
+    /// Returns a HashMap mapping toolset names to the tool names registered
+    /// within them. This mirrors Hermes' format: `HashMap<String, Vec<String>>`.
+    pub fn get_tools_in_all_toolsets(&self) -> std::collections::HashMap<String, Vec<String>> {
+        let inner = self.inner.lock().unwrap();
+        inner.toolset_groups.clone()
+    }
+
+    /// Get tool names in a specific toolset.
+    ///
+    /// Returns the list of tool names registered under the given toolset,
+    /// or an empty vec if the toolset doesn't exist.
+    pub fn get_tools_in_toolset(&self, toolset_name: &str) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.toolset_groups
+            .get(toolset_name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get the plugin that owns a specific tool.
+    ///
+    /// Returns the plugin key (lookup key) that registered this tool.
+    pub fn get_tool_owner(&self, tool_name: &str) -> Option<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.tool_to_plugin
+            .get(tool_name)
+            .cloned()
+    }
+
+    /// Get plugin attribution map: tool_name -> plugin_key.
+    ///
+    /// Returns a separate map that can be used alongside `get_tools_in_toolsets()`
+    /// to show which plugin each tool belongs to.
+    pub fn get_tool_to_plugin_map(&self) -> std::collections::HashMap<String, String> {
+        let inner = self.inner.lock().unwrap();
+        inner.tool_to_plugin.clone()
     }
 }
 
@@ -1031,6 +1229,7 @@ mod tests {
                 context_engine_registry: crate::provider::ContextEngineRegistry::new(),
                 model_provider_registry: crate::provider::ModelProviderRegistry::new(),
                 toolset_groups: std::collections::HashMap::new(),
+                tool_to_plugin: std::collections::HashMap::new(),
                 discovered: false,
             },
         )));
@@ -1048,5 +1247,257 @@ mod tests {
         let args = serde_json::json!({});
         let results = mgr.invoke_hook(&HookType::PreToolCall, &args);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_builtin_providers_registered_on_new() {
+        /// given: no explicit provider registration
+        /// when: PluginManager::new() is called
+        /// then: builtin mock providers are registered in all registries
+        let mgr = PluginManager::new();
+        
+        let image_gen = mgr.list_image_gen_providers();
+        assert!(image_gen.contains(&"oben-image-gen".to_string()));
+        
+        let web_search = mgr.list_web_search_providers();
+        assert!(web_search.contains(&"oben-web-search".to_string()));
+        
+        let browser = mgr.list_browser_providers();
+        assert!(browser.contains(&"oben-browser".to_string()));
+        
+        let model_provider = mgr.list_model_providers();
+        assert!(model_provider.contains(&"oben-model-provider".to_string()));
+    }
+
+    #[test]
+    fn test_config_driven_provider_selection_image_gen() {
+        /// given: a plugin manager with configurable provider selection
+        /// when: config is set to use a specific image gen provider
+        /// then: get_image_gen_provider(None) returns the configured provider
+        let mut mgr = PluginManager::new();
+        
+        // First add extra providers to make selection meaningful
+        mgr.register_image_gen_provider_for_test(Box::new(
+            crate::mock_provider::MockImageGenProvider::new("custom", true),
+        ));
+        
+        mgr.set_config(crate::config::PluginConfig {
+            enabled: None,
+            disabled: vec![],
+            trusted: vec![],
+            providers: std::collections::HashMap::from([
+                ("image_gen".to_string(), "custom".to_string()),
+            ]),
+        });
+        
+        let profile = mgr.get_image_gen_provider(None);
+        assert!(profile.is_some());
+        assert_eq!(profile.unwrap().name, "custom");
+    }
+
+    #[test]
+    fn test_config_driven_provider_selection_web_search() {
+        /// given: a plugin manager with configurable web search provider
+        /// when: config specifies web_search provider name
+        /// then: get_web_search_provider(None) returns configured provider
+        let mut mgr = PluginManager::new();
+        
+        // Register extra provider with distinct name
+        mgr.register_web_search_provider_for_test(Box::new(
+            crate::mock_provider::MockWebSearchProvider::new("custom-search", true),
+        ));
+        
+        mgr.set_config(crate::config::PluginConfig {
+            enabled: None,
+            disabled: vec![],
+            trusted: vec![],
+            providers: std::collections::HashMap::from([
+                ("web_search".to_string(), "custom-search".to_string()),
+            ]),
+        });
+        
+        let profile = mgr.get_web_search_provider(None);
+        assert!(profile.is_some());
+        assert_eq!(profile.unwrap().name, "custom-search");
+    }
+
+    #[test]
+    fn test_explicit_name_overrides_config() {
+        /// given: config specifies a provider name, but explicit name passed
+        /// when: get_image_gen_provider(Some(other)) is called
+        /// then: the explicit name is returned, not config value
+        let mut mgr = PluginManager::new();
+        
+        // Register two providers
+        mgr.register_image_gen_provider_for_test(Box::new(
+            crate::mock_provider::MockImageGenProvider::new("config-pref", true),
+        ));
+        mgr.register_image_gen_provider_for_test(Box::new(
+            crate::mock_provider::MockImageGenProvider::new("explicit", true),
+        ));
+        
+        mgr.set_config(crate::config::PluginConfig {
+            enabled: None,
+            disabled: vec![],
+            trusted: vec![],
+            providers: std::collections::HashMap::from([
+                ("image_gen".to_string(), "config-pref".to_string()),
+            ]),
+        });
+        
+        // Explicit name should win over config
+        let profile = mgr.get_image_gen_provider(Some("explicit"));
+        assert!(profile.is_some());
+        assert_eq!(profile.unwrap().name, "explicit");
+    }
+
+    #[test]
+    fn test_llm_trust_gating_trusted_plugin() {
+        /// given: PluginContext for a trusted plugin
+        /// when: llm() is called
+        /// then: returns Some(())
+        let mut mgr = PluginManager::new();
+        mgr.set_config(crate::config::PluginConfig {
+            enabled: None,
+            disabled: vec![],
+            trusted: vec!["trusted-plugin".to_string()],
+            providers: std::collections::HashMap::new(),
+        });
+        
+        let manifest = Arc::new(PluginManifest {
+            name: "trusted-plugin".to_string(),
+            version: "1.0.0".to_string(),
+            description: "Test".to_string(),
+            author: "Test".to_string(),
+            requires_env: vec![],
+            provides_tools: vec![],
+            provides_hooks: vec![],
+            provides_providers: vec![],
+            source: PluginSource::Bundled,
+            path: Some("/test".to_string()),
+            kind: PluginKind::Standalone,
+            key: "trusted-plugin".to_string(),
+        });
+        
+        let manager_arc = std::sync::Arc::new(Mutex::new(
+            ManagerInner {
+                plugins: std::collections::HashMap::new(),
+                hooks: std::collections::HashMap::new(),
+                registered_tools: std::collections::HashSet::new(),
+                plugin_skills: std::collections::HashMap::new(),
+                slash_commands: crate::slash_command::SlashCommandRegistry::new(),
+                cli_commands: crate::cli_command::CliCommandRegistry::new(),
+                message_injector: crate::message_injector::MessageInjector::new(),
+                config: crate::config::PluginConfig {
+                    trusted: vec!["trusted-plugin".to_string()],
+                    ..Default::default()
+                },
+                discovery_config: crate::discovery::DiscoveryConfig::new(),
+                image_gen_registry: crate::provider::ImageGenRegistry::new(),
+                video_gen_registry: crate::provider::VideoGenRegistry::new(),
+                web_search_registry: crate::provider::WebSearchRegistry::new(),
+                browser_registry: crate::provider::BrowserRegistry::new(),
+                context_engine_registry: crate::provider::ContextEngineRegistry::new(),
+                model_provider_registry: crate::provider::ModelProviderRegistry::new(),
+                toolset_groups: std::collections::HashMap::new(),
+                tool_to_plugin: std::collections::HashMap::new(),
+                discovered: false,
+            },
+        ));
+        let weak = std::sync::Arc::downgrade(&manager_arc);
+        let ctx = PluginContext::new(manifest, weak);
+        
+        assert!(ctx.is_trusted());
+    }
+
+    #[test]
+    fn test_is_trust_gating_untrusted_plugin() {
+        /// given: PluginContext for an untrusted plugin
+        /// when: is_trusted() is called
+        /// then: returns false
+        let manifest = Arc::new(PluginManifest {
+            name: "untrusted-plugin".to_string(),
+            version: "1.0.0".to_string(),
+            description: "Test".to_string(),
+            author: "Test".to_string(),
+            requires_env: vec![],
+            provides_tools: vec![],
+            provides_hooks: vec![],
+            provides_providers: vec![],
+            source: PluginSource::Bundled,
+            path: Some("/test".to_string()),
+            kind: PluginKind::Standalone,
+            key: "untrusted-plugin".to_string(),
+        });
+        
+        let manager_arc = std::sync::Arc::new(Mutex::new(
+            ManagerInner {
+                plugins: std::collections::HashMap::new(),
+                hooks: std::collections::HashMap::new(),
+                registered_tools: std::collections::HashSet::new(),
+                plugin_skills: std::collections::HashMap::new(),
+                slash_commands: crate::slash_command::SlashCommandRegistry::new(),
+                cli_commands: crate::cli_command::CliCommandRegistry::new(),
+                message_injector: crate::message_injector::MessageInjector::new(),
+                config: crate::config::PluginConfig {
+                    trusted: vec![],
+                    ..Default::default()
+                },
+                discovery_config: crate::discovery::DiscoveryConfig::new(),
+                image_gen_registry: crate::provider::ImageGenRegistry::new(),
+                video_gen_registry: crate::provider::VideoGenRegistry::new(),
+                web_search_registry: crate::provider::WebSearchRegistry::new(),
+                browser_registry: crate::provider::BrowserRegistry::new(),
+                context_engine_registry: crate::provider::ContextEngineRegistry::new(),
+                model_provider_registry: crate::provider::ModelProviderRegistry::new(),
+                toolset_groups: std::collections::HashMap::new(),
+                tool_to_plugin: std::collections::HashMap::new(),
+                discovered: false,
+            },
+        ));
+        let weak = std::sync::Arc::downgrade(&manager_arc);
+        let ctx = PluginContext::new(manifest, weak);
+        
+        assert!(!ctx.is_trusted());
+    }
+
+    #[test]
+    fn test_toolset_grouping_format_fix() {
+        /// given: a PluginManager with tools registered under different toolsets
+        /// when: get_tools_in_*() methods are called
+        /// then: returns correct format with tool names only + separate attribution
+        let mgr = PluginManager::new();
+        
+        // Simulate tool registration by manually populating the internal state
+        {
+            let mut inner = mgr.inner.lock().unwrap();
+            inner.toolset_groups.insert("core".to_string(), vec!["read".to_string(), "write".to_string()]);
+            inner.toolset_groups.insert("files".to_string(), vec!["touch".to_string(), "delete".to_string()]);
+            inner.tool_to_plugin.insert("read".to_string(), "plugin-a".to_string());
+            inner.tool_to_plugin.insert("write".to_string(), "plugin-a".to_string());
+            inner.tool_to_plugin.insert("touch".to_string(), "plugin-b".to_string());
+            inner.tool_to_plugin.insert("delete".to_string(), "plugin-b".to_string());
+        }
+        
+        // get all toolsets
+        let toolsets = mgr.get_tools_in_all_toolsets();
+        assert_eq!(toolsets.get("core").unwrap(), &vec!["read".to_string(), "write".to_string()]);
+        assert_eq!(toolsets.get("files").unwrap(), &vec!["touch".to_string(), "delete".to_string()]);
+        assert_eq!(toolsets.len(), 2);
+        
+        // get tools in specific toolset
+        assert_eq!(mgr.get_tools_in_toolset("core"), vec!["read".to_string(), "write".to_string()]);
+        assert!(mgr.get_tools_in_toolset("nonexistent").is_empty());
+        
+        // get tool owner
+        assert_eq!(mgr.get_tool_owner("read"), Some("plugin-a".to_string()));
+        assert_eq!(mgr.get_tool_owner("touch"), Some("plugin-b".to_string()));
+        assert!(mgr.get_tool_owner("unknown").is_none());
+        
+        // get attribution map
+        let attribution = mgr.get_tool_to_plugin_map();
+        assert_eq!(attribution.get("read").unwrap(), "plugin-a");
+        assert_eq!(attribution.get("touch").unwrap(), "plugin-b");
+        assert_eq!(attribution.len(), 4);
     }
 }

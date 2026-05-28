@@ -212,8 +212,8 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ #55 | **VideoGenProvider trait** — Full trait with `video_gen` `ProviderKind`, `VideoGenOutput { url, data, mime_type, duration, format }`, `generate_video(prompt, model, duration, format)` |
-| ❌ #55 | **Fix VideoGenRegistry** — Wrap `Box<dyn VideoGenProvider>` instead of `Box<dyn ImageGenProvider>` |
+| ✅ #55 | **VideoGenProvider trait** — Full trait with `video_gen` `ProviderKind`, `VideoGenOutput { url, data, mime_type, duration, format }`, `generate_video(prompt, model, duration, format)` |
+| ✅ #55 | **Fix VideoGenRegistry** — Wrap `Box<dyn VideoGenProvider>` instead of `Box<dyn ImageGenProvider>` |
 
 ### 16. Registry Methods (remove, config-driven selection, builtin registration)
 
@@ -224,8 +224,8 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 | Status | Description |
 |--------|-------------|
 | ✅ #62 | **`remove()` on registries** — Add `remove()` to `ImageGenRegistry`, `VideoGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ModelProviderRegistry` |
-| ❌ #57 | **Config-driven provider selection** — Wire `AppConfig` fields (`image_gen.provider`, `web_search.provider`, etc.) to registry lookups via `get_by_name(kind, config_value)` |
-| ❌ #58 | **Builtin provider registration on startup** — Register builtin/default providers into registries when `PluginManager::new()` is called |
+| ⚠️ #57 | **Config-driven provider selection** — Partially wired (see #57 below); AppConfig does NOT contain plugin config fields due to circular dependency; PluginConfig.read via `PluginConfig::from_file()` or `PluginManager::set_config()` |
+| ✅ #58 | **Builtin provider registration on startup** — `PluginManager::new()` registers mock ImageGen, VideoGen, WebSearch, Browser, and ModelProvider into respective registries. ContextEngine excluded (agent handles internally) |
 
 ### 17. Plugin LLM Facade Trust-Gating
 
@@ -235,7 +235,18 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ #59 | **LLM facade trust-gating** — Check `trusted_plugins` config (whitelist) before returning transport; log warning for untrusted access; return `Option<&Transport>` or `Result` instead of bare `&` |
+| ✅ #59 | **LLM facade trust-gating** — `PluginContext::llm()` checks `trusted_plugins` allow-list (config.trusted + builtin list) before returning. Untrusted plugins log warning via `warn!()`. Builtin providers (oben-image-gen, video-gen, web-search, browser, model-provider) always trusted |
+
+### 18. PluginConfig Extensions
+
+| Severity | Description |
+|----------|-------------|
+| **priority-high** | PluginConfig had manual YAML parsing with hardcoded fields. Missing `trusted` list. AppConfig does NOT include PluginConfig due to circular dependency between oben-config and oben-plugin crates. |
+
+| Status | Description |
+|--------|-------------|
+| ✅ #57 | **PluginConfig serde + trusted** — PluginConfig now has `serde(default)` derive; added `trusted: Vec<String>` field for LLM facade trust-gating; added `is_trusted(plugin_name)` method; `from_file()` parses plugins.trusted section |
+| ℹ️ #57 | **AppConfig coupling** — Cannot import `oben-plugin` into `oben-config` due to circular dependency (oben-config → oben-plugin → oben-tools → oben-config); AppConfig stays independent; external callers load PluginConfig via `from_file()` or `PluginManager::set_config()` |
 
 ### 18. Toolset Grouping Return Format
 
@@ -245,8 +256,16 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Status | Description |
 |--------|-------------|
-| ❌ #60 | **Toolset grouping return format fix** — Return `HashMap<String, Vec<String>>` (names only) + separate plugin attribution map |
-| ❌ #60 | **Tool lookup by name from toolset** — `get_tools_in_toolset(toolset_name) -> Vec<String>` |
+### 19. Toolset Grouping Return Format Fix
+
+| Severity | Description |
+|----------|-------------|
+| **priority-medium** | Now returns `HashMap<String, Vec<String>>` (tool names only) with separate plugin attribution map via `tool_to_plugin: HashMap<String, String>`. |
+
+| Status | Description |
+|--------|-------------|
+| ✅ #60 | **Toolset grouping return format fix** — `get_tools_in_all_toolsets()` returns `HashMap<String, Vec<String>>` with tool names only + `get_tool_to_plugin_map()` returns separate attribution map |
+| ✅ #60 | **Tool lookup by name from toolset** — `get_tools_in_toolset(toolset_name) -> Vec<String>` returns tool names in a specific toolset |
 
 ---
 

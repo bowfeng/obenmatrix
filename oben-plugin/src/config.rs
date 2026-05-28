@@ -1,35 +1,38 @@
 //! Plugin configuration — enabled/disabled lists, provider selection, load gating.
 //!
 //! Maps to Hermes' `plugins.enabled`, `plugins.disabled`, and provider config
-/// values in config.yaml.
+//! values in config.yaml.
+//!
+//! ```yaml
+//! plugins:
+//!   enabled: []        # empty = auto-load only; list = explicit allow
+//!   disabled: []       # always blocked
+//!   trusted: []        # LLM facade trust-gating whitelist
+//! providers:
+//!   image_gen: mock    # which provider to use
+//!   web_search: tavily
+//! ```
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::fs;
 
 /// Plugin configuration from config.yaml.
-///
-/// Controls which plugins are loaded and how they are gated.
-/// ```yaml
-/// plugins:
-///   enabled: []        # empty = auto-load only; list = explicit allow
-///   disabled: []       # always blocked
-/// image_gen:
-///   provider: "mock"   # which provider to use
-/// web_search:
-///   provider: "tavily"
-/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginConfig {
     /// Explicit allow list. None or empty = all pass (except disabled).
-    /// If non-empty, only listed plugins are loaded.
+    #[serde(default)]
     pub enabled: Option<Vec<String>>,
 
     /// Always blocked, regardless of enabled list.
+    #[serde(default)]
     pub disabled: Vec<String>,
 
-    /// Provider selection by category. Keys like "image_gen", "web_search",
-    /// "browser", etc. Values are provider names to use.
+    /// Trusted plugins can access the host LLM facade via PluginContext::llm().
+    #[serde(default)]
+    pub trusted: Vec<String>,
+
+    /// Provider selection by category: "image_gen", "web_search", "browser", etc.
     #[serde(default)]
     pub providers: std::collections::HashMap<String, String>,
 }
@@ -42,12 +45,9 @@ impl PluginConfig {
         let content = fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Cannot read config file {}: {}", path.display(), e))?;
 
-        // Parse as full YAML with plugins + providers sections
         if let Ok(map) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-            // Build a config with plugins + providers sections
             let mut config = Self::default();
-            
-            // Parse plugins section
+
             if let Some(plugins) = map.get("plugins") {
                 if let Some(plugins_map) = plugins.as_mapping() {
                     for (k, v) in plugins_map {
@@ -64,12 +64,17 @@ impl PluginConfig {
                                     .filter_map(|val| val.as_str().map(String::from))
                                     .collect();
                             }
+                        } else if key == "trusted" {
+                            if let Some(trusted) = v.as_sequence() {
+                                config.trusted = trusted.iter()
+                                    .filter_map(|val| val.as_str().map(String::from))
+                                    .collect();
+                            }
                         }
                     }
                 }
             }
-            
-            // Parse providers section
+
             if let Some(providers) = map.get("providers") {
                 if let Some(providers_map) = providers.as_mapping() {
                     for (k, v) in providers_map {
@@ -79,9 +84,8 @@ impl PluginConfig {
                     }
                 }
             }
-            
-            // Check if we parsed anything
-            if config.enabled.is_some() || !config.disabled.is_empty() || !config.providers.is_empty() {
+
+            if config.enabled.is_some() || !config.disabled.is_empty() || !config.trusted.is_empty() || !config.providers.is_empty() {
                 return Ok(config);
             }
         }
@@ -112,6 +116,11 @@ impl PluginConfig {
     /// Check if a specific provider is configured for a category.
     pub fn has_provider(&self, category: &str, provider_name: &str) -> bool {
         self.providers.get(category).map(|s| s.as_str()) == Some(provider_name)
+    }
+
+    /// Check if a plugin is trusted to access the LLM facade.
+    pub fn is_trusted(&self, plugin_name: &str) -> bool {
+        self.trusted.iter().any(|t| t == plugin_name)
     }
 }
 

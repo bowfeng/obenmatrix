@@ -55,4 +55,5 @@ pub use cli_command::{CliCommand, CliCommandRegistry, CliCommandHandler, CliComm
 pub use message_injector::{MessageInjector, MessageAction, InjectedMessage};
 pub use mock_provider::{
     MockImageGenProvider, MockWebSearchProvider, MockBrowserProvider, MockContextEngine, MockModelProvider,
+    MockVideoGenProvider,
 };
