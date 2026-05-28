@@ -11,7 +11,8 @@ pub mod debug;
 pub mod clipboard;
 pub mod rate_limit;
 pub mod pricing;
-pub mod credential_pool;
+pub mod checkpoint;
+pub mod trajectory;
 
 pub use logging::*;
 pub use terminal::*;

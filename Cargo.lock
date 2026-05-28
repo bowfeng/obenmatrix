@@ -2264,12 +2264,15 @@ dependencies = [
  "itertools 0.14.0",
  "libc",
  "once_cell",
+ "rand 0.8.6",
  "regex",
  "reqwest",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
 ]
 
 [[package]]
