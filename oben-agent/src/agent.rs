@@ -85,8 +85,6 @@ pub struct Agent {
     dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
     /// Nudge / background memory review config.
     nudge_config: NudgeConfig,
-    /// User turns elapsed since last nudge review.
-    turns_since_nudge: usize,
 }
 
 impl Agent {
@@ -102,15 +100,14 @@ impl Agent {
             session_manager: SessionManager::new()?,
             interrupt_state: Arc::new(InterruptState::new()),
             fallback_chain: FallbackChain::new(config.fallback_models),
-            callbacks: config.callbacks,
-            prompt_cache: SystemPromptCache::new(),
-            dispatch_config: config.concurrent_dispatch_config,
-            nudge_config: config.nudge_config.unwrap_or_default(),
-            turns_since_nudge: 0,
-        };
-        // Initialize the prompt cache with the initial system prompt.
-        // The cache will be updated on each compaction/session change.
-        agent.prompt_cache.set_prompt(&config.system_prompt);
+        callbacks: config.callbacks,
+        prompt_cache: SystemPromptCache::new(),
+        dispatch_config: config.concurrent_dispatch_config,
+        nudge_config: config.nudge_config.unwrap_or_default(),
+    };
+    // Initialize the prompt cache with the initial system prompt.
+    // The cache will be updated on each compaction/session change.
+    agent.prompt_cache.set_prompt(&config.system_prompt);
         agent.eager_load_active_session();
         Ok(agent)
     }
