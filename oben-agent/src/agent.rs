@@ -63,10 +63,6 @@ pub struct Agent {
     transport: std::sync::Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
     /// Tools registry — owned by Agent.
     tools: Arc<oben_tools::ToolRegistry>,
-    /// Skills dirs — owned by Agent.
-    skills_dirs: Vec<std::path::PathBuf>,
-    /// System prompt — owned by Agent.
-    system_prompt: String,
     /// Context engine — owned by Agent, manages token tracking & compression.
     context_engine: Box<dyn crate::context::ContextEngine>,
     /// Call mode — tracked per-session (Fresh on first turn, Incremental after).
@@ -93,8 +89,6 @@ impl Agent {
         let mut agent = Self {
             transport: config.transport,
             tools: config.tools,
-            skills_dirs: config.skills_dirs,
-            system_prompt: config.system_prompt.clone(),
             context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(config.context_config)),
             call_mode: None,
             session_manager: SessionManager::new()?,
