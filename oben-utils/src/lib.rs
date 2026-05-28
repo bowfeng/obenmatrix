@@ -13,6 +13,7 @@ pub mod rate_limit;
 pub mod pricing;
 pub mod checkpoint;
 pub mod trajectory;
+pub mod advisory;
 
 pub use logging::*;
 pub use terminal::*;
