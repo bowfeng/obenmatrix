@@ -51,6 +51,8 @@ pub struct ChatPanel {
     pub tab_completion_items: Vec<String>,
     pub tab_completion_index: usize,
     pub tab_completion_original: String,
+    pub stream_info: String,
+    pub turn_state_ref: Option<std::sync::Arc<std::sync::Mutex<crate::turn::event::TurnState>>>,
 }
 
 impl ChatPanel {
@@ -72,6 +74,39 @@ impl ChatPanel {
             tab_completion_items: Vec::new(),
             tab_completion_index: 0,
             tab_completion_original: String::new(),
+            stream_info: String::new(),
+            turn_state_ref: None,
+        }
+    }
+
+    /// Update stream_info from turn state
+    pub fn update_from_turn_state(&mut self, turn_state: &crate::turn::event::TurnState) {
+        let mut parts = Vec::new();
+        
+        // Show active tool info
+        let active = &turn_state.active_tools;
+        if !active.is_empty() {
+            let names: Vec<String> = active.iter()
+                .take(2)
+                .map(|t| format!("{} ({})", t.name, t.context.chars().take(30).collect::<String>()))
+                .collect();
+            parts.push(format!("🔧 {}", names.join(", ")).to_string());
+        }
+        
+        // Show streaming text preview
+        if !turn_state.streaming_text.is_empty() {
+            let preview = if turn_state.streaming_text.len() > 100 {
+                format!("{}...", &turn_state.streaming_text[..100])
+            } else {
+                turn_state.streaming_text.clone()
+            };
+            parts.push(format!("💬 {}", preview));
+        }
+        
+        if !parts.is_empty() {
+            self.stream_info = parts.join("\n");
+        } else {
+            self.stream_info.clear();
         }
     }
 
@@ -238,6 +273,7 @@ impl Panel for ChatPanel {
         .split(area);
         draw_messages(frame, self, chunks[0]);
         draw_tool_trail(frame, self, chunks[0]);
+        draw_turn_status(frame, &self.stream_info);
 
         // Draw input bar
         let input_text = format!("> {}", &self.input[self.cursor..]);
@@ -771,4 +807,40 @@ fn draw_tool_trail(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
 
     let trail_para = Paragraph::new(Text::from(trail_lines));
     frame.render_widget(trail_para, trail_area);
+}
+
+fn draw_turn_status(frame: &mut Frame, stream_info: &str) {
+    if stream_info.is_empty() {
+        return;
+    }
+
+    let lines = stream_info.lines().collect::<Vec<_>>();
+    let height = lines.len().min(3) as u16;
+    if height == 0 {
+        return;
+    }
+
+    let displayed_lines: Vec<Line> = lines.iter().take(3).map(|l| Line::from(*l)).collect();
+    let para = Paragraph::new(displayed_lines);
+    let area = Rect::new(
+        2,
+        frame.area().height.saturating_sub(6),
+        frame.area().width.saturating_sub(4),
+        height,
+    );
+    frame.render_widget(para, area);
+
+    // Show streaming indicator in top-right
+    let first_line = lines.first().copied().unwrap_or("");
+    let indicator_span = Span::styled(
+        format!(" 🔵 {}", first_line),
+        Style::default().fg(Color::Yellow),
+    );
+    let indicator_area = Rect::new(
+        frame.area().width.saturating_sub(40),
+        0,
+        40,
+        1,
+    );
+    frame.render_widget(Paragraph::new(Line::from(indicator_span)), indicator_area);
 }

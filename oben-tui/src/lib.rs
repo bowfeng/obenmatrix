@@ -6,10 +6,11 @@
 pub mod clipboard;
 pub mod history;
 pub mod panels;
+pub mod turn;
 pub mod widgets;
 
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, KeyboardEnhancementFlags, MouseEvent, MouseEventKind};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode, disable_raw_mode};
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
@@ -22,7 +23,7 @@ use ratatui::Terminal;
 use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
@@ -33,10 +34,14 @@ use panels::setup::SetupPanel;
 use panels::sessions::SessionsPanel;
 use panels::{Panel, PanelId};
 
+use turn::event::TurnState;
+
 use oben_config::AppConfig;
 use oben_agent::{Agent, AgentConfig};
 use oben_models::Message;
 use oben_tools::ToolRegistry;
+
+
 
 
 pub struct Layouts {
@@ -88,6 +93,7 @@ pub struct App {
     pub input_tx: Option<tokio::sync::mpsc::UnboundedSender<TuiEvent>>,
     pub input_history: history::InputHistory,
     pub paste_mode: bool,
+    pub turn_state: Arc<Mutex<turn::event::TurnState>>,
 }
 
 impl App {
@@ -111,6 +117,7 @@ impl App {
             input_tx: None,
             input_history: history::InputHistory::new(),
             paste_mode: false,
+            turn_state: Arc::new(Mutex::new(turn::event::TurnState::new())),
         })
     }
 
@@ -127,6 +134,52 @@ impl App {
             &self.config.model, &assembled.prompt,
             &self.tools.list_tools().iter().map(|t| (*t).clone()).collect::<Vec<oben_models::Tool>>(),
         );
+
+        let turn_state = Arc::new(Mutex::new(turn::event::TurnState::new()));
+        let turn_state_clone = Arc::clone(&turn_state);
+
+        let callbacks = oben_agent::AgentCallbacks {
+            step: Some(Box::new(move |msg: &str| {
+                info!("STEP: {}", msg);
+            })),
+            status: Some(Box::new(move |level: &str, msg: &str| {
+                info!("STATUS [{}]: {}", level, msg);
+            })),
+            tool_start: {
+                let ts_clone = Arc::clone(&turn_state);
+                Some(Box::new(move |tool_name: &str, args_json: &str| {
+                    if let Ok(mut ts) = ts_clone.lock() {
+                        ts.on_tool_start("tool-id", tool_name, args_json);
+                    }
+                }))
+            },
+            tool_complete: {
+                let ts_clone = Arc::clone(&turn_state);
+                Some(Box::new(move |tool_name: &str, args_json: &str, result: &str| {
+                    if let Ok(mut ts) = ts_clone.lock() {
+                        ts.on_tool_complete("tool-id", tool_name, result);
+                    }
+                }))
+            },
+            stream_delta: {
+                let ts_clone = Arc::clone(&turn_state);
+                Some(Box::new(move |text: &str| {
+                    if let Ok(mut ts) = ts_clone.lock() {
+                        ts.on_stream_delta(text);
+                    }
+                }))
+            },
+            reasoning: {
+                let ts_clone = Arc::clone(&turn_state);
+                Some(Box::new(move |text: &str| {
+                    if let Ok(mut ts) = ts_clone.lock() {
+                        ts.on_reasoning(text);
+                    }
+                }))
+            },
+            ..Default::default()
+        };
+
         self.chat = Some(Agent::new(AgentConfig {
             system_prompt: assembled.prompt,
             transport,
@@ -136,11 +189,24 @@ impl App {
             max_messages: self.config.context.max_messages.unwrap_or(100),
             context_config: oben_agent::CompactCofig::default(),
             fallback_models: vec![],
-            callbacks: oben_agent::AgentCallbacks::default(),
+            callbacks,
             concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
             nudge_config: None,
         })?);
+
         Ok(())
+    }
+
+    pub fn begin_turn(&self) {
+        if let Ok(mut ts) = self.turn_state.lock() {
+            ts.on_turn_start();
+        }
+    }
+
+    pub fn finalize_turn(&self, outcome: &str) {
+        if let Ok(mut ts) = self.turn_state.lock() {
+            ts.on_completed(outcome);
+        }
     }
 
     pub fn create_chat_panel(&mut self) {
@@ -238,7 +304,7 @@ pub async fn run_tui() -> Result<()> {
 
     while app.running {
         terminal.draw(|frame| {
-            draw_ui(frame, &app);
+            draw_ui(frame, &mut app);
         })?;
 
         match event_rx.recv().await {
@@ -262,6 +328,9 @@ pub async fn run_tui() -> Result<()> {
             }
             Some(TuiEvent::ChatInput(input)) => {
                 if let Some(ref mut chat) = app.chat {
+                    // Begin turn tracking
+                    app.turn_state.lock().unwrap().on_turn_start();
+
                     // Preserve Input state across ChatPanel rebuild.
                     let was_chat = app.active_panel == PanelId::Chat;
                     let saved_input = app.panels.get(&PanelId::Chat).and_then(|p| {
@@ -272,6 +341,9 @@ pub async fn run_tui() -> Result<()> {
 
                     match chat.turn(&input, false, None).await {
                         Ok(_) => {
+                            // Finalize turn on success
+                            app.turn_state.lock().unwrap().on_completed("completed");
+                            
                             if was_chat {
                                 let session_id = app.chat.as_ref().and_then(|c| c.active_session_name().map(|s| s.clone()));
                                 let messages = app.chat.as_ref().and_then(|c| {
@@ -294,6 +366,8 @@ pub async fn run_tui() -> Result<()> {
                             }
                         }
                         Err(e) => {
+                            // Finalize turn on error
+                            app.turn_state.lock().unwrap().on_error(&format!("{}", e));
                             app.status = format!("Error: {}", e);
                             info!("Agent turn error: {}", e);
                         }
@@ -336,9 +410,31 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn draw_ui(frame: &mut Frame, app: &App) {
+fn draw_ui(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let layout = Layouts::new(area);
+
+    // Collect ChatPanel streaming state
+    let is_streaming = app.panels.get(&PanelId::Chat)
+        .and_then(|p| p.downcast_ref::<ChatPanel>())
+        .map(|cp| cp.streaming)
+        .unwrap_or(false);
+
+    let (mode_icon, fg_color) = match (is_streaming, app.status.as_str()) {
+        (true, _) => (" ⏳ Streaming", Color::Yellow),
+        (_, s) if s.starts_with("Error") => (" Error", Color::Red),
+        (_, s) if !s.is_empty() && s != " No session" => (" Info", Color::Magenta),
+        _ => (" Ready", Color::Green),
+    };
+
+    // Update ChatPanel stream_info from turn state
+    if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+        if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+            if let Ok(ts) = app.turn_state.lock() {
+                chat.update_from_turn_state(&ts);
+            }
+        }
+    }
 
     let panel_name = match app.active_panel {
         PanelId::Chat => "Chat",
@@ -359,19 +455,6 @@ fn draw_ui(frame: &mut Frame, app: &App) {
     let session_info = match app.chat.as_ref().and_then(|c| c.session_manager().active_session()) {
         Some(s) => format!(" Session: {} ({} msgs)", s.name, s.messages.len()),
         None => " No session".to_string(),
-    };
-
-    // Collect ChatPanel streaming state
-    let is_streaming = app.panels.get(&PanelId::Chat)
-        .and_then(|p| p.downcast_ref::<ChatPanel>())
-        .map(|cp| cp.streaming)
-        .unwrap_or(false);
-
-    let (mode_icon, fg_color) = match (is_streaming, app.status.as_str()) {
-        (true, _) => (" ⏳ Streaming", Color::Yellow),
-        (_, s) if s.starts_with("Error") => (" Error", Color::Red),
-        (_, s) if !s.is_empty() && s != " No session" => (" Info", Color::Magenta),
-        _ => (" Ready", Color::Green),
     };
 
     let status_text = format!(
