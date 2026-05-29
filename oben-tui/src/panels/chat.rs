@@ -6,10 +6,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarState, ScrollbarOrientation};
-use oben_models::Message;
-use std::time::Duration;
-use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
+use oben_models::Message;
+use std::time::Instant;
 
 pub enum ChatViewMode {
     History,
@@ -50,6 +49,9 @@ pub struct ChatPanel {
     pub streaming_text: String,
     pub last_enter_time: Option<Instant>,
     pub tool_trail: Vec<ToolTrailLine>,
+    pub tab_completion_items: Vec<String>,
+    pub tab_completion_index: usize,
+    pub tab_completion_original: String,
 }
 
 impl ChatPanel {
@@ -69,6 +71,9 @@ impl ChatPanel {
             streaming_text: String::new(),
             last_enter_time: None,
             tool_trail: Vec::new(),
+            tab_completion_items: Vec::new(),
+            tab_completion_index: 0,
+            tab_completion_original: String::new(),
         }
     }
 
@@ -357,7 +362,25 @@ impl Panel for ChatPanel {
                     }
                 }
             }
+            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::SHIFT) && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+Shift+M: cycle backwards
+                self.cycle_tab(false);
+            }
+            KeyCode::Esc => {
+                // Escape: clear completion overlay and restore original input
+                if !self.tab_completion_items.is_empty() && self.tab_completion_index == 0 {
+                    self.input = self.tab_completion_original.clone();
+                    self.cursor = self.input.len();
+                    self.tab_completion_items.clear();
+                    self.tab_completion_index = 0;
+                }
+            }
             _ => {}
+        }
+
+        // Update completions on any char input
+        if matches!(key.code, KeyCode::Char(_)) && key.modifiers == KeyModifiers::NONE {
+            self.update_completions();
         }
     }
 }
@@ -372,6 +395,89 @@ impl ChatPanel {
         self.input.push_str(raw);
         self.cursor = self.input.len();
         self.last_enter_time = None;
+    }
+
+    /// Update tab completion candidates based on current input prefix.
+    fn update_completions(&mut self) {
+        // Find the word before cursor (/command...)
+        let text_before_cursor = if self.cursor > 0 {
+            &self.input[..self.cursor]
+        } else {
+            ""
+        };
+        let last_word = text_before_cursor.split_whitespace().last().unwrap_or("");
+
+        if last_word.starts_with('/') {
+            // Filter slash commands that match the prefix
+            let prefix = last_word.to_lowercase();
+            let commands = [
+                ("/clear", "Clear chat messages"),
+                ("/compact", "Compress current session context"),
+                ("/details", "Show available commands"),
+                ("/help", "Show this help message"),
+                ("/new", "Start a new session"),
+                ("/quit", "Exit TUI"),
+                ("/reasoning", "Enable step-by-step reasoning mode"),
+                ("/session", "Show session info"),
+                ("/theme", "Current theme info"),
+                ("/todo", "Show pending tasks"),
+            ];
+            self.tab_completion_items = commands
+                .iter()
+                .filter(|(cmd, _)| cmd.to_lowercase().starts_with(&prefix))
+                .map(|(cmd, desc)| format!("{} — {}", cmd, desc))
+                .collect();
+            if !self.tab_completion_items.is_empty() {
+                self.tab_completion_index = 0;
+                self.tab_completion_original = self.input.clone();
+            } else {
+                self.tab_completion_items.clear();
+            }
+        } else {
+            // Don't clear tab completion items when not in slash context,
+            // just allow cycling
+        }
+    }
+
+    /// Apply the current tab completion to input.
+    fn apply_tab_completion(&mut self) {
+        if self.tab_completion_items.is_empty() { return; }
+        let entry = &self.tab_completion_items[self.tab_completion_index];
+        // Extract command name from "cmd — description"
+        let cmd = entry.split_whitespace().next().unwrap_or("");
+        // Replace the current word (from last whitespace or start to cursor)
+        let text_before = &self.input[..self.cursor];
+        let last_ws = text_before.rfind(|c: char| c.is_whitespace()).unwrap_or(0);
+        let replacement = if last_ws == 0 && last_ws < self.input.len() {
+            // No whitespace found — replace from 0
+            format!("{}{}", cmd, &self.input[self.cursor..])
+        } else {
+            let start = if last_ws == 0 { 0 } else { last_ws + 1 };
+            format!(
+                "{}{}{}",
+                &self.input[..start],
+                cmd,
+                &self.input[self.cursor..]
+            )
+        };
+        self.input = replacement.clone();
+        self.cursor = replacement.len();
+    }
+
+    /// Cycle the completion index.
+    fn cycle_tab(&mut self, forward: bool) {
+        if self.tab_completion_items.is_empty() { return; }
+        if forward {
+            self.tab_completion_index =
+                (self.tab_completion_index + 1) % self.tab_completion_items.len();
+        } else {
+            if self.tab_completion_index == 0 {
+                self.tab_completion_index = self.tab_completion_items.len() - 1;
+            } else {
+                self.tab_completion_index -= 1;
+            }
+        }
+        self.apply_tab_completion();
     }
 
     /// Extract tool trail from session messages.
