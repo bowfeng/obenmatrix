@@ -3,6 +3,8 @@
 //! Replaces the CLI-based `oben chat`, `oben setup`, `oben config`, and
 //! `oben sessions` with a ratatui-driven interface.
 
+pub mod clipboard;
+pub mod history;
 pub mod panels;
 pub mod widgets;
 
@@ -75,6 +77,8 @@ pub struct App {
     pub tools: std::sync::Arc<ToolRegistry>,
     pub tool_names: Vec<String>,
     pub input_tx: Option<tokio::sync::mpsc::UnboundedSender<TuiEvent>>,
+    pub input_history: history::InputHistory,
+    pub paste_mode: bool,
 }
 
 impl App {
@@ -96,6 +100,8 @@ impl App {
             tools: std::sync::Arc::new(tools),
             tool_names,
             input_tx: None,
+            input_history: history::InputHistory::new(),
+            paste_mode: false,
         })
     }
 
@@ -225,19 +231,30 @@ pub async fn run_tui() -> Result<()> {
                 handle_key(&mut app, key);
             }
             Some(TuiEvent::ChatInput(input)) => {
-                // Run turn directly in async context (no spawn needed)
                 if let Some(ref mut chat) = app.chat {
+                    // Preserve Input state across ChatPanel rebuild.
+                    let was_chat = app.active_panel == PanelId::Chat;
+                    let saved_input = app.panels.get(&PanelId::Chat).and_then(|p| {
+                        p.downcast_ref::<ChatPanel>().map(|cp| {
+                            (cp.input.clone(), cp.cursor, cp.last_enter_time, cp.streaming)
+                        })
+                    });
+
                     match chat.turn(&input, false, None).await {
                         Ok(_) => {
-                            if app.active_panel == PanelId::Chat {
+                            if was_chat {
                                 let session_id = app.chat.as_ref().and_then(|c| c.active_session_name().map(|s| s.clone()));
                                 let messages = app.chat.as_ref().and_then(|c| {
                                     c.session_manager().active_session().map(|s| s.messages.clone())
                                 });
-                                app.panels.insert(
-                                    PanelId::Chat,
-                                    Box::new(ChatPanel::new(session_id, messages)),
-                                );
+                                let mut new_panel = ChatPanel::new(session_id, messages);
+                                if let Some((inp, cursor, enter, streaming)) = saved_input {
+                                    new_panel.input = inp;
+                                    new_panel.cursor = cursor;
+                                    new_panel.last_enter_time = enter;
+                                    new_panel.streaming = streaming;
+                                }
+                                app.panels.insert(PanelId::Chat, Box::new(new_panel));
                             }
                         }
                         Err(e) => {

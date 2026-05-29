@@ -7,6 +7,7 @@ use ratatui::prelude::*;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarState, ScrollbarOrientation};
 use oben_models::Message;
+use std::time::Instant;
 
 pub enum ChatViewMode {
     History,
@@ -33,6 +34,7 @@ pub struct ChatPanel {
     pub streaming: bool,
     pub session_id: Option<String>,
     pub streaming_text: String,
+    pub last_enter_time: Option<Instant>,
 }
 
 impl ChatPanel {
@@ -50,7 +52,55 @@ impl ChatPanel {
             streaming: false,
             session_id,
             streaming_text: String::new(),
+            last_enter_time: None,
         }
+    }
+
+    fn handle_submit(&mut self, app: &mut App) {
+        let trimmed = self.input.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        if self.input.len() > 64 * 1024 {
+            app.status = "Input too large, max 64KB".to_string();
+            return;
+        }
+
+        if let Some(stamp) = self.last_enter_time {
+            if stamp.elapsed().as_millis() < 150 {
+                self.last_enter_time = None;
+                return;
+            }
+        }
+        self.last_enter_time = Some(Instant::now());
+
+        match trimmed {
+            "/quit" => {
+                app.running = false;
+                return;
+            }
+            "/clear" => {
+                self.messages.clear();
+                self.input.clear();
+                self.cursor = 0;
+                return;
+            }
+            "/help" => {
+                app.status = "Commands: /help /clear /quit".to_string();
+                self.input.clear();
+                self.cursor = 0;
+                return;
+            }
+            _ => {}
+        }
+
+        if let Some(tx) = &app.input_tx {
+            let _ = tx.send(TuiEvent::ChatInput(self.input.clone()));
+        }
+        app.input_history.append(&self.input);
+        self.input.clear();
+        self.cursor = 0;
     }
 }
 
@@ -87,6 +137,8 @@ fn to_chat_msg(msg: &Message) -> ChatMessage {
 }
 
 impl Panel for ChatPanel {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::vertical([
             Constraint::Min(0),
@@ -130,15 +182,20 @@ impl Panel for ChatPanel {
         }
 
         match key.code {
-            KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
-                if !self.input.is_empty() {
-                    // Send input to async main loop via channel
-                    if let Some(tx) = &app.input_tx {
-                        let _ = tx.send(TuiEvent::ChatInput(self.input.clone()));
-                    }
-                    self.input.clear();
-                    self.cursor = 0;
+            KeyCode::Up => {
+                if let Some(new_text) = app.input_history.up(&self.input) {
+                    self.input = new_text;
+                    self.cursor = self.input.len();
                 }
+            }
+            KeyCode::Down => {
+                if let Some(new_text) = app.input_history.down() {
+                    self.input = new_text;
+                    self.cursor = self.input.len();
+                }
+            }
+            KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
+                self.handle_submit(app);
             }
             KeyCode::Left => { if self.cursor > 0 { self.cursor -= 1; } }
             KeyCode::Right => { if self.cursor < self.input.len() { self.cursor += 1; } }
@@ -151,13 +208,36 @@ impl Panel for ChatPanel {
             KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
                 self.input.insert(self.cursor, c);
                 self.cursor += 1;
+                self.last_enter_time = None;
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.clear();
                 self.cursor = 0;
             }
+            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(text) = crate::clipboard::read_clipboard() {
+                    if !text.is_empty() {
+                        self.input.insert_str(self.cursor, &text);
+                        self.cursor += text.len();
+                        self.last_enter_time = None;
+                    }
+                }
+            }
             _ => {}
         }
+    }
+}
+
+impl ChatPanel {
+    /// Handle bracket-paste escape sequences (ESC [ ? 2004 h / l).
+    ///
+    /// Terminals send `\x1b[?2004h` at paste start and `\x1b[?2004l` at paste
+    /// end.  Any chars arriving after the start sequence are buffered as raw
+    /// text instead of being processed key-by-key.
+    pub fn handle_bracket_paste(&mut self, raw: &str) {
+        self.input.push_str(raw);
+        self.cursor = self.input.len();
+        self.last_enter_time = None;
     }
 }
 

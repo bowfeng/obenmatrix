@@ -164,6 +164,8 @@ impl SetupPanel {
 }
 
 impl Panel for SetupPanel {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let para = Paragraph::new(Text::from(self.help.as_str()))
             .block(Block::default().borders(Borders::ALL).title(" Setup "));
