@@ -363,17 +363,21 @@ impl Panel for ChatPanel {
                 }
             }
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::SHIFT) && key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+Shift+M: cycle backwards
+                // Ctrl+Shift+M: cycle backwards (unnecessary, Tab handles cycling)
                 self.cycle_tab(false);
             }
-            KeyCode::Esc => {
-                // Escape: clear completion overlay and restore original input
-                if !self.tab_completion_items.is_empty() && self.tab_completion_index == 0 {
-                    self.input = self.tab_completion_original.clone();
-                    self.cursor = self.input.len();
-                    self.tab_completion_items.clear();
-                    self.tab_completion_index = 0;
+            KeyCode::Tab => {
+                // Tab: cycle forward or apply first match
+                if !self.tab_completion_items.is_empty() {
+                    self.cycle_tab(true);
                 }
+            }
+            KeyCode::Esc if !self.tab_completion_items.is_empty() => {
+                // Escape: clear completion overlay and restore original input
+                self.input = self.tab_completion_original.clone();
+                self.cursor = self.input.len();
+                self.tab_completion_items.clear();
+                self.tab_completion_index = 0;
             }
             _ => {}
         }
