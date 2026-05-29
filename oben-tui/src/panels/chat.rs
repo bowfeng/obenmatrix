@@ -250,7 +250,6 @@ impl Panel for ChatPanel {
         frame.set_cursor_position(Position::new(chunks[1].x + cursor_x, chunks[1].y + 1));
 
         // Draw streaming indicator
-        // Draw streaming indicator
         if self.streaming {
             let indicator_text = " ⏳ Streaming... ".to_string();
             let indicator_span = Span::styled(
@@ -265,35 +264,6 @@ impl Panel for ChatPanel {
                 1,
             );
             frame.render_widget(indicator_para, indicator_area);
-        }
-
-        // Draw tab completion overlay if active
-        if !self.tab_completion_items.is_empty() {
-            let completion_text: Vec<Line> = self.tab_completion_items.iter().enumerate().map(|(i, entry)| {
-                let (cmd, desc) = entry.split_once(" — ").unwrap_or((&entry[..], ""));
-                if i == self.tab_completion_index {
-                    Line::from(Span::styled(
-                        format!(" ▸ {} ({})", cmd, desc),
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                    ))
-                } else {
-                    Line::from(Span::styled(
-                        format!("   {} ({})", cmd, desc),
-                        Style::default().fg(Color::DarkGray),
-                    ))
-                }
-            }).collect();
-
-            let max_lines = 8;
-            let display_lines = completion_text.iter().take(max_lines).cloned().collect::<Vec<_>>();
-            let completion_para = Paragraph::new(display_lines);
-            let completion_area = Rect::new(
-                chunks[1].x,
-                chunks[1].y + 3,
-                chunks[1].width,
-                if completion_text.len() > max_lines { max_lines as u16 } else { completion_text.len() as u16 },
-            );
-            frame.render_widget(completion_para, completion_area);
         }
 
         // Draw tab completion overlay if active
@@ -423,6 +393,46 @@ impl Panel for ChatPanel {
                     };
                     self.input.drain(self.cursor..truncated);
                     self.last_enter_time = None;
+                }
+            }
+            // Alt+B: move cursor back one word
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                if self.cursor > 0 {
+                    // First skip backwards over non-whitespace
+                    if let Some(word_start) = self.input[..self.cursor]
+                        .chars().rev()
+                        .find(|c| c.is_whitespace()).map(|c| self.cursor - self.input[..self.cursor].rfind(c).unwrap_or(0)) {
+                        self.cursor = word_start;
+                    }
+                    // Then skip backwards over whitespace
+                    while self.cursor > 0 && self.input[..self.cursor].ends_with(char::is_whitespace) {
+                        self.cursor -= 1;
+                    }
+                    if self.cursor > 0 {
+                        self.cursor = self.input[..self.cursor].find(|c: char| !c.is_whitespace()).unwrap_or(0);
+                    }
+                }
+            }
+            // Alt+F: move cursor forward one word
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                if self.cursor < self.input.len() {
+                    let after = &self.input[self.cursor..];
+                    // Skip over non-whitespace characters
+                    let mut in_word = false;
+                    let mut word_end = self.cursor;
+                    for (i, c) in after.chars().enumerate() {
+                        if in_word && c.is_whitespace() {
+                            word_end = self.cursor + i;
+                            break;
+                        }
+                        if !in_word && !c.is_whitespace() {
+                            in_word = true;
+                        }
+                        if i == after.len() - 1 && in_word {
+                            word_end = self.cursor + i + 1;
+                        }
+                    }
+                    self.cursor = word_end;
                 }
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
