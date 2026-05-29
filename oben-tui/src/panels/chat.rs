@@ -241,7 +241,8 @@ impl Panel for ChatPanel {
 
         // Draw input bar
         let input_text = format!("> {}", &self.input[self.cursor..]);
-        let input_para = Paragraph::new(Text::from(input_text.as_str()))
+        let input_para = Paragraph::new(input_text)
+            .style(Style::default().fg(Color::White))
             .block(Block::default().borders(Borders::ALL).title(" Input (Ctrl+W:del word, Ctrl+A/E:home/end) "));
         frame.render_widget(input_para, chunks[1]);
 
