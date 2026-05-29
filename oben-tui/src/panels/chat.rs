@@ -307,41 +307,27 @@ impl Panel for ChatPanel {
         match key.code {
             KeyCode::Up => {
                 if !self.tab_completion_items.is_empty() {
-                    // Tab completion active
                     if self.tab_completion_index == 0 {
                         return;
                     } else {
                         self.tab_completion_index -= 1;
                         self.apply_tab_completion();
                     }
-                } else if !self.messages.is_empty() {
-                    // Calculate total lines for scroll bounds
-                    let total_lines: usize = self.messages.iter().map(|msg| {
-                        1 + msg.text.matches('\n').count() + 1 + msg.tool_calls.len() + msg.tool_results.len()
-                    }).sum();
-                    let viewport = if total_lines > 50 { 50 } else { total_lines };
-                    if self.scroll > 0 && self.scroll < total_lines.saturating_sub(viewport) {
-                        self.scroll += 1;
-                    }
                 } else if let Some(new_text) = app.input_history.up(&self.input) {
                     self.input = new_text;
                     self.cursor = self.input.len();
+                } else {
+                    self.scroll_messages(1);
                 }
             }
             KeyCode::Down => {
                 if !self.tab_completion_items.is_empty() {
                     self.cycle_tab(true);
-                } else if !self.messages.is_empty() {
-                    let total_lines: usize = self.messages.iter().map(|msg| {
-                        1 + msg.text.matches('\n').count() + 1 + msg.tool_calls.len() + msg.tool_results.len()
-                    }).sum();
-                    let viewport = if total_lines > 50 { 50 } else { total_lines };
-                    if self.scroll > 0 && self.scroll > total_lines.saturating_sub(viewport) {
-                        self.scroll -= 1;
-                    }
                 } else if let Some(new_text) = app.input_history.down() {
                     self.input = new_text;
                     self.cursor = self.input.len();
+                } else {
+                    self.scroll_messages(-1);
                 }
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
@@ -568,6 +554,28 @@ impl ChatPanel {
             }
         }
         self.apply_tab_completion();
+    }
+
+    /// Calculate total line count for a messages list.
+    fn total_message_lines(&self) -> usize {
+        self.messages.iter().map(|msg| {
+            1 + msg.text.matches('\n').count() + 1 + msg.tool_calls.len() + msg.tool_results.len()
+        }).sum()
+    }
+
+    /// Scroll messages by delta (positive = up, negative = down).
+    fn scroll_messages(&mut self, delta: i32) {
+        if self.messages.is_empty() { return; }
+        let total: usize = self.total_message_lines();
+        let viewport = if total > 50 { 50 } else { total };
+        let max_scroll = total.saturating_sub(viewport);
+        if delta > 0 {
+            self.scroll = (self.scroll as i32 + delta)
+                .clamp(0, max_scroll as i32) as usize;
+        } else {
+            self.scroll = (self.scroll as i32 + delta)
+                .clamp(0, max_scroll as i32) as usize;
+        }
     }
 
     /// Extract tool trail from session messages.
