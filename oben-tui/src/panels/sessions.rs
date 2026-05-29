@@ -90,6 +90,8 @@ impl SessionsPanel {
 }
 
 impl Panel for SessionsPanel {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let header_cells = ["Name", "Msgs", "Updated"]
             .iter()

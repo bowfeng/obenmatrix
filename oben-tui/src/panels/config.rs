@@ -29,6 +29,8 @@ impl ConfigPanel {
 }
 
 impl Panel for ConfigPanel {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let text_lines: Vec<Line> = self
             .lines
