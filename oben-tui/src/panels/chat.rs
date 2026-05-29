@@ -7,7 +7,9 @@ use ratatui::prelude::*;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarState, ScrollbarOrientation};
 use oben_models::Message;
+use std::time::Duration;
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 
 pub enum ChatViewMode {
     History,
@@ -24,6 +26,18 @@ pub struct ChatMessage {
     pub tool_results: Vec<(String, String)>,
 }
 
+pub enum ToolTrailStatus {
+    Running(usize),
+    Success,
+    Error,
+}
+
+pub struct ToolTrailLine {
+    pub status: ToolTrailStatus,
+    pub tool_name: String,
+    pub output_preview: String,
+}
+
 pub struct ChatPanel {
     pub messages: Vec<ChatMessage>,
     pub input: String,
@@ -35,6 +49,7 @@ pub struct ChatPanel {
     pub session_id: Option<String>,
     pub streaming_text: String,
     pub last_enter_time: Option<Instant>,
+    pub tool_trail: Vec<ToolTrailLine>,
 }
 
 impl ChatPanel {
@@ -53,6 +68,7 @@ impl ChatPanel {
             session_id,
             streaming_text: String::new(),
             last_enter_time: None,
+            tool_trail: Vec::new(),
         }
     }
 
@@ -217,6 +233,7 @@ impl Panel for ChatPanel {
         ])
         .split(area);
         draw_messages(frame, self, chunks[0]);
+        draw_tool_trail(frame, self, chunks[0]);
 
         let input_text = format!("> {}", &self.input[self.cursor..]);
         let input_para = Paragraph::new(Text::from(input_text.as_str()))
@@ -356,6 +373,84 @@ impl ChatPanel {
         self.cursor = self.input.len();
         self.last_enter_time = None;
     }
+
+    /// Extract tool trail from session messages.
+    /// Finds assistant messages with tool_calls and their corresponding tool results.
+    pub fn extract_tool_trail(&mut self, messages: &[Message]) {
+        if messages.is_empty() {
+            self.tool_trail.clear();
+            return;
+        }
+
+        // Helper: get text content from a Message
+        let text_of = |msg: &Message| -> String {
+            match &msg.content {
+                oben_models::MessageContent::Text(s) => s.clone(),
+                oben_models::MessageContent::Image { .. } => String::new(),
+                oben_models::MessageContent::Parts(parts) => {
+                    parts.iter().filter_map(|p| {
+                        if let oben_models::MessagePart::Text(t) = p {
+                            Some(t.clone())
+                        } else {
+                            None
+                        }
+                    }).collect::<Vec<_>>().join("\n")
+                }
+            }
+        };
+
+        let mut trail: Vec<ToolTrailLine> = Vec::new();
+        let mut pending: Vec<String> = Vec::new(); // pending tool names
+
+        for msg in messages {
+            if msg.role == oben_models::MessageRole::Assistant {
+                if let Some(ref tool_calls) = msg.tool_calls {
+                    for tc in tool_calls {
+                        pending.push(tc.tool_name.clone());
+                    }
+                }
+            } else if msg.role == oben_models::MessageRole::Tool {
+                let output = text_of(msg);
+                let has_error = output.to_lowercase().contains("error") || output.to_lowercase().contains("failed");
+                let preview = if output.len() > 60 {
+                    format!("{}...", &output[..60])
+                } else {
+                    output.clone()
+                };
+
+                if let Some(pos) = pending.iter().position(|name| {
+                    output.contains(name.as_str()) || output.contains(&name[..name.len().min(20)])
+                }) {
+                    trail.push(ToolTrailLine {
+                        status: if has_error { ToolTrailStatus::Error } else { ToolTrailStatus::Success },
+                        tool_name: pending[pos].clone(),
+                        output_preview: preview,
+                    });
+                    pending.remove(pos);
+                } else if let Some(first_pending) = pending.first() {
+                    // Fallback: match by tool id (tool_call_ids)
+                    let tool_name = if let Some(id) = msg.tool_call_ids.first() {
+                        first_pending.clone()
+                    } else {
+                        "unknown".into()
+                    };
+                    trail.push(ToolTrailLine {
+                        status: if has_error { ToolTrailStatus::Error } else { ToolTrailStatus::Success },
+                        tool_name,
+                        output_preview: preview,
+                    });
+                }
+            }
+        }
+
+        // Reverse to chronological order
+        trail.reverse();
+        if trail.len() > 5 {
+            trail.drain(0..trail.len() - 5);
+        }
+
+        self.tool_trail = trail;
+    }
 }
 
 fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
@@ -407,4 +502,58 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
         let mut state = ScrollbarState::new(total_lines).position(panel.scroll);
         frame.render_stateful_widget(scrollbar, area, &mut state);
     }
+}
+
+fn draw_tool_trail(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
+    if panel.tool_trail.is_empty() {
+        return;
+    }
+
+    // Count tool trail lines needed
+    let mut trail_lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            " ── Tool Trail ── ",
+            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    for line in &panel.tool_trail {
+        let spinner_char = match line.status {
+            ToolTrailStatus::Running(idx) => {
+                let spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                spinners[idx % spinners.len()]
+            }
+            _ => '✓',
+        };
+
+        let fg = match line.status {
+            ToolTrailStatus::Running(_) => Color::Yellow,
+            ToolTrailStatus::Success => Color::Green,
+            ToolTrailStatus::Error => Color::Red,
+        };
+
+        let display_text = if line.output_preview.is_empty() {
+            format!(" {} {}", spinner_char, line.tool_name)
+        } else {
+            format!(" {} {} ({})", spinner_char, line.tool_name, line.output_preview)
+        };
+
+        trail_lines.push(Line::from(Span::styled(
+            display_text,
+            Style::default().fg(fg),
+        )));
+    }
+
+    // Limit trail area to 5 lines max
+    let trail_height = if trail_lines.len() > 6 { 6 } else { trail_lines.len() };
+    let h = area.height.min(trail_lines.len() as u16) - if trail_lines.len() > 1 { 1 } else { 0 };
+    let trail_area = Rect::new(
+        area.x,
+        area.y + area.height.saturating_sub(h),
+        area.width,
+        trail_height as u16,
+    );
+
+    let trail_para = Paragraph::new(Text::from(trail_lines));
+    frame.render_widget(trail_para, trail_area);
 }

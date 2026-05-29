@@ -255,12 +255,18 @@ pub async fn run_tui() -> Result<()> {
                                 let messages = app.chat.as_ref().and_then(|c| {
                                     c.session_manager().active_session().map(|s| s.messages.clone())
                                 });
+                                // Extract tool trail before messages are moved into ChatPanel
+                                let trail_msgs = messages.clone();
                                 let mut new_panel = ChatPanel::new(session_id, messages);
                                 if let Some((inp, cursor, enter, streaming)) = saved_input {
                                     new_panel.input = inp;
                                     new_panel.cursor = cursor;
                                     new_panel.last_enter_time = enter;
                                     new_panel.streaming = streaming;
+                                }
+                                // Build tool trail from session messages
+                                if let Some(ref msgs) = trail_msgs {
+                                    new_panel.extract_tool_trail(msgs);
                                 }
                                 app.panels.insert(PanelId::Chat, Box::new(new_panel));
                             }
