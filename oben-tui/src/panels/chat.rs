@@ -240,14 +240,17 @@ impl Panel for ChatPanel {
         draw_messages(frame, self, chunks[0]);
         draw_tool_trail(frame, self, chunks[0]);
 
+        // Draw input bar
         let input_text = format!("> {}", &self.input[self.cursor..]);
         let input_para = Paragraph::new(Text::from(input_text.as_str()))
-            .block(Block::default().borders(Borders::ALL).title(" Input (Ctrl+W:del word, Ctrl+A/E:home/end, Ctrl+K:del-line) "));
+            .block(Block::default().borders(Borders::ALL).title(" Input (Ctrl+W:del word, Ctrl+A/E:home/end) "));
         frame.render_widget(input_para, chunks[1]);
 
         let cursor_x = 2 + unicode_width::UnicodeWidthStr::width(&self.input[..self.cursor]) as u16;
         frame.set_cursor_position(Position::new(chunks[1].x + cursor_x, chunks[1].y + 1));
 
+        // Draw streaming indicator
+        // Draw streaming indicator
         if self.streaming {
             let indicator_text = " ⏳ Streaming... ".to_string();
             let indicator_span = Span::styled(
@@ -263,6 +266,64 @@ impl Panel for ChatPanel {
             );
             frame.render_widget(indicator_para, indicator_area);
         }
+
+        // Draw tab completion overlay if active
+        if !self.tab_completion_items.is_empty() {
+            let completion_text: Vec<Line> = self.tab_completion_items.iter().enumerate().map(|(i, entry)| {
+                let (cmd, desc) = entry.split_once(" — ").unwrap_or((&entry[..], ""));
+                if i == self.tab_completion_index {
+                    Line::from(Span::styled(
+                        format!(" ▸ {} ({})", cmd, desc),
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    ))
+                } else {
+                    Line::from(Span::styled(
+                        format!("   {} ({})", cmd, desc),
+                        Style::default().fg(Color::DarkGray),
+                    ))
+                }
+            }).collect();
+
+            let max_lines = 8;
+            let display_lines = completion_text.iter().take(max_lines).cloned().collect::<Vec<_>>();
+            let completion_para = Paragraph::new(display_lines);
+            let completion_area = Rect::new(
+                chunks[1].x,
+                chunks[1].y + 3,
+                chunks[1].width,
+                if completion_text.len() > max_lines { max_lines as u16 } else { completion_text.len() as u16 },
+            );
+            frame.render_widget(completion_para, completion_area);
+        }
+
+        // Draw tab completion overlay if active
+        if !self.tab_completion_items.is_empty() {
+            let completion_text: Vec<Line> = self.tab_completion_items.iter().enumerate().map(|(i, entry)| {
+                let (cmd, desc) = entry.split_once(" — ").unwrap_or((&entry[..], ""));
+                if i == self.tab_completion_index {
+                    Line::from(Span::styled(
+                        format!(" ▸ {} ({})", cmd, desc),
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    ))
+                } else {
+                    Line::from(Span::styled(
+                        format!("   {} ({})", cmd, desc),
+                        Style::default().fg(Color::DarkGray),
+                    ))
+                }
+            }).collect();
+
+            let max_lines = 8;
+            let display_lines = completion_text.iter().take(max_lines).cloned().collect::<Vec<_>>();
+            let completion_para = Paragraph::new(display_lines);
+            let completion_area = Rect::new(
+                chunks[1].x,
+                chunks[1].y + 3,
+                chunks[1].width,
+                if completion_text.len() > max_lines { max_lines as u16 } else { completion_text.len() as u16 },
+            );
+            frame.render_widget(completion_para, completion_area);
+        }
     }
 
     fn handle_key(&mut self, app: &mut App, key: KeyEvent) {
@@ -276,15 +337,26 @@ impl Panel for ChatPanel {
 
         match key.code {
             KeyCode::Up => {
-                if let Some(new_text) = app.input_history.up(&self.input) {
-                    self.input = new_text;
-                    self.cursor = self.input.len();
+                if self.tab_completion_items.is_empty() {
+                    if let Some(new_text) = app.input_history.up(&self.input) {
+                        self.input = new_text;
+                        self.cursor = self.input.len();
+                    }
+                } else if self.tab_completion_index == 0 {
+                    return; // top of completion list, let it fall through
+                } else {
+                    self.tab_completion_index -= 1;
+                    self.apply_tab_completion();
                 }
             }
             KeyCode::Down => {
-                if let Some(new_text) = app.input_history.down() {
-                    self.input = new_text;
-                    self.cursor = self.input.len();
+                if self.tab_completion_items.is_empty() {
+                    if let Some(new_text) = app.input_history.down() {
+                        self.input = new_text;
+                        self.cursor = self.input.len();
+                    }
+                } else {
+                    self.cycle_tab(true);
                 }
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
@@ -362,22 +434,11 @@ impl Panel for ChatPanel {
                     }
                 }
             }
-            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::SHIFT) && key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+Shift+M: cycle backwards (unnecessary, Tab handles cycling)
-                self.cycle_tab(false);
-            }
             KeyCode::Tab => {
-                // Tab: cycle forward or apply first match
+                // Tab: cycle through completion suggestions
                 if !self.tab_completion_items.is_empty() {
                     self.cycle_tab(true);
                 }
-            }
-            KeyCode::Esc if !self.tab_completion_items.is_empty() => {
-                // Escape: clear completion overlay and restore original input
-                self.input = self.tab_completion_original.clone();
-                self.cursor = self.input.len();
-                self.tab_completion_items.clear();
-                self.tab_completion_index = 0;
             }
             _ => {}
         }
