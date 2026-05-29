@@ -305,7 +305,7 @@ pub async fn run_tui() -> Result<()> {
             if event::poll(Duration::from_millis(16)).unwrap() {
                 match event::read().unwrap() {
                     crossterm::event::Event::Key(key) => {
-                        if key.kind == KeyEventKind::Press {
+                        if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
                             let _ = event_tx.send(TuiEvent::Key(key));
                         }
                     }
@@ -319,6 +319,7 @@ pub async fn run_tui() -> Result<()> {
     });
 
     while app.running {
+        // Draw first to avoid waiting for first event before showing UI
         terminal.draw(|frame| {
             draw_ui(frame, &mut app);
         })?;

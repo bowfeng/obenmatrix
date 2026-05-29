@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::prelude::*;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use tracing::info;
 use unicode_width::UnicodeWidthStr;
 use oben_models::Message;
 use std::time::Instant;
@@ -267,6 +268,7 @@ impl Panel for ChatPanel {
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let trail_count = if self.tool_trail.is_empty() { 0u16 } else { (self.tool_trail.len() + 1).min(7) as u16 };
+
         let chunks = Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(trail_count),
@@ -281,17 +283,49 @@ impl Panel for ChatPanel {
         let body_relative_height = chunks[0].height;
         draw_turn_status(frame, &self.stream_info, Rect::new(chunks[0].x, body_relative_y, chunks[0].width, body_relative_height));
 
-        // Draw input bar
-        let input_line = Line::from(format!("> {}", self.input));
-        let input_para = Paragraph::new(input_line)
+        // Draw input bar — multi-line wrapped, truncated to 3 lines
+        let input_height = chunks[2].height as usize;
+        let text_area_width = (chunks[2].width - 2).max(1) as usize; // -2 for borders
+        let max_displayed_chars = input_height * text_area_width;
+
+        // Truncate input to fit 3 wrapped lines of text
+        let full_text = if self.input.chars().count() > max_displayed_chars {
+            let chars_before: String = self.input.chars().take(max_displayed_chars).collect();
+            format!("> {}", chars_before)
+        } else {
+            format!("> {}", self.input)
+        };
+
+        let input_para = Paragraph::new(full_text)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .scroll((0, 0))
             .style(Style::default().fg(Color::White))
             .block(Block::default().borders(Borders::ALL).title(" Input (Ctrl+W:del word, Ctrl+A/E:home/end) "));
-        let mut render_area = chunks[2];
-        render_area.width += 1;
-        frame.render_widget(input_para, render_area);
+        frame.render_widget(input_para, chunks[2]);
 
-        let cursor_x = 2 + unicode_width::UnicodeWidthStr::width(&self.input[..self.cursor]) as u16;
-        frame.set_cursor_position(Position::new(render_area.x + cursor_x, render_area.y + 1));
+        // Calculate cursor position for wrapped text
+        let available_cols = chunks[2].width; // includes borders
+        let text_area_cols = (available_cols - 2) as usize; // -2 for left/right borders
+        let prefix_cols: usize = 2;
+
+        // Text area is where paragraph text wraps, no cap needed
+        let text_cols = text_area_cols.max(1);
+
+        if self.cursor <= self.input.len() {
+            let input_chars_before: &str = &self.input[..self.cursor.min(self.input.len())];
+            let cursor_col_width = unicode_width::UnicodeWidthStr::width(input_chars_before);
+            let total_text_cols = prefix_cols + cursor_col_width;
+
+            let line = total_text_cols / text_cols;
+            let col = total_text_cols % text_cols;
+
+            if line < input_height {
+                frame.set_cursor_position(Position::new(
+                    chunks[2].x + 1 + col as u16,
+                    chunks[2].y + 1 + line as u16,
+                ));
+            }
+        }
 
         // Draw streaming indicator
         if self.streaming {
@@ -757,11 +791,19 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
     let total_lines = lines.len();
     let viewport = area.height as usize;
     let max_scroll = if total_lines > viewport { total_lines - viewport } else { 0 };
-    let scroll_offset = panel.scroll.min(max_scroll);
-    let visible_lines: Vec<Line> = if scroll_offset + viewport >= total_lines {
-        lines.clone()
+    
+    // scroll=0 = bottom (latest), scroll=max_scroll = top (oldest)
+    let scroll_pos = panel.scroll.min(max_scroll);
+    let start = if max_scroll > 0 {
+        max_scroll.saturating_sub(scroll_pos)
     } else {
-        lines[scroll_offset..scroll_offset + viewport].to_vec()
+        0
+    };
+    
+    let visible_lines: Vec<Line> = if start + viewport <= total_lines {
+        lines[start..start + viewport].to_vec()
+    } else {
+        lines[start..].to_vec()
     };
     
     let para = Paragraph::new(visible_lines)
@@ -772,7 +814,7 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
-        let mut state = ScrollbarState::new(total_lines).position(panel.scroll);
+        let mut state = ScrollbarState::new(max_scroll).position(panel.scroll);
         frame.render_stateful_widget(scrollbar, area, &mut state);
     }
 }
