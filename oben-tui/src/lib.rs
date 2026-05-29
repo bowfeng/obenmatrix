@@ -249,13 +249,13 @@ pub async fn run_tui() -> Result<()> {
                 if let MouseEventKind::ScrollUp = mouse_event.kind {
                     if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
                         if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                            chat.scroll = chat.scroll.saturating_add(1);
+                            chat.scroll = chat.scroll.saturating_sub(1);
                         }
                     }
                 } else if let MouseEventKind::ScrollDown = mouse_event.kind {
                     if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
                         if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                            chat.scroll = chat.scroll.saturating_sub(1);
+                            chat.scroll = chat.scroll.saturating_add(1);
                         }
                     }
                 }
