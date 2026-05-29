@@ -2263,6 +2263,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "crossterm 0.29.0",
+ "dirs",
  "oben-agent",
  "oben-config",
  "oben-gateway",
@@ -2278,6 +2279,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "unicode-segmentation",
  "unicode-width",
 ]

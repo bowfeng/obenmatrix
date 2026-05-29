@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
+use tracing_subscriber::{fmt::layer, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use panels::chat::ChatPanel;
 use panels::config::ConfigPanel;
@@ -270,6 +271,21 @@ pub async fn run_tui() -> Result<()> {
     app.init_chat()?;
     app.init_panels()?;
 
+    // Only set up file logging if no subscriber has been initialized yet
+    // (e.g. when TUI is run directly without going through oben-cli)
+    #[cfg(not(feature = "cli-wired"))]
+    {
+        let log_dir = dirs::home_dir()
+            .map(|d| d.join(".obenalien/logs"))
+            .unwrap_or_else(|| std::path::PathBuf::from("./logs"));
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("oben-tui.log");
+        let log_file = std::fs::OpenOptions::new().create(true).append(true).open(log_path)?;
+        let subscriber = tracing_subscriber::registry()
+            .with(layer().with_writer(log_file));
+        let _ = subscriber.try_init();
+    }
+
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
     io::stdout().execute(EnableMouseCapture)?;
@@ -420,22 +436,6 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         .map(|cp| cp.streaming)
         .unwrap_or(false);
 
-    let (mode_icon, fg_color) = match (is_streaming, app.status.as_str()) {
-        (true, _) => (" ⏳ Streaming", Color::Yellow),
-        (_, s) if s.starts_with("Error") => (" Error", Color::Red),
-        (_, s) if !s.is_empty() && s != " No session" => (" Info", Color::Magenta),
-        _ => (" Ready", Color::Green),
-    };
-
-    // Update ChatPanel stream_info from turn state
-    if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
-        if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-            if let Ok(ts) = app.turn_state.lock() {
-                chat.update_from_turn_state(&ts);
-            }
-        }
-    }
-
     let panel_name = match app.active_panel {
         PanelId::Chat => "Chat",
         PanelId::Sessions => "Sessions",
@@ -457,32 +457,20 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         None => " No session".to_string(),
     };
 
-    let status_text = format!(
-        " [{}]  F1:Chat  F2:Sessions  F3:Config  F4:Setup  q/Ctrl+C:Quit  {} ",
-        mode_icon, session_info
-    );
-    let status_span = Span::styled(
-        status_text,
-        Style::default().fg(fg_color).bg(Color::DarkGray),
-    );
-    let status_para = Paragraph::new(Line::from(status_span));
-    frame.render_widget(status_para, layout.statusbar);
+    let session_text = format!(" Session: {}", session_info);
+    let mode_text = match (is_streaming, app.status.as_str()) {
+        (true, _) => "⏳ Streaming",
+        (_, s) if s.starts_with("Error") => "Error",
+        (_, s) if !s.is_empty() && s != " No session" => "Info",
+        _ => "Ready",
+    };
+    let status_text = format!(" F1:Chat  F2:Sessions  F3:Config  F4:Setup  q/Ctrl+C:Quit  ");
+    let status_lines: Vec<Line> = vec![
+        Line::from(format!(" [{}]  {}", mode_text, session_text)),
+        Line::from(status_text),
+    ];
+    let status_para = Paragraph::new(status_lines);
+    let status_area = Rect::new(layout.statusbar.x, layout.statusbar.y, layout.statusbar.width, layout.statusbar.height);
+    frame.render_widget(status_para, status_area);
 
-    // Show status message if set (non-empty and not auto-generated)
-    if !app.status.is_empty() {
-        let info_line = format!(" ℹ️ {}", app.status);
-        let info_span = Span::styled(
-            info_line,
-            Style::default().fg(Color::White).bg(Color::Blue),
-        );
-        // Render status message just above the status bar
-        let msg_area = Rect::new(
-            layout.statusbar.x,
-            layout.statusbar.y - 1,
-            layout.statusbar.width,
-            1,
-        );
-        let info_para = Paragraph::new(Line::from(info_span));
-        frame.render_widget(info_para, msg_area);
-    }
 }

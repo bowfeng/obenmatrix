@@ -172,7 +172,8 @@ impl Panel for SessionsPanel {
         frame.render_widget(table, area);
 
         if self.searching {
-            let search_text = format!("🔍 {}", &self.search_input[self.search_cursor..]);
+            let search_after = &self.search_input[self.search_cursor..];
+            let search_text = format!("🔍 {}", search_after);
             let para = Paragraph::new(Text::from(search_text.as_str()))
                 .block(Block::default().borders(Borders::ALL).title(" Search "));
             frame.render_widget(para, area);
@@ -192,17 +193,33 @@ impl Panel for SessionsPanel {
             match key.code {
                 KeyCode::Enter => { self.searching = false; self.apply_filter(); }
                 KeyCode::Esc => { self.searching = false; self.search_input.clear(); self.search_cursor = 0; }
-                KeyCode::Left => { if self.search_cursor > 0 { self.search_cursor -= 1; } }
-                KeyCode::Right => { self.search_cursor += 1; }
+                KeyCode::Left => {
+                    if self.search_cursor > 0 {
+                        self.search_cursor = self.search_input[..self.search_cursor]
+                            .char_indices()
+                            .last()
+                            .map(|(i, _)| i)
+                            .unwrap_or(0);
+                    }
+                }
+                KeyCode::Right => {
+                    if let Some(ch) = self.search_input[self.search_cursor..].chars().next() {
+                        self.search_cursor += ch.len_utf8();
+                    }
+                }
                 KeyCode::Backspace => {
                     if self.search_cursor > 0 {
-                        self.search_input.remove(self.search_cursor - 1);
-                        self.search_cursor -= 1;
+                        let ch = self.search_input[..self.search_cursor]
+                            .chars()
+                            .next_back()
+                            .unwrap();
+                        self.search_input.remove(self.search_cursor - ch.len_utf8());
+                        self.search_cursor -= ch.len_utf8();
                     }
                 }
                 KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
                     self.search_input.insert(self.search_cursor, c);
-                    self.search_cursor += 1;
+                    self.search_cursor += c.len_utf8();
                 }
                 _ => {}
             }

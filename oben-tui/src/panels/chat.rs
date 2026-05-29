@@ -266,24 +266,32 @@ impl Panel for ChatPanel {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
+        let trail_count = if self.tool_trail.is_empty() { 0u16 } else { (self.tool_trail.len() + 1).min(7) as u16 };
         let chunks = Layout::vertical([
             Constraint::Min(0),
+            Constraint::Length(trail_count),
             Constraint::Length(3),
         ])
         .split(area);
         draw_messages(frame, self, chunks[0]);
-        draw_tool_trail(frame, self, chunks[0]);
-        draw_turn_status(frame, &self.stream_info);
+        if !self.tool_trail.is_empty() {
+            draw_tool_trail(frame, self, chunks[1]);
+        }
+        let body_relative_y = chunks[0].y;
+        let body_relative_height = chunks[0].height;
+        draw_turn_status(frame, &self.stream_info, Rect::new(chunks[0].x, body_relative_y, chunks[0].width, body_relative_height));
 
         // Draw input bar
-        let input_text = format!("> {}", &self.input[self.cursor..]);
-        let input_para = Paragraph::new(input_text)
+        let input_line = Line::from(format!("> {}", self.input));
+        let input_para = Paragraph::new(input_line)
             .style(Style::default().fg(Color::White))
             .block(Block::default().borders(Borders::ALL).title(" Input (Ctrl+W:del word, Ctrl+A/E:home/end) "));
-        frame.render_widget(input_para, chunks[1]);
+        let mut render_area = chunks[2];
+        render_area.width += 1;
+        frame.render_widget(input_para, render_area);
 
         let cursor_x = 2 + unicode_width::UnicodeWidthStr::width(&self.input[..self.cursor]) as u16;
-        frame.set_cursor_position(Position::new(chunks[1].x + cursor_x, chunks[1].y + 1));
+        frame.set_cursor_position(Position::new(render_area.x + cursor_x, render_area.y + 1));
 
         // Draw streaming indicator
         if self.streaming {
@@ -323,9 +331,9 @@ impl Panel for ChatPanel {
             let display_lines = completion_text.iter().take(max_lines).cloned().collect::<Vec<_>>();
             let completion_para = Paragraph::new(display_lines);
             let completion_area = Rect::new(
-                chunks[1].x,
-                chunks[1].y + 3,
-                chunks[1].width,
+                chunks[2].x,
+                chunks[2].y + 3,
+                chunks[2].width,
                 if completion_text.len() > max_lines { max_lines as u16 } else { completion_text.len() as u16 },
             );
             frame.render_widget(completion_para, completion_area);
@@ -370,17 +378,33 @@ impl Panel for ChatPanel {
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
                 self.handle_submit(app);
             }
-            KeyCode::Left => { if self.cursor > 0 { self.cursor -= 1; } }
-            KeyCode::Right => { if self.cursor < self.input.len() { self.cursor += 1; } }
+            KeyCode::Left => {
+                if let Some((byte_idx, _)) = self.input[..self.cursor].char_indices().next_back() {
+                    self.cursor = byte_idx;
+                } else {
+                    self.cursor = 0;
+                }
+            }
+            KeyCode::Right => {
+                if let Some(ch) = self.input[self.cursor..].chars().next() {
+                    self.cursor += ch.len_utf8();
+                }
+            }
             KeyCode::Backspace => {
-                if self.cursor > 0 { self.input.remove(self.cursor - 1); self.cursor -= 1; }
+                if let Some((byte_idx, ch)) = self.input[..self.cursor].char_indices().next_back() {
+                    self.input.remove(byte_idx);
+                    self.cursor -= ch.len_utf8();
+                }
             }
             KeyCode::Delete => {
-                if self.cursor < self.input.len() { self.input.remove(self.cursor); }
+                if let Some(ch) = self.input[self.cursor..].chars().next() {
+                    self.input.remove(self.cursor);
+                    // cursor stays in place (next char slides into this position)
+                }
             }
             KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
                 self.input.insert(self.cursor, c);
-                self.cursor += 1;
+                self.cursor += c.len_utf8();
                 self.last_enter_time = None;
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -390,24 +414,17 @@ impl Panel for ChatPanel {
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.cursor > 0 {
                     let prefix = &self.input[..self.cursor];
-                    if let Some(word_start) = prefix
+                    let word_start = prefix
                         .char_indices()
                         .rev()
                         .find(|(_, c)| !c.is_whitespace() && !c.is_alphanumeric())
                         .map(|(i, _)| i + 1)
                         .or_else(|| {
-                            prefix
-                                .char_indices()
-                                .rev()
-                                .find(|(_, c)| c.is_whitespace())
-                                .map(|(i, _)| i + 1)
-                        }) {
-                        self.input.drain(word_start..self.cursor);
-                        self.cursor = word_start;
-                    } else {
-                        self.input.drain(0..self.cursor);
-                        self.cursor = 0;
-                    }
+                            prefix.char_indices().rev().find(|(_, c)| c.is_whitespace()).map(|(i, _)| i + 1)
+                        })
+                        .unwrap_or(0);
+                    self.input.drain(word_start..self.cursor);
+                    self.cursor = word_start;
                     self.last_enter_time = None;
                 }
             }
@@ -433,44 +450,48 @@ impl Panel for ChatPanel {
                     self.last_enter_time = None;
                 }
             }
-            // Alt+B: move cursor back one word
+            // Alt+B: move cursor back one word (byte-aware)
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
                 if self.cursor > 0 {
-                    // First skip backwards over non-whitespace
-                    if let Some(word_start) = self.input[..self.cursor]
-                        .chars().rev()
-                        .find(|c| c.is_whitespace()).map(|c| self.cursor - self.input[..self.cursor].rfind(c).unwrap_or(0)) {
-                        self.cursor = word_start;
-                    }
-                    // Then skip backwards over whitespace
-                    while self.cursor > 0 && self.input[..self.cursor].ends_with(char::is_whitespace) {
-                        self.cursor -= 1;
-                    }
-                    if self.cursor > 0 {
-                        self.cursor = self.input[..self.cursor].find(|c: char| !c.is_whitespace()).unwrap_or(0);
-                    }
+                    let before = &self.input[..self.cursor];
+                    // Skip backwards over whitespace, then find next non-whitespace word start
+                    let word_start = before
+                        .char_indices()
+                        .rev()
+                        .scan(true, |skip_ws, (i, c)| {
+                            if !(*skip_ws) && !c.is_whitespace() {
+                                Some(i)
+                            } else {
+                                *skip_ws = c.is_whitespace();
+                                None
+                            }
+                        })
+                        .next()
+                        .unwrap_or(0);
+                    self.cursor = word_start;
                 }
             }
-            // Alt+F: move cursor forward one word
+            // Alt+F: move cursor forward one word (byte-aware)
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
                 if self.cursor < self.input.len() {
                     let after = &self.input[self.cursor..];
-                    // Skip over non-whitespace characters
+                    let char_len = after.chars().map(|c| c.len_utf8()).collect::<Vec<_>>();
+                    let mut byte_offset = 0;
                     let mut in_word = false;
-                    let mut word_end = self.cursor;
                     for (i, c) in after.chars().enumerate() {
+                        let cur = byte_offset;
+                        byte_offset += char_len[i];
                         if in_word && c.is_whitespace() {
-                            word_end = self.cursor + i;
+                            self.cursor = cur;
                             break;
                         }
                         if !in_word && !c.is_whitespace() {
                             in_word = true;
                         }
-                        if i == after.len() - 1 && in_word {
-                            word_end = self.cursor + i + 1;
+                        if i == after.chars().count() - 1 && in_word {
+                            self.cursor = byte_offset;
                         }
                     }
-                    self.cursor = word_end;
                 }
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -653,8 +674,9 @@ impl ChatPanel {
             } else if msg.role == oben_models::MessageRole::Tool {
                 let output = text_of(msg);
                 let has_error = output.to_lowercase().contains("error") || output.to_lowercase().contains("failed");
-                let preview = if output.len() > 60 {
-                    format!("{}...", &output[..60])
+                let preview = if output.chars().count() > 60 {
+                    let truncated: String = output.chars().take(60).collect();
+                    format!("{}...", truncated)
                 } else {
                     output.clone()
                 };
@@ -795,21 +817,13 @@ fn draw_tool_trail(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
         )));
     }
 
-    // Limit trail area to 5 lines max
-    let trail_height = if trail_lines.len() > 6 { 6 } else { trail_lines.len() };
-    let h = area.height.min(trail_lines.len() as u16) - if trail_lines.len() > 1 { 1 } else { 0 };
-    let trail_area = Rect::new(
-        area.x,
-        area.y + area.height.saturating_sub(h),
-        area.width,
-        trail_height as u16,
-    );
-
+    // Use exactly the area provided by layout — cap lines to available height
+    let trail_height = (trail_lines.len() as u16).min(area.height);
     let trail_para = Paragraph::new(Text::from(trail_lines));
-    frame.render_widget(trail_para, trail_area);
+    frame.render_widget(trail_para, area);
 }
 
-fn draw_turn_status(frame: &mut Frame, stream_info: &str) {
+fn draw_turn_status(frame: &mut Frame, stream_info: &str, body_area: Rect) {
     if stream_info.is_empty() {
         return;
     }
@@ -823,24 +837,10 @@ fn draw_turn_status(frame: &mut Frame, stream_info: &str) {
     let displayed_lines: Vec<Line> = lines.iter().take(3).map(|l| Line::from(*l)).collect();
     let para = Paragraph::new(displayed_lines);
     let area = Rect::new(
-        2,
-        frame.area().height.saturating_sub(6),
-        frame.area().width.saturating_sub(4),
+        body_area.x,
+        body_area.y,
+        body_area.width,
         height,
     );
     frame.render_widget(para, area);
-
-    // Show streaming indicator in top-right
-    let first_line = lines.first().copied().unwrap_or("");
-    let indicator_span = Span::styled(
-        format!(" 🔵 {}", first_line),
-        Style::default().fg(Color::Yellow),
-    );
-    let indicator_area = Rect::new(
-        frame.area().width.saturating_sub(40),
-        0,
-        40,
-        1,
-    );
-    frame.render_widget(Paragraph::new(Line::from(indicator_span)), indicator_area);
 }
