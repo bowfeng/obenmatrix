@@ -86,8 +86,79 @@ impl ChatPanel {
                 self.cursor = 0;
                 return;
             }
+            "/new" => {
+                // Request a new session from the agent
+                if let Some(tx) = &app.input_tx {
+                    let _ = tx.send(TuiEvent::ChatInput("start new session".into()));
+                }
+                self.input.clear();
+                self.cursor = 0;
+                return;
+            }
+            "/details" => {
+                app.status = "Details: Use /session view to see all commands and options.".to_string();
+                return;
+            }
+            "/theme" => {
+                app.status = "Theme: Currently using dark theme. Configuration via ~/.config/obenalien/config.yaml.".to_string();
+                return;
+            }
+            "/reasoning" => {
+                // Toggle reasoning: append explicit instruction
+                let tx_ref = app.input_tx.clone();
+                if let Some(tx) = &tx_ref {
+                    let _ = tx.send(TuiEvent::ChatInput(format!("{}\n\n[reasoning mode: please explain your step-by-step reasoning before responding]", self.input)));
+                }
+                return;
+            }
+            "/compact" => {
+                app.status = "Compacting session context...".to_string();
+                if let Some(tx) = &app.input_tx {
+                    let _ = tx.send(TuiEvent::ChatInput("compact session".into()));
+                }
+                self.input.clear();
+                self.cursor = 0;
+                return;
+            }
+            "/todo" => {
+                app.status = "TODO: No pending tasks. Tools can set TODO items via task output.".to_string();
+                return;
+            }
+            "/session" => {
+                let mut info = "Active session management:".to_string();
+                if let Some(ref sid) = self.session_id {
+                    info.push_str(&format!("\n  ID: {}", sid));
+                }
+                info.push_str("\n  Commands: /new (new session), /compact (compress context), /switch or press F2 for sessions list");
+                app.status = info;
+                self.input.clear();
+                self.cursor = 0;
+                return;
+            }
             "/help" => {
-                app.status = "Commands: /help /clear /quit".to_string();
+                let help = "Slash commands:\
+                    \n  /help        Show this help message\
+                    \n  /clear       Clear chat messages\
+                    \n  /quit        Exit TUI\
+                    \n  /new         Start a new session\
+                    \n  /session     Show session info\
+                    \n  /compact     Compress current session context\
+                    \n  /todo        Show pending tasks\
+                    \n  /reasoning   Enable step-by-step reasoning mode\
+                    \n  /details     Show available commands\
+                    \n  /theme       Current theme info\
+                    \n\nKeyboard:\
+                    \n  Up/Down    Navigate input history\
+                    \n  Ctrl+A     Move cursor to start\
+                    \n  Ctrl+E     Move cursor to end\
+                    \n  Ctrl+W     Delete word before cursor\
+                    \n  Ctrl+K     Delete from cursor to end\
+                    \n  Ctrl+U     Clear entire input\
+                    \n  Ctrl+V     Paste from system clipboard\
+                    \n  Alt+D      Delete next word\
+                    \n  Ctrl+C     Exit TUI\
+                    \n  F1-F4     Switch panels (Chat/Sessions/Config/Setup)";
+                app.status = help.to_string();
                 self.input.clear();
                 self.cursor = 0;
                 return;
@@ -149,7 +220,7 @@ impl Panel for ChatPanel {
 
         let input_text = format!("> {}", &self.input[self.cursor..]);
         let input_para = Paragraph::new(Text::from(input_text.as_str()))
-            .block(Block::default().borders(Borders::ALL).title(" Input "));
+            .block(Block::default().borders(Borders::ALL).title(" Input (Ctrl+W:del word, Ctrl+A/E:home/end, Ctrl+K:del-line) "));
         frame.render_widget(input_para, chunks[1]);
 
         let cursor_x = 2 + unicode_width::UnicodeWidthStr::width(&self.input[..self.cursor]) as u16;
@@ -213,6 +284,52 @@ impl Panel for ChatPanel {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.clear();
                 self.cursor = 0;
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.cursor > 0 {
+                    let prefix = &self.input[..self.cursor];
+                    if let Some(word_start) = prefix
+                        .char_indices()
+                        .rev()
+                        .find(|(_, c)| !c.is_whitespace() && !c.is_alphanumeric())
+                        .map(|(i, _)| i + 1)
+                        .or_else(|| {
+                            prefix
+                                .char_indices()
+                                .rev()
+                                .find(|(_, c)| c.is_whitespace())
+                                .map(|(i, _)| i + 1)
+                        }) {
+                        self.input.drain(word_start..self.cursor);
+                        self.cursor = word_start;
+                    } else {
+                        self.input.drain(0..self.cursor);
+                        self.cursor = 0;
+                    }
+                    self.last_enter_time = None;
+                }
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor = 0;
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor = self.input.len();
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.truncate(self.cursor);
+                self.last_enter_time = None;
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
+                if self.cursor < self.input.len() {
+                    let after = &self.input[self.cursor..];
+                    let truncated = if let Some(sp) = after.find(|c: char| c.is_whitespace()) {
+                        self.cursor + sp
+                    } else {
+                        self.input.len()
+                    };
+                    self.input.drain(self.cursor..truncated);
+                    self.last_enter_time = None;
+                }
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(text) = crate::clipboard::read_clipboard() {

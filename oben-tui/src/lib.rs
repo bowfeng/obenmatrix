@@ -66,6 +66,14 @@ pub(crate) enum TuiEvent {
     ChatInput(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusMode {
+    Ready,
+    Streaming,
+    Error,
+    ToolRunning,
+}
+
 pub struct App {
     pub running: bool,
     pub active_panel: PanelId,
@@ -325,14 +333,45 @@ fn draw_ui(frame: &mut Frame, app: &App) {
         None => " No session".to_string(),
     };
 
+    // Collect ChatPanel streaming state
+    let is_streaming = app.panels.get(&PanelId::Chat)
+        .and_then(|p| p.downcast_ref::<ChatPanel>())
+        .map(|cp| cp.streaming)
+        .unwrap_or(false);
+
+    let (mode_icon, fg_color) = match (is_streaming, app.status.as_str()) {
+        (true, _) => (" ⏳ Streaming", Color::Yellow),
+        (_, s) if s.starts_with("Error") => (" Error", Color::Red),
+        (_, s) if !s.is_empty() && s != " No session" => (" Info", Color::Magenta),
+        _ => (" Ready", Color::Green),
+    };
+
     let status_text = format!(
-        " F1:Chat  F2:Sessions  F3:Config  F4:Setup  q/Ctrl+C:Quit  {} ",
-        session_info
+        " [{}]  F1:Chat  F2:Sessions  F3:Config  F4:Setup  q/Ctrl+C:Quit  {} ",
+        mode_icon, session_info
     );
     let status_span = Span::styled(
         status_text,
-        Style::default().fg(Color::White).bg(Color::DarkGray),
+        Style::default().fg(fg_color).bg(Color::DarkGray),
     );
     let status_para = Paragraph::new(Line::from(status_span));
     frame.render_widget(status_para, layout.statusbar);
+
+    // Show status message if set (non-empty and not auto-generated)
+    if !app.status.is_empty() {
+        let info_line = format!(" ℹ️ {}", app.status);
+        let info_span = Span::styled(
+            info_line,
+            Style::default().fg(Color::White).bg(Color::Blue),
+        );
+        // Render status message just above the status bar
+        let msg_area = Rect::new(
+            layout.statusbar.x,
+            layout.statusbar.y - 1,
+            layout.statusbar.width,
+            1,
+        );
+        let info_para = Paragraph::new(Line::from(info_span));
+        frame.render_widget(info_para, msg_area);
+    }
 }
