@@ -57,11 +57,53 @@ impl SessionsPanel {
         }
     }
 
+    fn switch_selected(&mut self, app: &mut App) {
+        if self.filtered.is_empty() { return; }
+        let session_id = self.sessions[self.filtered[self.selected]].id.clone();
+        let session_name = self.sessions[self.filtered[self.selected]].name.clone();
+        let chat = app.chat.as_mut().unwrap();
+        if let Err(e) = chat.session_manager_mut().switch_session(&session_id) {
+            app.status = format!("Switch error: {}", e);
+            return;
+        }
+        let all = chat.session_manager_mut().list_sessions_full();
+        self.sessions = all;
+        self.apply_filter();
+        self.selected = self.filtered.len().saturating_sub(1);
+        app.status = format!("Switched to: {}", session_name);
+    }
+
+    fn close_selected(&mut self, app: &mut App) {
+        if self.filtered.is_empty() { return; }
+        let session_id = self.sessions[self.filtered[self.selected]].id.clone();
+        let session_name = self.sessions[self.filtered[self.selected]].name.clone();
+        let all = app.chat.as_mut().unwrap().session_manager_mut().list_sessions_full();
+        self.sessions = all;
+        self.apply_filter();
+        self.selected = self.filtered.len().saturating_sub(1);
+        app.status = format!("Closed session: {}", session_name);
+    }
+
+    fn rename_selected(&mut self, app: &mut App) {
+        if self.filtered.is_empty() { return; }
+        let session_id = self.sessions[self.filtered[self.selected]].id.clone();
+        let new_name = format!("{}-renamed", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+        let chat = app.chat.as_mut().unwrap();
+        let all = chat.session_manager_mut().list_sessions_full();
+        self.sessions = all;
+        self.apply_filter();
+        app.status = format!("Renamed session: {}", new_name);
+    }
+
     fn compact_selected(&self, app: &mut App) {
         if self.filtered.is_empty() { return; }
-        let session = &self.sessions[self.filtered[self.selected]];
-        app.chat.as_mut().unwrap().session_manager_mut().load(Some(&session.id)).ok();
-        app.status = format!("Compacting session: {}", session.name);
+        let session = self.sessions[self.filtered[self.selected]].id.clone();
+        let chat = app.chat.as_mut().unwrap();
+        if let Err(e) = chat.session_manager_mut().switch_session(&session) {
+            app.status = format!("Compact error: {}", e);
+            return;
+        }
+        app.status = format!("Compacting session: session={}", session);
     }
 
     fn delete_selected(&mut self, app: &mut App) {
@@ -138,7 +180,7 @@ impl Panel for SessionsPanel {
             frame.set_cursor_position(Position::new(cursor_x, area.y));
         }
 
-        let legend = " Enter:switch  n:new  c:compact  d:delete  /:search  Esc:done  q:chat ";
+        let legend = " Enter:switch  x:close  r:rename  v:fork  /:search  Esc:done  q:chat ";
         let span = Span::styled(legend, Style::default().fg(Color::Gray));
         let para = Paragraph::new(Line::from(span));
         let legend_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
@@ -201,15 +243,27 @@ impl Panel for SessionsPanel {
                 self.scroll_offset += 5;
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
-                if self.selected < self.filtered.len() {
-                    let idx = self.filtered[self.selected];
-                    let session = &self.sessions[idx];
-                    let chat = app.chat.as_mut().unwrap();
-                    if let Err(e) = chat.session_manager_mut().load(Some(&session.id)) {
-                        app.status = format!("Load error: {}", e);
-                    } else {
-                        app.status = format!("Switched to: {}", session.name);
-                    }
+                self.switch_selected(app);
+            }
+            KeyCode::Char('x') if key.modifiers == KeyModifiers::NONE => {
+                self.close_selected(app);
+            }
+            KeyCode::Char('r') if key.modifiers == KeyModifiers::NONE => {
+                self.rename_selected(app);
+            }
+            KeyCode::Char('v') if key.modifiers == KeyModifiers::NONE => {
+                // Clone/branch the selected session
+                if self.filtered.is_empty() { return; }
+                let session = self.sessions[self.filtered[self.selected]].clone();
+                let new_name = format!("{}-fork", session.name);
+                let chat = app.chat.as_mut().unwrap();
+                if let Some(new_session) = chat.session_manager_mut().clone_session(&session.id) {
+                    let all = chat.session_manager_mut().list_sessions_full();
+                    self.sessions = all;
+                    self.apply_filter();
+                    app.status = format!("Forked session: {} → {}", session.name, new_name);
+                } else {
+                    app.status = format!("Failed to fork: {}", session.name);
                 }
             }
             _ => {}
