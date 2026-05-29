@@ -9,7 +9,7 @@ pub mod panels;
 pub mod widgets;
 
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, KeyboardEnhancementFlags, MouseEvent, MouseEventKind};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode, disable_raw_mode};
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
@@ -64,6 +64,7 @@ impl Layouts {
 pub(crate) enum TuiEvent {
     Key(KeyEvent),
     ChatInput(String),
+    Mouse(MouseEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,10 +221,16 @@ pub async fn run_tui() -> Result<()> {
     let reader_handle = tokio::task::spawn_blocking(move || {
         while running_clone.load(Ordering::SeqCst) {
             if event::poll(Duration::from_millis(16)).unwrap() {
-                if let crossterm::event::Event::Key(key) = event::read().unwrap() {
-                    if key.kind == KeyEventKind::Press {
-                        let _ = event_tx.send(TuiEvent::Key(key));
+                match event::read().unwrap() {
+                    crossterm::event::Event::Key(key) => {
+                        if key.kind == KeyEventKind::Press {
+                            let _ = event_tx.send(TuiEvent::Key(key));
+                        }
                     }
+                    crossterm::event::Event::Mouse(mouse) => {
+                        let _ = event_tx.send(TuiEvent::Mouse(mouse));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -237,6 +244,21 @@ pub async fn run_tui() -> Result<()> {
         match event_rx.recv().await {
             Some(TuiEvent::Key(key)) => {
                 handle_key(&mut app, key);
+            }
+            Some(TuiEvent::Mouse(mouse_event)) => {
+                if let MouseEventKind::ScrollUp = mouse_event.kind {
+                    if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                        if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                            chat.scroll = chat.scroll.saturating_add(1);
+                        }
+                    }
+                } else if let MouseEventKind::ScrollDown = mouse_event.kind {
+                    if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                        if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                            chat.scroll = chat.scroll.saturating_sub(1);
+                        }
+                    }
+                }
             }
             Some(TuiEvent::ChatInput(input)) => {
                 if let Some(ref mut chat) = app.chat {

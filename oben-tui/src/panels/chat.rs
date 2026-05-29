@@ -2,10 +2,10 @@
 
 use super::Panel;
 use crate::{App, TuiEvent};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarState, ScrollbarOrientation};
+use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use unicode_width::UnicodeWidthStr;
 use oben_models::Message;
 use std::time::Instant;
@@ -42,7 +42,6 @@ pub struct ChatPanel {
     pub input: String,
     pub cursor: usize,
     pub scroll: usize,
-    pub max_scroll: usize,
     pub view_mode: ChatViewMode,
     pub streaming: bool,
     pub session_id: Option<String>,
@@ -64,7 +63,6 @@ impl ChatPanel {
             input: String::new(),
             cursor: 0,
             scroll: 0,
-            max_scroll: 0,
             view_mode: ChatViewMode::History,
             streaming: false,
             session_id,
@@ -230,6 +228,7 @@ fn to_chat_msg(msg: &Message) -> ChatMessage {
 
 impl Panel for ChatPanel {
     fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::vertical([
@@ -307,26 +306,42 @@ impl Panel for ChatPanel {
 
         match key.code {
             KeyCode::Up => {
-                if self.tab_completion_items.is_empty() {
-                    if let Some(new_text) = app.input_history.up(&self.input) {
-                        self.input = new_text;
-                        self.cursor = self.input.len();
+                if !self.tab_completion_items.is_empty() {
+                    // Tab completion active
+                    if self.tab_completion_index == 0 {
+                        return;
+                    } else {
+                        self.tab_completion_index -= 1;
+                        self.apply_tab_completion();
                     }
-                } else if self.tab_completion_index == 0 {
-                    return; // top of completion list, let it fall through
-                } else {
-                    self.tab_completion_index -= 1;
-                    self.apply_tab_completion();
+                } else if !self.messages.is_empty() {
+                    // Calculate total lines for scroll bounds
+                    let total_lines: usize = self.messages.iter().map(|msg| {
+                        1 + msg.text.matches('\n').count() + 1 + msg.tool_calls.len() + msg.tool_results.len()
+                    }).sum();
+                    let viewport = if total_lines > 50 { 50 } else { total_lines };
+                    if self.scroll > 0 && self.scroll < total_lines.saturating_sub(viewport) {
+                        self.scroll += 1;
+                    }
+                } else if let Some(new_text) = app.input_history.up(&self.input) {
+                    self.input = new_text;
+                    self.cursor = self.input.len();
                 }
             }
             KeyCode::Down => {
-                if self.tab_completion_items.is_empty() {
-                    if let Some(new_text) = app.input_history.down() {
-                        self.input = new_text;
-                        self.cursor = self.input.len();
-                    }
-                } else {
+                if !self.tab_completion_items.is_empty() {
                     self.cycle_tab(true);
+                } else if !self.messages.is_empty() {
+                    let total_lines: usize = self.messages.iter().map(|msg| {
+                        1 + msg.text.matches('\n').count() + 1 + msg.tool_calls.len() + msg.tool_results.len()
+                    }).sum();
+                    let viewport = if total_lines > 50 { 50 } else { total_lines };
+                    if self.scroll > 0 && self.scroll > total_lines.saturating_sub(viewport) {
+                        self.scroll -= 1;
+                    }
+                } else if let Some(new_text) = app.input_history.down() {
+                    self.input = new_text;
+                    self.cursor = self.input.len();
                 }
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
@@ -636,27 +651,25 @@ impl ChatPanel {
 
 fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
-
-    for msg in &panel.messages {
-        let role_color = match msg.role.as_str() {
-            "User" => Color::Green,
-            "Assistant" => Color::Blue,
-            "System" => Color::Magenta,
-            "Tool" => Color::Yellow,
-            _ => Color::Gray,
-        };
-        let role_line = Line::from(Span::styled(
+    let line_indices: Vec<usize> = panel.messages.iter().flat_map(|msg| {
+        let mut indices = vec![lines.len()];
+        lines.push(Line::from(Span::styled(
             format!(" ── {} ── ", msg.role),
-            Style::default().fg(role_color).add_modifier(Modifier::BOLD),
-        ));
-        lines.push(role_line);
-
+            Style::default().fg(match msg.role.as_str() {
+                "User" => Color::Green,
+                "Assistant" => Color::Blue,
+                "System" => Color::Magenta,
+                "Tool" => Color::Yellow,
+                _ => Color::Gray,
+            }).add_modifier(Modifier::BOLD),
+        )));
         for line in msg.text.split('\n') {
+            indices.push(lines.len());
             lines.push(Line::from(Span::raw(line.to_string())));
         }
-
         if msg.has_tool_calls && !msg.tool_calls.is_empty() {
             for tc in &msg.tool_calls {
+                indices.push(lines.len());
                 lines.push(Line::from(format!("   🔧 {}", tc)));
             }
             for (tool_name, output) in &msg.tool_results {
@@ -665,18 +678,30 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
                 } else {
                     output.clone()
                 };
+                indices.push(lines.len());
                 lines.push(Line::from(format!("   ✅ {} → {}", tool_name, preview)));
             }
         }
+        indices.push(lines.len());
         lines.push(Line::from(""));
-    }
-
+        indices
+    }).collect();
+    
     let total_lines = lines.len();
-    let para = Paragraph::new(Text::from(lines))
+    let viewport = area.height as usize;
+    let max_scroll = if total_lines > viewport { total_lines - viewport } else { 0 };
+    let scroll_offset = panel.scroll.min(max_scroll);
+    let visible_lines: Vec<Line> = if scroll_offset + viewport >= total_lines {
+        lines.clone()
+    } else {
+        lines[scroll_offset..scroll_offset + viewport].to_vec()
+    };
+    
+    let para = Paragraph::new(visible_lines)
         .block(Block::default().borders(Borders::ALL).title(" Messages "));
     frame.render_widget(para, area);
-
-    if total_lines > area.height as usize {
+    
+    if total_lines > viewport {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));

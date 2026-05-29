@@ -25,6 +25,9 @@ pub trait Panel: Send + Sync {
     /// Cast to `dyn Any` for downcasting in TUI runtime.
     fn as_any(&self) -> &dyn std::any::Any;
 
+    /// Cast to `dyn Any` for mut downcasting in TUI runtime.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
     /// Draw the panel content in the given area.
     fn draw(&self, frame: &mut Frame, area: Rect);
 
@@ -36,5 +39,10 @@ impl dyn Panel {
     /// Downcast &dyn Panel to &T if this is a ChatPanel.
     pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
         self.as_any().downcast_ref::<T>()
+    }
+
+    /// Downcast &mut dyn Panel to &mut T if this is a ChatPanel.
+    pub fn downcast_mut<T: std::any::Any>(&mut self) -> Option<&mut T> {
+        self.as_any_mut().downcast_mut::<T>()
     }
 }
