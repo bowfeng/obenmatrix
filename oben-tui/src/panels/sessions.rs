@@ -68,13 +68,23 @@ impl SessionsPanel {
         }
         let session_id = self.sessions[self.filtered[self.selected]].id.clone();
         let session_name = self.sessions[self.filtered[self.selected]].name.clone();
-        let chat = app.chat.as_mut().unwrap();
-        if let Err(e) = chat.session_manager_mut().switch_session(&session_id) {
-            app.status = format!("Switch error: {}", e);
-            return;
+        let agent = app.chat.as_mut().unwrap();
+
+        {
+            let mut g = agent.blocking_lock();
+            if let Err(e) = g.session_manager_mut().switch_session(&session_id) {
+                app.status = format!("Switch error: {}", e);
+                return;
+            }
         }
-        let all = chat.session_manager_mut().list_sessions_full();
-        self.sessions = all;
+
+        {
+            let agent = app.chat.as_mut().unwrap();
+            let mut g = agent.blocking_lock();
+            let all = g.session_manager_mut().list_sessions_full();
+            self.sessions = all;
+        }
+
         self.apply_filter();
         self.selected = self.filtered.len().saturating_sub(1);
         app.status = format!("Switched to: {}", session_name);
@@ -86,13 +96,14 @@ impl SessionsPanel {
         }
         let _session_id = self.sessions[self.filtered[self.selected]].id.clone();
         let session_name = self.sessions[self.filtered[self.selected]].name.clone();
-        let all = app
-            .chat
-            .as_mut()
-            .unwrap()
-            .session_manager_mut()
-            .list_sessions_full();
-        self.sessions = all;
+
+        {
+            let agent = app.chat.as_mut().unwrap();
+            let mut g = agent.blocking_lock();
+            let all = g.session_manager_mut().list_sessions_full();
+            self.sessions = all;
+        }
+
         self.apply_filter();
         self.selected = self.filtered.len().saturating_sub(1);
         app.status = format!("Closed session: {}", session_name);
@@ -104,23 +115,33 @@ impl SessionsPanel {
         }
         let _session_id = self.sessions[self.filtered[self.selected]].id.clone();
         let new_name = format!("{}-renamed", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
-        let chat = app.chat.as_mut().unwrap();
-        let all = chat.session_manager_mut().list_sessions_full();
-        self.sessions = all;
+
+        {
+            let agent = app.chat.as_mut().unwrap();
+            let mut g = agent.blocking_lock();
+            let all = g.session_manager_mut().list_sessions_full();
+            self.sessions = all;
+        }
+
         self.apply_filter();
         app.status = format!("Renamed session: {}", new_name);
     }
 
-    fn compact_selected(&self, app: &mut App) {
+    fn compact_selected(&mut self, app: &mut App) {
         if self.filtered.is_empty() {
             return;
         }
         let session = self.sessions[self.filtered[self.selected]].id.clone();
-        let chat = app.chat.as_mut().unwrap();
-        if let Err(e) = chat.session_manager_mut().switch_session(&session) {
-            app.status = format!("Compact error: {}", e);
-            return;
+
+        {
+            let agent = app.chat.as_mut().unwrap();
+            let mut g = agent.blocking_lock();
+            if let Err(e) = g.session_manager_mut().switch_session(&session) {
+                app.status = format!("Compact error: {}", e);
+                return;
+            }
         }
+
         app.status = format!("Compacting session: session={}", session);
     }
 
@@ -129,30 +150,40 @@ impl SessionsPanel {
             return;
         }
         let session_id = self.sessions[self.filtered[self.selected]].id.clone();
-        let chat = app.chat.as_mut().unwrap();
-        if let Err(e) = chat.session_manager_mut().delete(&session_id) {
-            app.status = format!("Delete failed: {}", e);
-            return;
+
+        {
+            let agent = app.chat.as_mut().unwrap();
+            let mut g = agent.blocking_lock();
+            if let Err(e) = g.session_manager_mut().delete(&session_id) {
+                app.status = format!("Delete failed: {}", e);
+                return;
+            }
         }
+
         self.sessions.retain(|s| s.id != session_id);
+        {
+            let agent = app.chat.as_mut().unwrap();
+            let mut g = agent.blocking_lock();
+            g.session_manager_mut().load(None).ok();
+        }
         self.apply_filter();
-        chat.session_manager_mut().load(None).ok();
         self.selected = self.filtered.len().saturating_sub(1);
         app.status = format!("Deleted session: {}", session_id);
     }
 
     fn new_session(&mut self, app: &mut App) {
         let name = format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
-        let session = app
-            .chat
-            .as_mut()
-            .unwrap()
-            .session_manager_mut()
-            .new_session(&name);
-        self.sessions.push(session.clone());
+
+        let session = {
+            let agent = app.chat.as_mut().unwrap();
+            let mut g = agent.blocking_lock();
+            let s = g.session_manager_mut().new_session(&name);
+            s.clone()
+        };
+        self.sessions.push(session);
         self.apply_filter();
         self.selected = self.filtered.len() - 1;
-        app.status = format!("Created session: {}", session.name);
+        app.status = format!("Created session: {}", self.sessions.last().map(|s| &s.name).unwrap_or(&String::from("unknown")));
     }
 }
 
@@ -317,14 +348,18 @@ impl Panel for SessionsPanel {
                 }
                 let session = self.sessions[self.filtered[self.selected]].clone();
                 let new_name = format!("{}-fork", session.name);
-                let chat = app.chat.as_mut().unwrap();
-                if let Some(_new_session) = chat.session_manager_mut().clone_session(&session.id) {
-                    let all = chat.session_manager_mut().list_sessions_full();
-                    self.sessions = all;
-                    self.apply_filter();
-                    app.status = format!("Forked session: {} → {}", session.name, new_name);
-                } else {
-                    app.status = format!("Failed to fork: {}", session.name);
+
+                {
+                    let agent = app.chat.as_mut().unwrap();
+                    let mut g = agent.blocking_lock();
+                    if let Some(_new_session) = g.session_manager_mut().clone_session(&session.id) {
+                        let all = g.session_manager_mut().list_sessions_full();
+                        self.sessions = all;
+                        self.apply_filter();
+                        app.status = format!("Forked session: {} → {}", session.name, new_name);
+                    } else {
+                        app.status = format!("Failed to fork: {}", session.name);
+                    }
                 }
             }
             _ => {}

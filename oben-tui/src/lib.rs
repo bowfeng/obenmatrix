@@ -10,38 +10,40 @@ pub mod turn;
 pub mod widgets;
 
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode, disable_raw_mode};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEvent, MouseEventKind,
+};
+use crossterm::terminal::{
+    enable_raw_mode, disable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::ExecutableCommand;
+use panels::chat::{ChatPanel, ChatViewMode};
+use panels::config::ConfigPanel;
+use panels::setup::SetupPanel;
+use panels::sessions::SessionsPanel;
+use panels::{Panel, PanelId};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
-
 use ratatui::Frame;
 use ratatui::Terminal;
 use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::Mutex as TokioMutex;
 use tracing::info;
 use tracing_subscriber::{fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
 
-use panels::chat::ChatPanel;
-use panels::config::ConfigPanel;
-use panels::setup::SetupPanel;
-use panels::sessions::SessionsPanel;
-use panels::{Panel, PanelId};
-
+use oben_agent::{Agent, AgentCallbacks, AgentConfig};
 use oben_config::AppConfig;
-use oben_agent::{Agent, AgentConfig};
 use oben_models::Message;
 use oben_tools::ToolRegistry;
-
-
-
 
 pub struct Layouts {
     pub header: Rect,
@@ -71,12 +73,9 @@ pub enum TuiEvent {
     Mouse(MouseEvent),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusMode {
-    Ready,
-    Streaming,
-    Error,
-    ToolRunning,
+/// Payload carried by TurnDone completion event from spawned task.
+struct TurnCompletion {
+    success: bool,
 }
 
 pub struct App {
@@ -85,14 +84,22 @@ pub struct App {
     pub panels: HashMap<PanelId, Box<dyn Panel>>,
     pub status: String,
     pub config: AppConfig,
-    pub chat: Option<Agent>,
+    /// Agent protected by TokioMutex — guard is Send, needed for spawn()
+    /// where we hold the lock across .await in agent.turn().
+    pub chat: Option<Arc<TokioMutex<Agent>>>,
+    pub turn_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Cached session info updated on turn completion.
+    /// Avoids blocking the tokio runtime during draw().
+    pub cached_session_info: String,
     pub session_id: Option<String>,
     pub tools: std::sync::Arc<ToolRegistry>,
     pub tool_names: Vec<String>,
     pub input_tx: Option<tokio::sync::mpsc::UnboundedSender<TuiEvent>>,
     pub input_history: history::InputHistory,
     pub paste_mode: bool,
-    pub turn_state: Arc<Mutex<turn::event::TurnState>>,
+    /// TurnState protected by std Mutex — accessed only in sync context,
+    /// never held across .await. std Mutex is lighter than TokioMutex.
+    pub turn_state: Arc<StdMutex<turn::event::TurnState>>,
 }
 
 impl App {
@@ -110,13 +117,15 @@ impl App {
             status: String::new(),
             config,
             chat: None,
+            turn_handle: None,
             session_id: None,
+            cached_session_info: String::new(),
             tools: std::sync::Arc::new(tools),
             tool_names,
             input_tx: None,
             input_history: history::InputHistory::new(),
             paste_mode: false,
-            turn_state: Arc::new(Mutex::new(turn::event::TurnState::new())),
+            turn_state: Arc::new(StdMutex::new(turn::event::TurnState::new())),
         })
     }
 
@@ -134,10 +143,9 @@ impl App {
             &self.tools.list_tools().iter().map(|t| (*t).clone()).collect::<Vec<oben_models::Tool>>(),
         );
 
-        let turn_state = Arc::new(Mutex::new(turn::event::TurnState::new()));
-        let _turn_state_clone = Arc::clone(&turn_state);
+        let turn_state = Arc::clone(&self.turn_state);
 
-        let callbacks = oben_agent::AgentCallbacks {
+        let callbacks = AgentCallbacks {
             step: Some(Box::new(move |msg: &str| {
                 info!("STEP: {}", msg);
             })),
@@ -179,7 +187,7 @@ impl App {
             ..Default::default()
         };
 
-        self.chat = Some(Agent::new(AgentConfig {
+        self.chat = Some(Arc::new(TokioMutex::new(Agent::new(AgentConfig {
             system_prompt: assembled.prompt,
             transport,
             tools: std::sync::Arc::clone(&self.tools),
@@ -191,7 +199,7 @@ impl App {
             callbacks,
             concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
             nudge_config: None,
-        })?);
+        })?)));
 
         Ok(())
     }
@@ -208,23 +216,55 @@ impl App {
         }
     }
 
-    pub fn create_chat_panel(&mut self) {
-        let session_id = self.chat.as_ref().and_then(|c| c.active_session_name().map(|s| s.clone()));
-        let messages = self.chat.as_ref().and_then(|c| {
-            c.session_manager().active_session().map(|s| s.messages.clone())
-        });
+    pub async fn create_chat_panel(&mut self) -> Result<()> {
+        let (session_id, messages) = match &self.chat {
+            Some(agent) => {
+                let guard = agent.lock().await;
+                let sid = guard.active_session_name().map(|s| s.clone());
+                let msgs = guard.session_manager().active_session()
+                    .map(|s| s.messages.clone());
+                (sid, msgs)
+            }
+            None => (None, None),
+        };
         self.panels.insert(
             PanelId::Chat,
             Box::new(ChatPanel::new(session_id, messages)),
         );
+        Ok(())
     }
 
-    pub fn create_sessions_panel(&mut self) {
+    pub async fn create_sessions_panel(&mut self) -> Result<()> {
         let sessions: Vec<oben_models::Session> = match &self.chat {
-            Some(chat) => chat.session_manager().list_sessions_full(),
+            Some(agent) => {
+                agent.lock().await.session_manager().list_sessions_full()
+            }
             None => vec![],
         };
         self.panels.insert(PanelId::Sessions, Box::new(SessionsPanel::new(sessions)));
+        Ok(())
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.running = false;
+                return;
+            }
+            KeyCode::F(1) => { self.active_panel = PanelId::Chat; return; }
+            KeyCode::F(2) => { self.active_panel = PanelId::Sessions; return; }
+            KeyCode::F(3) => { self.active_panel = PanelId::Config; return; }
+            KeyCode::F(4) => { self.active_panel = PanelId::Setup; return; }
+            _ => {}
+        }
+        if let Some(_panel) = self.panels.get_mut(&self.active_panel) {
+            let panel_id = self.active_panel;
+            if let Some(boxed_panel) = self.panels.remove(&panel_id) {
+                let mut panel = boxed_panel;
+                panel.handle_key(self, key);
+                self.panels.insert(panel_id, panel);
+            }
+        }
     }
 
     pub fn create_config_panel(&mut self) {
@@ -250,16 +290,15 @@ impl App {
         self.panels.insert(PanelId::Setup, Box::new(panel));
     }
 
-    pub fn init_panels(&mut self) -> Result<()> {
-        self.create_chat_panel();
-        self.create_sessions_panel();
+    pub async fn init_panels(&mut self) -> Result<()> {
+        self.create_chat_panel().await?;
+        self.create_sessions_panel().await?;
         self.create_config_panel();
         self.create_setup_panel();
         Ok(())
     }
 
-    pub fn update_session_messages(&mut self, messages: Vec<Message>) -> Result<()> {
-        let _ = messages;
+    pub fn update_session_messages(&mut self, _messages: Vec<Message>) -> Result<()> {
         Ok(())
     }
 }
@@ -267,10 +306,9 @@ impl App {
 pub async fn run_tui() -> Result<()> {
     let mut app = App::new()?;
     app.init_chat()?;
-    app.init_panels()?;
+    app.init_panels().await?;
 
-    // Only set up file logging if no subscriber has been initialized yet
-    // (e.g. when TUI is run directly without going through oben-cli)
+    // Set up logging
     #[allow(unexpected_cfgs)]
     #[cfg(not(feature = "cli-wired"))]
     {
@@ -299,6 +337,7 @@ pub async fn run_tui() -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
 
+    // Read events from crossterm in a blocking task
     let reader_handle = tokio::task::spawn_blocking(move || {
         while running_clone.load(Ordering::SeqCst) {
             if event::poll(Duration::from_millis(16)).unwrap() {
@@ -317,80 +356,86 @@ pub async fn run_tui() -> Result<()> {
         }
     });
 
-    while app.running {
-        // Draw first to avoid waiting for first event before showing UI
-        terminal.draw(|frame| {
-            draw_ui(frame, &mut app);
-        })?;
+    // Channel for signaling task completion back to the main event loop
+    let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
 
-        match event_rx.recv().await {
-            Some(TuiEvent::Key(key)) => {
-                handle_key(&mut app, key);
+    // Main event loop — draw at the end of every iteration.
+    // The timeout branch ensures we periodically return to draw() even when
+    // no events arrive (critical for streaming feedback).
+    loop {
+        tokio::select! {
+            // Timeout: ensures periodic redraw (~30fps) so streaming/tool activity
+            // remain visible even when no user events arrive.
+            _ = tokio::time::sleep(Duration::from_millis(32)) => {
+                // Nothing — draw happens at the end of the loop.
             }
-            Some(TuiEvent::Mouse(mouse_event)) => {
-                if let MouseEventKind::ScrollUp = mouse_event.kind {
-                    if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
-                        if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                            chat.scroll = chat.scroll.saturating_sub(1);
-                        }
-                    }
-                } else if let MouseEventKind::ScrollDown = mouse_event.kind {
-                    if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
-                        if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                            chat.scroll = chat.scroll.saturating_add(1);
-                        }
-                    }
-                }
-            }
-            Some(TuiEvent::ChatInput(input)) => {
-                if let Some(ref mut chat) = app.chat {
-                    // Begin turn tracking
-                    app.turn_state.lock().unwrap().on_turn_start();
 
-                    // Preserve Input state across ChatPanel rebuild.
-                    let was_chat = app.active_panel == PanelId::Chat;
-                    let saved_input = app.panels.get(&PanelId::Chat).and_then(|p| {
-                        p.downcast_ref::<ChatPanel>().map(|cp| {
-                            (cp.input.clone(), cp.cursor, cp.last_enter_time, cp.streaming)
-                        })
-                    });
-
-                    match chat.turn(&input, false, None).await {
-                        Ok(_) => {
-                            // Finalize turn on success
-                            app.turn_state.lock().unwrap().on_completed("completed");
-                            
-                            if was_chat {
-                                let session_id = app.chat.as_ref().and_then(|c| c.active_session_name().map(|s| s.clone()));
-                                let messages = app.chat.as_ref().and_then(|c| {
-                                    c.session_manager().active_session().map(|s| s.messages.clone())
-                                });
-                                // Extract tool trail before messages are moved into ChatPanel
-                                let trail_msgs = messages.clone();
-                                let mut new_panel = ChatPanel::new(session_id, messages);
-                                if let Some((inp, cursor, enter, streaming)) = saved_input {
-                                    new_panel.input = inp;
-                                    new_panel.cursor = cursor;
-                                    new_panel.last_enter_time = enter;
-                                    new_panel.streaming = streaming;
-                                }
-                                // Build tool trail from session messages
-                                if let Some(ref msgs) = trail_msgs {
-                                    new_panel.extract_tool_trail(msgs);
-                                }
-                                app.panels.insert(PanelId::Chat, Box::new(new_panel));
+            // Check for completion signal from spawned turn task
+            maybe_completion = done_rx.recv() => {
+                if let Some(completion) = maybe_completion {
+                    info!("main_loop: task completed success={}", completion.success);
+                    app.turn_handle = None;
+                    if completion.success {
+                        // Rebuild ChatPanel with new messages
+                        let (session_id, messages) = match &app.chat {
+                            Some(agent) => {
+                                let guard = agent.lock().await;
+                                let sid = guard.active_session_name().map(|s| s.clone());
+                                let msgs = guard
+                                    .session_manager().active_session()
+                                    .map(|s| s.messages.clone());
+                                (sid, msgs)
                             }
-                        }
-                        Err(e) => {
-                            // Finalize turn on error
-                            app.turn_state.lock().unwrap().on_error(&format!("{}", e));
-                            app.status = format!("Error: {}", e);
-                            info!("Agent turn error: {}", e);
-                        }
+                            None => (None, None),
+                        };
+                        app.panels.insert(
+                            PanelId::Chat,
+                            Box::new(ChatPanel::new(session_id, messages)),
+                        );
+                    } else {
+                        app.status = "Turn completed with errors".into();
                     }
                 }
             }
-            None => break,
+
+            // Event branch: handles key, mouse, and chat input events.
+            event = event_rx.recv() => {
+                match event {
+                    Some(TuiEvent::Key(key)) => {
+                        app.handle_key(key);
+                    }
+                    Some(TuiEvent::Mouse(mouse_event)) => {
+                        match mouse_event.kind {
+                            MouseEventKind::ScrollUp => {
+                                if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                                    if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                                        chat.scroll = chat.scroll.saturating_sub(1);
+                                    }
+                                }
+                            }
+                            MouseEventKind::ScrollDown => {
+                                if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                                    if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                                        chat.scroll = chat.scroll.saturating_add(1);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(TuiEvent::ChatInput(input)) => {
+                        handle_chat_input(&mut app, input, &done_tx).await;
+                    }
+                    None => break,
+                }
+            }
+        }
+
+        // Single draw per loop iteration — after select! returns for any reason.
+        if let Err(e) = terminal.draw(|frame| {
+            draw_ui(frame, &mut app);
+        }) {
+            tracing::warn!("draw error: {}", e);
         }
     }
 
@@ -404,24 +449,93 @@ pub async fn run_tui() -> Result<()> {
     Ok(())
 }
 
-fn handle_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.running = false;
-            return;
-        }
-        KeyCode::F(1) => { app.active_panel = PanelId::Chat; return; }
-        KeyCode::F(2) => { app.active_panel = PanelId::Sessions; return; }
-        KeyCode::F(3) => { app.active_panel = PanelId::Config; return; }
-        KeyCode::F(4) => { app.active_panel = PanelId::Setup; return; }
-        _ => {}
+/// Handle a chat input: spawn a turn in a background task so the event loop
+/// can keep drawing the UI during streaming.
+async fn handle_chat_input(
+    app: &mut App,
+    input: String,
+    done_tx: &tokio::sync::mpsc::UnboundedSender<TurnCompletion>,
+) {
+    info!("handle_chat_input: input.len()={}", input.len());
+
+    let Some(agent) = app.chat.as_ref().map(|a| Arc::clone(a)) else {
+        app.status = "Agent not initialized".into();
+        return;
+    };
+
+    if app.turn_handle.is_some() {
+        app.status = "Already processing a turn. Please wait...".into();
+        return;
     }
-    if let Some(_panel) = app.panels.get_mut(&app.active_panel) {
-        let panel_id = app.active_panel;
-        if let Some(boxed_panel) = app.panels.remove(&panel_id) {
-            let mut panel = boxed_panel;
-            panel.handle_key(app, key);
-            app.panels.insert(panel_id, panel);
+
+    let was_chat = app.active_panel == PanelId::Chat;
+
+    // Begin turn tracking
+    if let Ok(mut ts) = app.turn_state.lock() {
+        ts.on_turn_start();
+    }
+
+    // Prepare ChatPanel for streaming
+    if was_chat {
+        if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+            if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                chat.streaming = true;
+                chat.view_mode = ChatViewMode::Streaming;
+            }
+        }
+    }
+
+    // Spawn turn in background so event loop is not blocked.
+    // TokioMutex guard IS Send, so the spawned future can hold the lock
+    // across .await in agent.turn().
+    let agent_clone = agent;
+    let ts_clone_for_callback = Arc::clone(&app.turn_state);
+    let ts_clone_for_finalize = Arc::clone(&app.turn_state);
+    let done_tx_clone = done_tx.clone();
+    let input_clone = input.clone();
+
+    let handle = tokio::spawn(async move {
+        info!("spawned_turn_task: calling agent.turn()");
+        let result = {
+            let mut guard = agent_clone.lock().await;
+            let delta_callback = Box::new(move |text: &str| {
+                if let Ok(mut ts) = ts_clone_for_callback.lock() {
+                    ts.on_stream_delta(text);
+                }
+            });
+            guard.turn(&input_clone, false, Some(delta_callback)).await
+        };
+
+        tracing::info!("spawned_turn_task: turn completed, is_ok={}", result.is_ok());
+
+        // Finalize turn state
+        match &result {
+            Ok(_) => {
+                if let Ok(mut ts) = ts_clone_for_finalize.lock() {
+                    ts.on_completed("completed");
+                }
+                let _ = done_tx_clone.send(TurnCompletion { success: true });
+            }
+            Err(e) => {
+                if let Ok(mut ts) = ts_clone_for_finalize.lock() {
+                    ts.on_error(&format!("{}", e));
+                }
+                let _ = done_tx_clone.send(TurnCompletion { success: false });
+            }
+        }
+
+        tracing::info!("spawned_turn_task: done");
+    });
+
+    app.turn_handle = Some(handle);
+    app.input_history.append(&input);
+
+    if was_chat {
+        if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+            if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                chat.input.clear();
+                chat.cursor = 0;
+            }
         }
     }
 }
@@ -452,12 +566,26 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         panel.draw(frame, layout.body);
     }
 
-    let session_info = match app.chat.as_ref().and_then(|c| c.session_manager().active_session()) {
-        Some(s) => format!(" Session: {} ({} msgs)", s.name, s.messages.len()),
-        None => " No session".to_string(),
+    // Derive session info from stored ChatPanel fields — no Agent locking.
+    let (session_name, msg_count) = match app.panels.get(&PanelId::Chat) {
+        Some(panel) => {
+            if let Some(chat) = panel.downcast_ref::<ChatPanel>() {
+                if let Some(ref sid) = chat.session_id {
+                    (sid.clone(), chat.messages.len())
+                } else {
+                    (app.session_id.clone().unwrap_or_default(), 0)
+                }
+            } else {
+                (String::new(), 0)
+            }
+        }
+        None => (String::new(), 0),
     };
 
-    let session_text = format!(" Session: {}", session_info);
+    let session_text = match &session_name {
+        s if !s.is_empty() => format!(" Session: {} ({} msgs)", s, msg_count),
+        _ => " No session".to_string(),
+    };
     let mode_text = match (is_streaming, app.status.as_str()) {
         (true, _) => "⏳ Streaming",
         (_, s) if s.starts_with("Error") => "Error",
@@ -472,5 +600,4 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     let status_para = Paragraph::new(status_lines);
     let status_area = Rect::new(layout.statusbar.x, layout.statusbar.y, layout.statusbar.width, layout.statusbar.height);
     frame.render_widget(status_para, status_area);
-
 }
