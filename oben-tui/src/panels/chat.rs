@@ -141,6 +141,8 @@ impl ChatPanel {
 
     /// Update stream_info from turn state
     pub fn update_from_turn_state(&mut self, turn_state: &crate::turn::event::TurnState) {
+        tracing::info!("[ChatPanel::update_from_turn_state] streaming_text.len={} active_tools={} phase={:?}", 
+            turn_state.streaming_text.len(), turn_state.active_tools.len(), turn_state.phase);
         let mut parts = Vec::new();
         
         // Show active tool info
@@ -156,7 +158,8 @@ impl ChatPanel {
         // Show streaming text preview
         if !turn_state.streaming_text.is_empty() {
             let preview = if turn_state.streaming_text.len() > 100 {
-                format!("{}...", &turn_state.streaming_text[..100])
+                let s: String = turn_state.streaming_text.chars().take(100).collect();
+                format!("{}...", s)
             } else {
                 turn_state.streaming_text.clone()
             };
@@ -337,6 +340,16 @@ impl Panel for ChatPanel {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
+        let mut stream_text = String::new();
+        if let Some(ref ts) = self.turn_state_ref {
+            if let Ok(ts) = ts.lock() {
+                if !ts.streaming_text.is_empty() {
+                    stream_text = ts.streaming_text.clone();
+                }
+            }
+        }
+        tracing::info!("[ChatPanel::draw] stream_text.len={} messages.len={}", stream_text.len(), self.messages.len());
+
         let trail_count = if self.tool_trail.is_empty() { 0u16 } else { (self.tool_trail.len() + 1).min(7) as u16 };
 
         // Calculate input bar height based on wrapped text lines
@@ -383,7 +396,7 @@ impl Panel for ChatPanel {
 
         let input_area = chunks[1];
 
-        draw_messages(frame, self, chat_area);
+        draw_messages(frame, self, chat_area, &stream_text);
         if !self.tool_trail.is_empty() && trail_count > 0 {
             draw_tool_trail(frame, self, trail_area);
         }
@@ -892,10 +905,32 @@ impl ChatPanel {
     }
 }
 
-fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
+fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect, streaming_text: &str) {
     let mut lines: Vec<Line> = Vec::new();
-    let _line_indices: Vec<usize> = panel.messages.iter().flat_map(|msg| {
-        let mut indices = vec![lines.len()];
+    
+    // During streaming, replace the last assistant message with streaming text
+    // keep everything before it and everything after (e.g. user messages just sent)
+    let messages_to_render: Vec<_> = if panel.streaming && !streaming_text.is_empty() {
+        let last_assistant_idx = panel.messages.iter().enumerate()
+            .rev()
+            .find_map(|(i, m)| {
+                if m.role == "Assistant" { Some(i) } else { None }
+            });
+        
+        match last_assistant_idx {
+            Some(idx) => {
+                let mut filtered = Vec::new();
+                filtered.extend_from_slice(&panel.messages[..idx]);
+                filtered.extend_from_slice(&panel.messages[idx+1..]);
+                filtered
+            },
+            None => panel.messages.clone(),
+        }
+    } else {
+        panel.messages.clone()
+    };
+    
+    for msg in &messages_to_render {
         lines.push(Line::from(Span::styled(
             format!(" ── {} ── ", msg.role),
             Style::default().fg(match msg.role.as_str() {
@@ -907,12 +942,10 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
             }).add_modifier(Modifier::BOLD),
         )));
         for line in msg.text.split('\n') {
-            indices.push(lines.len());
             lines.push(Line::from(Span::raw(line.to_string())));
         }
         if msg.has_tool_calls && !msg.tool_calls.is_empty() {
             for tc in &msg.tool_calls {
-                indices.push(lines.len());
                 lines.push(Line::from(format!("   🔧 {}", tc)));
             }
             for (tool_name, output) in &msg.tool_results {
@@ -921,14 +954,21 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
                 } else {
                     output.clone()
                 };
-                indices.push(lines.len());
                 lines.push(Line::from(format!("   ✅ {} → {}", tool_name, preview)));
             }
         }
-        indices.push(lines.len());
         lines.push(Line::from(""));
-        indices
-    }).collect();
+    }
+    
+    // Streaming assistant text replaces the last assistant message
+    if panel.streaming && !streaming_text.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " ── Assistant ── ",
+            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(streaming_text.lines().map(Line::from));
+        lines.push(Line::from(""));
+    }
     
     let total_lines = lines.len();
     let viewport = area.height as usize;

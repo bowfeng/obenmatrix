@@ -332,6 +332,7 @@ pub async fn run_tui() -> Result<()> {
     terminal.clear()?;
 
     let (event_tx, mut event_rx) = unbounded_channel();
+    let event_tx_for_signal = event_tx.clone();
     app.input_tx = Some(event_tx.clone());
 
     let running = Arc::new(AtomicBool::new(true));
@@ -356,6 +357,16 @@ pub async fn run_tui() -> Result<()> {
         }
     });
 
+    // Ctrl+C signal handler — raw mode intercepts key events, so we must catch SIGINT directly
+    let running_for_signal = running.clone();
+    let quit_ev = TuiEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    tokio::spawn(async move {
+        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
+        let _ = signal.recv().await;
+        running_for_signal.store(false, Ordering::SeqCst);
+        let _ = event_tx_for_signal.send(quit_ev);
+    });
+
     // Channel for signaling task completion back to the main event loop
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
 
@@ -363,11 +374,36 @@ pub async fn run_tui() -> Result<()> {
     // The timeout branch ensures we periodically return to draw() even when
     // no events arrive (critical for streaming feedback).
     loop {
+        if !app.running {
+            break;
+        }
+        info!(
+            "🔄 loop iteration: turn_handle={:?}, streaming_panel={}",
+            app.turn_handle.as_ref().map(|_| "some"),
+            app.panels.get(&PanelId::Chat)
+                .and_then(|p| p.downcast_ref::<ChatPanel>())
+                .map_or("".to_string(), |p| format!("{}", p.streaming_text.len())),
+        );
         tokio::select! {
             // Timeout: ensures periodic redraw (~30fps) so streaming/tool activity
             // remain visible even when no user events arrive.
             _ = tokio::time::sleep(Duration::from_millis(32)) => {
-                // Nothing — draw happens at the end of the loop.
+                if let Ok(ts) = app.turn_state.lock() {
+                    info!(
+                        "⏱️ timeout: phase={:?}, streaming_text.len={}, active_tools={}",
+                        ts.phase,
+                        ts.streaming_text.len(),
+                        ts.active_tools.len(),
+                    );
+                    info!(
+                        "⏱️ timeout: streaming_text preview='{}'",
+                        if ts.streaming_text.len() > 200 {
+                            ts.streaming_text.chars().take(200).collect::<String>()
+                        } else {
+                            ts.streaming_text.clone()
+                        },
+                    );
+                }
             }
 
             // Check for completion signal from spawned turn task
@@ -424,7 +460,9 @@ pub async fn run_tui() -> Result<()> {
                         }
                     }
                     Some(TuiEvent::ChatInput(input)) => {
+                        tracing::info!("📥 event loop: ChatInput received, input.len()={}", input.len());
                         handle_chat_input(&mut app, input, &done_tx).await;
+                        tracing::info!("📥 event loop: handle_chat_input returned");
                     }
                     None => break,
                 }
@@ -469,18 +507,31 @@ async fn handle_chat_input(
     }
 
     let was_chat = app.active_panel == PanelId::Chat;
+    tracing::info!("handle_chat_input: was_chat={}, has_agent={}, turn_handle_some={}", 
+        was_chat, app.chat.is_some(), app.turn_handle.is_some());
 
     // Begin turn tracking
     if let Ok(mut ts) = app.turn_state.lock() {
         ts.on_turn_start();
+        tracing::info!("handle_chat_input: turn_state phase set to {:?}", ts.phase);
     }
 
     // Prepare ChatPanel for streaming
     if was_chat {
         if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
             if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                tracing::info!("handle_chat_input: setting ChatPanel.streaming=true");
                 chat.streaming = true;
                 chat.view_mode = ChatViewMode::Streaming;
+                // Append user message immediately so it shows in messages panel right away
+                chat.messages.push(crate::panels::chat::ChatMessage {
+                    role: "User".to_string(),
+                    text: input.clone(),
+                    has_tool_calls: false,
+                    tool_calls: Vec::new(),
+                    tool_results: Vec::new(),
+                });
+                tracing::info!("handle_chat_input: appended user message to ChatPanel.messages, msg_count={}", chat.messages.len());
             }
         }
     }
@@ -494,39 +545,50 @@ async fn handle_chat_input(
     let done_tx_clone = done_tx.clone();
     let input_clone = input.clone();
 
-    let handle = tokio::spawn(async move {
-        info!("spawned_turn_task: calling agent.turn()");
-        let result = {
-            let mut guard = agent_clone.lock().await;
-            let delta_callback = Box::new(move |text: &str| {
-                if let Ok(mut ts) = ts_clone_for_callback.lock() {
-                    ts.on_stream_delta(text);
-                }
-            });
-            guard.turn(&input_clone, false, Some(delta_callback)).await
-        };
+    let handle = tokio::spawn({
+        tracing::info!("handle_chat_input: tokio::spawn called");
+        async move {
+            info!("spawned_turn_task: calling agent.turn()");
+            let result = {
+                let mut guard = agent_clone.lock().await;
+                let delta_callback = Box::new(move |text: &str| {
+                    tracing::info!("[delta_callback] text.len={} text='{}'", text.len(), text);
+                    if let Ok(mut ts) = ts_clone_for_callback.lock() {
+                        ts.on_stream_delta(text);
+                    } else {
+                        tracing::warn!("[delta_callback] FAILED to lock ts_clone_for_callback");
+                    }
+                });
+                guard.turn(&input_clone, false, Some(delta_callback)).await
+            };
 
-        tracing::info!("spawned_turn_task: turn completed, is_ok={}", result.is_ok());
+            tracing::info!("spawned_turn_task: turn completed, is_ok={}", result.is_ok());
 
-        // Finalize turn state
-        match &result {
-            Ok(_) => {
-                if let Ok(mut ts) = ts_clone_for_finalize.lock() {
-                    ts.on_completed("completed");
+            // Finalize turn state
+            match &result {
+                Ok(_) => {
+                    if let Ok(mut ts) = ts_clone_for_finalize.lock() {
+                        ts.on_completed("completed");
+                        tracing::info!("spawned_turn_task: finalized turn_state phase={:?}", ts.phase);
+                    }
+                    let _ = done_tx_clone.send(TurnCompletion { success: true });
+                    tracing::info!("spawned_turn_task: sent done_tx success");
                 }
-                let _ = done_tx_clone.send(TurnCompletion { success: true });
-            }
-            Err(e) => {
-                if let Ok(mut ts) = ts_clone_for_finalize.lock() {
-                    ts.on_error(&format!("{}", e));
+                Err(e) => {
+                    if let Ok(mut ts) = ts_clone_for_finalize.lock() {
+                        ts.on_error(&format!("{}", e));
+                        tracing::info!("spawned_turn_task: finalized turn_state error: {}", e);
+                    }
+                    let _ = done_tx_clone.send(TurnCompletion { success: false });
+                    tracing::info!("spawned_turn_task: sent done_tx failure");
                 }
-                let _ = done_tx_clone.send(TurnCompletion { success: false });
             }
+
+            tracing::info!("spawned_turn_task: done");
         }
-
-        tracing::info!("spawned_turn_task: done");
     });
 
+    tracing::info!("handle_chat_input: spawn completed, handle={:?}, about to send done_tx", handle);
     app.turn_handle = Some(handle);
     app.input_history.append(&input);
 
@@ -544,7 +606,20 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let layout = Layouts::new(area);
 
-    // Collect ChatPanel streaming state
+    // Inject turn_state_ref into ChatPanel so draw() can read streaming text in real-time
+    if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+        if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+            chat.turn_state_ref = Some(Arc::clone(&app.turn_state));
+        }
+    }
+
+    // Collect ChatPanel streaming state (after injecting ref)
+    let chat_panel_info = app.panels.get(&PanelId::Chat)
+        .and_then(|p| p.downcast_ref::<ChatPanel>())
+        .map(|cp| format!("streaming={} msg_count={} turn_state_ref={}", cp.streaming, cp.messages.len(), if cp.turn_state_ref.is_some() { "some" } else { "none" }))
+        .unwrap_or_else(|| "no_chat_panel".to_string());
+    tracing::info!("[draw_ui] chat_panel={}", chat_panel_info);
+
     let is_streaming = app.panels.get(&PanelId::Chat)
         .and_then(|p| p.downcast_ref::<ChatPanel>())
         .map(|cp| cp.streaming)

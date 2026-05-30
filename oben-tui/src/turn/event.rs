@@ -129,6 +129,8 @@ impl TurnState {
     }
 
     pub fn on_stream_delta(&mut self, text: &str) {
+        tracing::info!("[TurnState::on_stream_delta] text.len={} text='{}' total_after={} phase={:?}", 
+            text.len(), text, self.streaming_text.len() + text.len(), self.phase);
         self.streaming_text.push_str(text);
         self.add_activity(
             ActivityKind::Streaming,
