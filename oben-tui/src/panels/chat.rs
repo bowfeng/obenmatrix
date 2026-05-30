@@ -695,7 +695,15 @@ impl ChatPanel {
     }
 
     /// Update tab completion candidates based on current input prefix.
+    /// Only triggers when '/' is at the very start of the input.
     fn update_completions(&mut self) {
+        if !self.input.starts_with('/') {
+            self.tab_completion_items.clear();
+            self.tab_completion_index = 0;
+            self.tab_completion_original = String::new();
+            return;
+        }
+
         let text_before_cursor = if self.cursor > 0 {
             &self.input[..self.grapheme_to_byte(self.cursor)]
         } else {
