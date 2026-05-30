@@ -53,6 +53,10 @@ To ensure maximum performance and scannability, you must write idiomatic, modern
 * **Idiomatic Control Flow**: Rely on functional combinators (`.map()`, `.and_then()`, `.unwrap_or_else()`) for cleaner, localized logic handling instead of deeply nested `if let` blocks.
 * **No Silent Failures**: Propagate errors explicitly using the `?` operator. Never hide critical subsystem errors behind broad unlogs or silent `Default::default()` returns.
 
+### 4. Info and Debug log
+
+MUST output a complete Trace Log for every complex task
+
 ---
 
 ## 📄 Documentation Architecture

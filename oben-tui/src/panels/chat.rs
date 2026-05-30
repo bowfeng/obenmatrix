@@ -4,6 +4,7 @@ use super::Panel;
 use crate::{App, TuiEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
+use tracing;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use textwrap::wrap;
@@ -171,7 +172,10 @@ impl ChatPanel {
 
     fn handle_submit(&mut self, app: &mut App) {
         let trimmed = self.input.trim();
+        tracing::info!("ChatPanel::submit - input='{}', has_input_tx={}", trimmed, app.input_tx.is_some());
+
         if trimmed.is_empty() {
+            tracing::info!("ChatPanel::submit - empty input, returning");
             return;
         }
 
@@ -285,7 +289,10 @@ impl ChatPanel {
         }
 
         if let Some(tx) = &app.input_tx {
+            tracing::info!("ChatPanel::submit - sending ChatInput: '{}'", self.input);
             let _ = tx.send(TuiEvent::ChatInput(self.input.clone()));
+        } else {
+            tracing::info!("ChatPanel::submit - WARNING: input_tx is None, NOT sending");
         }
         app.input_history.append(&self.input);
         self.input.clear();
