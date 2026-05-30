@@ -40,6 +40,7 @@ impl InputHistory {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn new_at(path: PathBuf) -> Self {
         let entries = Self::load_entries(&path);
         Self {

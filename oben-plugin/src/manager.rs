@@ -68,8 +68,8 @@ impl PluginContext {
         &self,
         name: &str,
         toolset: &str,
-        description: &str,
-        schema: Value,
+        _description: &str,
+        _schema: Value,
         _handler: Box<dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> + Send>,
         _override: bool,
     ) -> Result<()> {
@@ -192,12 +192,10 @@ impl PluginContext {
         _setup_fn: Box<dyn Fn() + Send>,
         _handler_fn: Box<dyn Fn() + Send>,
     ) -> Result<()> {
-        let manager = self.manager.upgrade().ok_or_else(|| {
+        let _manager = self.manager.upgrade().ok_or_else(|| {
             anyhow!("PluginManager no longer exists")
         })?;
 
-        let mut mgr = manager.lock().unwrap();
-        // Phase 2: Store CLI command metadata
         let _ = name;
 
         debug!(
@@ -480,7 +478,8 @@ impl PluginContext {
 }
 
 /// Inner state for PluginManager (hidden behind Mutex).
-pub(crate) struct ManagerInner {
+#[allow(dead_code)]
+pub struct ManagerInner {
     /// All discovered/loaded plugins.
     plugins: std::collections::HashMap<String, LoadedPlugin>,
 
@@ -556,6 +555,7 @@ pub struct LoadedPlugin {
 
 /// Metadata about a registered plugin skill.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PluginSkill {
     path: std::path::PathBuf,
     plugin: String,
@@ -565,6 +565,7 @@ struct PluginSkill {
 
 /// Metadata about a registered CLI command.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PluginCliCommand {
     name: String,
     description: String,
@@ -804,6 +805,7 @@ impl PluginManager {
     }
 
     /// Register a hook callback for a plugin.
+    #[allow(dead_code)]
     pub(crate) fn register_hook(&mut self, hook_type: &HookType, callback: HookCallback, _manifest: &PluginManifest) {
         let mut mgr = self.inner.lock().unwrap();
         mgr.hooks
@@ -813,6 +815,7 @@ impl PluginManager {
     }
 
     /// Track a registered tool for a plugin.
+    #[allow(dead_code)]
     pub(crate) fn track_registered_tools_for_plugin(&mut self, manifest: &PluginManifest, tool_name: &str) {
         let mut mgr = self.inner.lock().unwrap();
         if let Some(loaded) = mgr.plugins.get_mut(manifest.lookup_key()) {
@@ -821,6 +824,7 @@ impl PluginManager {
     }
 
     /// Track a registered command for a plugin.
+    #[allow(dead_code)]
     pub(crate) fn track_command_for_plugin(&mut self, manifest: &PluginManifest, name: &str, _description: &str, _args_hint: &str) {
         let mut mgr = self.inner.lock().unwrap();
         if let Some(loaded) = mgr.plugins.get_mut(manifest.lookup_key()) {
@@ -829,12 +833,14 @@ impl PluginManager {
     }
 
     /// Track a registered CLI command for a plugin.
+    #[allow(dead_code)]
     pub(crate) fn track_cli_command_for_plugin(&mut self, manifest: &PluginManifest, name: &str, _description: &str) {
         // Phase 2: Store CLI command metadata
         let _ = (manifest, name, _description);
     }
 
     /// Register a plugin skill.
+    #[allow(dead_code)]
     pub(crate) fn register_plugin_skill(&mut self, qualified_name: &str, path: std::path::PathBuf, description: &str, plugin: &str) {
         let mut mgr = self.inner.lock().unwrap();
         mgr.plugin_skills.insert(qualified_name.to_string(), PluginSkill {

@@ -2,12 +2,12 @@
 
 pub mod chat;
 pub mod config;
-pub mod setup;
 pub mod sessions;
+pub mod setup;
 
 use crossterm::event::KeyEvent;
-use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::Frame;
 
 use super::App;
 

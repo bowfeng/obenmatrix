@@ -5,10 +5,7 @@
 
 use anyhow::Result;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
 use tracing::info;
-
-use oben_agent::{CompactContextEngine, ContextEngine};
 
 use clap::Parser;
 use crate::cli::{Cli, Commands, ConfigCommand, CronCommand, ModelsCommand, SessionsCommand};
@@ -17,11 +14,13 @@ use oben_models::{Session, SessionStore};
 
 /// In-memory session store - no SQLite, no persistence, just a single
 /// session holding a `Vec<Message>`. Perfect for one-shot CLI commands.
+#[allow(dead_code)]
 struct MemorySessionStore {
     session: Session,
 }
 
 impl MemorySessionStore {
+    #[allow(dead_code)]
     fn new() -> Self {
         let now = chrono::Utc::now();
         Self {
@@ -517,7 +516,7 @@ fn cron_tick() -> Result<()> {
         println!("cron tick at {}: running {} due job(s)...",
             now.format("%H:%M:%S"), due.len());
         for job in &due {
-            let prompt = job.prompt.clone();
+            let _prompt = job.prompt.clone();
             match store.advance_job(&job.id, &ober_exec) {
                 Ok(()) => println!("  Job '{}' advanced to next run", job.id),
                 Err(e) => println!("  Job '{}': error: {}", job.id, e),
@@ -579,7 +578,7 @@ fn find_cron_binary() -> Option<std::path::PathBuf> {
 /// Start the cron daemon as a background process.
 /// The daemon process becomes its own process group (not a child).
 pub fn cron_start() -> Result<()> {
-    let pid_path = cron_pid_path();
+    let _pid_path = cron_pid_path();
 
     // Already running?
     if let Some(_pid) = is_cron_running() {

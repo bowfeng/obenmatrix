@@ -98,7 +98,7 @@ impl CatalogManifest {
     }
 
     /// Returns all model IDs (one per provider).
-    pub fn provider_names(&self) -> Keys<String, ProviderCatalog> {
+    pub fn provider_names(&self) -> Keys<'_, String, ProviderCatalog> {
         self.providers.keys()
     }
 

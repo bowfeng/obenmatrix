@@ -5,7 +5,6 @@
 //! - Interrupt current generation (interrupt)
 //! - Queue messages for next idle turn (queue)
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Duration;

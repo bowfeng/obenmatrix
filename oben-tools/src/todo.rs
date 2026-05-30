@@ -39,6 +39,7 @@ impl TodoStore {
         Self { items: Vec::new(), next_id: 1 }
     }
 
+    #[allow(dead_code)]
     fn load() -> Self {
         let path = Self::get_path();
         if path.exists() {

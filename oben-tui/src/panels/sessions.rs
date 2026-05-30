@@ -3,9 +3,9 @@
 use super::Panel;
 use crate::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Table, Row, Cell};
 use ratatui::layout::Rect;
+use ratatui::prelude::*;
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use oben_models::Session;
 
@@ -47,7 +47,12 @@ impl SessionsPanel {
                 .filter(|(_, s)| {
                     s.name.to_lowercase().contains(&q)
                         || s.id.to_lowercase().contains(&q)
-                        || s.metadata.title.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                        || s.metadata
+                            .title
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&q)
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -58,7 +63,9 @@ impl SessionsPanel {
     }
 
     fn switch_selected(&mut self, app: &mut App) {
-        if self.filtered.is_empty() { return; }
+        if self.filtered.is_empty() {
+            return;
+        }
         let session_id = self.sessions[self.filtered[self.selected]].id.clone();
         let session_name = self.sessions[self.filtered[self.selected]].name.clone();
         let chat = app.chat.as_mut().unwrap();
@@ -74,10 +81,17 @@ impl SessionsPanel {
     }
 
     fn close_selected(&mut self, app: &mut App) {
-        if self.filtered.is_empty() { return; }
-        let session_id = self.sessions[self.filtered[self.selected]].id.clone();
+        if self.filtered.is_empty() {
+            return;
+        }
+        let _session_id = self.sessions[self.filtered[self.selected]].id.clone();
         let session_name = self.sessions[self.filtered[self.selected]].name.clone();
-        let all = app.chat.as_mut().unwrap().session_manager_mut().list_sessions_full();
+        let all = app
+            .chat
+            .as_mut()
+            .unwrap()
+            .session_manager_mut()
+            .list_sessions_full();
         self.sessions = all;
         self.apply_filter();
         self.selected = self.filtered.len().saturating_sub(1);
@@ -85,8 +99,10 @@ impl SessionsPanel {
     }
 
     fn rename_selected(&mut self, app: &mut App) {
-        if self.filtered.is_empty() { return; }
-        let session_id = self.sessions[self.filtered[self.selected]].id.clone();
+        if self.filtered.is_empty() {
+            return;
+        }
+        let _session_id = self.sessions[self.filtered[self.selected]].id.clone();
         let new_name = format!("{}-renamed", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
         let chat = app.chat.as_mut().unwrap();
         let all = chat.session_manager_mut().list_sessions_full();
@@ -96,7 +112,9 @@ impl SessionsPanel {
     }
 
     fn compact_selected(&self, app: &mut App) {
-        if self.filtered.is_empty() { return; }
+        if self.filtered.is_empty() {
+            return;
+        }
         let session = self.sessions[self.filtered[self.selected]].id.clone();
         let chat = app.chat.as_mut().unwrap();
         if let Err(e) = chat.session_manager_mut().switch_session(&session) {
@@ -107,7 +125,9 @@ impl SessionsPanel {
     }
 
     fn delete_selected(&mut self, app: &mut App) {
-        if self.filtered.is_empty() { return; }
+        if self.filtered.is_empty() {
+            return;
+        }
         let session_id = self.sessions[self.filtered[self.selected]].id.clone();
         let chat = app.chat.as_mut().unwrap();
         if let Err(e) = chat.session_manager_mut().delete(&session_id) {
@@ -123,7 +143,12 @@ impl SessionsPanel {
 
     fn new_session(&mut self, app: &mut App) {
         let name = format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
-        let session = app.chat.as_mut().unwrap().session_manager_mut().new_session(&name);
+        let session = app
+            .chat
+            .as_mut()
+            .unwrap()
+            .session_manager_mut()
+            .new_session(&name);
         self.sessions.push(session.clone());
         self.apply_filter();
         self.selected = self.filtered.len() - 1;
@@ -132,13 +157,21 @@ impl SessionsPanel {
 }
 
 impl Panel for SessionsPanel {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
-        let header_cells = ["Name", "Msgs", "Updated"]
-            .iter()
-            .map(|h| Cell::from(*h).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        let header_cells = ["Name", "Msgs", "Updated"].iter().map(|h| {
+            Cell::from(*h).style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+        });
         let header = Row::new(header_cells);
 
         let rows: Vec<Row> = self
@@ -191,8 +224,15 @@ impl Panel for SessionsPanel {
     fn handle_key(&mut self, app: &mut App, key: KeyEvent) {
         if self.searching {
             match key.code {
-                KeyCode::Enter => { self.searching = false; self.apply_filter(); }
-                KeyCode::Esc => { self.searching = false; self.search_input.clear(); self.search_cursor = 0; }
+                KeyCode::Enter => {
+                    self.searching = false;
+                    self.apply_filter();
+                }
+                KeyCode::Esc => {
+                    self.searching = false;
+                    self.search_input.clear();
+                    self.search_cursor = 0;
+                }
                 KeyCode::Left => {
                     if self.search_cursor > 0 {
                         self.search_cursor = self.search_input[..self.search_cursor]
@@ -245,7 +285,9 @@ impl Panel for SessionsPanel {
                 self.search_cursor = 0;
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.selected > 0 { self.selected -= 1; }
+                if self.selected > 0 {
+                    self.selected -= 1;
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.selected < self.filtered.len().saturating_sub(1) {
@@ -270,11 +312,13 @@ impl Panel for SessionsPanel {
             }
             KeyCode::Char('v') if key.modifiers == KeyModifiers::NONE => {
                 // Clone/branch the selected session
-                if self.filtered.is_empty() { return; }
+                if self.filtered.is_empty() {
+                    return;
+                }
                 let session = self.sessions[self.filtered[self.selected]].clone();
                 let new_name = format!("{}-fork", session.name);
                 let chat = app.chat.as_mut().unwrap();
-                if let Some(new_session) = chat.session_manager_mut().clone_session(&session.id) {
+                if let Some(_new_session) = chat.session_manager_mut().clone_session(&session.id) {
                     let all = chat.session_manager_mut().list_sessions_full();
                     self.sessions = all;
                     self.apply_filter();

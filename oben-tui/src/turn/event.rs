@@ -1,6 +1,6 @@
 //! Turn events — messages sent from turn controller to UI components.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Activity item types for status feed
 #[derive(Debug, Clone)]
@@ -91,18 +91,10 @@ impl TurnState {
             started_at: Instant::now(),
             context: context.to_string(),
         });
-        self.add_activity(
-            ActivityKind::ToolStart,
-            format!("Running: {tool_name}"),
-        );
+        self.add_activity(ActivityKind::ToolStart, format!("Running: {tool_name}"));
     }
 
-    pub fn on_tool_complete(
-        &mut self,
-        tool_id: &str,
-        tool_name: &str,
-        result: &str,
-    ) {
+    pub fn on_tool_complete(&mut self, tool_id: &str, tool_name: &str, result: &str) {
         // Remove from active and add to completed
         let has_error =
             result.to_lowercase().contains("error") || result.to_lowercase().contains("failed");
@@ -124,8 +116,7 @@ impl TurnState {
             self.completed_tools.truncate(8);
         }
         // Remove from active
-        self.active_tools
-            .retain(|t| t.id != tool_id);
+        self.active_tools.retain(|t| t.id != tool_id);
         let status = if has_error { "error" } else { "✅" };
         self.add_activity(
             if has_error {
@@ -139,13 +130,17 @@ impl TurnState {
 
     pub fn on_stream_delta(&mut self, text: &str) {
         self.streaming_text.push_str(text);
-        self.add_activity(ActivityKind::Streaming, format!("Streaming: {}...", &text[..text.len().min(30)]));
+        self.add_activity(
+            ActivityKind::Streaming,
+            format!("Streaming: {}...", &text[..text.len().min(30)]),
+        );
     }
 
     pub fn on_reasoning(&mut self, text: &str) {
         self.reasoning_text.push_str(text);
         if self.reasoning_text.len() > 2000 {
-            self.reasoning_text = self.reasoning_text[self.reasoning_text.len() - 2000..].to_string();
+            self.reasoning_text =
+                self.reasoning_text[self.reasoning_text.len() - 2000..].to_string();
         }
     }
 
@@ -169,7 +164,12 @@ impl TurnState {
         self.add_activity(ActivityKind::Info, "Turn interrupted".to_string());
     }
 
-    fn add_activity(&mut self, kind: ActivityKind, message: String) {
+    pub fn on_cancel(&mut self, reason: &str) {
+        self.on_interrupted();
+        self.outcome = reason.to_string();
+    }
+
+    pub fn add_activity(&mut self, kind: ActivityKind, message: String) {
         self.activity.push(ActivityItem {
             kind,
             message,

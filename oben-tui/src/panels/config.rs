@@ -3,9 +3,11 @@
 use super::Panel;
 use crate::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarState, ScrollbarOrientation};
 use ratatui::layout::Rect;
+use ratatui::prelude::*;
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 
 pub struct ConfigPanel {
     pub text: String,
@@ -29,8 +31,12 @@ impl ConfigPanel {
 }
 
 impl Panel for ConfigPanel {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let text_lines: Vec<Line> = self

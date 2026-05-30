@@ -108,7 +108,7 @@ fn discover_builtin_transports(reg: &mut TransportRegistry) {
     // Future: "bedrock_converse", "codex_responses"
     reg.register(
         "gemini_native",
-        Box::new(|config: &ProviderConfig, system_prompt: &str| {
+        Box::new(|config: &ProviderConfig, _system_prompt: &str| {
             let base_url = config
                 .base_url
                 .as_deref()

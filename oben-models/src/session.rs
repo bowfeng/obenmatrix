@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use super::ToolCall;
 
 /// A single message in a conversation.
 
@@ -156,7 +155,7 @@ pub trait SessionStore {
 ///
 /// Methods that create/switch sessions return `&mut Session` so the caller
 /// can mutate messages and metadata in one shot — no extra lookup needed.
-pub trait SessionManagerExt {
+pub trait SessionManagerExt: Send + Sync {
     /// Initialize the session store from disk.
     fn init(&mut self) -> Result<(), anyhow::Error>;
 

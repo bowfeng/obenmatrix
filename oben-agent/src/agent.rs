@@ -17,7 +17,7 @@
 //! - Concurrent tool dispatch (Tier 2)
 //! - Nudge / background review (Tier 2)
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::Result;
 use oben_models::{CallMode, Message, StreamDeltaCallback};
@@ -352,7 +352,7 @@ impl Agent {
     /// prompt. The result is delivered via the provided callback.
     pub async fn trigger_nudge(
         &mut self,
-        user_message: &str,
+        _user_message: &str,
         memory_interval: usize,
         skill_interval: usize,
         on_complete: impl FnOnce(bool, String) + Send + 'static,
@@ -401,7 +401,7 @@ impl Agent {
             turn_options,
         ).await;
 
-        let result = match response_text {
+        let _result = match response_text {
             Ok(text) => {
                 let text_lower = text.to_lowercase();
                 let is_noop = text_lower.contains("nothing to")

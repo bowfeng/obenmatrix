@@ -9,6 +9,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+#[allow(dead_code)]
 const MAX_READ_BUFFER: u32 = 4 * 1024 * 1024; // 4MB
 
 /// Read clipboard content as a usable UTF-8 string.

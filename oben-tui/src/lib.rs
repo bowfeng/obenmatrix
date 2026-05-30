@@ -27,15 +27,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
-use tracing_subscriber::{fmt::layer, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use panels::chat::ChatPanel;
 use panels::config::ConfigPanel;
 use panels::setup::SetupPanel;
 use panels::sessions::SessionsPanel;
 use panels::{Panel, PanelId};
-
-use turn::event::TurnState;
 
 use oben_config::AppConfig;
 use oben_agent::{Agent, AgentConfig};
@@ -67,7 +65,7 @@ impl Layouts {
     }
 }
 
-pub(crate) enum TuiEvent {
+pub enum TuiEvent {
     Key(KeyEvent),
     ChatInput(String),
     Mouse(MouseEvent),
@@ -137,7 +135,7 @@ impl App {
         );
 
         let turn_state = Arc::new(Mutex::new(turn::event::TurnState::new()));
-        let turn_state_clone = Arc::clone(&turn_state);
+        let _turn_state_clone = Arc::clone(&turn_state);
 
         let callbacks = oben_agent::AgentCallbacks {
             step: Some(Box::new(move |msg: &str| {
@@ -156,7 +154,7 @@ impl App {
             },
             tool_complete: {
                 let ts_clone = Arc::clone(&turn_state);
-                Some(Box::new(move |tool_name: &str, args_json: &str, result: &str| {
+                Some(Box::new(move |tool_name: &str, _args_json: &str, result: &str| {
                     if let Ok(mut ts) = ts_clone.lock() {
                         ts.on_tool_complete("tool-id", tool_name, result);
                     }
@@ -273,6 +271,7 @@ pub async fn run_tui() -> Result<()> {
 
     // Only set up file logging if no subscriber has been initialized yet
     // (e.g. when TUI is run directly without going through oben-cli)
+    #[allow(unexpected_cfgs)]
     #[cfg(not(feature = "cli-wired"))]
     {
         let log_dir = dirs::home_dir()

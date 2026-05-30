@@ -60,6 +60,7 @@ impl CompactContextEngine {
         }
     }
 
+    #[allow(dead_code)]
     fn context_length(&self) -> usize {
         self.config.context_length
     }
@@ -69,6 +70,7 @@ impl CompactContextEngine {
     }
 
     // -- Model switching ----------------------------------------------------
+    #[allow(dead_code)]
     const MINIMUM_CONTEXT_LENGTH: usize = 4096;
 }
 

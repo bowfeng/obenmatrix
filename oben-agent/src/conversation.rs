@@ -9,7 +9,7 @@ use crate::callbacks::AgentCallbacks;
 use crate::context::ContextEngine;
 use crate::fallback::FallbackChain;
 use crate::interrupt::SharedInterrupt;
-use crate::nudge::{NudgeConfig, NudgeResult, build_nudge_prompt, should_trigger_nudge};
+use crate::nudge::{NudgeConfig, build_nudge_prompt, should_trigger_nudge};
 use crate::retry::RetryConfig;
 use crate::turn_executor::{TurnConfig, TurnExecutor};
 use oben_models::{CallMode, Message, SessionManagerExt, StreamDeltaCallback, TransportProvider};

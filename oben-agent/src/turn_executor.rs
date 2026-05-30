@@ -243,7 +243,7 @@ impl TurnExecutor {
                 // while calling `session_manager` methods. Drop the borrow,
                 // do the rotation, then re-acquire.
                 let parent_id = current_session_id.clone();
-                drop(session);
+                let _ = session;
 
                 // 1. End the parent session
                 context_engine.on_session_end(&parent_id);
@@ -498,7 +498,8 @@ impl TurnExecutor {
             }
         }
         // Note: all code paths inside the loop use `return`, so this point is unreachable.
-        unreachable!("turn execution always returns inside the loop")
+        #[allow(unreachable_code)]
+        let _ = unreachable!("all loop paths return early");
     }
 }
 

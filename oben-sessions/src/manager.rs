@@ -191,7 +191,7 @@ fn reconcile_schema(conn: &Connection) -> Result<()> {
 /// and using PRAGMA table_info. This handles all SQL syntax correctly
 /// (DEFAULT expressions, inline REFERENCES, CHECK constraints, etc.)
 fn parse_expected_columns(schema_sql: &str) -> Result<Vec<(String, Vec<(String, String)>)>> {
-    let mut ref_conn = Connection::open_in_memory()?;
+    let ref_conn = Connection::open_in_memory()?;
     ref_conn.execute_batch(schema_sql)?;
     
     let mut result = Vec::new();
@@ -1460,7 +1460,7 @@ impl SessionManager {
 
         let start = session.messages.len() - new_count;
         let mut new_messages: Vec<Message> = session.messages[start..].iter().cloned().collect();
-        drop(session);
+        let _ = session;
 
         self.db.save_new_messages(&sid, &mut new_messages)?;
         if let Some(s) = self.sessions.get_mut(&sid) {

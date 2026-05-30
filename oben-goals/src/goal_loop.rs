@@ -466,6 +466,7 @@ mod tests {
     }
 
     // Synchronous helper for tests (simulates the judge logic)
+    #[allow(dead_code)]
     fn call_judge_sync(_goal: &str, plan: &PlanState) -> JudgeVerdict {
         let all_done = plan.nodes.iter().all(|n| {
             n.status == crate::plan::NodeStatus::Done

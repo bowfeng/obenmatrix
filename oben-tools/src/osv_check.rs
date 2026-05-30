@@ -32,6 +32,7 @@ struct OSVResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct OSVVuln {
     id: String,
     summary: Option<String>,
@@ -46,18 +47,21 @@ struct OSVReference {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct OSVAffected {
     package: OSVPackage,
     ranges: Vec<OSVRange>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct OSVRange {
     r#type: String,
     events: Vec<OSVEvent>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct OSVEvent {
     introduced: Option<String>,
     fixed: Option<String>,

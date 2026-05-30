@@ -2,12 +2,11 @@
 
 use super::Panel;
 use crate::{App, TuiEvent};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
-use tracing::info;
-use unicode_width::UnicodeWidthStr;
+
 use oben_models::Message;
 use std::time::Instant;
 
@@ -431,7 +430,7 @@ impl Panel for ChatPanel {
                 }
             }
             KeyCode::Delete => {
-                if let Some(ch) = self.input[self.cursor..].chars().next() {
+                if let Some(_ch) = self.input[self.cursor..].chars().next() {
                     self.input.remove(self.cursor);
                     // cursor stays in place (next char slides into this position)
                 }
@@ -726,7 +725,7 @@ impl ChatPanel {
                     pending.remove(pos);
                 } else if let Some(first_pending) = pending.first() {
                     // Fallback: match by tool id (tool_call_ids)
-                    let tool_name = if let Some(id) = msg.tool_call_ids.first() {
+                    let tool_name = if msg.tool_call_ids.first().is_some() {
                         first_pending.clone()
                     } else {
                         "unknown".into()
@@ -752,7 +751,7 @@ impl ChatPanel {
 
 fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
-    let line_indices: Vec<usize> = panel.messages.iter().flat_map(|msg| {
+    let _line_indices: Vec<usize> = panel.messages.iter().flat_map(|msg| {
         let mut indices = vec![lines.len()];
         lines.push(Line::from(Span::styled(
             format!(" ── {} ── ", msg.role),
@@ -860,7 +859,7 @@ fn draw_tool_trail(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
     }
 
     // Use exactly the area provided by layout — cap lines to available height
-    let trail_height = (trail_lines.len() as u16).min(area.height);
+    let _trail_height = (trail_lines.len() as u16).min(area.height);
     let trail_para = Paragraph::new(Text::from(trail_lines));
     frame.render_widget(trail_para, area);
 }

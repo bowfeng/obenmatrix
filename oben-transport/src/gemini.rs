@@ -4,7 +4,6 @@
 //! converting OpenAI-style `messages[]` / `tools[]` into Gemini's native schema.
 
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -392,14 +391,6 @@ fn build_gen(
 // Translate Gemini response → TransportResponse
 // ---------------------------------------------------------------------------
 
-fn map_fr(r: &GeminiFinishReason) -> &'static str {
-    match r {
-        GeminiFinishReason::Stop | GeminiFinishReason::Other | GeminiFinishReason::Unspecified => "stop",
-        GeminiFinishReason::MaxTokens => "length",
-        GeminiFinishReason::Safety | GeminiFinishReason::Recitation => "content_filter",
-    }
-}
-
 fn translate_response(resp: &GeminiResponse, _model: &str) -> TransportResponse {
     if resp.candidates.is_empty() {
         return TransportResponse { text: String::new(), tool_calls: Vec::new(), tokens_used: None };
@@ -458,7 +449,7 @@ fn short_id(n: usize) -> String {
 // ---------------------------------------------------------------------------
 
 struct TSlot {
-    index: usize,
+    _index: usize,
     id: String,
     last: String,
 }
@@ -492,7 +483,7 @@ fn stream_delta(event: &GeminiResponse, slots: &mut std::collections::HashMap<St
                         let key = format!("{}_{}", 0, name);
                         let ni = slots.len();
                         let id = short_id(8);
-                        let prev = slots.entry(key.clone()).or_insert(TSlot { index: ni, id, last: String::new() });
+                        let prev = slots.entry(key.clone()).or_insert(TSlot { _index: ni, id, last: String::new() });
                         let emitted = if a.starts_with(&prev.last) {
                             a[prev.last.len()..].to_string()
                         } else {
@@ -518,7 +509,7 @@ fn stream_delta(event: &GeminiResponse, slots: &mut std::collections::HashMap<St
 // Transport implementation
 // ---------------------------------------------------------------------------
 
-struct CachedReq { json_str: String }
+struct CachedReq { _json_str: String }
 
 /// Google Gemini native transport.
 pub struct GeminiMessagesTransport {
@@ -598,7 +589,7 @@ impl GeminiMessagesTransport {
         let mut guard = self.cached.lock().unwrap();
         let req = self.build_request(messages)?;
         let json = serde_json::to_value(&req)?;
-        *guard = Some(CachedReq { json_str: serde_json::to_string(&req)? });
+        *guard = Some(CachedReq { _json_str: serde_json::to_string(&req)? });
         Ok(json)
     }
 

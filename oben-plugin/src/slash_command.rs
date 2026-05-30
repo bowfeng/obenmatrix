@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// A slash command registered by a plugin.
 ///

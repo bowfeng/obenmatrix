@@ -94,6 +94,7 @@ impl CuratorState {
 
 /// Curator — orchestrates skill maintenance tasks.
 pub struct Curator {
+    #[allow(dead_code)]
     config: CuratorConfig,
     lifecycle_manager: LifecycleManager,
     state: CuratorState,

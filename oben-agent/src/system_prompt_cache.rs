@@ -1,10 +1,3 @@
-/// System prompt prefix caching — restores cached prompts from session DB.
-///
-/// Mirrors Hermes' system prompt caching: the cached prompt is stored in the
-/// session DB and restored on session resume. This keeps provider prefix
-/// caches warm across turns.
-
-use anyhow::Result;
 
 /// System prompt cache backed by a session store.
 pub struct SystemPromptCache {

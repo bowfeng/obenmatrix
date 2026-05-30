@@ -2,7 +2,7 @@
 //!
 //! Jobs are stored in `~/.config/obenalien/cron/jobs.json`.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -315,7 +315,7 @@ impl CronStore {
         }
     }
 
-    pub fn create(&self, mut job: CronJob) -> Result<()> {
+    pub fn create(&self, job: CronJob) -> Result<()> {
         let mut data = self.data.lock().unwrap();
         data.push(job);
         drop(data);
@@ -333,8 +333,7 @@ impl CronStore {
             if let Some(i) = name_pos {
                 data.remove(i);
             } else {
-                drop(data);
-                return anyhow::bail!("Job '{}' not found", ref_str);
+                anyhow::bail!("Job '{}' not found", ref_str);
             }
         }
         drop(data);
@@ -424,8 +423,7 @@ impl CronStore {
             if let Some(j) = data.iter_mut().find(|jj| jj.id == ref_str || jj.name == ref_str) {
                 j.next_run_at = Some(now);
             } else {
-                drop(data);
-                return anyhow::bail!("Job '{}' not found", ref_str);
+                anyhow::bail!("Job '{}' not found", ref_str);
             }
             drop(data);
         }
@@ -519,6 +517,7 @@ impl CronStore {
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct Daemon {
+    #[allow(dead_code)]
     store: std::sync::Arc<CronStore>,
     running: std::sync::Arc<AtomicBool>,
 }

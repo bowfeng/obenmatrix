@@ -162,8 +162,9 @@ Directly below your Thinking block, you must determine if the feature is a **Par
 
 **Steps:**
 1. Write the 3-layer FAILING tests exactly following the BDD specs above.
-2. Implement core logic using idiomatic Rust design patterns until all 3 layers pass sequentially.
-3. **Update Ledger:** - *If Parity Match*: Update the targeted row in `docs/PRD-*-parity.md` directly to ✅.
+2. If there is a new UI component, please refer to https://github.com/ratatui/awesome-ratatui to see what can be used.
+3. Implement core logic using idiomatic Rust design patterns until all 3 layers pass sequentially.
+4. **Update Ledger:** - *If Parity Match*: Update the targeted row in `docs/PRD-*-parity.md` directly to ✅.
    - *If Custom Feature*: Document the new design directly inside `docs/PRD-*-{area}.md`.
 
 ```

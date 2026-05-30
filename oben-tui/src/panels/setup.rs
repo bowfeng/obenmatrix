@@ -3,9 +3,9 @@
 use super::Panel;
 use crate::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::layout::Rect;
 
 use oben_config::AppConfig;
 use oben_models::ProviderKind;
@@ -56,7 +56,10 @@ impl SetupPanel {
             ProviderKind::LMStudio => 5,
             _ => 5, // All new providers default to LMStudio/index 5
         };
-        let max_iter_str = config.max_iterations.map(|v| v.to_string()).unwrap_or("50".to_string());
+        let max_iter_str = config
+            .max_iterations
+            .map(|v| v.to_string())
+            .unwrap_or("50".to_string());
         let compression = config.context.compression.clone();
         let model = config.model.model.clone();
         let api_key = config.model.api_key.clone().unwrap_or_default();
@@ -70,8 +73,13 @@ impl SetupPanel {
 
     fn providers(&self) -> Vec<&'static str> {
         vec![
-            "OpenRouter", "OpenAI", "Anthropic", "Bedrock", "Gemini",
-            "LMStudio (local)", "Custom endpoint",
+            "OpenRouter",
+            "OpenAI",
+            "Anthropic",
+            "Bedrock",
+            "Gemini",
+            "LMStudio (local)",
+            "Custom endpoint",
         ]
     }
 
@@ -164,8 +172,12 @@ impl SetupPanel {
 }
 
 impl Panel for SetupPanel {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let para = Paragraph::new(Text::from(self.help.as_str()))
@@ -188,18 +200,19 @@ impl Panel for SetupPanel {
                     _ => SetupStep::Welcome,
                 };
             }
-            KeyCode::Enter => {
-                match self.step {
-                    SetupStep::Welcome | SetupStep::Provider
-                    | SetupStep::ModelName | SetupStep::ApiKey | SetupStep::MaxIterations => {
-                        self.next_step();
-                    }
-                    SetupStep::Compression => {
-                        self.save_config();
-                    }
-                    SetupStep::Complete => {}
+            KeyCode::Enter => match self.step {
+                SetupStep::Welcome
+                | SetupStep::Provider
+                | SetupStep::ModelName
+                | SetupStep::ApiKey
+                | SetupStep::MaxIterations => {
+                    self.next_step();
                 }
-            }
+                SetupStep::Compression => {
+                    self.save_config();
+                }
+                SetupStep::Complete => {}
+            },
             KeyCode::Up | KeyCode::Char('k') if self.step == SetupStep::Provider => {
                 if self.provider_selected > 0 {
                     self.provider_selected -= 1;
@@ -210,39 +223,41 @@ impl Panel for SetupPanel {
                     self.provider_selected += 1;
                 }
             }
-            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
-                match self.step {
-                    SetupStep::Compression => {
-                        match c {
-                            '1' => self.compression_input = "summary".to_string(),
-                            '2' => self.compression_input = "token_count".to_string(),
-                            '3' => self.compression_input = "none".to_string(),
-                            _ => {}
-                        }
-                    }
-                    SetupStep::MaxIterations => {
-                        if c.is_ascii_digit() {
-                            self.max_iter_input.push(c);
-                        }
-                    }
-                    SetupStep::ModelName => {
-                        self.model_input.push(c);
-                    }
-                    SetupStep::ApiKey => {
-                        self.api_key_input.push(c);
-                    }
+            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => match self.step {
+                SetupStep::Compression => match c {
+                    '1' => self.compression_input = "summary".to_string(),
+                    '2' => self.compression_input = "token_count".to_string(),
+                    '3' => self.compression_input = "none".to_string(),
                     _ => {}
+                },
+                SetupStep::MaxIterations => {
+                    if c.is_ascii_digit() {
+                        self.max_iter_input.push(c);
+                    }
                 }
-            }
-            KeyCode::Backspace => {
-                match self.step {
-                    SetupStep::MaxIterations => { self.max_iter_input.pop(); }
-                    SetupStep::ModelName => { self.model_input.pop(); }
-                    SetupStep::ApiKey => { self.api_key_input.pop(); }
-                    SetupStep::Compression => { self.compression_input.pop(); }
-                    _ => {}
+                SetupStep::ModelName => {
+                    self.model_input.push(c);
                 }
-            }
+                SetupStep::ApiKey => {
+                    self.api_key_input.push(c);
+                }
+                _ => {}
+            },
+            KeyCode::Backspace => match self.step {
+                SetupStep::MaxIterations => {
+                    self.max_iter_input.pop();
+                }
+                SetupStep::ModelName => {
+                    self.model_input.pop();
+                }
+                SetupStep::ApiKey => {
+                    self.api_key_input.pop();
+                }
+                SetupStep::Compression => {
+                    self.compression_input.pop();
+                }
+                _ => {}
+            },
             _ => {}
         }
     }

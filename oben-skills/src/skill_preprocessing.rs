@@ -12,7 +12,6 @@
 use regex::Regex;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -101,7 +100,7 @@ pub fn substitute_template_vars(
 /// Failures return a short `[inline-shell error: ...]` marker instead of
 /// raising, so one bad snippet can't wreck the whole skill message.
 fn run_inline_shell(command: &str, cwd: Option<&Path>, timeout: u64) -> String {
-    let timeout = std::cmp::max(1, timeout);
+    let _timeout = std::cmp::max(1, timeout);
 
     let mut cmd = Command::new("bash");
     cmd.arg("-c").arg(command);

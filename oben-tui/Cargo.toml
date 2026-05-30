@@ -21,8 +21,8 @@ oben-skills = { path = "../oben-skills" }
 
 ratatui = { version = "0", features = ["serde"] }
 crossterm = { version = "0", features = ["event-stream"] }
-unicode-segmentation = "1"
-unicode-width = "0"
+ratatui-textarea = { version = "0.9", features = ["crossterm"] }
+unicode-width = "0.2"
 tokio = { workspace = true, features = ["sync"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -31,6 +31,11 @@ dirs = "5"
 chrono = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+tui-scrollview = "0.6.4"
+
+[features]
+default = []
+cli-wired = []
 
 [dev-dependencies]
 tempfile = { workspace = true }

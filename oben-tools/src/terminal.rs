@@ -26,6 +26,7 @@ use oben_utils::path_security::is_path_safe;
 
 /// Status of a background task.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum TaskStatus {
     Running,
     Finished,
@@ -37,7 +38,7 @@ struct BackgroundTask {
     /// The command string that was executed.
     command: String,
     /// Process handle for cleanup.
-    process: tokio::process::Child,
+    _process: tokio::process::Child,
     /// Process ID for external reference.
     pid: Option<u32>,
     /// Current status.
@@ -344,7 +345,7 @@ async fn handle_background_task(
     let mut tasks = BACKGROUND_TASKS.lock().await;
     tasks.insert(task_id.clone(), BackgroundTask {
         command: cmd.to_string(),
-        process,
+        _process: process,
         pid,
         status: TaskStatus::Running,
     });

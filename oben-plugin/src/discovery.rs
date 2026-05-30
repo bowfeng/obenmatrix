@@ -9,7 +9,7 @@
 //! Later sources override earlier ones on name collision.
 
 use crate::manifest::{PluginManifest, PluginSource};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};

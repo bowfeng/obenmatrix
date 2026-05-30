@@ -4,9 +4,9 @@
 /// random jitter between retries. Only retries on configured HTTP status codes
 /// (429, 500, 502, 503, 504).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rand::Rng;
 use tracing::{debug, warn};
 

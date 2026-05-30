@@ -47,8 +47,6 @@ impl Default for Theme {
 impl Theme {
     /// Apply this theme's style to a style builder.
     pub fn apply(self) -> Style {
-        Style::default()
-            .fg(self.foreground)
-            .bg(self.background)
+        Style::default().fg(self.foreground).bg(self.background)
     }
 }
