@@ -530,6 +530,7 @@ impl Panel for ChatPanel {
                     self.input.drain(byte_idx..byte_idx + len);
                     self.cursor -= 1;
                 }
+                self.update_completions();
             }
             KeyCode::Delete => {
                 if self.cursor < self.grapheme_count() {
@@ -538,6 +539,7 @@ impl Panel for ChatPanel {
                     let len = g.graphemes(true).next().map(|x| x.len()).unwrap_or(3);
                     self.input.drain(byte_idx..byte_idx + len);
                 }
+                self.update_completions();
             }
             KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
                 let byte_idx = self.grapheme_to_byte(self.cursor);
@@ -548,6 +550,7 @@ impl Panel for ChatPanel {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.clear();
                 self.cursor = 0;
+                self.tab_completion_items.clear();
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.cursor > 0 {
@@ -564,6 +567,7 @@ impl Panel for ChatPanel {
                     self.input.drain(byte_start..byte_end);
                     self.cursor = word_end;
                     self.last_enter_time = None;
+                    self.update_completions();
                 }
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -576,6 +580,37 @@ impl Panel for ChatPanel {
                 let byte_idx = self.grapheme_to_byte(self.cursor);
                 self.input.truncate(byte_idx);
                 self.last_enter_time = None;
+                self.update_completions();
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.cursor > 0 {
+                    let prefix_graphemes: Vec<&str> = self.input[..self.grapheme_to_byte(self.cursor)].graphemes(true).collect();
+                    let mut word_end = prefix_graphemes.len();
+                    for (i, g) in prefix_graphemes.iter().enumerate().rev() {
+                        if g.trim().is_empty() { word_end = i; } else { break; }
+                    }
+                    while word_end > 0 && !prefix_graphemes[word_end - 1].trim().is_empty() {
+                        word_end -= 1;
+                    }
+                    let byte_start = self.grapheme_to_byte(word_end);
+                    let byte_end = self.grapheme_to_byte(self.cursor);
+                    self.input.drain(byte_start..byte_end);
+                    self.cursor = word_end;
+                    self.last_enter_time = None;
+                    self.update_completions();
+                }
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor = 0;
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor = self.grapheme_count();
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let byte_idx = self.grapheme_to_byte(self.cursor);
+                self.input.truncate(byte_idx);
+                self.last_enter_time = None;
+                self.update_completions();
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
                 if self.cursor < self.grapheme_count() {
@@ -594,6 +629,7 @@ impl Panel for ChatPanel {
                     let byte_end = self.grapheme_to_byte(self.cursor + word_end);
                     self.input.drain(self.grapheme_to_byte(self.cursor)..byte_end);
                     self.last_enter_time = None;
+                    self.update_completions();
                 }
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -605,6 +641,7 @@ impl Panel for ChatPanel {
                     // Skip backwards over non-whitespace
                     while i > 0 && !prefix_graphemes[i - 1].trim().is_empty() { i -= 1; }
                     self.cursor = i;
+                    self.update_completions();
                 }
             }
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -616,6 +653,7 @@ impl Panel for ChatPanel {
                     // Skip word
                     while i < remaining.len() && !remaining[i].trim().is_empty() { i += 1; }
                     self.cursor += i;
+                    self.update_completions();
                 }
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
