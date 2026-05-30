@@ -653,6 +653,7 @@ impl ChatPanel {
         self.input.push_str(raw);
         self.cursor = self.input.len();
         self.last_enter_time = None;
+        self.update_completions();
     }
 
     /// Update tab completion candidates based on current input prefix.
@@ -688,7 +689,13 @@ impl ChatPanel {
                 self.tab_completion_original = self.input.clone();
             } else {
                 self.tab_completion_items.clear();
+                self.tab_completion_index = 0;
+                self.tab_completion_original = String::new();
             }
+        } else {
+            self.tab_completion_items.clear();
+            self.tab_completion_index = 0;
+            self.tab_completion_original = String::new();
         }
     }
 
