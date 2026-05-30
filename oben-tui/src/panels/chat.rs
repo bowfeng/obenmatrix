@@ -6,6 +6,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use textwrap::wrap;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use oben_models::Message;
 use std::time::Instant;
@@ -56,6 +59,62 @@ pub struct ChatPanel {
 }
 
 impl ChatPanel {
+    /** Display width of input (1 CJK char = 1 column). */
+    pub fn display_width(&self) -> usize {
+        self.input.width()
+    }
+
+    /** Count grapheme clusters in input. */
+    pub fn grapheme_count(&self) -> usize {
+        self.input.graphemes(true).count()
+    }
+
+    // Convert grapheme index (cursor) to terminal screen position (col, row)
+    // matching how the text is rendered (fold-based wrapping).
+    pub fn cursor_screen_pos(&self, text_cols: usize) -> (u16, u16) {
+        if text_cols == 0 || self.input.is_empty() {
+            return (0, 0);
+        }
+        
+        let mut col: usize = 0;
+        let mut row: usize = 0;
+        
+        for (i, g) in self.input.graphemes(true).enumerate() {
+            let g_width = g.width();
+            
+            if g == "\n" {
+                col = 0;
+                row += 1;
+            } else if i < self.cursor {
+                if col + g_width > text_cols {
+                    row += 1;
+                    col = g_width;
+                } else {
+                    col += g_width;
+                }
+            }
+        }
+        
+        (col as u16, row as u16)
+    }
+
+    /** Display width of `n` graphemes in input. */
+    pub fn grapheme_prefix_display(&self, n: usize) -> usize {
+        self.input.graphemes(true)
+            .take(n)
+            .map(|g| g.width())
+            .sum()
+    }
+
+    /** Convert grapheme index (cursor) to byte index for string slicing. */
+    fn grapheme_to_byte(&self, grapheme_idx: usize) -> usize {
+        self.input
+            .graphemes(true)
+            .take(grapheme_idx.min(self.grapheme_count()))
+            .map(|g| g.len())
+            .sum()
+    }
+
     pub fn new(session_id: Option<String>, messages: Option<Vec<Message>>) -> Self {
         let chat_messages = messages
             .map(|msgs| msgs.iter().map(to_chat_msg).collect())
@@ -128,6 +187,11 @@ impl ChatPanel {
             }
         }
         self.last_enter_time = Some(Instant::now());
+
+        // Clear tab completion on any submission
+        self.tab_completion_items.clear();
+        self.tab_completion_index = 0;
+        self.tab_completion_original = String::new();
 
         match trimmed {
             "/quit" => {
@@ -268,63 +332,102 @@ impl Panel for ChatPanel {
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let trail_count = if self.tool_trail.is_empty() { 0u16 } else { (self.tool_trail.len() + 1).min(7) as u16 };
 
+        // Calculate input bar height based on wrapped text lines
+        let input_area_width: u16 = if trail_count > 0 {
+            area.width.saturating_sub(trail_count + 1)
+        } else {
+            area.width.saturating_sub(1)
+        };
+        let text_cols = (input_area_width as usize).saturating_sub(2).max(1);
+        
+        let full_wrapped_lines = if text_cols > 0 {
+            wrap(self.input.as_str(), text_cols).len()
+        } else {
+            1
+        };
+
+        let wrapped_lines = full_wrapped_lines.min(50);
+        
+        let indicator_height: u16 = if self.streaming { 1 } else { 0 };
+        let completion_height: u16 = if !self.tab_completion_items.is_empty() {
+            self.tab_completion_items.len().min(8) as u16
+        } else {
+            0
+        };
+        
+        let bottom_area_height: u16 = 2 + wrapped_lines as u16 + indicator_height + completion_height;
+        let bottom_area_height = bottom_area_height.max(3);
+        
+        let chat_height = area.height.saturating_sub(bottom_area_height);
+        let chat_height = chat_height.min(area.height);
+
         let chunks = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(trail_count),
-            Constraint::Length(3),
+            Constraint::Length(chat_height),
+            Constraint::Length(bottom_area_height),
         ])
         .split(area);
-        draw_messages(frame, self, chunks[0]);
-        if !self.tool_trail.is_empty() {
-            draw_tool_trail(frame, self, chunks[1]);
+        
+        let chat_area = chunks[0];
+        let trail_area = if trail_count > 0 {
+            Rect::new(chat_area.x, chat_area.y + chat_area.height - trail_count as u16, trail_count, trail_count)
+        } else {
+            Rect::new(0, 0, 0, 0)
+        };
+
+        let input_area = chunks[1];
+
+        draw_messages(frame, self, chat_area);
+        if !self.tool_trail.is_empty() && trail_count > 0 {
+            draw_tool_trail(frame, self, trail_area);
         }
         let body_relative_y = chunks[0].y;
         let body_relative_height = chunks[0].height;
         draw_turn_status(frame, &self.stream_info, Rect::new(chunks[0].x, body_relative_y, chunks[0].width, body_relative_height));
 
-        // Draw input bar — multi-line wrapped, truncated to 3 lines
-        let input_height = chunks[2].height as usize;
-        let text_area_width = (chunks[2].width - 2).max(1) as usize; // -2 for borders
-        let max_displayed_chars = input_height * text_area_width;
+        // Calculate cursor position
+        let text_cols_actual = (input_area.width as usize).saturating_sub(2).max(1);
+        let (screen_col, screen_row) = self.cursor_screen_pos(text_cols_actual);
 
-        // Truncate input to fit 3 wrapped lines of text
-        let full_text = if self.input.chars().count() > max_displayed_chars {
-            let chars_before: String = self.input.chars().take(max_displayed_chars).collect();
-            format!("> {}", chars_before)
+        // Build input text lines using same folding logic as cursor_screen_pos
+        let input_text_lines: Vec<Line> = if !self.input.is_empty() {
+            self.input.as_str().graphemes(true).fold(Vec::new(), |mut lines, g| {
+                if lines.is_empty() {
+                    lines.push(String::from(g));
+                } else {
+                    let last = lines.last_mut().unwrap();
+                    let current_line_width: usize = last.graphemes(true).map(|c| c.width()).sum();
+                    if current_line_width + g.width() > text_cols_actual {
+                        lines.push(String::from(g));
+                    } else {
+                        last.push_str(g);
+                    }
+                }
+                lines
+            }).into_iter().map(Line::from).collect()
         } else {
-            format!("> {}", self.input)
+            vec![Line::from(Span::styled(
+                "Type '/' to see available slash commands. Type your message and press Enter to send.",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        };
+        
+        let total_lines = input_text_lines.len() as u16;
+        let visible_height = if total_lines > 0 { input_area.height.saturating_sub(2) } else { 1 };
+        let row_scroll = if total_lines > visible_height {
+            total_lines.saturating_sub(visible_height)
+        } else {
+            0
         };
 
-        let input_para = Paragraph::new(full_text)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .scroll((0, 0))
-            .style(Style::default().fg(Color::White))
-            .block(Block::default().borders(Borders::ALL).title(" Input (Ctrl+W:del word, Ctrl+A/E:home/end) "));
-        frame.render_widget(input_para, chunks[2]);
+        let input_para = Paragraph::new(input_text_lines)
+            .scroll((row_scroll, 0))
+            .block(Block::default().borders(Borders::ALL).title(" Typing.. "));
+        frame.render_widget(input_para, input_area);
 
-        // Calculate cursor position for wrapped text
-        let available_cols = chunks[2].width; // includes borders
-        let text_area_cols = (available_cols - 2) as usize; // -2 for left/right borders
-        let prefix_cols: usize = 2;
-
-        // Text area is where paragraph text wraps, no cap needed
-        let text_cols = text_area_cols.max(1);
-
-        if self.cursor <= self.input.len() {
-            let input_chars_before: &str = &self.input[..self.cursor.min(self.input.len())];
-            let cursor_col_width = unicode_width::UnicodeWidthStr::width(input_chars_before);
-            let total_text_cols = prefix_cols + cursor_col_width;
-
-            let line = total_text_cols / text_cols;
-            let col = total_text_cols % text_cols;
-
-            if line < input_height {
-                frame.set_cursor_position(Position::new(
-                    chunks[2].x + 1 + col as u16,
-                    chunks[2].y + 1 + line as u16,
-                ));
-            }
-        }
+        frame.set_cursor_position(Position::new(
+            input_area.x + 1 + screen_col,
+            input_area.y + 1 + screen_row,
+        ));
 
         // Draw streaming indicator
         if self.streaming {
@@ -335,15 +438,15 @@ impl Panel for ChatPanel {
             );
             let indicator_para = Paragraph::new(Line::from(indicator_span));
             let indicator_area = Rect::new(
-                chunks[0].right() - indicator_text.len() as u16 - 2,
-                chunks[0].y + 1,
+                chat_area.right() - indicator_text.len() as u16 - 2,
+                chat_area.y + 1,
                 indicator_text.len() as u16 + 2,
                 1,
             );
             frame.render_widget(indicator_para, indicator_area);
         }
 
-        // Draw tab completion overlay if active
+        // Draw tab completion overlay below input text
         if !self.tab_completion_items.is_empty() {
             let completion_text: Vec<Line> = self.tab_completion_items.iter().enumerate().map(|(i, entry)| {
                 let (cmd, desc) = entry.split_once(" — ").unwrap_or((&entry[..], ""));
@@ -364,9 +467,9 @@ impl Panel for ChatPanel {
             let display_lines = completion_text.iter().take(max_lines).cloned().collect::<Vec<_>>();
             let completion_para = Paragraph::new(display_lines);
             let completion_area = Rect::new(
-                chunks[2].x,
-                chunks[2].y + 3,
-                chunks[2].width,
+                input_area.x,
+                input_area.y + 1 + textwrap::wrap(&self.input, text_cols_actual).len() as u16,
+                input_area.width,
                 if completion_text.len() > max_lines { max_lines as u16 } else { completion_text.len() as u16 },
             );
             frame.render_widget(completion_para, completion_area);
@@ -393,7 +496,7 @@ impl Panel for ChatPanel {
                     }
                 } else if let Some(new_text) = app.input_history.up(&self.input) {
                     self.input = new_text;
-                    self.cursor = self.input.len();
+                    self.cursor = self.grapheme_count();
                 } else {
                     self.scroll_messages(1);
                 }
@@ -403,7 +506,7 @@ impl Panel for ChatPanel {
                     self.cycle_tab(true);
                 } else if let Some(new_text) = app.input_history.down() {
                     self.input = new_text;
-                    self.cursor = self.input.len();
+                    self.cursor = self.grapheme_count();
                 } else {
                     self.scroll_messages(-1);
                 }
@@ -412,32 +515,34 @@ impl Panel for ChatPanel {
                 self.handle_submit(app);
             }
             KeyCode::Left => {
-                if let Some((byte_idx, _)) = self.input[..self.cursor].char_indices().next_back() {
-                    self.cursor = byte_idx;
-                } else {
-                    self.cursor = 0;
-                }
+                if self.cursor > 0 { self.cursor -= 1; }
             }
             KeyCode::Right => {
-                if let Some(ch) = self.input[self.cursor..].chars().next() {
-                    self.cursor += ch.len_utf8();
+                if self.cursor < self.grapheme_count() {
+                    self.cursor += 1;
                 }
             }
             KeyCode::Backspace => {
-                if let Some((byte_idx, ch)) = self.input[..self.cursor].char_indices().next_back() {
-                    self.input.remove(byte_idx);
-                    self.cursor -= ch.len_utf8();
+                if self.cursor > 0 {
+                    let byte_idx = self.grapheme_to_byte(self.cursor - 1);
+                    let g = &self.input[byte_idx..];
+                    let len = g.graphemes(true).next().map(|x| x.len()).unwrap_or(3);
+                    self.input.drain(byte_idx..byte_idx + len);
+                    self.cursor -= 1;
                 }
             }
             KeyCode::Delete => {
-                if let Some(_ch) = self.input[self.cursor..].chars().next() {
-                    self.input.remove(self.cursor);
-                    // cursor stays in place (next char slides into this position)
+                if self.cursor < self.grapheme_count() {
+                    let byte_idx = self.grapheme_to_byte(self.cursor);
+                    let g = &self.input[byte_idx..];
+                    let len = g.graphemes(true).next().map(|x| x.len()).unwrap_or(3);
+                    self.input.drain(byte_idx..byte_idx + len);
                 }
             }
             KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
-                self.input.insert(self.cursor, c);
-                self.cursor += c.len_utf8();
+                let byte_idx = self.grapheme_to_byte(self.cursor);
+                self.input.insert(byte_idx, c);
+                self.cursor += 1;
                 self.last_enter_time = None;
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -446,18 +551,18 @@ impl Panel for ChatPanel {
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.cursor > 0 {
-                    let prefix = &self.input[..self.cursor];
-                    let word_start = prefix
-                        .char_indices()
-                        .rev()
-                        .find(|(_, c)| !c.is_whitespace() && !c.is_alphanumeric())
-                        .map(|(i, _)| i + 1)
-                        .or_else(|| {
-                            prefix.char_indices().rev().find(|(_, c)| c.is_whitespace()).map(|(i, _)| i + 1)
-                        })
-                        .unwrap_or(0);
-                    self.input.drain(word_start..self.cursor);
-                    self.cursor = word_start;
+                    let prefix_graphemes: Vec<&str> = self.input[..self.grapheme_to_byte(self.cursor)].graphemes(true).collect();
+                    let mut word_end = prefix_graphemes.len();
+                    for (i, g) in prefix_graphemes.iter().enumerate().rev() {
+                        if g.trim().is_empty() { word_end = i; } else { break; }
+                    }
+                    while word_end > 0 && !prefix_graphemes[word_end - 1].trim().is_empty() {
+                        word_end -= 1;
+                    }
+                    let byte_start = self.grapheme_to_byte(word_end);
+                    let byte_end = self.grapheme_to_byte(self.cursor);
+                    self.input.drain(byte_start..byte_end);
+                    self.cursor = word_end;
                     self.last_enter_time = None;
                 }
             }
@@ -465,79 +570,65 @@ impl Panel for ChatPanel {
                 self.cursor = 0;
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cursor = self.input.len();
+                self.cursor = self.grapheme_count();
             }
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.input.truncate(self.cursor);
+                let byte_idx = self.grapheme_to_byte(self.cursor);
+                self.input.truncate(byte_idx);
                 self.last_enter_time = None;
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
-                if self.cursor < self.input.len() {
-                    let after = &self.input[self.cursor..];
-                    let truncated = if let Some(sp) = after.find(|c: char| c.is_whitespace()) {
-                        self.cursor + sp
-                    } else {
-                        self.input.len()
-                    };
-                    self.input.drain(self.cursor..truncated);
+                if self.cursor < self.grapheme_count() {
+                    let remaining_graphemes: Vec<&str> = self.input[self.grapheme_to_byte(self.cursor)..].graphemes(true).collect();
+                    let mut word_end = 0;
+                    // Skip leading whitespace
+                    for g in &remaining_graphemes {
+                        if !g.trim().is_empty() { break; }
+                        word_end += 1;
+                    }
+                    // Skip non-whitespace (word)
+                    for g in &remaining_graphemes[word_end..] {
+                        if g.trim().is_empty() { break; }
+                        word_end += 1;
+                    }
+                    let byte_end = self.grapheme_to_byte(self.cursor + word_end);
+                    self.input.drain(self.grapheme_to_byte(self.cursor)..byte_end);
                     self.last_enter_time = None;
                 }
             }
-            // Alt+B: move cursor back one word (byte-aware)
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
                 if self.cursor > 0 {
-                    let before = &self.input[..self.cursor];
-                    // Skip backwards over whitespace, then find next non-whitespace word start
-                    let word_start = before
-                        .char_indices()
-                        .rev()
-                        .scan(true, |skip_ws, (i, c)| {
-                            if !(*skip_ws) && !c.is_whitespace() {
-                                Some(i)
-                            } else {
-                                *skip_ws = c.is_whitespace();
-                                None
-                            }
-                        })
-                        .next()
-                        .unwrap_or(0);
-                    self.cursor = word_start;
+                    let prefix_graphemes: Vec<&str> = self.input[..self.grapheme_to_byte(self.cursor)].graphemes(true).collect();
+                    let mut i = prefix_graphemes.len();
+                    // Skip backwards over whitespace
+                    while i > 0 && prefix_graphemes[i - 1].trim().is_empty() { i -= 1; }
+                    // Skip backwards over non-whitespace
+                    while i > 0 && !prefix_graphemes[i - 1].trim().is_empty() { i -= 1; }
+                    self.cursor = i;
                 }
             }
-            // Alt+F: move cursor forward one word (byte-aware)
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
-                if self.cursor < self.input.len() {
-                    let after = &self.input[self.cursor..];
-                    let char_len = after.chars().map(|c| c.len_utf8()).collect::<Vec<_>>();
-                    let mut byte_offset = 0;
-                    let mut in_word = false;
-                    for (i, c) in after.chars().enumerate() {
-                        let cur = byte_offset;
-                        byte_offset += char_len[i];
-                        if in_word && c.is_whitespace() {
-                            self.cursor = cur;
-                            break;
-                        }
-                        if !in_word && !c.is_whitespace() {
-                            in_word = true;
-                        }
-                        if i == after.chars().count() - 1 && in_word {
-                            self.cursor = byte_offset;
-                        }
-                    }
+                if self.cursor < self.grapheme_count() {
+                    let remaining: Vec<&str> = self.input[self.grapheme_to_byte(self.cursor)..].graphemes(true).collect();
+                    let mut i = 0;
+                    // Skip leading whitespace
+                    while i < remaining.len() && remaining[i].trim().is_empty() { i += 1; }
+                    // Skip word
+                    while i < remaining.len() && !remaining[i].trim().is_empty() { i += 1; }
+                    self.cursor += i;
                 }
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(text) = crate::clipboard::read_clipboard() {
                     if !text.is_empty() {
-                        self.input.insert_str(self.cursor, &text);
-                        self.cursor += text.len();
+                        let byte_idx = self.grapheme_to_byte(self.cursor);
+                        self.input.insert_str(byte_idx, &text);
+                        self.cursor += text.graphemes(true).count();
                         self.last_enter_time = None;
                     }
                 }
             }
             KeyCode::Tab => {
-                // Tab: cycle through completion suggestions
                 if !self.tab_completion_items.is_empty() {
                     self.cycle_tab(true);
                 }
@@ -566,16 +657,14 @@ impl ChatPanel {
 
     /// Update tab completion candidates based on current input prefix.
     fn update_completions(&mut self) {
-        // Find the word before cursor (/command...)
         let text_before_cursor = if self.cursor > 0 {
-            &self.input[..self.cursor]
+            &self.input[..self.grapheme_to_byte(self.cursor)]
         } else {
             ""
         };
         let last_word = text_before_cursor.split_whitespace().last().unwrap_or("");
 
         if last_word.starts_with('/') {
-            // Filter slash commands that match the prefix
             let prefix = last_word.to_lowercase();
             let commands = [
                 ("/clear", "Clear chat messages"),
@@ -600,9 +689,6 @@ impl ChatPanel {
             } else {
                 self.tab_completion_items.clear();
             }
-        } else {
-            // Don't clear tab completion items when not in slash context,
-            // just allow cycling
         }
     }
 
@@ -610,25 +696,26 @@ impl ChatPanel {
     fn apply_tab_completion(&mut self) {
         if self.tab_completion_items.is_empty() { return; }
         let entry = &self.tab_completion_items[self.tab_completion_index];
-        // Extract command name from "cmd — description"
         let cmd = entry.split_whitespace().next().unwrap_or("");
-        // Replace the current word (from last whitespace or start to cursor)
-        let text_before = &self.input[..self.cursor];
-        let last_ws = text_before.rfind(|c: char| c.is_whitespace()).unwrap_or(0);
-        let replacement = if last_ws == 0 && last_ws < self.input.len() {
-            // No whitespace found — replace from 0
-            format!("{}{}", cmd, &self.input[self.cursor..])
+        
+        let replacement = if self.input[..self.grapheme_to_byte(self.cursor)].trim().is_empty() {
+            format!("{}{}", cmd, &self.input[self.grapheme_to_byte(self.cursor)..])
         } else {
-            let start = if last_ws == 0 { 0 } else { last_ws + 1 };
+            let before_graphemes: Vec<&str> = self.input[..self.grapheme_to_byte(self.cursor)].graphemes(true).collect();
+            let last_ws = before_graphemes.iter().rposition(|g| g.trim().is_empty());
+            let start = match last_ws {
+                Some(pos) => self.grapheme_to_byte(pos + 1),
+                None => 0,
+            };
             format!(
                 "{}{}{}",
                 &self.input[..start],
                 cmd,
-                &self.input[self.cursor..]
+                &self.input[self.grapheme_to_byte(self.cursor)..]
             )
         };
         self.input = replacement.clone();
-        self.cursor = replacement.len();
+        self.cursor = self.input.graphemes(true).count();
     }
 
     /// Cycle the completion index.
@@ -670,14 +757,12 @@ impl ChatPanel {
     }
 
     /// Extract tool trail from session messages.
-    /// Finds assistant messages with tool_calls and their corresponding tool results.
     pub fn extract_tool_trail(&mut self, messages: &[Message]) {
         if messages.is_empty() {
             self.tool_trail.clear();
             return;
         }
 
-        // Helper: get text content from a Message
         let text_of = |msg: &Message| -> String {
             match &msg.content {
                 oben_models::MessageContent::Text(s) => s.clone(),
@@ -695,7 +780,7 @@ impl ChatPanel {
         };
 
         let mut trail: Vec<ToolTrailLine> = Vec::new();
-        let mut pending: Vec<String> = Vec::new(); // pending tool names
+        let mut pending: Vec<String> = Vec::new();
 
         for msg in messages {
             if msg.role == oben_models::MessageRole::Assistant {
@@ -724,7 +809,6 @@ impl ChatPanel {
                     });
                     pending.remove(pos);
                 } else if let Some(first_pending) = pending.first() {
-                    // Fallback: match by tool id (tool_call_ids)
                     let tool_name = if msg.tool_call_ids.first().is_some() {
                         first_pending.clone()
                     } else {
@@ -739,7 +823,6 @@ impl ChatPanel {
             }
         }
 
-        // Reverse to chronological order
         trail.reverse();
         if trail.len() > 5 {
             trail.drain(0..trail.len() - 5);
@@ -791,7 +874,6 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
     let viewport = area.height as usize;
     let max_scroll = if total_lines > viewport { total_lines - viewport } else { 0 };
     
-    // scroll=0 = bottom (latest), scroll=max_scroll = top (oldest)
     let scroll_pos = panel.scroll.min(max_scroll);
     let start = if max_scroll > 0 {
         max_scroll.saturating_sub(scroll_pos)
@@ -823,7 +905,6 @@ fn draw_tool_trail(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
         return;
     }
 
-    // Count tool trail lines needed
     let mut trail_lines: Vec<Line> = vec![
         Line::from(Span::styled(
             " ── Tool Trail ── ",
@@ -858,7 +939,6 @@ fn draw_tool_trail(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
         )));
     }
 
-    // Use exactly the area provided by layout — cap lines to available height
     let _trail_height = (trail_lines.len() as u16).min(area.height);
     let trail_para = Paragraph::new(Text::from(trail_lines));
     frame.render_widget(trail_para, area);
