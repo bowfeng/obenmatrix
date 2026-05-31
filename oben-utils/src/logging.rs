@@ -2,13 +2,14 @@
 
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Initialize the tracing subscriber. Logs are written to `~/.obenalien/logs/oben-tui.log`.
+/// Initialize the tracing subscriber. Logs are written to `~/.obenalien/logs/oa-{datetime}.log`.
 pub fn init(level: tracing::Level) {
     let log_dir = dirs::home_dir()
         .map(|d| d.join(".obenalien/logs"))
         .unwrap_or_else(|| std::path::PathBuf::from("./logs"));
     let _ = std::fs::create_dir_all(&log_dir);
-    let log_path = log_dir.join("oben-tui.log");
+    let datetime = chrono::Local::now().format("%Y%m%dT%H%M%S");
+    let log_path = log_dir.join(format!("oa-{datetime}.log"));
 
     let log_file = std::fs::OpenOptions::new()
         .create(true)

@@ -316,7 +316,8 @@ pub async fn run_tui() -> Result<()> {
             .map(|d| d.join(".obenalien/logs"))
             .unwrap_or_else(|| std::path::PathBuf::from("./logs"));
         let _ = std::fs::create_dir_all(&log_dir);
-        let log_path = log_dir.join("oben-tui.log");
+        let datetime = chrono::Local::now().format("%Y%m%dT%H%M%S");
+        let log_path = log_dir.join(format!("oa-{datetime}.log"));
         let log_file = std::fs::OpenOptions::new().create(true).append(true).open(log_path)?;
         let subscriber = tracing_subscriber::registry()
             .with(layer().with_writer(log_file));
