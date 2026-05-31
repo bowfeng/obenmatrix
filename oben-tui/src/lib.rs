@@ -42,7 +42,7 @@ use tracing_subscriber::{fmt::layer, layer::SubscriberExt, util::SubscriberInitE
 
 use oben_agent::{Agent, AgentCallbacks, AgentConfig};
 use oben_config::AppConfig;
-use oben_models::Message;
+
 use oben_tools::ToolRegistry;
 
 pub struct Layouts {
@@ -88,9 +88,6 @@ pub struct App {
     /// where we hold the lock across .await in agent.turn().
     pub chat: Option<Arc<TokioMutex<Agent>>>,
     pub turn_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Cached session info updated on turn completion.
-    /// Avoids blocking the tokio runtime during draw().
-    pub cached_session_info: String,
     pub session_id: Option<String>,
     pub tools: std::sync::Arc<ToolRegistry>,
     pub tool_names: Vec<String>,
@@ -119,7 +116,6 @@ impl App {
             chat: None,
             turn_handle: None,
             session_id: None,
-            cached_session_info: String::new(),
             tools: std::sync::Arc::new(tools),
             tool_names,
             input_tx: None,
@@ -298,9 +294,6 @@ impl App {
         Ok(())
     }
 
-    pub fn update_session_messages(&mut self, _messages: Vec<Message>) -> Result<()> {
-        Ok(())
-    }
 }
 
 pub async fn run_tui() -> Result<()> {
@@ -371,49 +364,34 @@ pub async fn run_tui() -> Result<()> {
     // Channel for signaling task completion back to the main event loop
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
 
-    // Main event loop — draw at the end of every iteration.
-    // The timeout branch ensures we periodically return to draw() even when
-    // no events arrive (critical for streaming feedback).
+    // Main event loop — draw when something changes.
+    // Only redraw periodically when streaming (to show live updates).
+    // Draw once on startup so the UI is visible immediately.
+    terminal.draw(|frame| draw_ui(frame, &mut app))?;
     loop {
         if !app.running {
             break;
         }
-        info!(
-            "🔄 loop iteration: turn_handle={:?}, streaming_panel={}",
-            app.turn_handle.as_ref().map(|_| "some"),
-            app.panels.get(&PanelId::Chat)
-                .and_then(|p| p.downcast_ref::<ChatPanel>())
-                .map_or("".to_string(), |p| format!("{}", p.streaming_text.len())),
-        );
+        let mut redraw = false;
         tokio::select! {
-            // Timeout: ensures periodic redraw (~30fps) so streaming/tool activity
-            // remain visible even when no user events arrive.
+            // Timeout: only redraw periodically during streaming so live text
+            // remains visible even when no user events arrive.
             _ = tokio::time::sleep(Duration::from_millis(32)) => {
-                if let Ok(ts) = app.turn_state.lock() {
-                    info!(
-                        "⏱️ timeout: phase={:?}, streaming_text.len={}, active_tools={}",
-                        ts.phase,
-                        ts.streaming_text.len(),
-                        ts.active_tools.len(),
-                    );
-                    info!(
-                        "⏱️ timeout: streaming_text preview='{}'",
-                        if ts.streaming_text.len() > 200 {
-                            ts.streaming_text.chars().take(200).collect::<String>()
-                        } else {
-                            ts.streaming_text.clone()
-                        },
-                    );
+                let is_streaming = app.panels.get(&PanelId::Chat)
+                    .and_then(|p| p.downcast_ref::<ChatPanel>())
+                    .map(|cp| cp.streaming)
+                    .unwrap_or(false);
+                if is_streaming {
+                    let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
                 }
             }
 
             // Check for completion signal from spawned turn task
             maybe_completion = done_rx.recv() => {
                 if let Some(completion) = maybe_completion {
-                    info!("main_loop: task completed success={}", completion.success);
                     app.turn_handle = None;
                     if completion.success {
-                        // Rebuild ChatPanel with new messages
+                        // Incrementally update ChatPanel instead of rebuilding
                         let (session_id, messages) = match &app.chat {
                             Some(agent) => {
                                 let guard = agent.lock().await;
@@ -425,13 +403,18 @@ pub async fn run_tui() -> Result<()> {
                             }
                             None => (None, None),
                         };
-                        app.panels.insert(
-                            PanelId::Chat,
-                            Box::new(ChatPanel::new(session_id, messages)),
-                        );
+                        if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                            if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                                chat.session_id = session_id;
+                                if let Some(messages) = messages {
+                                    chat.update_from_messages(&messages);
+                                }
+                            }
+                        }
                     } else {
                         app.status = "Turn completed with errors".into();
                     }
+                    redraw = true;
                 }
             }
 
@@ -440,6 +423,7 @@ pub async fn run_tui() -> Result<()> {
                 match event {
                     Some(TuiEvent::Key(key)) => {
                         app.handle_key(key);
+                        redraw = true;
                     }
                     Some(TuiEvent::Mouse(mouse_event)) => {
                         let scroll_up = matches!(mouse_event.kind, MouseEventKind::ScrollUp)
@@ -452,33 +436,32 @@ pub async fn run_tui() -> Result<()> {
                                     chat.scroll_to_bottom = false;
                                     chat.scroll = chat.scroll.saturating_sub(1);
                                     chat.scroll_state.lock().unwrap().scroll_up();
+                                    redraw = true;
                                 }
                             }
                         } else if scroll_down {
                             if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
                                 if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                                    chat.scroll_to_bottom = false;
+                                    chat.scroll_to_bottom = true;
                                     chat.scroll = chat.scroll.saturating_add(1);
                                     chat.scroll_state.lock().unwrap().scroll_down();
+                                    redraw = true;
                                 }
                             }
                         }
                     }
                     Some(TuiEvent::ChatInput(input)) => {
-                        tracing::info!("📥 event loop: ChatInput received, input.len()={}", input.len());
                         handle_chat_input(&mut app, input, &done_tx).await;
-                        tracing::info!("📥 event loop: handle_chat_input returned");
+                        redraw = true;
                     }
                     None => break,
                 }
             }
         }
 
-        // Single draw per loop iteration — after select! returns for any reason.
-        if let Err(e) = terminal.draw(|frame| {
-            draw_ui(frame, &mut app);
-        }) {
-            tracing::warn!("draw error: {}", e);
+        // Redraw after events and during streaming
+        if redraw {
+            let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
         }
     }
 
@@ -536,6 +519,7 @@ async fn handle_chat_input(
                     tool_calls: Vec::new(),
                     tool_results: Vec::new(),
                 });
+                chat.build_base_lines();
                 tracing::info!("handle_chat_input: appended user message to ChatPanel.messages, msg_count={}", chat.messages.len());
             }
         }

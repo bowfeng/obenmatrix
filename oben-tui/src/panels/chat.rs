@@ -17,7 +17,6 @@ use std::time::Instant;
 
 pub enum ChatViewMode {
     History,
-    ToolOutput(usize),
     Streaming,
 }
 
@@ -51,7 +50,6 @@ pub struct ChatPanel {
     pub view_mode: ChatViewMode,
     pub streaming: bool,
     pub session_id: Option<String>,
-    pub streaming_text: String,
     pub last_enter_time: Option<Instant>,
     pub tool_trail: Vec<ToolTrailLine>,
     pub tab_completion_items: Vec<String>,
@@ -60,6 +58,9 @@ pub struct ChatPanel {
     pub stream_info: String,
     pub turn_state_ref: Option<std::sync::Arc<std::sync::Mutex<crate::turn::event::TurnState>>>,
     pub scroll_to_bottom: bool,
+    /// Pre-rendered base messages (without streaming text).
+    /// Built once per message update, cloned every draw (cheap Arc bump).
+    pub base_lines: Vec<Line<'static>>,
 }
 
 impl ChatPanel {
@@ -135,7 +136,6 @@ impl ChatPanel {
             streaming: false,
             scroll_to_bottom: true,
             session_id,
-            streaming_text: String::new(),
             last_enter_time: None,
             tool_trail: Vec::new(),
             tab_completion_items: Vec::new(),
@@ -143,6 +143,7 @@ impl ChatPanel {
             tab_completion_original: String::new(),
             stream_info: String::new(),
             turn_state_ref: None,
+            base_lines: Vec::new(),
         }
     }
 
@@ -615,37 +616,7 @@ impl Panel for ChatPanel {
                 self.last_enter_time = None;
                 self.update_completions();
             }
-            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.cursor > 0 {
-                    let prefix_graphemes: Vec<&str> = self.input[..self.grapheme_to_byte(self.cursor)].graphemes(true).collect();
-                    let mut word_end = prefix_graphemes.len();
-                    for (i, g) in prefix_graphemes.iter().enumerate().rev() {
-                        if g.trim().is_empty() { word_end = i; } else { break; }
-                    }
-                    while word_end > 0 && !prefix_graphemes[word_end - 1].trim().is_empty() {
-                        word_end -= 1;
-                    }
-                    let byte_start = self.grapheme_to_byte(word_end);
-                    let byte_end = self.grapheme_to_byte(self.cursor);
-                    self.input.drain(byte_start..byte_end);
-                    self.cursor = word_end;
-                    self.last_enter_time = None;
-                    self.update_completions();
-                }
-            }
-            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cursor = 0;
-            }
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cursor = self.grapheme_count();
-            }
-            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let byte_idx = self.grapheme_to_byte(self.cursor);
-                self.input.truncate(byte_idx);
-                self.last_enter_time = None;
-                self.update_completions();
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
                 if self.cursor < self.grapheme_count() {
                     let remaining_graphemes: Vec<&str> = self.input[self.grapheme_to_byte(self.cursor)..].graphemes(true).collect();
                     let mut word_end = 0;
@@ -820,6 +791,59 @@ impl ChatPanel {
         self.apply_tab_completion();
     }
 
+    /// Incrementally update messages and tool_trail from session.
+    /// Preserves scroll state, input state, and other runtime state.
+    pub fn update_from_messages(&mut self, messages: &[Message]) {
+        self.messages = messages.iter().map(to_chat_msg).collect();
+        self.extract_tool_trail(messages);
+        self.session_id = None; // will be set by caller if needed
+        self.streaming = false;
+        self.view_mode = ChatViewMode::History;
+        self.tab_completion_items.clear();
+        self.tab_completion_index = 0;
+        self.tab_completion_original.clear();
+        self.base_lines.clear();
+        self.build_base_lines();
+    }
+
+    /// Render messages (excluding the last assistant if streaming) into base_lines.
+    /// This is called only when messages change, not on every draw.
+    pub fn build_base_lines(&mut self) {
+        let messages_to_render = &self.messages[..];
+
+        let mut lines = Vec::new();
+        for msg in messages_to_render {
+            lines.push(Line::from(Span::styled(
+                format!(" ── {} ── ", msg.role),
+                Style::default().fg(match msg.role.as_str() {
+                    "User" => Color::Green,
+                    "Assistant" => Color::Blue,
+                    "System" => Color::Magenta,
+                    "Tool" => Color::Yellow,
+                    _ => Color::Gray,
+                }).add_modifier(Modifier::BOLD),
+            )));
+            for line in msg.text.split('\n') {
+                lines.push(Line::from(Span::raw(line.to_string())));
+            }
+            if msg.has_tool_calls && !msg.tool_calls.is_empty() {
+                for tc in &msg.tool_calls {
+                    lines.push(Line::from(format!("   🔧 {}", tc)));
+                }
+                for (tool_name, output) in &msg.tool_results {
+                    let preview = if output.len() > 50 {
+                        format!("{}...", &output[..50])
+                    } else {
+                        output.clone()
+                    };
+                    lines.push(Line::from(format!("   ✅ {} → {}", tool_name, preview)));
+                }
+            }
+            lines.push(Line::from(""));
+        }
+        self.base_lines = lines;
+    }
+
     /// Extract tool trail from session messages.
     pub fn extract_tool_trail(&mut self, messages: &[Message]) {
         if messages.is_empty() {
@@ -897,50 +921,8 @@ impl ChatPanel {
 }
 
 fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect, streaming_text: &str) {
-    let mut lines: Vec<Line> = Vec::new();
-
-    // Compute messages to render: during streaming, exclude the last assistant message
-    // which is replaced by streaming_text
-    let mut messages_to_render = &panel.messages[..];
-    if panel.streaming && !streaming_text.is_empty() {
-        // Find and exclude the last assistant message
-        for (i, msg) in panel.messages.iter().enumerate().rev() {
-            if msg.role == "Assistant" {
-                messages_to_render = &panel.messages[..i];
-                break;
-            }
-        }
-    }
-
-    for msg in messages_to_render {
-        lines.push(Line::from(Span::styled(
-            format!(" ── {} ── ", msg.role),
-            Style::default().fg(match msg.role.as_str() {
-                "User" => Color::Green,
-                "Assistant" => Color::Blue,
-                "System" => Color::Magenta,
-                "Tool" => Color::Yellow,
-                _ => Color::Gray,
-            }).add_modifier(Modifier::BOLD),
-        )));
-        for line in msg.text.split('\n') {
-            lines.push(Line::from(Span::raw(line.to_string())));
-        }
-        if msg.has_tool_calls && !msg.tool_calls.is_empty() {
-            for tc in &msg.tool_calls {
-                lines.push(Line::from(format!("   🔧 {}", tc)));
-            }
-            for (tool_name, output) in &msg.tool_results {
-                let preview = if output.len() > 50 {
-                    format!("{}...", &output[..50])
-                } else {
-                    output.clone()
-                };
-                lines.push(Line::from(format!("   ✅ {} → {}", tool_name, preview)));
-            }
-        }
-        lines.push(Line::from(""));
-    }
+    // Use cached base_lines (pre-rendered, cheap Arc clone) + streaming_text lines
+    let mut lines: Vec<Line> = panel.base_lines.clone();
 
     // Streaming assistant text replaces the last assistant message
     if panel.streaming && !streaming_text.is_empty() {

@@ -150,34 +150,12 @@ impl TurnExecutor {
         // Add user message to session
         session.messages.push(user_message);
 
-        // ── Streaming setup ──────────────────────────────────────────
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let mut callback_handle: Option<tokio::task::JoinHandle<()>> = None;
         let has_streaming = delta_callback.is_some();
-
-        // Wrap the user callback in Arc<Mutex> so it can be shared across
-        // loop iterations and retry attempts. Each iteration creates a new
-        // wrapper that forwards to the same Arc.
-        let shared_cb = delta_callback.map(|cb| Arc::new(std::sync::Mutex::new(cb)));
-
-        // Spawn task that forwards text from channel to user callback.
-        if let Some(ref cb_for_task) = shared_cb {
-            let cb_for_task = Arc::clone(cb_for_task);
-            callback_handle = Some(tokio::task::spawn(async move {
-                let mut buf = String::new();
-                const FLUSH_THRESHOLD: usize = 512;
-                while let Some(chunk) = rx.recv().await {
-                    buf.push_str(&chunk);
-                    if buf.len() >= FLUSH_THRESHOLD {
-                        let text = std::mem::take(&mut buf);
-                        cb_for_task.lock().unwrap()(&text);
-                    }
-                }
-                if !buf.is_empty() {
-                    cb_for_task.lock().unwrap()(&buf);
-                }
-            }));
-        }
+        let shared_cb = has_streaming.then(|| {
+            Arc::new(std::sync::Mutex::new(
+                delta_callback.unwrap() as oben_models::StreamDeltaCallback
+            ))
+        });
 
         // ── Budget setup ─────────────────────────────────────────────
         let mut budget = budget.unwrap_or_else(|| IterationBudget::new(90));
@@ -407,13 +385,6 @@ impl TurnExecutor {
                     session.messages.push(assistant_msg);
 
                     if tool_calls.is_empty() {
-                        // Flush streaming output
-                        if has_streaming {
-                            drop(tx);
-                            if let Some(handle) = callback_handle.take() {
-                                let _ = handle.await;
-                            }
-                        }
 
                         // When text is empty, return last tool result if available
                         if text.trim().is_empty() {
@@ -485,13 +456,7 @@ impl TurnExecutor {
                         classified.kind, classified.http_code, e
                     );
 
-                    // Flush streaming if active
-                    if has_streaming {
-                        drop(tx);
-                        if let Some(handle) = callback_handle.take() {
-                            let _ = handle.await;
-                        }
-                    }
+
 
                     return Err(e);
                 }
