@@ -13,7 +13,6 @@ use unicode_width::UnicodeWidthStr;
 use tui_scrollview::{ScrollView, ScrollViewState};
 
 use oben_models::Message;
-use std::sync::Mutex;
 use std::time::Instant;
 
 pub enum ChatViewMode {
@@ -48,7 +47,7 @@ pub struct ChatPanel {
     pub input: String,
     pub cursor: usize,
     pub scroll: usize,
-    pub scroll_state: Mutex<ScrollViewState>,
+    pub scroll_state: std::sync::Arc<std::sync::Mutex<ScrollViewState>>,
     pub view_mode: ChatViewMode,
     pub streaming: bool,
     pub session_id: Option<String>,
@@ -60,6 +59,7 @@ pub struct ChatPanel {
     pub tab_completion_original: String,
     pub stream_info: String,
     pub turn_state_ref: Option<std::sync::Arc<std::sync::Mutex<crate::turn::event::TurnState>>>,
+    pub scroll_to_bottom: bool,
 }
 
 impl ChatPanel {
@@ -128,9 +128,12 @@ impl ChatPanel {
             input: String::new(),
             cursor: 0,
             scroll: 0,
-            scroll_state: Mutex::new(ScrollViewState::default()),
+            scroll_state: std::sync::Arc::new(
+                std::sync::Mutex::new(ScrollViewState::default()),
+            ),
             view_mode: ChatViewMode::History,
             streaming: false,
+            scroll_to_bottom: true,
             session_id,
             streaming_text: String::new(),
             last_enter_time: None,
@@ -521,8 +524,6 @@ impl Panel for ChatPanel {
                 } else if let Some(new_text) = app.input_history.up(&self.input) {
                     self.input = new_text;
                     self.cursor = self.grapheme_count();
-                } else {
-                    self.scroll_state.lock().unwrap().scroll_down();
                 }
             }
             KeyCode::Down => {
@@ -531,8 +532,6 @@ impl Panel for ChatPanel {
                 } else if let Some(new_text) = app.input_history.down() {
                     self.input = new_text;
                     self.cursor = self.grapheme_count();
-                } else {
-                    self.scroll_state.lock().unwrap().scroll_up();
                 }
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
@@ -565,11 +564,19 @@ impl Panel for ChatPanel {
                 }
                 self.update_completions();
             }
-            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
-                let byte_idx = self.grapheme_to_byte(self.cursor);
-                self.input.insert(byte_idx, c);
-                self.cursor += 1;
-                self.last_enter_time = None;
+            KeyCode::Char('\n') | KeyCode::Char('\r') if key.modifiers == KeyModifiers::NONE => {
+                self.handle_submit(app);
+            }
+            _ if key.modifiers == KeyModifiers::NONE && matches!(key.code, KeyCode::Char(_)) => {
+                match key.code {
+                    KeyCode::Char(c) => {
+                        let byte_idx = self.grapheme_to_byte(self.cursor);
+                        self.input.insert(byte_idx, c);
+                        self.cursor += 1;
+                        self.last_enter_time = None;
+                    }
+                    _ => {}
+                }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.clear();
@@ -943,17 +950,30 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect, streaming_tex
         lines.push(Line::from(""));
     }
 
-    // Render into ScrollView — full content, ScrollView handles viewing area
+    let block = Block::default().borders(Borders::ALL).title(" Messages ");
+    block.render(area, frame.buffer_mut());
+    
+    let inner_height = (area.height.saturating_sub(2)).max(1);
+    let inner_width = (area.width.saturating_sub(2)).max(1) as u16;
+    let viewport_area = Rect::new(area.x + 1, area.y + 1, inner_width, inner_height as u16);
+    
     let total_lines = lines.len();
-    let content_size = ratatui::layout::Size::new(area.width, total_lines.max(1) as u16);
-    let mut scroll_view = ScrollView::new(content_size);
-    let para = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" Messages "));
-    scroll_view.render_widget(para, ratatui::layout::Rect::new(0, 0, content_size.width, content_size.height));
-
+    let content_height = (total_lines.max(1)) as u16;
+    let mut scroll_view = ScrollView::new(Size::new(inner_width, content_height));
+    
+    // Render ALL lines into the scroll view buffer.
+    scroll_view.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::NONE)),
+        scroll_view.area(),
+    );
+    
+    // Sync scroll: if at bottom or scroll_to_bottom flag, set offset to bottom edge.
     let mut state = panel.scroll_state.lock().unwrap();
-    state.set_offset(Position::new(0, panel.scroll as u16));
-    frame.render_stateful_widget(scroll_view, area, &mut *state);
+    let max_offset = content_height.saturating_sub(inner_height.max(1) as u16);
+    if panel.scroll_to_bottom || state.offset().y >= max_offset.saturating_sub(1) {
+        state.set_offset(Position::new(0, max_offset.max(1)));
+    }
+    scroll_view.render(viewport_area, frame.buffer_mut(), &mut state);
 }
 
 fn draw_tool_trail(frame: &mut Frame, panel: &ChatPanel, area: Rect) {
