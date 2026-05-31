@@ -442,26 +442,26 @@ pub async fn run_tui() -> Result<()> {
                         app.handle_key(key);
                     }
                     Some(TuiEvent::Mouse(mouse_event)) => {
-                        match mouse_event.kind {
-                              MouseEventKind::ScrollUp => {
-                                  if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
-                                      if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                                          chat.scroll_to_bottom = false;
-                                          chat.scroll = chat.scroll.saturating_add(1);
-                                          chat.scroll_state.lock().unwrap().scroll_down();
-                                      }
-                                  }
-                              }
-                              MouseEventKind::ScrollDown => {
-                                  if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
-                                      if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                                          chat.scroll_to_bottom = false;
-                                          chat.scroll = chat.scroll.saturating_sub(1);
-                                          chat.scroll_state.lock().unwrap().scroll_up();
-                                      }
-                                  }
-                              }
-                            _ => {}
+                        let scroll_up = matches!(mouse_event.kind, MouseEventKind::ScrollUp)
+                            || matches!(mouse_event.kind, MouseEventKind::ScrollLeft);
+                        let scroll_down = matches!(mouse_event.kind, MouseEventKind::ScrollDown)
+                            || matches!(mouse_event.kind, MouseEventKind::ScrollRight);
+                        if scroll_up {
+                            if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                                if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                                    chat.scroll_to_bottom = false;
+                                    chat.scroll = chat.scroll.saturating_sub(1);
+                                    chat.scroll_state.lock().unwrap().scroll_up();
+                                }
+                            }
+                        } else if scroll_down {
+                            if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                                if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                                    chat.scroll_to_bottom = false;
+                                    chat.scroll = chat.scroll.saturating_add(1);
+                                    chat.scroll_state.lock().unwrap().scroll_down();
+                                }
+                            }
                         }
                     }
                     Some(TuiEvent::ChatInput(input)) => {

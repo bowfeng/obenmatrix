@@ -970,7 +970,7 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect, streaming_tex
     // Sync scroll: if at bottom or scroll_to_bottom flag, set offset to bottom edge.
     let mut state = panel.scroll_state.lock().unwrap();
     let max_offset = content_height.saturating_sub(inner_height.max(1) as u16);
-    if panel.scroll_to_bottom || state.offset().y >= max_offset.saturating_sub(1) {
+    if panel.scroll_to_bottom || state.offset().y >= max_offset {
         state.set_offset(Position::new(0, max_offset.max(1)));
     }
     scroll_view.render(viewport_area, frame.buffer_mut(), &mut state);
