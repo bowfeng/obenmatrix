@@ -567,7 +567,9 @@ impl Panel for ChatPanel {
             KeyCode::Char('\n') | KeyCode::Char('\r') if key.modifiers == KeyModifiers::NONE => {
                 self.handle_submit(app);
             }
-            _ if key.modifiers == KeyModifiers::NONE && matches!(key.code, KeyCode::Char(_)) => {
+            _ if !key.modifiers.contains(KeyModifiers::CONTROL)
+                 && !key.modifiers.contains(KeyModifiers::ALT)
+                 && matches!(key.code, KeyCode::Char(_)) => {
                 match key.code {
                     KeyCode::Char(c) => {
                         let byte_idx = self.grapheme_to_byte(self.cursor);

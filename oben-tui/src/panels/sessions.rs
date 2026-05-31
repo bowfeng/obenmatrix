@@ -288,7 +288,8 @@ impl Panel for SessionsPanel {
                         self.search_cursor -= ch.len_utf8();
                     }
                 }
-                KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) => {
                     self.search_input.insert(self.search_cursor, c);
                     self.search_cursor += c.len_utf8();
                 }
