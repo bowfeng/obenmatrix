@@ -150,6 +150,7 @@ impl TurnState {
         self.phase = TurnPhase::Completed;
         self.outcome = outcome.to_string();
         self.active_tools.clear();
+        self.streaming_text.clear();
         self.add_activity(ActivityKind::Completed, "Turn completed".to_string());
     }
 

@@ -6,12 +6,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use tracing;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use textwrap::wrap;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+use tui_scrollview::{ScrollView, ScrollViewState};
 
 use oben_models::Message;
+use std::sync::Mutex;
 use std::time::Instant;
 
 pub enum ChatViewMode {
@@ -46,6 +48,7 @@ pub struct ChatPanel {
     pub input: String,
     pub cursor: usize,
     pub scroll: usize,
+    pub scroll_state: Mutex<ScrollViewState>,
     pub view_mode: ChatViewMode,
     pub streaming: bool,
     pub session_id: Option<String>,
@@ -125,6 +128,7 @@ impl ChatPanel {
             input: String::new(),
             cursor: 0,
             scroll: 0,
+            scroll_state: Mutex::new(ScrollViewState::default()),
             view_mode: ChatViewMode::History,
             streaming: false,
             session_id,
@@ -518,7 +522,7 @@ impl Panel for ChatPanel {
                     self.input = new_text;
                     self.cursor = self.grapheme_count();
                 } else {
-                    self.scroll_messages(1);
+                    self.scroll_state.lock().unwrap().scroll_down();
                 }
             }
             KeyCode::Down => {
@@ -528,7 +532,7 @@ impl Panel for ChatPanel {
                     self.input = new_text;
                     self.cursor = self.grapheme_count();
                 } else {
-                    self.scroll_messages(-1);
+                    self.scroll_state.lock().unwrap().scroll_up();
                 }
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
@@ -807,28 +811,6 @@ impl ChatPanel {
         self.apply_tab_completion();
     }
 
-    /// Calculate total line count for a messages list.
-    fn total_message_lines(&self) -> usize {
-        self.messages.iter().map(|msg| {
-            1 + msg.text.matches('\n').count() + 1 + msg.tool_calls.len() + msg.tool_results.len()
-        }).sum()
-    }
-
-    /// Scroll messages by delta (positive = up, negative = down).
-    fn scroll_messages(&mut self, delta: i32) {
-        if self.messages.is_empty() { return; }
-        let total: usize = self.total_message_lines();
-        let viewport = if total > 50 { 50 } else { total };
-        let max_scroll = total.saturating_sub(viewport);
-        if delta > 0 {
-            self.scroll = (self.scroll as i32 + delta)
-                .clamp(0, max_scroll as i32) as usize;
-        } else {
-            self.scroll = (self.scroll as i32 + delta)
-                .clamp(0, max_scroll as i32) as usize;
-        }
-    }
-
     /// Extract tool trail from session messages.
     pub fn extract_tool_trail(&mut self, messages: &[Message]) {
         if messages.is_empty() {
@@ -907,30 +889,21 @@ impl ChatPanel {
 
 fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect, streaming_text: &str) {
     let mut lines: Vec<Line> = Vec::new();
-    
-    // During streaming, replace the last assistant message with streaming text
-    // keep everything before it and everything after (e.g. user messages just sent)
-    let messages_to_render: Vec<_> = if panel.streaming && !streaming_text.is_empty() {
-        let last_assistant_idx = panel.messages.iter().enumerate()
-            .rev()
-            .find_map(|(i, m)| {
-                if m.role == "Assistant" { Some(i) } else { None }
-            });
-        
-        match last_assistant_idx {
-            Some(idx) => {
-                let mut filtered = Vec::new();
-                filtered.extend_from_slice(&panel.messages[..idx]);
-                filtered.extend_from_slice(&panel.messages[idx+1..]);
-                filtered
-            },
-            None => panel.messages.clone(),
+
+    // Compute messages to render: during streaming, exclude the last assistant message
+    // which is replaced by streaming_text
+    let mut messages_to_render = &panel.messages[..];
+    if panel.streaming && !streaming_text.is_empty() {
+        // Find and exclude the last assistant message
+        for (i, msg) in panel.messages.iter().enumerate().rev() {
+            if msg.role == "Assistant" {
+                messages_to_render = &panel.messages[..i];
+                break;
+            }
         }
-    } else {
-        panel.messages.clone()
-    };
-    
-    for msg in &messages_to_render {
+    }
+
+    for msg in messages_to_render {
         lines.push(Line::from(Span::styled(
             format!(" ── {} ── ", msg.role),
             Style::default().fg(match msg.role.as_str() {
@@ -959,7 +932,7 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect, streaming_tex
         }
         lines.push(Line::from(""));
     }
-    
+
     // Streaming assistant text replaces the last assistant message
     if panel.streaming && !streaming_text.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -969,35 +942,18 @@ fn draw_messages(frame: &mut Frame, panel: &ChatPanel, area: Rect, streaming_tex
         lines.extend(streaming_text.lines().map(Line::from));
         lines.push(Line::from(""));
     }
-    
+
+    // Render into ScrollView — full content, ScrollView handles viewing area
     let total_lines = lines.len();
-    let viewport = area.height as usize;
-    let max_scroll = if total_lines > viewport { total_lines - viewport } else { 0 };
-    
-    let scroll_pos = panel.scroll.min(max_scroll);
-    let start = if max_scroll > 0 {
-        max_scroll.saturating_sub(scroll_pos)
-    } else {
-        0
-    };
-    
-    let visible_lines: Vec<Line> = if start + viewport <= total_lines {
-        lines[start..start + viewport].to_vec()
-    } else {
-        lines[start..].to_vec()
-    };
-    
-    let para = Paragraph::new(visible_lines)
+    let content_size = ratatui::layout::Size::new(area.width, total_lines.max(1) as u16);
+    let mut scroll_view = ScrollView::new(content_size);
+    let para = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(" Messages "));
-    frame.render_widget(para, area);
-    
-    if total_lines > viewport {
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(Some("▲"))
-            .end_symbol(Some("▼"));
-        let mut state = ScrollbarState::new(max_scroll).position(panel.scroll);
-        frame.render_stateful_widget(scrollbar, area, &mut state);
-    }
+    scroll_view.render_widget(para, ratatui::layout::Rect::new(0, 0, content_size.width, content_size.height));
+
+    let mut state = panel.scroll_state.lock().unwrap();
+    state.set_offset(Position::new(0, panel.scroll as u16));
+    frame.render_stateful_widget(scroll_view, area, &mut *state);
 }
 
 fn draw_tool_trail(frame: &mut Frame, panel: &ChatPanel, area: Rect) {

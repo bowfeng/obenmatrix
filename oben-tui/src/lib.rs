@@ -442,20 +442,22 @@ pub async fn run_tui() -> Result<()> {
                     }
                     Some(TuiEvent::Mouse(mouse_event)) => {
                         match mouse_event.kind {
-                            MouseEventKind::ScrollUp => {
-                                if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
-                                    if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                                        chat.scroll = chat.scroll.saturating_sub(1);
-                                    }
-                                }
-                            }
-                            MouseEventKind::ScrollDown => {
-                                if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
-                                    if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                                        chat.scroll = chat.scroll.saturating_add(1);
-                                    }
-                                }
-                            }
+                             MouseEventKind::ScrollUp => {
+                                 if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                                     if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                                         chat.scroll = chat.scroll.saturating_sub(1);
+                                         chat.scroll_state.lock().unwrap().scroll_up();
+                                     }
+                                 }
+                             }
+                             MouseEventKind::ScrollDown => {
+                                 if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                                     if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                                         chat.scroll = chat.scroll.saturating_add(1);
+                                         let _ = chat.scroll_state.lock().unwrap().scroll_down();
+                                     }
+                                 }
+                             }
                             _ => {}
                         }
                     }
