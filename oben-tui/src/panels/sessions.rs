@@ -34,6 +34,32 @@ pub struct SessionsPanel {
 }
 
 impl SessionsPanel {
+    pub fn new_empty() -> Self {
+        let sm = SessionManager::new().unwrap_or_else(|e| {
+            eprintln!("Failed to create SessionManager: {}", e);
+            panic!("Fatal: cannot create SessionManager");
+        });
+        let mut ls = ListState::default();
+        ls.select(Some(0));
+        Self {
+            session_manager: Arc::new(Mutex::new(sm)),
+            sessions: Vec::new(),
+            filtered: Vec::new(),
+            selected: 0,
+            sessions_loaded: RwLock::new(false),
+            renderer: MessageRenderer::new(),
+            message_state: MessageDisplayState::new(),
+            message_display: MessageDisplay,
+            list_state: RwLock::new(ls),
+            right_lines: Arc::new(Mutex::new(Vec::new())),
+            search_query: String::new(),
+            searching: false,
+            search_input: String::new(),
+            search_cursor: 0,
+        }
+    }
+
+    /// Legacy — use `new_empty()` for lazy loading. Test-only.
     pub fn new(sessions: Vec<Session>) -> Self {
         let sm = SessionManager::new().unwrap_or_else(|e| {
             eprintln!("Failed to create SessionManager: {}", e);

@@ -251,16 +251,8 @@ impl App {
     }
 
     pub async fn create_sessions_panel(&mut self) -> Result<()> {
-        let sessions: Vec<oben_models::Session> = match &self.agent {
-            Some(agent) => {
-                let mut g = agent.lock().await;
-                let _ = g.session_manager_mut().init();
-                g.session_manager().list_sessions_full()
-            }
-            None => vec![],
-        };
         self.panels
-            .insert(PanelId::Sessions, Box::new(SessionsPanel::new(sessions)));
+            .insert(PanelId::Sessions, Box::new(SessionsPanel::new_empty()));
         Ok(())
     }
 
