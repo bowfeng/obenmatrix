@@ -99,7 +99,7 @@ oben-tui/
 ├── src/lib.rs              # Main loop, event reader, App struct, draw_ui, handle_key
 ├── src/panels/mod.rs       # Panel trait, PanelId enum
 ├── src/panels/chat.rs      # Chat panel: messages, input bar, streaming indicator
-├── src/panels/sessions.rs  # Sessions panel: list, search, select, new, delete, compact, switch, fork, virtual-scrolling right panel, own SessionManager
+├── src/panels/sessions.rs  # Sessions panel: list, search, select, new, delete, compact
 ├── src/panels/config.rs    # Config panel: YAML display, basic navigation
 ├── src/panels/setup.rs     # Setup wizard: provider → model → API key → options
 └── src/widgets/
@@ -119,10 +119,10 @@ oben-tui/
 | Tab completion | Slash + path completion | None | Major gap |
 | Slash commands | 30+ across 5 categories | 0 | Major gap |
 | Overlays | 10 overlay types with soft reset | None | Major gap |
-| Virtual scrolling | 120-item mounted cap + height cache | tui-widget-list ListView virtual scrolling in sessions right panel | Reduced |
+| Virtual scrolling | 120-item mounted cap + height cache | No scrolling optimization | Major gap |
 | Scroll precision | Wheel accel + precision mode + shift-arrows | None | Major gap |
 | Terminal detection | SSH, tmux, IDE, Apple Terminal | None | Major gap |
-| Status bar | Dynamic modes (8+), color-coded | Session/Chat-aware message count | Partial |
+| Status bar | Dynamic modes (8+), color-coded | Static F1-F4 labels | Moderate gap |
 | Tool output display | Tool trail + live progress | Basic text | Moderate gap |
 | Voice recording | Ctrl+V toggle, bus/busy states | None | Low priority |
 | Delegation dashboard | Real-time subagent status | None | Low priority |

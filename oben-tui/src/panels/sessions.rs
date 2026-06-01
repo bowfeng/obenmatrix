@@ -26,6 +26,7 @@ pub struct SessionsPanel {
     message_display: MessageDisplay,
     list_state: RwLock<ListState>,
     right_lines: Arc<Mutex<Vec<Line<'static>>>>,
+    sessions_loaded: RwLock<bool>,
     search_query: String,
     searching: bool,
     search_input: String,
@@ -41,39 +42,6 @@ impl SessionsPanel {
         Self::with_session_manager(sm, sessions)
     }
 
-    pub fn new_empty() -> Self {
-        let mut sm = SessionManager::new().unwrap_or_else(|e| {
-            eprintln!("Failed to create SessionManager: {}", e);
-            panic!("Fatal: cannot create SessionManager");
-        });
-        let sessions = match sm.init() {
-            Ok(_) => sm.list_sessions_full(),
-            Err(_) => Vec::new(),
-        };
-        let filtered: Vec<usize> = (0..sessions.len()).collect();
-        let mut ls = ListState::default();
-        ls.select(Some(0));
-        Self {
-            session_manager: Arc::new(Mutex::new(sm)),
-            sessions,
-            filtered,
-            selected: 0,
-            renderer: MessageRenderer::new(),
-            message_state: MessageDisplayState::new(),
-            message_display: MessageDisplay,
-            list_state: RwLock::new(ls),
-            right_lines: Arc::new(Mutex::new(Vec::new())),
-            search_query: String::new(),
-            searching: false,
-            search_input: String::new(),
-            search_cursor: 0,
-        }
-    }
-
-    pub fn ensure_loaded(&mut self) {
-        // Already eagerly loaded in new_empty()
-    }
-
     /// Construct a SessionsPanel with a pre-configured SessionManager (test-only).
     pub fn with_session_manager(sm: SessionManager, sessions: Vec<Session>) -> Self {
         let filtered: Vec<usize> = (0..sessions.len()).collect();
@@ -84,6 +52,7 @@ impl SessionsPanel {
             sessions,
             filtered,
             selected: 0,
+            sessions_loaded: RwLock::new(false),
             renderer: MessageRenderer::new(),
             message_state: MessageDisplayState::new(),
             message_display: MessageDisplay,
@@ -94,6 +63,27 @@ impl SessionsPanel {
             search_input: String::new(),
             search_cursor: 0,
         }
+    }
+
+    /// Load sessions from the SessionManager (called on panel activation).
+    pub fn ensure_loaded(&mut self) {
+        if *self.sessions_loaded.read().unwrap() {
+            return;
+        }
+        if self.sessions.len() > 0 {
+            *self.sessions_loaded.write().unwrap() = true;
+            return;
+        }
+        let sessions = match self.session_manager.lock() {
+            Ok(mut sm) => {
+                let _ = sm.init();
+                sm.list_sessions_full()
+            }
+            Err(_) => Vec::new(),
+        };
+        self.sessions = sessions;
+        self.filtered = (0..self.sessions.len()).collect();
+        *self.sessions_loaded.write().unwrap() = true;
     }
 
     pub fn update_sessions(&mut self, sessions: Vec<Session>) {
@@ -137,13 +127,7 @@ impl SessionsPanel {
     }
 
     pub fn refresh_list(&mut self) {
-        let all:Vec<Session> = match self.session_manager.lock() {
-            Ok(sm) => sm.list_sessions_full(),
-            Err(_) => Vec::new(),
-        };
-        self.sessions = all;
-        self.apply_filter();
-        self.selected = self.filtered.len().saturating_sub(1);
+        self.ensure_loaded();
     }
 
     fn load_preview(&mut self) {
@@ -231,17 +215,28 @@ impl SessionsPanel {
 
         match action {
             Action::Switch => self.handle_switch(app, key_modifiers, session_id),
-            Action::Delete => self.handle_delete(app, session_id),
-            Action::New => self.handle_new(app),
-            Action::Close => self.handle_close(app),
+            Action::Delete => {
+                self.handle_delete(app, session_id);
+                self.refresh_list();
+                self.selected = self.filtered.len().saturating_sub(1);
+            }
+            Action::New => {
+                self.handle_new(app);
+                self.refresh_list();
+            }
+            Action::Close => {
+                self.handle_close(app);
+                self.refresh_list();
+                self.selected = self.filtered.len().saturating_sub(1);
+            }
             Action::Rename => self.handle_rename(app),
             Action::Compact => self.handle_compact(app),
-            Action::Fork => self.handle_fork(app),
+            Action::Fork => {
+                self.handle_fork(app);
+                self.refresh_list();
+                self.selected = self.filtered.len().saturating_sub(1);
+            }
         }
-
-        // Refresh after any operation
-        self.refresh_list();
-        self.selected = self.filtered.len().saturating_sub(1);
     }
 
     fn handle_switch(&mut self, app: &mut App, key_modifiers: KeyModifiers, session_id: String) {
@@ -377,6 +372,10 @@ impl Panel for SessionsPanel {
         self
     }
 
+    fn on_activate(&mut self) {
+        self.ensure_loaded();
+    }
+
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::horizontal([
             Constraint::Length(40),
@@ -389,7 +388,6 @@ impl Panel for SessionsPanel {
     }
 
     fn handle_key(&mut self, app: &mut App, key: KeyEvent) {
-        self.ensure_loaded();
         if self.searching {
             match key.code {
                 KeyCode::Enter => {

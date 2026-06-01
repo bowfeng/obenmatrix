@@ -103,6 +103,20 @@ pub struct App {
 }
 
 impl App {
+    /// Activate a panel and call its on_activate hook.
+    pub fn activate_panel(&mut self, panel: PanelId) {
+        let old = self.active_panel;
+        if old != panel {
+            if let Some(p) = self.panels.get_mut(&old) {
+                p.on_deactivate();
+            }
+        }
+        self.active_panel = panel;
+        if let Some(p) = self.panels.get_mut(&panel) {
+            p.on_activate();
+        }
+    }
+
     pub fn new() -> Result<Self> {
         let config = AppConfig::load()?;
         let mut tools = ToolRegistry::new();
@@ -237,7 +251,16 @@ impl App {
     }
 
     pub async fn create_sessions_panel(&mut self) -> Result<()> {
-        self.panels.insert(PanelId::Sessions, Box::new(SessionsPanel::new_empty()));
+        let sessions: Vec<oben_models::Session> = match &self.agent {
+            Some(agent) => {
+                let mut g = agent.lock().await;
+                let _ = g.session_manager_mut().init();
+                g.session_manager().list_sessions_full()
+            }
+            None => vec![],
+        };
+        self.panels
+            .insert(PanelId::Sessions, Box::new(SessionsPanel::new(sessions)));
         Ok(())
     }
 
@@ -263,52 +286,53 @@ impl App {
                 return;
             }
             KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.active_panel = PanelId::Chat;
+                self.activate_panel(PanelId::Chat);
                 return;
             }
             KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.active_panel = PanelId::Sessions;
+                self.activate_panel(PanelId::Sessions);
                 return;
             }
             KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.active_panel = PanelId::Config;
+                self.activate_panel(PanelId::Config);
                 return;
             }
             KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.active_panel = PanelId::Setup;
+                self.activate_panel(PanelId::Setup);
                 return;
             }
             KeyCode::F(1) => {
-                self.active_panel = PanelId::Chat;
+                self.activate_panel(PanelId::Chat);
                 return;
             }
             KeyCode::F(2) => {
-                self.active_panel = PanelId::Sessions;
+                self.activate_panel(PanelId::Sessions);
                 return;
             }
             KeyCode::F(3) => {
-                self.active_panel = PanelId::Config;
+                self.activate_panel(PanelId::Config);
                 return;
             }
             KeyCode::F(4) => {
-                self.active_panel = PanelId::Setup;
+                self.activate_panel(PanelId::Setup);
                 return;
             }
             KeyCode::Tab => {
                 let n = 4usize;
-                let next = match self.active_panel {
+                let next_idx = match self.active_panel {
                     PanelId::Chat => 0,
                     PanelId::Sessions => 1,
                     PanelId::Config => 2,
                     PanelId::Setup => 3,
                 };
-                self.active_panel = match (next + 1) % n {
+                let next = match (next_idx + 1) % n {
                     0 => PanelId::Chat,
                     1 => PanelId::Sessions,
                     2 => PanelId::Config,
                     3 => PanelId::Setup,
                     _ => unreachable!(),
                 };
+                self.activate_panel(next);
                 return;
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {

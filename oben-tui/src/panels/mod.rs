@@ -33,6 +33,12 @@ pub trait Panel: Send + Sync {
 
     /// Handle a keyboard event. Returns true if the event was consumed.
     fn handle_key(&mut self, app: &mut App, key: KeyEvent);
+
+    /// Called when this panel becomes active. Default no-op.
+    fn on_activate(&mut self) {}
+
+    /// Called when this panel becomes inactive. Default no-op.
+    fn on_deactivate(&mut self) {}
 }
 
 impl dyn Panel {
