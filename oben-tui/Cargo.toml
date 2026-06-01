@@ -23,6 +23,8 @@ ratatui = { version = "0", features = ["serde"] }
 crossterm = { version = "0", features = ["event-stream"] }
 ratatui-textarea = { version = "0.9", features = ["crossterm"] }
 unicode-width = "0.2"
+unicode-segmentation = "1.10"
+unicode-ident = "1"
 tokio = { workspace = true, features = ["sync"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -33,7 +35,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tui-scrollview = "0.6.4"
 textwrap = "0.16"
-unicode-segmentation = "1.10"
+ratatui-themes = "0.2"
 
 [features]
 default = []

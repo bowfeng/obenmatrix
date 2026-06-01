@@ -11,17 +11,17 @@ pub mod widgets;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEvent, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{
-    enable_raw_mode, disable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
-use panels::chat::{ChatPanel, ChatViewMode};
+use panels::chat::ChatPanel;
 use panels::config::ConfigPanel;
-use panels::setup::SetupPanel;
 use panels::sessions::SessionsPanel;
+use panels::setup::SetupPanel;
 use panels::{Panel, PanelId};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -104,9 +104,7 @@ impl App {
         let config = AppConfig::load()?;
         let mut tools = ToolRegistry::new();
         oben_tools::discover_builtin_tools(&mut tools);
-        let tool_names: Vec<String> = tools.list_tools().iter()
-            .map(|t| t.name.clone())
-            .collect();
+        let tool_names: Vec<String> = tools.list_tools().iter().map(|t| t.name.clone()).collect();
         Ok(Self {
             running: true,
             active_panel: PanelId::Chat,
@@ -129,14 +127,27 @@ impl App {
         let identity = oben_config::defaults::default_system_prompt();
         let skills_dirs: Vec<std::path::PathBuf> = vec![];
         let volatile = oben_agent::system_prompt::build_volatile_block(
-            None, None, Some(&self.config.model.model),
+            None,
+            None,
+            Some(&self.config.model.model),
         );
         let assembled = oben_agent::system_prompt::build_system_prompt(
-            &identity, &self.tool_names, &skills_dirs, None, None, Some(&volatile),
+            &identity,
+            &self.tool_names,
+            &skills_dirs,
+            None,
+            None,
+            Some(&volatile),
         );
         let transport = oben_transport::Transport::from_config_with_tools_via_registry(
-            &self.config.model, &assembled.prompt,
-            &self.tools.list_tools().iter().map(|t| (*t).clone()).collect::<Vec<oben_models::Tool>>(),
+            &self.config.model,
+            &assembled.prompt,
+            &self
+                .tools
+                .list_tools()
+                .iter()
+                .map(|t| (*t).clone())
+                .collect::<Vec<oben_models::Tool>>(),
         );
 
         let turn_state = Arc::clone(&self.turn_state);
@@ -158,11 +169,13 @@ impl App {
             },
             tool_complete: {
                 let ts_clone = Arc::clone(&turn_state);
-                Some(Box::new(move |tool_name: &str, _args_json: &str, result: &str| {
-                    if let Ok(mut ts) = ts_clone.lock() {
-                        ts.on_tool_complete("tool-id", tool_name, result);
-                    }
-                }))
+                Some(Box::new(
+                    move |tool_name: &str, _args_json: &str, result: &str| {
+                        if let Ok(mut ts) = ts_clone.lock() {
+                            ts.on_tool_complete("tool-id", tool_name, result);
+                        }
+                    },
+                ))
             },
             stream_delta: {
                 let ts_clone = Arc::clone(&turn_state);
@@ -217,7 +230,9 @@ impl App {
             Some(agent) => {
                 let guard = agent.lock().await;
                 let sid = guard.active_session_name().map(|s| s.clone());
-                let msgs = guard.session_manager().active_session()
+                let msgs = guard
+                    .session_manager()
+                    .active_session()
                     .map(|s| s.messages.clone());
                 (sid, msgs)
             }
@@ -232,12 +247,11 @@ impl App {
 
     pub async fn create_sessions_panel(&mut self) -> Result<()> {
         let sessions: Vec<oben_models::Session> = match &self.chat {
-            Some(agent) => {
-                agent.lock().await.session_manager().list_sessions_full()
-            }
+            Some(agent) => agent.lock().await.session_manager().list_sessions_full(),
             None => vec![],
         };
-        self.panels.insert(PanelId::Sessions, Box::new(SessionsPanel::new(sessions)));
+        self.panels
+            .insert(PanelId::Sessions, Box::new(SessionsPanel::new(sessions)));
         Ok(())
     }
 
@@ -247,10 +261,32 @@ impl App {
                 self.running = false;
                 return;
             }
-            KeyCode::F(1) => { self.active_panel = PanelId::Chat; return; }
-            KeyCode::F(2) => { self.active_panel = PanelId::Sessions; return; }
-            KeyCode::F(3) => { self.active_panel = PanelId::Config; return; }
-            KeyCode::F(4) => { self.active_panel = PanelId::Setup; return; }
+            KeyCode::F(1) => {
+                self.active_panel = PanelId::Chat;
+                return;
+            }
+            KeyCode::F(2) => {
+                self.active_panel = PanelId::Sessions;
+                return;
+            }
+            KeyCode::F(3) => {
+                self.active_panel = PanelId::Config;
+                return;
+            }
+            KeyCode::F(4) => {
+                self.active_panel = PanelId::Setup;
+                return;
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let panel_id = PanelId::Chat;
+                if let Some(boxed_panel) = self.panels.remove(&panel_id) {
+                    let mut panel = boxed_panel;
+                    if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                        chat.cycle_theme();
+                    }
+                    self.panels.insert(panel_id, panel);
+                }
+            }
             _ => {}
         }
         if let Some(_panel) = self.panels.get_mut(&self.active_panel) {
@@ -265,7 +301,8 @@ impl App {
 
     pub fn create_config_panel(&mut self) {
         let yaml = serde_yaml::to_string(&self.config).unwrap_or_default();
-        self.panels.insert(PanelId::Config, Box::new(ConfigPanel::new(yaml)));
+        self.panels
+            .insert(PanelId::Config, Box::new(ConfigPanel::new(yaml)));
     }
 
     pub fn create_setup_panel(&mut self) {
@@ -293,7 +330,6 @@ impl App {
         self.create_setup_panel();
         Ok(())
     }
-
 }
 
 pub async fn run_tui() -> Result<()> {
@@ -311,9 +347,11 @@ pub async fn run_tui() -> Result<()> {
         let _ = std::fs::create_dir_all(&log_dir);
         let datetime = chrono::Local::now().format("%Y%m%dT%H%M%S");
         let log_path = log_dir.join(format!("oa-{datetime}.log"));
-        let log_file = std::fs::OpenOptions::new().create(true).append(true).open(log_path)?;
-        let subscriber = tracing_subscriber::registry()
-            .with(layer().with_writer(log_file));
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+        let subscriber = tracing_subscriber::registry().with(layer().with_writer(log_file));
         let _ = subscriber.try_init();
     }
 
@@ -355,7 +393,8 @@ pub async fn run_tui() -> Result<()> {
     let running_for_signal = running.clone();
     let quit_ev = TuiEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     tokio::spawn(async move {
-        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
+        let mut signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
         let _ = signal.recv().await;
         running_for_signal.store(false, Ordering::SeqCst);
         let _ = event_tx_for_signal.send(quit_ev);
@@ -413,6 +452,12 @@ pub async fn run_tui() -> Result<()> {
                         }
                     } else {
                         app.status = "Turn completed with errors".into();
+                        if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
+                            if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                                chat.streaming = false;
+                                chat.update_from_turn_state(&app.turn_state.lock().unwrap());
+                            }
+                        }
                     }
                     redraw = true;
                 }
@@ -433,18 +478,16 @@ pub async fn run_tui() -> Result<()> {
                         if scroll_up {
                             if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
                                 if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                                    chat.scroll_to_bottom = false;
-                                    chat.scroll = chat.scroll.saturating_sub(1);
-                                    chat.scroll_state.lock().unwrap().scroll_up();
+                                    chat.message_state.scroll_to_bottom = false;
+                                    chat.message_state.scroll_state.lock().unwrap().scroll_up();
                                     redraw = true;
                                 }
                             }
                         } else if scroll_down {
                             if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
                                 if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                                    chat.scroll_to_bottom = true;
-                                    chat.scroll = chat.scroll.saturating_add(1);
-                                    chat.scroll_state.lock().unwrap().scroll_down();
+                                    chat.message_state.scroll_to_bottom = true;
+                                    chat.message_state.scroll_state.lock().unwrap().scroll_down();
                                     redraw = true;
                                 }
                             }
@@ -495,8 +538,12 @@ async fn handle_chat_input(
     }
 
     let was_chat = app.active_panel == PanelId::Chat;
-    tracing::info!("handle_chat_input: was_chat={}, has_agent={}, turn_handle_some={}", 
-        was_chat, app.chat.is_some(), app.turn_handle.is_some());
+    tracing::info!(
+        "handle_chat_input: was_chat={}, has_agent={}, turn_handle_some={}",
+        was_chat,
+        app.chat.is_some(),
+        app.turn_handle.is_some()
+    );
 
     // Begin turn tracking
     if let Ok(mut ts) = app.turn_state.lock() {
@@ -510,17 +557,9 @@ async fn handle_chat_input(
             if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
                 tracing::info!("handle_chat_input: setting ChatPanel.streaming=true");
                 chat.streaming = true;
-                chat.view_mode = ChatViewMode::Streaming;
-                // Append user message immediately so it shows in messages panel right away
-                chat.messages.push(crate::panels::chat::ChatMessage {
-                    role: "User".to_string(),
-                    text: input.clone(),
-                    has_tool_calls: false,
-                    tool_calls: Vec::new(),
-                    tool_results: Vec::new(),
-                });
-                chat.build_base_lines();
-                tracing::info!("handle_chat_input: appended user message to ChatPanel.messages, msg_count={}", chat.messages.len());
+                chat.message_state.turn_state_ref = Some(Arc::clone(&app.turn_state));
+                chat.append_user_message(&input);
+                tracing::info!("handle_chat_input: appended user message to chat, msg_count=0");
             }
         }
     }
@@ -551,14 +590,20 @@ async fn handle_chat_input(
                 guard.turn(&input_clone, false, Some(delta_callback)).await
             };
 
-            tracing::info!("spawned_turn_task: turn completed, is_ok={}", result.is_ok());
+            tracing::info!(
+                "spawned_turn_task: turn completed, is_ok={}",
+                result.is_ok()
+            );
 
             // Finalize turn state
             match &result {
                 Ok(_) => {
                     if let Ok(mut ts) = ts_clone_for_finalize.lock() {
                         ts.on_completed("completed");
-                        tracing::info!("spawned_turn_task: finalized turn_state phase={:?}", ts.phase);
+                        tracing::info!(
+                            "spawned_turn_task: finalized turn_state phase={:?}",
+                            ts.phase
+                        );
                     }
                     let _ = done_tx_clone.send(TurnCompletion { success: true });
                     tracing::info!("spawned_turn_task: sent done_tx success");
@@ -569,7 +614,7 @@ async fn handle_chat_input(
                         tracing::info!("spawned_turn_task: finalized turn_state error: {}", e);
                     }
                     let _ = done_tx_clone.send(TurnCompletion { success: false });
-                    tracing::info!("spawned_turn_task: sent done_tx failure");
+                    tracing::info!("spawned_turn_task: sent done_tx error");
                 }
             }
 
@@ -577,15 +622,18 @@ async fn handle_chat_input(
         }
     });
 
-    tracing::info!("handle_chat_input: spawn completed, handle={:?}, about to send done_tx", handle);
+    tracing::info!(
+        "handle_chat_input: spawn completed, handle={:?}, about to send done_tx",
+        handle
+    );
     app.turn_handle = Some(handle);
     app.input_history.append(&input);
 
     if was_chat {
         if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
             if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                chat.input.clear();
-                chat.cursor = 0;
+                chat.input.text.clear();
+                chat.input.cursor = 0;
             }
         }
     }
@@ -598,18 +646,26 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     // Inject turn_state_ref into ChatPanel so draw() can read streaming text in real-time
     if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
         if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-            chat.turn_state_ref = Some(Arc::clone(&app.turn_state));
+            chat.set_turn_state_ref(Arc::clone(&app.turn_state));
+            chat.update_from_turn_state(&app.turn_state.lock().unwrap());
         }
     }
 
     // Collect ChatPanel streaming state (after injecting ref)
-    let chat_panel_info = app.panels.get(&PanelId::Chat)
-        .and_then(|p| p.downcast_ref::<ChatPanel>())
-        .map(|cp| format!("streaming={} msg_count={} turn_state_ref={}", cp.streaming, cp.messages.len(), if cp.turn_state_ref.is_some() { "some" } else { "none" }))
-        .unwrap_or_else(|| "no_chat_panel".to_string());
+    let chat_panel_info = if let Some(panel) = app.panels.get(&PanelId::Chat) {
+        if let Some(cp) = panel.downcast_ref::<ChatPanel>() {
+            format!("streaming={}", cp.streaming)
+        } else {
+            "no_chat_panel".to_string()
+        }
+    } else {
+        "no_chat_panel".to_string()
+    };
     tracing::info!("[draw_ui] chat_panel={}", chat_panel_info);
 
-    let is_streaming = app.panels.get(&PanelId::Chat)
+    let is_streaming = app
+        .panels
+        .get(&PanelId::Chat)
         .and_then(|p| p.downcast_ref::<ChatPanel>())
         .map(|cp| cp.streaming)
         .unwrap_or(false);
@@ -635,7 +691,7 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         Some(panel) => {
             if let Some(chat) = panel.downcast_ref::<ChatPanel>() {
                 if let Some(ref sid) = chat.session_id {
-                    (sid.clone(), chat.messages.len())
+                    (sid.clone(), 0)
                 } else {
                     (app.session_id.clone().unwrap_or_default(), 0)
                 }
@@ -662,6 +718,11 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         Line::from(status_text),
     ];
     let status_para = Paragraph::new(status_lines);
-    let status_area = Rect::new(layout.statusbar.x, layout.statusbar.y, layout.statusbar.width, layout.statusbar.height);
+    let status_area = Rect::new(
+        layout.statusbar.x,
+        layout.statusbar.y,
+        layout.statusbar.width,
+        layout.statusbar.height,
+    );
     frame.render_widget(status_para, status_area);
 }
