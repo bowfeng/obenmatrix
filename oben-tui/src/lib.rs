@@ -86,7 +86,7 @@ pub struct App {
     pub config: AppConfig,
     /// Agent protected by TokioMutex — guard is Send, needed for spawn()
     /// where we hold the lock across .await in agent.turn().
-    pub chat: Option<Arc<TokioMutex<Agent>>>,
+    pub agent: Option<Arc<TokioMutex<Agent>>>,
     pub turn_handle: Option<tokio::task::JoinHandle<()>>,
     pub session_id: Option<String>,
     pub tools: std::sync::Arc<ToolRegistry>,
@@ -111,7 +111,7 @@ impl App {
             panels: HashMap::new(),
             status: String::new(),
             config,
-            chat: None,
+            agent: None,
             turn_handle: None,
             session_id: None,
             tools: std::sync::Arc::new(tools),
@@ -196,7 +196,7 @@ impl App {
             ..Default::default()
         };
 
-        self.chat = Some(Arc::new(TokioMutex::new(Agent::new(AgentConfig {
+        self.agent = Some(Arc::new(TokioMutex::new(Agent::new(AgentConfig {
             system_prompt: assembled.prompt,
             transport,
             tools: std::sync::Arc::clone(&self.tools),
@@ -226,7 +226,7 @@ impl App {
     }
 
     pub async fn create_chat_panel(&mut self) -> Result<()> {
-        let (session_id, messages) = match &self.chat {
+        let (session_id, messages) = match &self.agent {
             Some(agent) => {
                 let guard = agent.lock().await;
                 let sid = guard.active_session_name().map(|s| s.clone());
@@ -246,7 +246,7 @@ impl App {
     }
 
     pub async fn create_sessions_panel(&mut self) -> Result<()> {
-        let sessions: Vec<oben_models::Session> = match &self.chat {
+        let sessions: Vec<oben_models::Session> = match &self.agent {
             Some(agent) => agent.lock().await.session_manager().list_sessions_full(),
             None => vec![],
         };
@@ -431,7 +431,7 @@ pub async fn run_tui() -> Result<()> {
                     app.turn_handle = None;
                     if completion.success {
                         // Incrementally update ChatPanel instead of rebuilding
-                        let (session_id, messages) = match &app.chat {
+                        let (session_id, messages) = match &app.agent {
                             Some(agent) => {
                                 let guard = agent.lock().await;
                                 let sid = guard.active_session_name().map(|s| s.clone());
@@ -527,7 +527,7 @@ async fn handle_chat_input(
 ) {
     info!("handle_chat_input: input.len()={}", input.len());
 
-    let Some(agent) = app.chat.as_ref().map(|a| Arc::clone(a)) else {
+    let Some(agent) = app.agent.as_ref().map(|a| Arc::clone(a)) else {
         app.status = "Agent not initialized".into();
         return;
     };
@@ -541,7 +541,7 @@ async fn handle_chat_input(
     tracing::info!(
         "handle_chat_input: was_chat={}, has_agent={}, turn_handle_some={}",
         was_chat,
-        app.chat.is_some(),
+        app.agent.is_some(),
         app.turn_handle.is_some()
     );
 

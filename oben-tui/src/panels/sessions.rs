@@ -68,7 +68,7 @@ impl SessionsPanel {
         }
         let session_id = self.sessions[self.filtered[self.selected]].id.clone();
         let session_name = self.sessions[self.filtered[self.selected]].name.clone();
-        let agent = app.chat.as_mut().unwrap();
+        let agent = app.agent.as_mut().unwrap();
 
         {
             let mut g = agent.blocking_lock();
@@ -79,7 +79,7 @@ impl SessionsPanel {
         }
 
         {
-            let agent = app.chat.as_mut().unwrap();
+            let agent = app.agent.as_mut().unwrap();
             let mut g = agent.blocking_lock();
             let all = g.session_manager_mut().list_sessions_full();
             self.sessions = all;
@@ -98,7 +98,7 @@ impl SessionsPanel {
         let session_name = self.sessions[self.filtered[self.selected]].name.clone();
 
         {
-            let agent = app.chat.as_mut().unwrap();
+            let agent = app.agent.as_mut().unwrap();
             let mut g = agent.blocking_lock();
             let all = g.session_manager_mut().list_sessions_full();
             self.sessions = all;
@@ -117,7 +117,7 @@ impl SessionsPanel {
         let new_name = format!("{}-renamed", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
 
         {
-            let agent = app.chat.as_mut().unwrap();
+            let agent = app.agent.as_mut().unwrap();
             let mut g = agent.blocking_lock();
             let all = g.session_manager_mut().list_sessions_full();
             self.sessions = all;
@@ -134,7 +134,7 @@ impl SessionsPanel {
         let session = self.sessions[self.filtered[self.selected]].id.clone();
 
         {
-            let agent = app.chat.as_mut().unwrap();
+            let agent = app.agent.as_mut().unwrap();
             let mut g = agent.blocking_lock();
             if let Err(e) = g.session_manager_mut().switch_session(&session) {
                 app.status = format!("Compact error: {}", e);
@@ -152,7 +152,7 @@ impl SessionsPanel {
         let session_id = self.sessions[self.filtered[self.selected]].id.clone();
 
         {
-            let agent = app.chat.as_mut().unwrap();
+            let agent = app.agent.as_mut().unwrap();
             let mut g = agent.blocking_lock();
             if let Err(e) = g.session_manager_mut().delete(&session_id) {
                 app.status = format!("Delete failed: {}", e);
@@ -162,7 +162,7 @@ impl SessionsPanel {
 
         self.sessions.retain(|s| s.id != session_id);
         {
-            let agent = app.chat.as_mut().unwrap();
+            let agent = app.agent.as_mut().unwrap();
             let mut g = agent.blocking_lock();
             g.session_manager_mut().load(None).ok();
         }
@@ -175,7 +175,7 @@ impl SessionsPanel {
         let name = format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
 
         let session = {
-            let agent = app.chat.as_mut().unwrap();
+            let agent = app.agent.as_mut().unwrap();
             let mut g = agent.blocking_lock();
             let s = g.session_manager_mut().new_session(&name);
             s.clone()
@@ -359,7 +359,7 @@ impl Panel for SessionsPanel {
                 let new_name = format!("{}-fork", session.name);
 
                 {
-                    let agent = app.chat.as_mut().unwrap();
+                    let agent = app.agent.as_mut().unwrap();
                     let mut g = agent.blocking_lock();
                     if let Some(_new_session) = g.session_manager_mut().clone_session(&session.id) {
                         let all = g.session_manager_mut().list_sessions_full();
