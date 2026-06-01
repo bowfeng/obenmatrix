@@ -183,7 +183,13 @@ impl SessionsPanel {
         self.sessions.push(session);
         self.apply_filter();
         self.selected = self.filtered.len() - 1;
-        app.status = format!("Created session: {}", self.sessions.last().map(|s| &s.name).unwrap_or(&String::from("unknown")));
+        app.status = format!(
+            "Created session: {}",
+            self.sessions
+                .last()
+                .map(|s| &s.name)
+                .unwrap_or(&String::from("unknown"))
+        );
     }
 }
 
@@ -288,8 +294,10 @@ impl Panel for SessionsPanel {
                         self.search_cursor -= ch.len_utf8();
                     }
                 }
-                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL)
-                        && !key.modifiers.contains(KeyModifiers::ALT) => {
+                KeyCode::Char(c)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
                     self.search_input.insert(self.search_cursor, c);
                     self.search_cursor += c.len_utf8();
                 }
