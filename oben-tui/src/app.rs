@@ -43,6 +43,8 @@ pub struct App {
     /// Agents and UI components emit events through here to keep UI logic
     /// testable independently from the Agent.
     pub event_bus: Arc<EventBus>,
+    /// Pending session name to load on startup (from CLI `-s` argument).
+    pub pending_session: Option<String>,
 }
 
 impl App {
@@ -121,6 +123,7 @@ impl App {
             input_history: history::InputHistory::new(),
             paste_mode: false,
             event_bus: Arc::new(EventBus::new()),
+            pending_session: None,
         })
     }
 
@@ -339,6 +342,83 @@ impl App {
         self.create_sessions_panel().await?;
         self.create_config_panel();
         self.create_setup_panel();
+        Ok(())
+    }
+
+    /// Initialize the active panel based on config presence and CLI session argument.
+    ///
+    /// - If no `config.yaml` exists → activate Setup panel (first-time guide).
+    /// - If `config.yaml` exists → activate Chat panel and load the specified session
+    ///   messages (if `session_name` was provided via CLI `-s`).
+    pub async fn init_active_panel(&mut self, session_name: Option<&str>) -> Result<()> {
+        // Set pending session from CLI argument
+        if let Some(name) = session_name {
+            self.pending_session = Some(name.to_string());
+        }
+
+        // Check if config.yaml exists
+        let config_dir = AppConfig::config_dir_legacy();
+        let config_path = config_dir.join("config.yaml");
+        let has_config = config_path.exists();
+
+        // Create all panels first
+        self.create_chat_panel().await?;
+        self.create_sessions_panel().await?;
+        self.create_config_panel();
+        self.create_setup_panel();
+
+        if !has_config {
+            // No config — activate Setup panel for first-time configuration
+            info!(
+                "No config.yaml found at {:?}, activating Setup panel",
+                config_path
+            );
+            self.activate_panel(PanelId::Setup).await;
+        } else {
+            // Config exists — activate Chat panel
+            info!("Config found at {:?}, activating Chat panel", config_path);
+            self.activate_panel(PanelId::Chat).await;
+
+            // Load session messages if session_name was provided via CLI
+            let pending_name = self.pending_session.clone();
+            if let Some(ref session_name) = pending_name {
+                // Extract session data in a scoped block so guard is dropped
+                // before we mutably borrow self for get_chat_mut().
+                let (load_id, load_messages) = {
+                    if let Some(agent) = &self.agent {
+                        let guard = agent.lock().await;
+                        let id = guard.session_manager().find_key(session_name);
+                        let msgs = id
+                            .as_ref()
+                            .and_then(|id| guard.session_manager().session(id))
+                            .map(|s| s.messages.clone())
+                            .unwrap_or_default();
+                        (id, msgs)
+                    } else {
+                        (None, Vec::new())
+                    }
+                };
+
+                if let Some(ref id) = load_id {
+                    let chat = self.get_chat_mut();
+                    if let Some(chat) = chat {
+                        info!(
+                            "Loading session '{}' ({} messages)",
+                            session_name,
+                            load_messages.len()
+                        );
+                        chat.update_from_messages(&load_messages, Some(id.clone()));
+                    }
+                } else {
+                    // Session not found — log and continue with Chat panel
+                    info!(
+                        "Session '{}' not found, using default Chat panel",
+                        session_name
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 }

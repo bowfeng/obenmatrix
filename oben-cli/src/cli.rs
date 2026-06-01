@@ -58,7 +58,11 @@ pub enum Commands {
         action: ModelsCommand,
     },
     /// Start the terminal UI
-    Tui,
+    Tui {
+        /// Session name or ID to load on startup
+        #[arg(short, long)]
+        session: Option<String>,
+    },
     /// Manage scheduled cron tasks
     Cron {
         #[command(subcommand)]

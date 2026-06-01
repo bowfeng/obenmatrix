@@ -71,10 +71,11 @@ pub enum TuiEvent {
     Resize(u16, u16),
 }
 
-pub async fn run_tui() -> Result<()> {
+pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let mut app = App::new()?;
     app.init_agent()?;
     app.init_panels().await?;
+    app.init_active_panel(session_name).await?;
     
     // Set up logging
     #[allow(unexpected_cfgs)]

@@ -75,7 +75,7 @@ pub async fn run_cli() -> Result<()> {
             }
         }
         Commands::Models { action } => run_models(action).await,
-        Commands::Tui => oben_tui::run_tui().await,
+        Commands::Tui { session } => oben_tui::run_tui(session.as_deref()).await,
         Commands::Cron { action } => match action {
             None => cron_list(false),
             Some(CronCommand::List { all }) => cron_list(all),
