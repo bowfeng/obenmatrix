@@ -71,6 +71,7 @@ pub enum TuiEvent {
     Key(KeyEvent),
     ChatInput(String),
     Mouse(MouseEvent),
+    Resize(u16, u16),
 }
 
 /// Payload carried by TurnDone completion event from spawned task.
@@ -433,6 +434,9 @@ pub async fn run_tui() -> Result<()> {
                     crossterm::event::Event::Mouse(mouse) => {
                         let _ = event_tx.send(TuiEvent::Mouse(mouse));
                     }
+                    crossterm::event::Event::Resize(w, h) => {
+                        let _ = event_tx.send(TuiEvent::Resize(w, h));
+                    }
                     _ => {}
                 }
             }
@@ -553,6 +557,9 @@ pub async fn run_tui() -> Result<()> {
                     }
                     Some(TuiEvent::ChatInput(input)) => {
                         handle_chat_input(&mut app, input, &done_tx).await;
+                        redraw = true;
+                    }
+                    Some(TuiEvent::Resize(_w, _h)) => {
                         redraw = true;
                     }
                     None => break,
