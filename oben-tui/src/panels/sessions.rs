@@ -41,6 +41,39 @@ impl SessionsPanel {
         Self::with_session_manager(sm, sessions)
     }
 
+    pub fn new_empty() -> Self {
+        let mut sm = SessionManager::new().unwrap_or_else(|e| {
+            eprintln!("Failed to create SessionManager: {}", e);
+            panic!("Fatal: cannot create SessionManager");
+        });
+        let sessions = match sm.init() {
+            Ok(_) => sm.list_sessions_full(),
+            Err(_) => Vec::new(),
+        };
+        let filtered: Vec<usize> = (0..sessions.len()).collect();
+        let mut ls = ListState::default();
+        ls.select(Some(0));
+        Self {
+            session_manager: Arc::new(Mutex::new(sm)),
+            sessions,
+            filtered,
+            selected: 0,
+            renderer: MessageRenderer::new(),
+            message_state: MessageDisplayState::new(),
+            message_display: MessageDisplay,
+            list_state: RwLock::new(ls),
+            right_lines: Arc::new(Mutex::new(Vec::new())),
+            search_query: String::new(),
+            searching: false,
+            search_input: String::new(),
+            search_cursor: 0,
+        }
+    }
+
+    pub fn ensure_loaded(&mut self) {
+        // Already eagerly loaded in new_empty()
+    }
+
     /// Construct a SessionsPanel with a pre-configured SessionManager (test-only).
     pub fn with_session_manager(sm: SessionManager, sessions: Vec<Session>) -> Self {
         let filtered: Vec<usize> = (0..sessions.len()).collect();
@@ -356,6 +389,7 @@ impl Panel for SessionsPanel {
     }
 
     fn handle_key(&mut self, app: &mut App, key: KeyEvent) {
+        self.ensure_loaded();
         if self.searching {
             match key.code {
                 KeyCode::Enter => {
