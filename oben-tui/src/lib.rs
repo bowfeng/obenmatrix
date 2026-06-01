@@ -27,6 +27,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use ratatui::Terminal;
+use ratatui::widgets::{Tabs, Block};
 use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,7 +54,7 @@ pub struct Layouts {
 impl Layouts {
     pub fn new(area: Rect) -> Self {
         let chunks = Layout::vertical([
-            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(2),
         ])
@@ -75,6 +76,8 @@ pub enum TuiEvent {
 /// Payload carried by TurnDone completion event from spawned task.
 struct TurnCompletion {
     success: bool,
+    session_name: Option<String>,
+    messages: Vec<oben_models::Message>,
 }
 
 pub struct App {
@@ -246,7 +249,38 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.active_panel == PanelId::Chat
+                    && self
+                        .panels
+                        .get(&PanelId::Chat)
+                        .and_then(|p| p.downcast_ref::<ChatPanel>())
+                        .map(|cp| cp.message_state.selection_start.is_some())
+                        .unwrap_or(false)
+                {
+                    if let Some(panel) = self.panels.get_mut(&PanelId::Chat) {
+                        if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
+                            chat.copy_selection_to_clipboard();
+                        }
+                    }
+                    return;
+                }
                 self.running = false;
+                return;
+            }
+            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.active_panel = PanelId::Chat;
+                return;
+            }
+            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.active_panel = PanelId::Sessions;
+                return;
+            }
+            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.active_panel = PanelId::Config;
+                return;
+            }
+            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.active_panel = PanelId::Setup;
                 return;
             }
             KeyCode::F(1) => {
@@ -263,6 +297,23 @@ impl App {
             }
             KeyCode::F(4) => {
                 self.active_panel = PanelId::Setup;
+                return;
+            }
+            KeyCode::Tab => {
+                let n = 4usize;
+                let next = match self.active_panel {
+                    PanelId::Chat => 0,
+                    PanelId::Sessions => 1,
+                    PanelId::Config => 2,
+                    PanelId::Setup => 3,
+                };
+                self.active_panel = match (next + 1) % n {
+                    0 => PanelId::Chat,
+                    1 => PanelId::Sessions,
+                    2 => PanelId::Config,
+                    3 => PanelId::Setup,
+                    _ => unreachable!(),
+                };
                 return;
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -418,24 +469,9 @@ pub async fn run_tui() -> Result<()> {
                 if let Some(completion) = maybe_completion {
                     app.turn_handle = None;
                     if completion.success {
-                        // Incrementally update ChatPanel instead of rebuilding
-                        let (session_id, messages) = match &app.agent {
-                            Some(agent) => {
-                                let guard = agent.lock().await;
-                                let sid = guard.active_session_name().map(|s| s.clone());
-                                let msgs = guard
-                                    .session_manager().active_session()
-                                    .map(|s| s.messages.clone());
-                                (sid, msgs)
-                            }
-                            None => (None, None),
-                        };
                         if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
                             if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-                                chat.session_id = session_id;
-                                if let Some(messages) = messages {
-                                    chat.update_from_messages(&messages);
-                                }
+                                chat.update_from_messages(&completion.messages, completion.session_name);
                             }
                         }
                     } else {
@@ -460,6 +496,28 @@ pub async fn run_tui() -> Result<()> {
                         redraw = true;
                     }
                     Some(TuiEvent::Mouse(mouse_event)) => {
+                        let click_on_tabs = matches!(mouse_event.kind, MouseEventKind::Down(crossterm::event::MouseButton::Left))
+                            && mouse_event.row == 0;
+                        if click_on_tabs {
+                            let tab_names = ["Chat", "Sessions", "Config", "Setup"];
+                            let tab_widths: Vec<usize> = tab_names.iter().map(|n| n.len() + 2).collect();
+                            let mut consumed = 0usize;
+                            for (i, &pw) in tab_widths.iter().enumerate() {
+                                if mouse_event.column >= consumed as u16 && mouse_event.column < (consumed + pw) as u16 {
+                                    app.active_panel = match i {
+                                        0 => PanelId::Chat,
+                                        1 => PanelId::Sessions,
+                                        2 => PanelId::Config,
+                                        3 => PanelId::Setup,
+                                        _ => break,
+                                    };
+                                    break;
+                                }
+                                consumed += pw + 1;
+                            }
+                            redraw = true;
+                            continue;
+                        }
                         let scroll_up = matches!(mouse_event.kind, MouseEventKind::ScrollUp)
                             || matches!(mouse_event.kind, MouseEventKind::ScrollLeft);
                         let scroll_down = matches!(mouse_event.kind, MouseEventKind::ScrollDown)
@@ -468,7 +526,7 @@ pub async fn run_tui() -> Result<()> {
                             if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
                                 if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
                                     chat.message_state.scroll_to_bottom = false;
-                                    chat.message_state.scroll_state.lock().unwrap().scroll_up();
+                                    chat.message_state.scroll_state.lock().unwrap().prev();
                                     redraw = true;
                                 }
                             }
@@ -476,7 +534,7 @@ pub async fn run_tui() -> Result<()> {
                             if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
                                 if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
                                     chat.message_state.scroll_to_bottom = true;
-                                    chat.message_state.scroll_state.lock().unwrap().scroll_down();
+                                    chat.message_state.scroll_state.lock().unwrap().next();
                                     redraw = true;
                                 }
                             }
@@ -565,14 +623,21 @@ async fn handle_chat_input(
         tracing::info!("handle_chat_input: tokio::spawn called");
         async move {
             info!("spawned_turn_task: calling agent.turn()");
-            let result = {
+            let (result, sid, messages) = {
                 let mut guard = agent_clone.lock().await;
                 // inline delta_callback now emits through EventBus
                 let delta_callback = Box::new(move |text: &str| {
                     tracing::info!("[delta_callback] text.len={} text='{}'", text.len(), text);
                     eb.on_stream_delta(text);
                 });
-                guard.turn(&input_clone, false, Some(delta_callback)).await
+                let result = guard.turn(&input_clone, false, Some(delta_callback)).await;
+                let sid = guard.active_session_name().map(|s| s.clone());
+                let msgs = guard
+                    .session_manager()
+                    .active_session()
+                    .map(|s| s.messages.clone())
+                    .unwrap_or_default();
+                (result, sid, msgs)
             };
 
             tracing::info!(
@@ -584,14 +649,13 @@ async fn handle_chat_input(
             match &result {
                 Ok(_) => {
                     eb_for_finalize.on_turn_completed("completed");
-                    tracing::info!("spawned_turn_task: finalized turn_state phase=Streaming");
-                    let _ = done_tx_clone.send(TurnCompletion { success: true });
+                    let _ = done_tx_clone.send(TurnCompletion { success: true, session_name: sid, messages });
                     tracing::info!("spawned_turn_task: sent done_tx success");
                 }
                 Err(e) => {
                     eb_for_finalize.on_turn_error(&format!("{}", e));
                     tracing::info!("spawned_turn_task: finalized turn_state error: {}", e);
-                    let _ = done_tx_clone.send(TurnCompletion { success: false });
+                    let _ = done_tx_clone.send(TurnCompletion { success: false, session_name: None, messages: Vec::new() });
                     tracing::info!("spawned_turn_task: sent done_tx error");
                 }
             }
@@ -650,17 +714,20 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         .map(|cp| cp.streaming)
         .unwrap_or(false);
 
-    let panel_name = match app.active_panel {
-        PanelId::Chat => "Chat",
-        PanelId::Sessions => "Sessions",
-        PanelId::Config => "Config",
-        PanelId::Setup => "Setup",
+    let panel_names: [&str; 4] = ["Chat", "Sessions", "Config", "Setup"];
+    let panel_index = match app.active_panel {
+        PanelId::Chat => 0,
+        PanelId::Sessions => 1,
+        PanelId::Config => 2,
+        PanelId::Setup => 3,
     };
-    let title = format!(" 🦀 ObenAgent TUI | {} ", panel_name);
-    let title = format!("{:<width$}", title, width = layout.header.width as usize);
-    let title_span = Span::styled(title, Style::default().fg(Color::Cyan).bg(Color::DarkGray));
-    let title_para = Paragraph::new(Line::from(title_span));
-    frame.render_widget(title_para, layout.header);
+    let tabs = Tabs::new(panel_names)
+        .style(Style::default().fg(Color::DarkGray))
+        .highlight_style(Style::default().fg(Color::Cyan).bold())
+        .divider(" ")
+        .select(panel_index)
+        .block(Block::default().style(Style::default().bg(Color::Gray)));
+    frame.render_widget(tabs, layout.header);
 
     if let Some(panel) = app.panels.get(&app.active_panel) {
         panel.draw(frame, layout.body);
@@ -671,9 +738,9 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         Some(panel) => {
             if let Some(chat) = panel.downcast_ref::<ChatPanel>() {
                 if let Some(ref sid) = chat.session_id {
-                    (sid.clone(), 0)
+                    (sid.clone(), chat.message_count)
                 } else {
-                    (app.session_id.clone().unwrap_or_default(), 0)
+                    (app.session_id.clone().unwrap_or_default(), chat.message_count)
                 }
             } else {
                 (String::new(), 0)
@@ -692,10 +759,8 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         (_, s) if !s.is_empty() && s != " No session" => "Info",
         _ => "Ready",
     };
-    let status_text = format!(" F1:Chat  F2:Sessions  F3:Config  F4:Setup  q/Ctrl+C:Quit  ");
     let status_lines: Vec<Line> = vec![
         Line::from(format!(" [{}]  {}", mode_text, session_text)),
-        Line::from(status_text),
     ];
     let status_para = Paragraph::new(status_lines);
     let status_area = Rect::new(

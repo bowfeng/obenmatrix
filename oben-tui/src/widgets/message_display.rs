@@ -5,11 +5,10 @@
 //! delegates rendering.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use std::sync::{Arc, Mutex as StdMutex};
 use textwrap::wrap as textwrap_wrap;
 use unicode_width::UnicodeWidthStr;
-use tui_scrollview::{ScrollView, ScrollViewState};
 
 use crate::turn::event::TurnState;
 use crate::widgets::message_renderer::MessageRenderer;
@@ -19,22 +18,33 @@ use oben_models::{Message, MessageRole};
 
 /// State for the message display widget.
 pub struct MessageDisplayState {
-    pub scroll_state: Arc<StdMutex<ScrollViewState>>,
+    pub scroll_state: Arc<StdMutex<ScrollbarState>>,
     pub scroll_to_bottom: bool,
     pub base_lines: Vec<Line<'static>>,
     pub stream_info: Arc<StdMutex<String>>,
     pub turn_state_ref: Option<Arc<StdMutex<TurnState>>>,
+    /// Selection start/end as (visual_line_idx, char_offset).
+    pub selection_start: Option<(usize, usize)>,
+    pub selection_end: Option<(usize, usize)>,
 }
 
 impl MessageDisplayState {
     pub fn new() -> Self {
         Self {
-            scroll_state: Arc::new(StdMutex::new(ScrollViewState::default())),
+            scroll_state: Arc::new(StdMutex::new(ScrollbarState::new(0))),
             scroll_to_bottom: true,
             base_lines: Vec::new(),
             stream_info: Arc::new(StdMutex::new(String::new())),
             turn_state_ref: None,
+            selection_start: None,
+            selection_end: None,
         }
+    }
+
+    /// Cancel any active selection.
+    pub fn clear_selection(&mut self) {
+        self.selection_start = None;
+        self.selection_end = None;
     }
 }
 
@@ -42,6 +52,134 @@ impl MessageDisplayState {
 pub struct MessageDisplay;
 
 impl MessageDisplay {
+    /// Check if mouse event is relevant to message display and update selection state.
+    /// Returns true if the event was consumed (i.e. a mouse button was pressed/released on the text area).
+    pub fn handle_mouse_event(
+        &self,
+        state: &mut MessageDisplayState,
+        visual_lines: &[Line<'static>],
+        scroll_offset: u16,
+        event_row: u16,
+        event_col: u16,
+        viewport_top: u16,
+        viewport_left: u16,
+    ) -> bool {
+        let row = (event_row.saturating_sub(viewport_top) as usize)
+            .saturating_sub(1);
+        let col = (event_col.saturating_sub(viewport_left) as usize)
+            .saturating_sub(1);
+        let global_row = row.saturating_add(scroll_offset as usize);
+        if global_row >= visual_lines.len() || row >= (visual_lines.len() / scroll_offset.max(1) as usize) as usize {
+            return false;
+        }
+        // Only handle mouse down/up to toggle selection.
+        // We check the first two bytes of the event kind (opaque), and
+        // simply toggle start when Down is pressed.
+        #[allow(clippy::match_single_binding)]
+        let _ = (event_row, event_col);
+        if row < visual_lines.len() {
+            let line = &visual_lines[global_row.min(visual_lines.len() - 1)];
+            let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+            let offset = std::cmp::min(col, text.width());
+            if state.selection_start.is_none() {
+                state.selection_start = Some((global_row, offset));
+                state.selection_end = Some((global_row, offset));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Cancel any active selection (call on key press in message area).
+    pub fn cancel_selection(&self, state: &mut MessageDisplayState) {
+        state.selection_start = None;
+        state.selection_end = None;
+    }
+
+    /// Extract selected text from visual lines, clear selection, return None if empty.
+    pub fn get_selected_text(&self, state: &mut MessageDisplayState) -> Option<String> {
+        let (sy, sx) = state.selection_start?;
+        let (ey, ex) = state.selection_end?;
+
+        let y_start = std::cmp::min(sy, ey);
+        let y_end = std::cmp::max(sy, ey);
+        let mut result = Vec::new();
+
+        for v in y_start..=y_end {
+            if v >= state.base_lines.len() {
+                break;
+            }
+            let line = &state.base_lines[v];
+            let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+            let x_start = if v == sy { std::cmp::min(sx, ex) } else if v > sy { 0 } else { sx };
+            let x_end = if v == sy && v == ey { std::cmp::max(sx, ex) } else if v == ey { ex } else { text.width() };
+
+            if x_start >= x_end {
+                continue;
+            }
+
+            let mut byte_start = 0;
+            let mut char_count = 0;
+            for (i, ch) in text.chars().enumerate() {
+                if char_count >= x_start {
+                    byte_start = i;
+                    break;
+                }
+                char_count += ch.len_utf8();
+            }
+            let mut byte_end = text.len();
+            char_count = 0;
+            for (i, ch) in text.chars().enumerate() {
+                if char_count >= x_end {
+                    byte_end = i;
+                    break;
+                }
+                char_count += ch.len_utf8();
+            }
+            result.push(text[byte_start..byte_end].to_string());
+        }
+
+        if result.is_empty() {
+            state.selection_start = None;
+            state.selection_end = None;
+            return None;
+        }
+        state.selection_start = None;
+        state.selection_end = None;
+        Some(result.join("\n"))
+    }
+
+    /// Wrap base lines into visual lines for the given width, preserving styles.
+    fn build_visual_lines(
+        &self,
+        lines: &[Line<'static>],
+        inner_width: usize,
+    ) -> Vec<Line<'static>> {
+        lines
+            .iter()
+            .flat_map(|line| {
+                let total_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
+                if total_width <= inner_width {
+                    vec![line.clone()]
+                } else if line.spans.len() == 1 {
+                    let text = line.spans[0].content.to_string();
+                    textwrap_wrap(&text, inner_width)
+                        .into_iter()
+                        .map(|wrapped| {
+                            Line::from(Span::styled(
+                                wrapped.into_owned(),
+                                line.spans[0].style,
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    // Multi-span, overflow: don't wrap — ratatui Paragraph handles wrapping
+                    vec![line.clone()]
+                }
+            })
+            .collect()
+    }
+
     fn render_messages(
         &self,
         frame: &mut Frame,
@@ -80,51 +218,98 @@ impl MessageDisplay {
         }
 
         let block = Block::default().borders(Borders::ALL).title(" Messages ");
+        let message_area = block.inner(area);
         block.render(area, frame.buffer_mut());
 
-        let inner_height = (area.height.saturating_sub(2)).max(1);
-        let inner_width = (area.width.saturating_sub(2)).max(1) as usize;
+        let inner_height = (message_area.height.saturating_sub(1)).max(1);
+        let inner_width = (message_area.width).max(1) as usize;
 
-        // Scroll layout: wrap long lines while preserving existing styles.
-        let mut visual_lines: Vec<Line<'static>> = Vec::new();
-        for line in &lines {
-            if line.spans.len() != 1 {
-                visual_lines.push(line.clone());
-                continue;
-            }
-            let text = line.spans[0].content.to_string();
-            if text.width() <= inner_width {
-                visual_lines.push(line.clone());
+        // Wrap long lines while preserving existing styles.
+        let visual_lines = self.build_visual_lines(&lines, inner_width);
+
+        let content_height = visual_lines.len().max(1) as u16;
+
+        // Update scroll position: preserve current position, clamp to valid range.
+        let max_scroll = content_height.saturating_sub(inner_height) as usize;
+        let scroll_pos = {
+            let mut scroll_state = state.scroll_state.lock().unwrap();
+            let current_pos = scroll_state.get_position();
+            let target = if state.scroll_to_bottom {
+                max_scroll
             } else {
-                for wrapped in textwrap_wrap(&text, inner_width) {
-                    visual_lines.push(Line::from(Span::styled(
-                        wrapped.into_owned(),
-                        line.spans[0].style,
-                    )));
+                current_pos.min(max_scroll)
+            };
+            *scroll_state = ScrollbarState::new(visual_lines.len())
+                .viewport_content_length(inner_height as usize)
+                .position(target);
+            scroll_state.get_position()
+        };
+
+        let paragraph = Paragraph::new(visual_lines.iter().cloned().collect::<Vec<_>>())
+            .scroll((scroll_pos as u16, 0));
+        frame.render_widget(paragraph, message_area);
+
+        // Render vertical scrollbar on the right edge of the messages area (inside border).
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            message_area,
+            &mut state.scroll_state.lock().unwrap(),
+        );
+
+        // Render selection highlight.
+        let sy = state.selection_start.map(|(s, _)| s);
+        let sx = state.selection_start.map(|(_, s)| s);
+        let ey = state.selection_end.map(|(s, _)| s);
+        let ex = state.selection_end.map(|(_, s)| s);
+        if let (Some(sy), Some(sx), Some(ey), Some(ex)) = (sy, sx, ey, ex) {
+            let visible_start = if state.scroll_to_bottom {
+                visual_lines.len().saturating_sub(inner_height as usize)
+            } else {
+                scroll_pos
+            };
+            let visible_end = (visible_start + inner_height as usize).min(visual_lines.len());
+
+            let vy_start = if sy >= visible_start && sy < visible_end { sy } else { visible_start };
+            let vy_end = if ey >= visible_start && ey < visible_end { ey } else { visible_end - 1 };
+            let vy_start = std::cmp::min(vy_start, vy_end);
+            let vy_end = std::cmp::max(vy_start, vy_end);
+
+            for v in vy_start..=vy_end {
+                let buf_row = (v as u16).saturating_sub(scroll_pos as u16) + 1;
+                if buf_row >= area.height.saturating_sub(1) {
+                    continue;
+                }
+                let tx = if v < visual_lines.len() { visual_lines[v].width() } else { 0 };
+
+                let (x_start, x_end) = if v == sy && v == ey {
+                    let a = std::cmp::min(sx, ex);
+                    let b = std::cmp::max(sx, ex);
+                    (a, b)
+                } else if v == sy {
+                    let a = sx;
+                    let b = std::cmp::min(ex, tx);
+                    (a, b)
+                } else if v == ey {
+                    let a = 0;
+                    let b = std::cmp::min(ex, tx);
+                    (a, b)
+                } else {
+                    continue;
+                };
+
+                if x_start >= x_end {
+                    continue;
+                }
+                let x_end = x_end.min(tx).min(inner_width);
+
+                for col in x_start..x_end {
+                    let buf_col = (col as u16) + 1;
+                    if let Some(cell) = frame.buffer_mut().cell_mut((buf_col, buf_row)) {
+                        cell.set_style(cell.style().bg(Color::Gray));
+                    }
                 }
             }
         }
-
-        let total_lines = visual_lines.len();
-        let content_height = (total_lines.max(1)) as u16;
-        let mut scroll_view = ScrollView::new(Size::new(inner_width as u16, content_height));
-
-        scroll_view.render_widget(
-            Paragraph::new(visual_lines).block(Block::default().borders(Borders::NONE)),
-            scroll_view.area(),
-        );
-
-        let viewport_area = Rect::new(area.x + 1, area.y + 1, inner_width as u16, inner_height);
-
-        let mut scrollable_view = state.scroll_state.lock().unwrap();
-        let max_offset = content_height.saturating_sub(inner_height.max(1));
-        if state.scroll_to_bottom || scrollable_view.offset().y >= max_offset {
-            scrollable_view.set_offset(Position::new(0, max_offset.max(1)));
-        }
-        // Force horizontal offset to 0
-        let y = scrollable_view.offset().y;
-        scrollable_view.set_offset(Position::new(0, y));
-        scroll_view.render(viewport_area, frame.buffer_mut(), &mut scrollable_view);
     }
 
     fn render_turn_status(

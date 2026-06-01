@@ -17,6 +17,7 @@ pub struct ChatPanel {
     pub streaming: bool,
     pub input: InputState,
     pub message_state: MessageDisplayState,
+    pub message_count: usize,
     renderer: MessageRenderer,
     message_display: MessageDisplay,
 }
@@ -29,19 +30,21 @@ impl ChatPanel {
             streaming: false,
             input: InputState::new(),
             message_state,
+            message_count: 0,
             renderer: MessageRenderer::new(),
             message_display: MessageDisplay,
         }
     }
 
     /// Update message display state from session messages.
-    pub fn update_from_messages(&mut self, messages: &[Message]) {
+    pub fn update_from_messages(&mut self, messages: &[Message], session_name: Option<String>) {
         self.message_display.rebuild_from_messages(
             &mut self.message_state,
             messages,
             &self.renderer,
         );
-        self.session_id = None;
+        self.session_id = session_name;
+        self.message_count = messages.len();
         self.streaming = false;
         self.message_state.scroll_to_bottom = true;
     }
@@ -56,6 +59,16 @@ impl ChatPanel {
     pub fn update_from_turn_state(&mut self, turn_state: &crate::turn::event::TurnState) {
         self.message_display
             .update_stream_info(&mut self.message_state, turn_state);
+    }
+
+    /// Copy selection to system clipboard, then clear selection.
+    pub fn copy_selection_to_clipboard(&mut self) {
+        use crate::clipboard;
+        if let Some(text) = self.message_display.get_selected_text(&mut self.message_state) {
+            if !text.is_empty() && clipboard::write_clipboard(&text) {
+                self.message_state.clear_selection();
+            }
+        }
     }
 
     /// Set turn_state_ref so message display can read streaming text in real-time.
