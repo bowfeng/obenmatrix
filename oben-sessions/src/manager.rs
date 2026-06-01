@@ -447,26 +447,44 @@ impl SessionDB {
     /// Sanitize a session title: strip control chars, collapse whitespace,
     /// enforce max length. Matches Hermes' `sanitize_title()`.
     pub fn sanitize_title(title: &str) -> Option<String> {
-        use regex::Regex;
-        static RE: std::sync::LazyLock<Regex> = 
-            std::sync::LazyLock::new(|| Regex::new(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]").unwrap());
-        static RE_UNICODE: std::sync::LazyLock<Regex> = 
-            std::sync::LazyLock::new(|| Regex::new(
-                r"[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]"
-            ).unwrap());
-        static RE_WHITESPACE: std::sync::LazyLock<Regex> = 
-            std::sync::LazyLock::new(|| Regex::new(r"\s+").unwrap());
-        
         let max_len = 100;
-        let cleaned = RE.replace_all(title, "");
-        let cleaned = RE_UNICODE.replace_all(&cleaned, "");
-        let cleaned = RE_WHITESPACE.replace_all(&cleaned, " ");
-        let cleaned = cleaned.trim().to_string();
-        
+        let cleaned: String = title
+            .chars()
+            .filter(|c| {
+                // Allow printable ASCII and common Unicode (strip control chars)
+                !matches!(c,
+                    '\x00'|'\x01'|'\x02'|'\x03'|'\x04'|'\x05'|'\x06'|'\x07'
+                    |'\x08'|'\x0b'|'\x0c'|'\x0e'|'\x0f'|'\x10'|'\x11'|'\x12'|'\x13'
+                    |'\x14'|'\x15'|'\x16'|'\x17'|'\x18'|'\x19'|'\x1a'|'\x1b'|'\x1c'
+                    |'\x1d'|'\x1e'|'\x1f'|'\x7f'
+                )
+            })
+            .collect();
+        let cleaned: String = cleaned
+            .chars()
+            .filter(|c| {
+                // Strip zero-width spaces, line/paragraph separators, BOM, etc.
+                !matches!(c,
+                    '\u{200b}'|'\u{200c}'|'\u{200d}'|'\u{200e}'|'\u{200f}'
+                    |'\u{2028}'|'\u{2029}'
+                    |'\u{2060}'|'\u{2061}'|'\u{2062}'|'\u{2063}'|'\u{2064}'
+                    |'\u{feff}'
+                    |'\u{fffc}'|'\u{fffd}'|'\u{fffe}'
+                )
+            })
+            .collect();
+        // Collapse whitespace, remove '#' characters, rejoin with single space
+        let cleaned: String = cleaned
+            .split(|c: char| c.is_whitespace() || c == '#')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<&str>>()
+            .join(" ");
+        let cleaned = cleaned.trim();
+
         if cleaned.is_empty() {
             return None;
         }
-        
+
         // Truncate to max length at character boundary
         let truncated: String = cleaned.chars().take(max_len).collect();
         Some(truncated)
@@ -1260,6 +1278,11 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Read-only view of a session's messages — does not mutate state.
+    pub fn get_session_messages(&self, session_id: &str) -> Result<Vec<Message>> {
+        self.db.load_messages(session_id)
+    }
+
     fn find_session_key_by_name(&self, name: &str) -> Option<String> {
         self.sessions.iter().find(|(_, s)| s.name == name).map(|(k, _)| k.clone())
     }
@@ -1828,7 +1851,14 @@ impl SessionManager {
     /// List all sessions as full `Session` objects.
     /// Alias for iterating `sessions.values().cloned()`.
     pub fn list_sessions_full(&self) -> Vec<oben_models::Session> {
-        self.sessions.values().cloned().collect()
+        self.sessions
+            .values()
+            .map(|s| {
+                let mut cloned = s.clone();
+                cloned.persisted_message_count = s.metadata.message_count;
+                cloned
+            })
+            .collect()
     }
 
     /// Prune sessions older than `max_age_days` (exclude suspended and active).

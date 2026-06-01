@@ -103,6 +103,20 @@ pub struct App {
 }
 
 impl App {
+    /// Activate a panel and call its on_activate/on_deactivate hooks.
+    pub fn activate_panel(&mut self, panel: PanelId) {
+        let old = self.active_panel;
+        if old != panel {
+            if let Some(p) = self.panels.get_mut(&old) {
+                p.on_deactivate();
+            }
+        }
+        self.active_panel = panel;
+        if let Some(p) = self.panels.get_mut(&panel) {
+            p.on_activate();
+        }
+    }
+
     pub fn new() -> Result<Self> {
         let config = AppConfig::load()?;
         let mut tools = ToolRegistry::new();
@@ -238,7 +252,11 @@ impl App {
 
     pub async fn create_sessions_panel(&mut self) -> Result<()> {
         let sessions: Vec<oben_models::Session> = match &self.agent {
-            Some(agent) => agent.lock().await.session_manager().list_sessions_full(),
+            Some(agent) => {
+                let mut g = agent.lock().await;
+                let _ = g.session_manager_mut().init();
+                g.session_manager().list_sessions_full()
+            }
             None => vec![],
         };
         self.panels
@@ -268,52 +286,53 @@ impl App {
                 return;
             }
             KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.active_panel = PanelId::Chat;
+                self.activate_panel(PanelId::Chat);
                 return;
             }
             KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.active_panel = PanelId::Sessions;
+                self.activate_panel(PanelId::Sessions);
                 return;
             }
             KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.active_panel = PanelId::Config;
+                self.activate_panel(PanelId::Config);
                 return;
             }
             KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.active_panel = PanelId::Setup;
+                self.activate_panel(PanelId::Setup);
                 return;
             }
             KeyCode::F(1) => {
-                self.active_panel = PanelId::Chat;
+                self.activate_panel(PanelId::Chat);
                 return;
             }
             KeyCode::F(2) => {
-                self.active_panel = PanelId::Sessions;
+                self.activate_panel(PanelId::Sessions);
                 return;
             }
             KeyCode::F(3) => {
-                self.active_panel = PanelId::Config;
+                self.activate_panel(PanelId::Config);
                 return;
             }
             KeyCode::F(4) => {
-                self.active_panel = PanelId::Setup;
+                self.activate_panel(PanelId::Setup);
                 return;
             }
             KeyCode::Tab => {
                 let n = 4usize;
-                let next = match self.active_panel {
+                let next_idx = match self.active_panel {
                     PanelId::Chat => 0,
                     PanelId::Sessions => 1,
                     PanelId::Config => 2,
                     PanelId::Setup => 3,
                 };
-                self.active_panel = match (next + 1) % n {
+                let next = match (next_idx + 1) % n {
                     0 => PanelId::Chat,
                     1 => PanelId::Sessions,
                     2 => PanelId::Config,
                     3 => PanelId::Setup,
                     _ => unreachable!(),
                 };
+                self.activate_panel(next);
                 return;
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -734,19 +753,36 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     }
 
     // Derive session info from stored ChatPanel fields — no Agent locking.
-    let (session_name, msg_count) = match app.panels.get(&PanelId::Chat) {
-        Some(panel) => {
-            if let Some(chat) = panel.downcast_ref::<ChatPanel>() {
-                if let Some(ref sid) = chat.session_id {
-                    (sid.clone(), chat.message_count)
-                } else {
-                    (app.session_id.clone().unwrap_or_default(), chat.message_count)
+    let (session_name, msg_count) = match app.active_panel {
+        PanelId::Sessions => {
+            match app.panels.get(&PanelId::Sessions) {
+                Some(panel) => {
+                    if let Some(sessions) = panel.downcast_ref::<SessionsPanel>() {
+                        (sessions.get_session_name().unwrap_or_default(),
+                         sessions.get_message_count().unwrap_or(0))
+                    } else {
+                        (String::new(), 0)
+                    }
                 }
-            } else {
-                (String::new(), 0)
+                None => (String::new(), 0),
             }
         }
-        None => (String::new(), 0),
+        _ => {
+            match app.panels.get(&PanelId::Chat) {
+                Some(panel) => {
+                    if let Some(chat) = panel.downcast_ref::<ChatPanel>() {
+                        if let Some(ref sid) = chat.session_id {
+                            (sid.clone(), chat.message_count)
+                        } else {
+                            (app.session_id.clone().unwrap_or_default(), chat.message_count)
+                        }
+                    } else {
+                        (String::new(), 0)
+                    }
+                }
+                None => (String::new(), 0),
+            }
+        }
     };
 
     let session_text = match &session_name {
