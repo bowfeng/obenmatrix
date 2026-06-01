@@ -534,7 +534,7 @@ impl Panel for SessionsPanel {
 
 impl SessionsPanel {
     fn render_session_list(&self, frame: &mut Frame, area: Rect) {
-        let header_cells = ["Name", "Msgs", "Updated"].iter().map(|h| {
+        let header_cells = ["Name"].iter().map(|h| {
             Cell::from(*h).style(
                 Style::default()
                     .fg(Color::Cyan)
@@ -581,7 +581,6 @@ impl SessionsPanel {
             .enumerate()
             .filter_map(|(row_i, &idx)| {
                 let s = self.sessions.get(idx)?;
-                let updated = s.updated_at.format("%m-%d %H:%M");
                 let is_selected = display_start.saturating_add(row_i) == self.selected;
                 let style = if is_selected {
                     Style::default().bg(Color::DarkGray)
@@ -590,17 +589,13 @@ impl SessionsPanel {
                 };
                 let cells = vec![
                     Cell::new(format!("{}", s.name)).style(style),
-                    Cell::new(format!("{}", s.metadata.message_count)).style(style),
-                    Cell::new(format!("{}", updated)).style(style),
                 ];
                 Some(Row::new(cells))
             })
             .collect();
 
         let table = Table::new(rows, &[
-            Constraint::Length(30),
-            Constraint::Length(10),
-            Constraint::Length(12),
+            Constraint::Length(40),
         ])
         .header(header)
         .block(Block::default().borders(Borders::ALL).title(" Sessions "));
