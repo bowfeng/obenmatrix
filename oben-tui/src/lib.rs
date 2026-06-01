@@ -4,16 +4,14 @@
 //! `oben sessions` with a ratatui-driven interface.
 
 pub mod clipboard;
+pub mod event;
 pub mod history;
 pub mod panels;
 pub mod turn;
 pub mod widgets;
 
 use anyhow::Result;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-    MouseEvent, MouseEventKind,
-};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -33,13 +31,14 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::Mutex as TokioMutex;
 use tracing::info;
 use tracing_subscriber::{fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::event::EventBus;
 use oben_agent::{Agent, AgentCallbacks, AgentConfig};
 use oben_config::AppConfig;
 
@@ -94,9 +93,10 @@ pub struct App {
     pub input_tx: Option<tokio::sync::mpsc::UnboundedSender<TuiEvent>>,
     pub input_history: history::InputHistory,
     pub paste_mode: bool,
-    /// TurnState protected by std Mutex — accessed only in sync context,
-    /// never held across .await. std Mutex is lighter than TokioMutex.
-    pub turn_state: Arc<StdMutex<turn::event::TurnState>>,
+    /// Event bus — single event emission point, wraps TurnState internally.
+    /// Agents and UI components emit events through here to keep UI logic
+    /// testable independently from the Agent.
+    pub event_bus: Arc<EventBus>,
 }
 
 impl App {
@@ -119,7 +119,7 @@ impl App {
             input_tx: None,
             input_history: history::InputHistory::new(),
             paste_mode: false,
-            turn_state: Arc::new(StdMutex::new(turn::event::TurnState::new())),
+            event_bus: Arc::new(EventBus::new()),
         })
     }
 
@@ -150,7 +150,7 @@ impl App {
                 .collect::<Vec<oben_models::Tool>>(),
         );
 
-        let turn_state = Arc::clone(&self.turn_state);
+        let event_bus = Arc::clone(&self.event_bus);
 
         let callbacks = AgentCallbacks {
             step: Some(Box::new(move |msg: &str| {
@@ -160,37 +160,29 @@ impl App {
                 info!("STATUS [{}]: {}", level, msg);
             })),
             tool_start: {
-                let ts_clone = Arc::clone(&turn_state);
+                let eb = Arc::clone(&event_bus);
                 Some(Box::new(move |tool_name: &str, args_json: &str| {
-                    if let Ok(mut ts) = ts_clone.lock() {
-                        ts.on_tool_start("tool-id", tool_name, args_json);
-                    }
+                    eb.on_tool_start("tool-id", tool_name, args_json);
                 }))
             },
             tool_complete: {
-                let ts_clone = Arc::clone(&turn_state);
+                let eb = Arc::clone(&event_bus);
                 Some(Box::new(
                     move |tool_name: &str, _args_json: &str, result: &str| {
-                        if let Ok(mut ts) = ts_clone.lock() {
-                            ts.on_tool_complete("tool-id", tool_name, result);
-                        }
+                        eb.on_tool_complete("tool-id", tool_name, result);
                     },
                 ))
             },
             stream_delta: {
-                let ts_clone = Arc::clone(&turn_state);
+                let eb = Arc::clone(&event_bus);
                 Some(Box::new(move |text: &str| {
-                    if let Ok(mut ts) = ts_clone.lock() {
-                        ts.on_stream_delta(text);
-                    }
+                    eb.on_stream_delta(text);
                 }))
             },
             reasoning: {
-                let ts_clone = Arc::clone(&turn_state);
+                let eb = Arc::clone(&event_bus);
                 Some(Box::new(move |text: &str| {
-                    if let Ok(mut ts) = ts_clone.lock() {
-                        ts.on_reasoning(text);
-                    }
+                    eb.on_reasoning(text);
                 }))
             },
             ..Default::default()
@@ -214,15 +206,11 @@ impl App {
     }
 
     pub fn begin_turn(&self) {
-        if let Ok(mut ts) = self.turn_state.lock() {
-            ts.on_turn_start();
-        }
+        self.event_bus.begin_turn();
     }
 
     pub fn finalize_turn(&self, outcome: &str) {
-        if let Ok(mut ts) = self.turn_state.lock() {
-            ts.on_completed(outcome);
-        }
+        self.event_bus.on_turn_completed(outcome);
     }
 
     pub async fn create_chat_panel(&mut self) -> Result<()> {
@@ -373,8 +361,8 @@ pub async fn run_tui() -> Result<()> {
     // Read events from crossterm in a blocking task
     let reader_handle = tokio::task::spawn_blocking(move || {
         while running_clone.load(Ordering::SeqCst) {
-            if event::poll(Duration::from_millis(16)).unwrap() {
-                match event::read().unwrap() {
+            if crossterm::event::poll(Duration::from_millis(16)).unwrap() {
+                match crossterm::event::read().unwrap() {
                     crossterm::event::Event::Key(key) => {
                         if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
                             let _ = event_tx.send(TuiEvent::Key(key));
@@ -452,10 +440,11 @@ pub async fn run_tui() -> Result<()> {
                         }
                     } else {
                         app.status = "Turn completed with errors".into();
+                        let eb_state = Arc::clone(&app.event_bus.state());
                         if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
                             if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
                                 chat.streaming = false;
-                                chat.update_from_turn_state(&app.turn_state.lock().unwrap());
+                                chat.update_from_turn_state(&eb_state.lock().unwrap());
                             }
                         }
                     }
@@ -546,10 +535,9 @@ async fn handle_chat_input(
     );
 
     // Begin turn tracking
-    if let Ok(mut ts) = app.turn_state.lock() {
-        ts.on_turn_start();
-        tracing::info!("handle_chat_input: turn_state phase set to {:?}", ts.phase);
-    }
+    let event_bus = Arc::clone(&app.event_bus);
+    event_bus.begin_turn();
+    tracing::info!("handle_chat_input: turn started via event bus");
 
     // Prepare ChatPanel for streaming
     if was_chat {
@@ -557,7 +545,7 @@ async fn handle_chat_input(
             if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
                 tracing::info!("handle_chat_input: setting ChatPanel.streaming=true");
                 chat.streaming = true;
-                chat.message_state.turn_state_ref = Some(Arc::clone(&app.turn_state));
+                chat.message_state.turn_state_ref = Some(Arc::clone(&app.event_bus.state()));
                 chat.append_user_message(&input);
                 tracing::info!("handle_chat_input: appended user message to chat, msg_count=0");
             }
@@ -568,8 +556,8 @@ async fn handle_chat_input(
     // TokioMutex guard IS Send, so the spawned future can hold the lock
     // across .await in agent.turn().
     let agent_clone = agent;
-    let ts_clone_for_callback = Arc::clone(&app.turn_state);
-    let ts_clone_for_finalize = Arc::clone(&app.turn_state);
+    let eb = Arc::clone(&app.event_bus);
+    let eb_for_finalize = Arc::clone(&app.event_bus);
     let done_tx_clone = done_tx.clone();
     let input_clone = input.clone();
 
@@ -579,13 +567,10 @@ async fn handle_chat_input(
             info!("spawned_turn_task: calling agent.turn()");
             let result = {
                 let mut guard = agent_clone.lock().await;
+                // inline delta_callback now emits through EventBus
                 let delta_callback = Box::new(move |text: &str| {
                     tracing::info!("[delta_callback] text.len={} text='{}'", text.len(), text);
-                    if let Ok(mut ts) = ts_clone_for_callback.lock() {
-                        ts.on_stream_delta(text);
-                    } else {
-                        tracing::warn!("[delta_callback] FAILED to lock ts_clone_for_callback");
-                    }
+                    eb.on_stream_delta(text);
                 });
                 guard.turn(&input_clone, false, Some(delta_callback)).await
             };
@@ -598,21 +583,14 @@ async fn handle_chat_input(
             // Finalize turn state
             match &result {
                 Ok(_) => {
-                    if let Ok(mut ts) = ts_clone_for_finalize.lock() {
-                        ts.on_completed("completed");
-                        tracing::info!(
-                            "spawned_turn_task: finalized turn_state phase={:?}",
-                            ts.phase
-                        );
-                    }
+                    eb_for_finalize.on_turn_completed("completed");
+                    tracing::info!("spawned_turn_task: finalized turn_state phase=Streaming");
                     let _ = done_tx_clone.send(TurnCompletion { success: true });
                     tracing::info!("spawned_turn_task: sent done_tx success");
                 }
                 Err(e) => {
-                    if let Ok(mut ts) = ts_clone_for_finalize.lock() {
-                        ts.on_error(&format!("{}", e));
-                        tracing::info!("spawned_turn_task: finalized turn_state error: {}", e);
-                    }
+                    eb_for_finalize.on_turn_error(&format!("{}", e));
+                    tracing::info!("spawned_turn_task: finalized turn_state error: {}", e);
                     let _ = done_tx_clone.send(TurnCompletion { success: false });
                     tracing::info!("spawned_turn_task: sent done_tx error");
                 }
@@ -644,10 +622,12 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     let layout = Layouts::new(area);
 
     // Inject turn_state_ref into ChatPanel so draw() can read streaming text in real-time
+    // Clone event_bus state Arc first to avoid borrowing app twice
+    let eb_state = Arc::clone(&app.event_bus.state());
     if let Some(panel) = app.panels.get_mut(&PanelId::Chat) {
         if let Some(chat) = panel.downcast_mut::<ChatPanel>() {
-            chat.set_turn_state_ref(Arc::clone(&app.turn_state));
-            chat.update_from_turn_state(&app.turn_state.lock().unwrap());
+            chat.set_turn_state_ref(Arc::clone(&eb_state));
+            chat.update_from_turn_state(&eb_state.lock().unwrap());
         }
     }
 

@@ -234,7 +234,7 @@ impl Agent {
 
         let input_msg = oben_models::Message::user(input);
 
-        let response = ConversationLoop::execute_turn(
+        let response = ConversationLoop::execute_turn_with_options(
             &mut self.context_engine,
             &self.transport,
             &self.tools,
@@ -243,6 +243,16 @@ impl Agent {
             input_msg,
             &call_mode,
             delta_callback,
+            crate::conversation::TurnOptions {
+                retry_config: crate::retry::RetryConfig::default(),
+                budget: None,
+                interrupt: None,
+                callbacks: Some(std::mem::replace(
+                    &mut self.callbacks,
+                    crate::callbacks::AgentCallbacks::default(),
+                )),
+                fallback: None,
+            },
         ).await?;
 
         self.session_manager.save(None)?;
