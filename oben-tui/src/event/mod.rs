@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::turn::event::{ActivityKind, ActiveTool, CompletedTool, TurnPhase, TurnState};
+use crate::turn::turn_state::{ActivityKind, ActiveTool, CompletedTool, TurnPhase, TurnState};
 
 /// Events emitted by the agent during a turn.
 #[derive(Debug, Clone)]

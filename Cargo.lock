@@ -2261,6 +2261,7 @@ name = "oben-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "crossterm 0.29.0",
  "dirs",

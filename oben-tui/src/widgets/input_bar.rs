@@ -115,9 +115,9 @@ impl InputState {
 ///
 /// Renders the text area block with wrapping, cursor, placeholder, streaming
 /// indicator, and tab completion overlay.
-pub struct InputBar;
+pub struct InputBarWidget;
 
-impl InputBar {
+impl InputBarWidget {
     /// Render the input bar widget.
     ///
     /// Returns the height of the rendered block in rows (including border).
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn test_calculate_input_height_empty() {
-        let ib = InputBar;
+        let ib = InputBarWidget;
         let state = make_state("");
         // border(2) + text(1) = 3
         assert_eq!(ib.calculate_input_height(&state, 40), 3);
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_calculate_input_height_single_line_short() {
-        let ib = InputBar;
+        let ib = InputBarWidget;
         let state = make_state("hello");
         // border(2) + text(1) = 3
         assert_eq!(ib.calculate_input_height(&state, 40), 3);
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn test_calculate_input_height_word_wraps() {
-        let ib = InputBar;
+        let ib = InputBarWidget;
         let state = make_state("hello world foo bar baz qux quux corge extra long text here");
         // text_cols = 40-2 = 38; wraps into 2 lines → 2 + 2 + 0 + 0 = 4
         let h = ib.calculate_input_height(&state, 40);
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn test_calculate_input_height_explicit_newline() {
-        let ib = InputBar;
+        let ib = InputBarWidget;
         let state = make_state("line1\nline2\nline3");
         // 3 lines → 2 + 3 + 0 + 0 = 5
         assert_eq!(ib.calculate_input_height(&state, 40), 5);
@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_calculate_input_height_streaming() {
-        let ib = InputBar;
+        let ib = InputBarWidget;
         let mut state = make_state("");
         state.streaming = true;
         // border(2) + text(1) + streaming(1) = 4
@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_calculate_input_height_completion_list() {
-        let ib = InputBar;
+        let ib = InputBarWidget;
         let mut state = make_state("");
         state.completion_items = vec![
             CompletionItem { cmd: "/foo".into(), desc: "a".into() },
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn test_calculate_input_height_completion_clamped() {
-        let ib = InputBar;
+        let ib = InputBarWidget;
         let mut state = make_state("");
         // 12 items -> clamped to 8
         for i in 0..12 {
@@ -714,7 +714,7 @@ mod tests {
     /// Then: state.text contains " " (single space)
     #[test]
     fn test_space_key_inserts_single_space() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = make_state("");
         let mut app = crate::App::new().unwrap();
         let key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
@@ -728,7 +728,7 @@ mod tests {
     /// Then: state.text becomes "a b"
     #[test]
     fn test_space_key_inserts_at_cursor() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = make_state("ab");
         state.cursor = 1;
         let mut app = crate::App::new().unwrap();
@@ -742,7 +742,7 @@ mod tests {
     /// Then: rightmost grapheme is removed
     #[test]
     fn test_backspace_removes_rightmost_grapheme() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.cursor = 5;
         let mut app = crate::App::new().unwrap();
@@ -757,7 +757,7 @@ mod tests {
     /// Then: handle_submit is triggered (text is non-empty, consumed=true)
     #[test]
     fn test_enter_consumed_with_text() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.cursor = 5;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -774,7 +774,7 @@ mod tests {
     /// Then: nothing is submitted, consumed=false (empty input rejected)
     #[test]
     fn test_enter_not_consumed_when_empty() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = make_state("");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -791,7 +791,7 @@ mod tests {
     /// Then: cursor = 3
     #[test]
     fn test_cursor_moves_by_grapheme_not_by_byte() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = InputState {
             text: "你好世界测试".to_string(),
             cursor: 0,
@@ -813,7 +813,7 @@ mod tests {
     /// Then: entire text is removed (one "word")
     #[test]
     fn test_ctrl_w_deletes_word_before_cursor() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = make_state("hello world");
         state.cursor = 11; // end of "world"
         let mut app = crate::App::new().unwrap();
@@ -830,7 +830,7 @@ mod tests {
     /// Then: entire input is cleared
     #[test]
     fn test_ctrl_u_clears_all() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = make_state("some text here");
         let mut app = crate::App::new().unwrap();
         let key = KeyEvent::new(
@@ -847,7 +847,7 @@ mod tests {
     /// Then: consumed=true, streaming stays true
     #[test]
     fn test_streaming_suppresses_all_keys_except_ctrl_c() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.streaming = true;
         let mut app = crate::App::new().unwrap();
@@ -862,7 +862,7 @@ mod tests {
     /// Then: streaming becomes false, consumed=true
     #[test]
     fn test_ctrl_c_exits_streaming() {
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.streaming = true;
         let mut app = crate::App::new().unwrap();
@@ -883,7 +883,7 @@ mod tests {
         let mut state = InputState::new();
         state.text = "/co".to_string();
         state.cursor = 3;
-        InputBar.update_completions(&mut state);
+        InputBarWidget.update_completions(&mut state);
         assert!(!state.completion_items.is_empty());
         // Should match /compact, /details (starts with "/co"? no, /comp*"
         let found_compact = state
@@ -904,7 +904,7 @@ mod tests {
         let mut state = InputState::new();
         state.text = "/xyznonexistent".to_string();
         state.cursor = 17;
-        InputBar.update_completions(&mut state);
+        InputBarWidget.update_completions(&mut state);
         assert!(state.completion_items.is_empty());
     }
 
@@ -914,14 +914,14 @@ mod tests {
     #[test]
     fn test_up_arrow_cycles_completions() {
         let mut state = InputState::new();
-        InputBar.update_completions(&mut state);
+        InputBarWidget.update_completions(&mut state);
         let mut state2 = InputState::new();
         state2.text = "/".to_string();
         state2.cursor = 1;
-        InputBar.update_completions(&mut state2);
+        InputBarWidget.update_completions(&mut state2);
         assert!(state2.completion_items.len() >= 2);
 
-        let mut ib = InputBar;
+        let mut ib = InputBarWidget;
         let mut app = crate::App::new().unwrap();
         let up_key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         ib.handle_key(&mut state2, &mut app, up_key);
@@ -937,8 +937,8 @@ mod tests {
         let mut state = InputState::new();
         state.text = "/".to_string();
         state.cursor = 1;
-        InputBar.update_completions(&mut state);
-        let mut ib = InputBar;
+        InputBarWidget.update_completions(&mut state);
+        let mut ib = InputBarWidget;
         let mut app = crate::App::new().unwrap();
         // go forward past the end
         for _ in 0..state.completion_items.len() {

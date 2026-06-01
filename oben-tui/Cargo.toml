@@ -26,6 +26,7 @@ unicode-width = "0.2"
 unicode-segmentation = "1.10"
 unicode-ident = "1"
 tokio = { workspace = true, features = ["sync"] }
+async-trait = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

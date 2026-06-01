@@ -5,7 +5,8 @@ pub mod config;
 pub mod sessions;
 pub mod setup;
 
-use crossterm::event::KeyEvent;
+use async_trait::async_trait;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
@@ -21,6 +22,7 @@ pub enum PanelId {
 }
 
 /// Trait that every panel must implement.
+#[async_trait]
 pub trait Panel: Send + Sync {
     /// Cast to `dyn Any` for downcasting in TUI runtime.
     fn as_any(&self) -> &dyn std::any::Any;
@@ -34,11 +36,16 @@ pub trait Panel: Send + Sync {
     /// Handle a keyboard event. Returns true if the event was consumed.
     fn handle_key(&mut self, app: &mut App, key: KeyEvent);
 
+    /// Handle a mouse event. Default no-op (returns false).
+    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
+        false
+    }
+
     /// Called when this panel becomes active. Default no-op.
-    fn on_activate(&mut self) {}
+    async fn on_activate(&mut self, _app: &mut App) {}
 
     /// Called when this panel becomes inactive. Default no-op.
-    fn on_deactivate(&mut self) {}
+    async fn on_deactivate(&mut self, _app: &mut App) {}
 }
 
 impl dyn Panel {

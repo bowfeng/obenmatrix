@@ -10,14 +10,14 @@ use std::sync::{Arc, Mutex as StdMutex};
 use textwrap::wrap as textwrap_wrap;
 use unicode_width::UnicodeWidthStr;
 
-use crate::turn::event::TurnState;
+use crate::turn::turn_state::TurnState;
 use crate::widgets::message_renderer::MessageRenderer;
 use crate::widgets::role_style::{get_style_for_role, ColorHint};
 use crate::widgets::style::Theme;
 use oben_models::{Message, MessageRole};
 
 /// State for the message display widget.
-pub struct MessageDisplayState {
+pub struct ConversationState {
     pub scroll_state: Arc<StdMutex<ScrollbarState>>,
     pub scroll_to_bottom: bool,
     pub base_lines: Vec<Line<'static>>,
@@ -28,7 +28,7 @@ pub struct MessageDisplayState {
     pub selection_end: Option<(usize, usize)>,
 }
 
-impl MessageDisplayState {
+impl ConversationState {
     pub fn new() -> Self {
         Self {
             scroll_state: Arc::new(StdMutex::new(ScrollbarState::new(0))),
@@ -49,14 +49,14 @@ impl MessageDisplayState {
 }
 
 /// Message display widget — renders messages with scrolling and streaming overlay.
-pub struct MessageDisplay;
+pub struct ConversationWidget;
 
-impl MessageDisplay {
+impl ConversationWidget {
     /// Check if mouse event is relevant to message display and update selection state.
     /// Returns true if the event was consumed (i.e. a mouse button was pressed/released on the text area).
     pub fn handle_mouse_event(
         &self,
-        state: &mut MessageDisplayState,
+        state: &mut ConversationState,
         visual_lines: &[Line<'static>],
         scroll_offset: u16,
         event_row: u16,
@@ -91,13 +91,13 @@ impl MessageDisplay {
     }
 
     /// Cancel any active selection (call on key press in message area).
-    pub fn cancel_selection(&self, state: &mut MessageDisplayState) {
+    pub fn cancel_selection(&self, state: &mut ConversationState) {
         state.selection_start = None;
         state.selection_end = None;
     }
 
     /// Extract selected text from visual lines, clear selection, return None if empty.
-    pub fn get_selected_text(&self, state: &mut MessageDisplayState) -> Option<String> {
+    pub fn get_selected_text(&self, state: &mut ConversationState) -> Option<String> {
         let (sy, sx) = state.selection_start?;
         let (ey, ex) = state.selection_end?;
 
@@ -184,7 +184,7 @@ impl MessageDisplay {
         &self,
         frame: &mut Frame,
         area: Rect,
-        state: &MessageDisplayState,
+        state: &ConversationState,
         theme: &Theme,
         is_streaming: bool,
     ) {
@@ -316,7 +316,7 @@ impl MessageDisplay {
         &self,
         frame: &mut Frame,
         area: Rect,
-        state: &MessageDisplayState,
+        state: &ConversationState,
         _theme: &Theme,
     ) {
         let mut stream_info = String::new();
@@ -363,7 +363,7 @@ impl MessageDisplay {
         &self,
         frame: &mut Frame,
         area: Rect,
-        state: &MessageDisplayState,
+        state: &ConversationState,
         theme: &Theme,
         is_streaming: bool,
     ) {
@@ -391,7 +391,7 @@ impl MessageDisplay {
     }
 
     /// Append a user message to the internal display state.
-    pub fn append_user_message(&mut self, state: &mut MessageDisplayState, text: &str) {
+    pub fn append_user_message(&mut self, state: &mut ConversationState, text: &str) {
         state
             .base_lines
             .push(Line::from(format!(" {} {}", "\u{1F464}", text)));
@@ -401,7 +401,7 @@ impl MessageDisplay {
     /// Rebuild base lines from session messages using the renderer.
     pub fn rebuild_from_messages(
         &self,
-        state: &mut MessageDisplayState,
+        state: &mut ConversationState,
         messages: &[Message],
         renderer: &MessageRenderer,
     ) {
@@ -412,8 +412,8 @@ impl MessageDisplay {
         state.base_lines = lines;
     }
 
-    /// Update stream_info from turn state into MessageDisplayState.
-    pub fn update_stream_info(&self, state: &mut MessageDisplayState, turn_state: &TurnState) {
+    /// Update stream_info from turn state into ConversationState.
+    pub fn update_stream_info(&self, state: &mut ConversationState, turn_state: &TurnState) {
         let mut parts = Vec::new();
 
         let active = &turn_state.active_tools;
@@ -446,7 +446,7 @@ impl MessageDisplay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::turn::event::{ActiveTool, TurnState};
+    use crate::turn::turn_state::{ActiveTool, TurnState};
     use std::time::Instant;
 
     /// Given: a TurnState with active tool calls AND streaming text
@@ -454,7 +454,7 @@ mod tests {
     /// Then: stream_info contains only tool info, NOT streaming text
     #[test]
     fn test_update_stream_info_excludes_streaming_text() {
-        let mut state = MessageDisplayState::new();
+        let mut state = ConversationState::new();
         let mut turn = TurnState::new();
         turn.active_tools.push(ActiveTool {
             id: "call-1".into(),
@@ -464,7 +464,7 @@ mod tests {
         });
         turn.streaming_text = "This is streaming text that should NOT appear in stream_info".into();
 
-        MessageDisplay.update_stream_info(&mut state, &turn);
+        ConversationWidget.update_stream_info(&mut state, &turn);
 
         let info = state.stream_info.lock().unwrap();
         assert!(!info.contains("streaming text"));
@@ -477,11 +477,11 @@ mod tests {
     /// Then: stream_info stays empty (no misleading tool status)
     #[test]
     fn test_update_stream_info_empty_with_no_tools() {
-        let mut state = MessageDisplayState::new();
+        let mut state = ConversationState::new();
         let mut turn = TurnState::new();
         turn.streaming_text = "Some streaming content".into();
 
-        MessageDisplay.update_stream_info(&mut state, &turn);
+        ConversationWidget.update_stream_info(&mut state, &turn);
 
         let info = state.stream_info.lock().unwrap();
         assert!(info.is_empty());
@@ -492,7 +492,7 @@ mod tests {
     /// Then: stream_info includes the tool name
     #[test]
     fn test_update_stream_info_includes_tool_name() {
-        let mut state = MessageDisplayState::new();
+        let mut state = ConversationState::new();
         let mut turn = TurnState::new();
         turn.active_tools.push(ActiveTool {
             id: "call-2".into(),
@@ -501,7 +501,7 @@ mod tests {
             context: "/some/path".into(),
         });
 
-        MessageDisplay.update_stream_info(&mut state, &turn);
+        ConversationWidget.update_stream_info(&mut state, &turn);
 
         let info = state.stream_info.lock().unwrap();
         assert!(info.contains("search_files"));
@@ -512,7 +512,7 @@ mod tests {
     /// Then: streaming_text is NOT included in stream_info (prevents duplication in render_messages + render_turn_status)
     #[test]
     fn test_streaming_text_not_duplicated_in_stream_info() {
-        let mut state = MessageDisplayState::new();
+        let mut state = ConversationState::new();
         let mut turn = TurnState::new();
         let streaming_content = "The Clockmaker of Lost Hours";
         turn.streaming_text = streaming_content.into();
@@ -523,7 +523,7 @@ mod tests {
             context: "/Users/test/docs.md".into(),
         });
 
-        MessageDisplay.update_stream_info(&mut state, &turn);
+        ConversationWidget.update_stream_info(&mut state, &turn);
 
         let info = state.stream_info.lock().unwrap();
         // The stream_info should only have tool info, not the streaming text

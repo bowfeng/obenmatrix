@@ -24,7 +24,7 @@
 
 ### Fix
 
-**File:** `oben-tui/src/widgets/message_display.rs`
+**File:** `oben-tui/src/widgets/conversation.rs`
 
 1. **Removed streaming text from `update_stream_info()`** — now only handles tool call info (`🔧 file_read /path`)
 2. **Moved `render_turn_status()` position** from top-left `(area.x, area.y)` to bottom-right of messages panel, so it never overlaps message content

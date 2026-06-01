@@ -5,7 +5,7 @@
 
 use super::Panel;
 use crate::widgets::message_renderer::MessageRenderer;
-use crate::widgets::message_display::{MessageDisplay, MessageDisplayState};
+use crate::widgets::conversation::ConversationState;
 use crate::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -21,9 +21,7 @@ pub struct SessionsPanel {
     sessions: Vec<Session>,
     filtered: Vec<usize>,
     selected: usize,
-    renderer: MessageRenderer,
-    message_state: MessageDisplayState,
-    message_display: MessageDisplay,
+    message_state: ConversationState,
     list_state: RwLock<ListState>,
     right_lines: Arc<Mutex<Vec<Line<'static>>>>,
     sessions_loaded: RwLock<bool>,
@@ -47,9 +45,7 @@ impl SessionsPanel {
             filtered: Vec::new(),
             selected: 0,
             sessions_loaded: RwLock::new(false),
-            renderer: MessageRenderer::new(),
-            message_state: MessageDisplayState::new(),
-            message_display: MessageDisplay,
+            message_state: ConversationState::new(),
             list_state: RwLock::new(ls),
             right_lines: Arc::new(Mutex::new(Vec::new())),
             search_query: String::new(),
@@ -78,9 +74,7 @@ impl SessionsPanel {
             sessions,
             filtered,
             selected: 0,
-            renderer: MessageRenderer::new(),
-            message_state: MessageDisplayState::new(),
-            message_display: MessageDisplay,
+            message_state: ConversationState::new(),
             sessions_loaded: RwLock::new(false),
             list_state: RwLock::new(ls),
             right_lines: Arc::new(Mutex::new(Vec::new())),
@@ -396,6 +390,7 @@ enum Action {
     Fork,
 }
 
+#[async_trait::async_trait]
 impl Panel for SessionsPanel {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -404,11 +399,11 @@ impl Panel for SessionsPanel {
         self
     }
 
-    fn on_activate(&mut self) {
+    async fn on_activate(&mut self, _app: &mut App) {
         self.ensure_loaded();
     }
 
-    fn on_deactivate(&mut self) {
+    async fn on_deactivate(&mut self, _app: &mut App) {
         // Reset to force reload on next activation
         *self.sessions_loaded.write().unwrap() = false;
     }
