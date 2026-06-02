@@ -12,11 +12,11 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use tui_widget_list::{ListBuilder, ListState, ListView, ScrollDirection};
 use std::sync::{Arc, Mutex, RwLock};
+use oben_agent::Agent;
 use oben_models::Session;
-use oben_sessions::SessionManager;
 
 pub struct SessionsPanel {
-    session_manager: Arc<Mutex<SessionManager>>,
+    agent: Arc<tokio::sync::Mutex<Agent>>,
     sessions: Vec<Session>,
     filtered: Vec<usize>,
     selected: usize,
@@ -28,18 +28,17 @@ pub struct SessionsPanel {
     searching: bool,
     search_input: String,
     search_cursor: usize,
+    /// Name of the currently active session (set by refresh_list).
+    active_session_name: Option<String>,
 }
 
 impl SessionsPanel {
-    pub fn new_empty() -> Self {
-        let sm = SessionManager::new().unwrap_or_else(|e| {
-            eprintln!("Failed to create SessionManager: {}", e);
-            panic!("Fatal: cannot create SessionManager");
-        });
+    /// Create a SessionsPanel with a shared Agent (for TUI ↔ Agent sharing).
+    pub fn new_shared(agent: Arc<tokio::sync::Mutex<Agent>>) -> Self {
         let mut ls = ListState::default();
         ls.select(Some(0));
         Self {
-            session_manager: Arc::new(Mutex::new(sm)),
+            agent: agent,
             sessions: Vec::new(),
             filtered: Vec::new(),
             selected: 0,
@@ -51,63 +50,62 @@ impl SessionsPanel {
             searching: false,
             search_input: String::new(),
             search_cursor: 0,
+            active_session_name: None,
         }
     }
 
-    /// Legacy — use `new_empty()` for lazy loading. Test-only.
-    pub fn new(sessions: Vec<Session>) -> Self {
-        let sm = SessionManager::new().unwrap_or_else(|e| {
-            eprintln!("Failed to create SessionManager: {}", e);
-            panic!("Fatal: cannot create SessionManager");
-        });
-        Self::with_session_manager(sm, sessions)
+    /// Empty fallback (no agent). Use new_shared() in production.
+    pub fn new_empty() -> Self {
+        eprintln!("Warning: SessionsPanel::new_empty() should not be used in production");
+        panic!("Fatal: SessionsPanel requires an Agent reference");
+    }
+
+    /// Test-only: construct a SessionsPanel with pre-loaded sessions.
+    pub fn with_empty_sessions(_sessions: Vec<Session>) -> Self {
+        panic!("with_empty_sessions should not be used in production");
     }
 
     /// Construct a SessionsPanel with a pre-configured SessionManager (test-only).
-    pub fn with_session_manager(sm: SessionManager, sessions: Vec<Session>) -> Self {
-        let filtered: Vec<usize> = (0..sessions.len()).collect();
-        let mut ls = ListState::default();
-        ls.select(Some(0));
-        Self {
-            session_manager: Arc::new(Mutex::new(sm)),
-            sessions,
-            filtered,
-            selected: 0,
-            message_state: ConversationState::new(),
-            sessions_loaded: RwLock::new(false),
-            list_state: RwLock::new(ls),
-            right_lines: Arc::new(Mutex::new(Vec::new())),
-            search_query: String::new(),
-            searching: false,
-            search_input: String::new(),
-            search_cursor: 0,
-        }
+    #[allow(unused)]
+    pub fn with_session_manager(_sm: oben_sessions::SessionManager, _sessions: Vec<Session>) -> Self {
+        panic!("with_session_manager should not be used in production");
     }
 
     /// Load sessions from the SessionManager (called on panel activation).
-    pub fn ensure_loaded(&mut self) {
-        if *self.sessions_loaded.read().unwrap() {
+    /// Always re-fetches from agent so session changes made in the Chat panel
+    /// (rename, clear, new) are immediately reflected.
+    pub async fn ensure_loaded(&mut self) {
+        // Must init session manager first -- it loads from SQLite into the in-memory HashMap
+        if let Err(e) = self.agent.lock().await.init_session_manager().await {
+            tracing::error!("[SessionsPanel] Failed to init session manager: {}", e);
             return;
         }
-        if self.sessions.len() > 0 {
-            *self.sessions_loaded.write().unwrap() = true;
-            return;
-        }
-        let sessions = match self.session_manager.lock() {
-            Ok(mut sm) => {
-                let _ = sm.init();
-                sm.list_sessions_full()
-            }
-            Err(_) => Vec::new(),
-        };
+        let sessions = self.agent.lock().await.list_sessions_full().await;
         self.sessions = sessions;
         self.filtered = (0..self.sessions.len()).collect();
-        *self.sessions_loaded.write().unwrap() = true;
+        self.active_session_name = self.agent.lock().await.active_session_name().await;
     }
 
     pub fn update_sessions(&mut self, sessions: Vec<Session>) {
         self.sessions = sessions;
         self.apply_filter();
+    }
+
+    /// Update the display title of a single session without re-fetching the full list.
+    /// Match by old_title and replace with new_title.
+    pub fn refresh_display_name(&mut self, old_title: &str, new_title: &str) {
+        for session in self.sessions.iter_mut() {
+            let current = session
+                .metadata
+                .title
+                .as_deref()
+                .unwrap_or(&session.name);
+            if current == old_title {
+                session.metadata.title = Some(new_title.to_string());
+                self.apply_filter();
+                return;
+            }
+        }
     }
 
     pub fn apply_filter(&mut self) {
@@ -138,26 +136,21 @@ impl SessionsPanel {
     }
 
     fn get_session(&self) -> Option<&Session> {
-        self.filtered.first().and_then(|&idx| self.sessions.get(idx))
+        self.filtered.get(self.selected).and_then(|&idx| self.sessions.get(idx))
     }
 
     fn get_session_id(&self) -> Option<String> {
-        self.filtered.first().and_then(|&idx| self.sessions.get(idx).map(|s| s.id.clone()))
+        self.filtered.get(self.selected).and_then(|&idx| self.sessions.get(idx).map(|s| s.id.clone()))
     }
 
-    pub fn refresh_list(&mut self) {
-        let sessions = match self.session_manager.lock() {
-            Ok(mut sm) => {
-                let _ = sm.init();
-                sm.list_sessions_full()
-            }
-            Err(_) => Vec::new(),
-        };
+    pub async fn refresh_list(&mut self) {
+        let sessions = self.agent.lock().await.list_sessions_full().await;
         self.sessions = sessions;
         self.filtered = (0..self.sessions.len()).collect();
+        self.active_session_name = self.agent.lock().await.active_session_name().await;
     }
 
-    fn load_preview(&mut self) {
+    async fn load_preview(&mut self) {
         if self.filtered.is_empty() {
             self.message_state.base_lines.clear();
             return;
@@ -188,18 +181,17 @@ impl SessionsPanel {
             Style::default().fg(Color::DarkGray),
         )));
         if session.messages.is_empty() {
-            if let Ok(sm) = self.session_manager.lock() {
-                if let Ok(msgs) = sm.get_session_messages(&session.id) {
-                    if !msgs.is_empty() {
-                        lines.extend(self.format_messages(&msgs));
-                    } else {
-                        lines.push(Line::from(""));
-                        lines.push(Line::from(Span::styled(
-                            "[ No messages ]",
-                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
-                        )));
-                    }
-                }
+            let msgs = self.agent.lock().await
+                .get_session_messages(&session.id).await
+                .unwrap_or_default();
+            if !msgs.is_empty() {
+                lines.extend(self.format_messages(&msgs));
+            } else {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "[ No messages ]",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                )));
             }
         } else {
             lines.extend(self.format_messages(&session.messages));
@@ -234,76 +226,72 @@ impl SessionsPanel {
             .collect()
     }
 
-    fn handle_action(&mut self, action: Action) {
+    async fn handle_action(&mut self, action: Action) {
         let session_id = match self.get_session_id() {
             Some(id) => id,
             None => return,
         };
 
         match action {
-            Action::Switch(_) => self.handle_switch(session_id),
+            Action::Switch(_) => self.handle_switch(session_id).await,
             Action::Delete => {
-                self.handle_delete(session_id);
-                self.refresh_list();
+                // Cannot delete the active session
+                if let Some(session) = self.get_session() {
+                    let current_name = session.metadata.title.as_deref()
+                        .unwrap_or(&session.name);
+                    if self.active_session_name.as_deref() == Some(current_name)
+                        || self.active_session_name.as_deref() == Some(&session.name)
+                    {
+                        return;
+                    }
+                }
+                self.handle_delete(session_id).await;
+                self.refresh_list().await;
             }
             Action::New => {
-                self.handle_new();
-                self.refresh_list();
+                self.handle_new().await;
+                self.refresh_list().await;
             }
             Action::Close => {
-                self.handle_close();
-                self.refresh_list();
+                self.handle_close().await;
+                self.refresh_list().await;
             }
             Action::Rename => self.handle_rename(),
-            Action::Compact => self.handle_compact(session_id),
+            Action::Compact => self.handle_compact(session_id).await,
             Action::Fork => {
                 self.handle_fork();
-                self.refresh_list();
+                self.refresh_list().await;
             }
         }
         self.selected = self.filtered.len().saturating_sub(1);
     }
 
-    fn handle_switch(&mut self, session_id: String) {
-        let session_name = self
-            .get_session()
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
-
+    async fn handle_switch(&mut self, _session_id: String) {
         // Just preview — switch in agent session is handled via /session command
-        self.load_preview();
+        self.load_preview().await;
     }
 
-    fn handle_delete(&mut self, session_id: String) {
-        if let Ok(mut sm) = self.session_manager.lock() {
-            let _ = sm.delete(&session_id);
-        }
+    async fn handle_delete(&mut self, session_id: String) {
+        let _ = self.agent.lock().await.delete_session(&session_id).await;
     }
 
-    fn handle_new(&mut self) {
-        let name = format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
-        if let Ok(mut sm) = self.session_manager.lock() {
-            let _ = sm.new_session(&name);
-        }
+    async fn handle_new(&mut self) {
+        let _ = self.agent.lock().await.new_session().await;
     }
 
-    fn handle_close(&mut self) {
+    async fn handle_close(&mut self) {
         if self.filtered.is_empty() {
             return;
         }
-        if let Ok(mut sm) = self.session_manager.lock() {
-            let _ = sm.close();
-        }
+        let _ = self.agent.lock().await.close_session().await;
     }
 
     fn handle_rename(&mut self) {
         // Rename display only — actual rename handled via /rename command
     }
 
-    fn handle_compact(&mut self, session_id: String) {
-        if let Ok(mut sm) = self.session_manager.lock() {
-            let _ = sm.switch_session(&session_id);
-        }
+    async fn handle_compact(&mut self, session_id: String) {
+        let _ = self.agent.lock().await.switch_session(&session_id).await;
     }
 
     fn handle_fork(&mut self) {
@@ -321,8 +309,10 @@ impl SessionsPanel {
     }
 
     pub fn get_session_name(&self) -> Option<String> {
-        let s = self.filtered.first()?;
-        self.sessions.get(*s).map(|s| s.name.clone())
+        let s = *self.filtered.first()?;
+        self.sessions.get(s).map(|s| {
+            s.metadata.title.as_deref().unwrap_or(&s.name).to_string()
+        })
     }
 
     pub fn get_message_count(&self) -> Option<usize> {
@@ -351,12 +341,15 @@ impl Panel for SessionsPanel {
     }
 
     async fn on_activate(&mut self, _app: &mut crate::App) {
-        self.ensure_loaded();
+        self.ensure_loaded().await;
     }
 
     async fn on_deactivate(&mut self, _app: &mut crate::App) {
-        // Reset to force reload on next activation
+        // Reset sessions_loaded and clear the cached sessions so ensure_loaded()
+        // will re-fetch fresh data from the agent on next activation.
         *self.sessions_loaded.write().unwrap() = false;
+        self.sessions.clear();
+        self.active_session_name = None;
     }
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
@@ -426,43 +419,43 @@ impl Panel for SessionsPanel {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected > 0 {
                     self.selected -= 1;
-                    self.load_preview();
+                    self.load_preview().await;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.selected < self.filtered.len().saturating_sub(1) {
                     self.selected += 1;
-                    self.load_preview();
+                    self.load_preview().await;
                 }
             }
             KeyCode::PageUp => {
                 if self.selected > 0 {
                     let step = 5.min(self.selected);
                     self.selected -= step;
-                    self.load_preview();
+                    self.load_preview().await;
                 }
             }
             KeyCode::PageDown => {
                 if self.selected < self.filtered.len().saturating_sub(1) {
                     let step = 5.min(self.filtered.len().saturating_sub(1) - self.selected);
                     self.selected += step;
-                    self.load_preview();
+                    self.load_preview().await;
                 }
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Switch(KeyModifiers::NONE));
+                self.handle_action(Action::Switch(KeyModifiers::NONE)).await;
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::ALT => {
-                self.handle_action(Action::Switch(KeyModifiers::ALT));
+                self.handle_action(Action::Switch(KeyModifiers::ALT)).await;
             }
             KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::New);
+                self.handle_action(Action::New).await;
             }
             KeyCode::Char('c') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Compact);
+                self.handle_action(Action::Compact).await;
             }
             KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Delete);
+                self.handle_action(Action::Delete).await;
             }
             KeyCode::Char('/') if key.modifiers == KeyModifiers::NONE => {
                 self.searching = true;
@@ -470,13 +463,13 @@ impl Panel for SessionsPanel {
                 self.search_cursor = 0;
             }
             KeyCode::Char('x') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Close);
+                self.handle_action(Action::Close).await;
             }
             KeyCode::Char('r') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Rename);
+                self.handle_action(Action::Rename).await;
             }
             KeyCode::Char('v') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Fork);
+                self.handle_action(Action::Fork).await;
             }
             _ => {}
         }
@@ -539,8 +532,16 @@ impl SessionsPanel {
                 } else {
                     Style::default()
                 };
+                let display_title = s.metadata.title.as_deref().unwrap_or(&s.name);
+                let is_active = self.active_session_name.as_deref() == Some(&display_title)
+                    || self.active_session_name.as_deref() == Some(&s.name);
+                let display_name = if is_active {
+                    format!("* {}", display_title)
+                } else {
+                    display_title.to_string()
+                };
                 let cells = vec![
-                    Cell::new(format!("{}", s.name)).style(style),
+                    Cell::new(display_name).style(style),
                 ];
                 Some(Row::new(cells))
             })

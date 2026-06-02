@@ -18,6 +18,7 @@
 //! - Nudge / background review (Tier 2)
 
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use anyhow::Result;
 use oben_models::{CallMode, Message, StreamDeltaCallback};
@@ -68,7 +69,7 @@ pub struct Agent {
     /// Call mode — tracked per-session (Fresh on first turn, Incremental after).
     call_mode: Option<oben_models::CallMode>,
     /// Session manager — owns session lifecycle and persistence.
-    session_manager: SessionManager,
+    session_manager: Arc<Mutex<SessionManager>>,
     /// Interrupt state — shared via Arc with ConversationLoop/TurnExecutor.
     interrupt_state: Arc<InterruptState>,
     /// Fallback model chain.
@@ -85,42 +86,51 @@ pub struct Agent {
 
 impl Agent {
     /// Create a new agent. Does NOT own a tokio runtime.
-    pub fn new(config: AgentConfig) -> Result<Self> {
+    pub async fn new(config: AgentConfig) -> Result<Self> {
+        let session_manager = Arc::new(Mutex::new(SessionManager::new()?));
+
         let mut agent = Self {
             transport: config.transport,
             tools: config.tools,
             context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(config.context_config)),
             call_mode: None,
-            session_manager: SessionManager::new()?,
+            session_manager,
             interrupt_state: Arc::new(InterruptState::new()),
             fallback_chain: FallbackChain::new(config.fallback_models),
-        callbacks: config.callbacks,
-        prompt_cache: SystemPromptCache::new(),
-        dispatch_config: config.concurrent_dispatch_config,
-        nudge_config: config.nudge_config.unwrap_or_default(),
-    };
-    // Initialize the prompt cache with the initial system prompt.
-    // The cache will be updated on each compaction/session change.
-    agent.prompt_cache.set_prompt(&config.system_prompt);
-        agent.eager_load_active_session();
+            callbacks: config.callbacks,
+            prompt_cache: SystemPromptCache::new(),
+            dispatch_config: config.concurrent_dispatch_config,
+            nudge_config: config.nudge_config.unwrap_or_default(),
+        };
+        // Initialize the prompt cache with the initial system prompt.
+        // The cache will be updated on each compaction/session change.
+        agent.prompt_cache.set_prompt(&config.system_prompt);
+        agent.eager_load_active_session().await;
         Ok(agent)
     }
 
-    fn eager_load_active_session(&mut self) {
-        if let Some(active) = self.session_manager.active_session() {
-            let sid = active.id.clone();
-            let _ = self.session_manager.switch_session(&sid);
+    async fn eager_load_active_session(&mut self) {
+        let sid = self.session_manager
+            .lock()
+            .await
+            .active_session()
+            .map(|s| s.id.clone());
+        if let Some(sid) = sid {
+            let _ = self.session_manager
+                .lock()
+                .await
+                .switch_session(&sid);
         }
     }
 
     /// Access the session manager for listing/saving outside the turn cycle.
-    pub fn session_manager(&self) -> &SessionManager {
-        &self.session_manager
+    pub fn session_manager(&self) -> Arc<Mutex<SessionManager>> {
+        Arc::clone(&self.session_manager)
     }
 
     /// Mutably access the session manager (for admin ops: load, delete, new).
-    pub fn session_manager_mut(&mut self) -> &mut SessionManager {
-        &mut self.session_manager
+    pub fn session_manager_mut(&mut self) -> Arc<Mutex<SessionManager>> {
+        Arc::clone(&self.session_manager)
     }
 
     // ── Tier 1: Interrupt & Steer ────────────────────────────────────────
@@ -221,7 +231,7 @@ impl Agent {
         _stream: bool,
         delta_callback: Option<StreamDeltaCallback>,
     ) -> Result<String> {
-        let sid = self.resolve_session();
+        let sid = self.resolve_session().await;
 
         let call_mode = match &self.call_mode {
             Some(m) => m.clone(),
@@ -233,12 +243,13 @@ impl Agent {
         };
 
         let input_msg = oben_models::Message::user(input);
+        let sm = Arc::clone(&self.session_manager);
 
         let response = ConversationLoop::execute_turn_with_options(
             &mut self.context_engine,
             &self.transport,
             &self.tools,
-            &mut self.session_manager,
+            &mut *sm.lock().await,
             &sid,
             input_msg,
             &call_mode,
@@ -255,24 +266,28 @@ impl Agent {
             },
         ).await?;
 
-        self.session_manager.save(None)?;
+        sm.lock().await.save(None)?;
 
         Ok(response)
     }
 
     /// Resolve session ID (lazy create if no active session).
-    fn resolve_session(&mut self) -> String {
+    async fn resolve_session(&mut self) -> String {
+        let sm = Arc::clone(&self.session_manager);
         let sid = {
-            let active_id = self.session_manager.active_session().map(|s| s.id.clone());
+            let guard = sm.lock().await;
+            let active_id = guard.active_session().map(|s| s.id.clone());
+            drop(guard);
             match active_id {
-                Some(sid) => self.session_manager.switch_session(&sid)
-                    .map(|s| s.id.clone())
-                    .unwrap_or_else(|_| {
-                        self.session_manager.new_session(&format!(
+                Some(sid) => {
+                    match sm.lock().await.switch_session(&sid) {
+                        Ok(s) => s.id.clone(),
+                        Err(_) => sm.lock().await.new_session(&format!(
                             "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                        )).id.clone()
-                    }),
-                None => self.session_manager.new_session(&format!(
+                        )).id.clone(),
+                    }
+                }
+                None => sm.lock().await.new_session(&format!(
                     "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
                 )).id.clone(),
             }
@@ -281,25 +296,32 @@ impl Agent {
     }
 
     /// Switch to an existing session by ID or name.
-    pub fn continue_session(&mut self, key: &str) -> Result<String> {
-        self.session_manager.init()?;
-        let sid = self.session_manager.find_key(key)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}. Run `oben sessions list` to see available sessions.", key))?;
-
-        self.session_manager.switch_session(&sid)?;
-        let name = self.session_manager.active_session()
-            .map(|s| s.name.clone()).unwrap_or(key.to_string());
+    pub async fn continue_session(&mut self, key: &str) -> Result<String> {
+        let sm = Arc::clone(&self.session_manager);
+        sm.lock().await.init()?;
+        let sid = {
+            sm.lock().await.find_key(key)
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {}. Run `oben sessions list` to see available sessions.", key))?
+        };
+        sm.lock().await.switch_session(&sid)?;
+        let name = {
+            sm.lock().await.active_session()
+                .map(|s| s.name.clone()).unwrap_or(key.to_string())
+        };
         Ok(name)
     }
 
     /// Reset the current session: delete it (messages + DB record) and enter
     /// a no-session state. The next [turn] will lazily create a new session
     /// via [resolve_session].
-    pub fn reset(&mut self) -> Result<()> {
-        let sid = self.session_manager.active_session().map(|s| s.id.clone());
+    pub async fn reset(&mut self) -> Result<()> {
+        let sm = Arc::clone(&self.session_manager);
+        let sid = {
+            sm.lock().await.active_session().map(|s| s.id.clone())
+        };
         if let Some(sid) = sid {
             // Delete from DB and in-memory cache; sets active_session_id = None
-            self.session_manager.delete_session(&sid)?;
+            sm.lock().await.delete_session(&sid)?;
         }
         // Reset call mode so the next turn starts as Fresh.
         self.call_mode = None;
@@ -311,19 +333,20 @@ impl Agent {
     /// Retrieves the active session messages, mutates them in-place via the
     /// context engine's compaction logic, then saves the session back.
     pub async fn compact_session(&mut self) -> Result<()> {
+        let sm = Arc::clone(&self.session_manager);
         // Ensure session manager is initialized
-        self.session_manager.init()?;
+        sm.lock().await.init()?;
 
         // Get the active session
-        let sid = self.session_manager.active_session()
-            .map(|s| s.id.clone())
-            .ok_or_else(|| anyhow::anyhow!("No active session"))?;
-
-        // Get messages from the active session (need mutable access)
-        let mut messages = {
-            let session = self.session_manager.active_session_mut()
+        let (sid, mut messages) = {
+            let mut guard = sm.lock().await;
+            let sid = guard.active_session()
+                .map(|s| s.id.clone())
                 .ok_or_else(|| anyhow::anyhow!("No active session"))?;
-            session.messages.clone()
+            let messages = guard.active_session_mut()
+                .ok_or_else(|| anyhow::anyhow!("No active session"))?
+                .messages.clone();
+            (sid, messages)
         };
 
         // Check if compaction is needed
@@ -337,10 +360,13 @@ impl Agent {
             .await?;
 
         // Save the compacted messages back to the session
-        if let Some(session) = self.session_manager.active_session_mut() {
-            session.messages = messages;
-            // Save the updated session
-            self.session_manager.save_session(Some(&sid))?;
+        {
+            let mut guard = sm.lock().await;
+            if let Some(session) = guard.active_session_mut() {
+                session.messages = messages;
+                // Save the updated session
+                guard.save_session(Some(&sid))?;
+            }
         }
 
         Ok(())
@@ -348,8 +374,9 @@ impl Agent {
 
     /// Create a new session and switch to it. The old session is preserved
     /// and can be restored later via [continue_session].
-    pub fn new_session(&mut self) -> Result<String> {
-        let new_id = self.session_manager.new_session(&format!(
+    pub async fn new_session(&mut self) -> Result<String> {
+        let sm = Arc::clone(&self.session_manager);
+        let new_id = sm.lock().await.new_session(&format!(
             "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
         )).id.clone();
         // Reset call mode so next turn starts Fresh
@@ -357,14 +384,83 @@ impl Agent {
         Ok(new_id)
     }
 
-    /// Get the currently loaded session name.
-    pub fn loaded_session_name(&self) -> Option<String> {
-        self.session_manager.active_session().map(|s| s.name.clone())
+    /// Get the currently loaded session display name (title if set, else internal name).
+    pub async fn loaded_session_name(&self) -> Option<String> {
+        let sm = Arc::clone(&self.session_manager);
+        let guard = sm.lock().await;
+        guard.active_session().map(|s| {
+            s.metadata
+                .title
+                .as_deref()
+                .unwrap_or(&s.name)
+                .to_string()
+        })
     }
 
     /// Get the active session name.
-    pub fn active_session_name(&self) -> Option<String> {
-        self.loaded_session_name()
+    pub async fn active_session_name(&self) -> Option<String> {
+        self.loaded_session_name().await
+    }
+
+    /// Get the active session messages.
+    pub async fn loaded_session_messages(&self) -> Result<Vec<oben_models::Message>> {
+        let sm = Arc::clone(&self.session_manager);
+        let guard = sm.lock().await;
+        let msgs = guard.active_session()
+            .map(|s| s.messages.clone())
+            .unwrap_or_default();
+        Ok(msgs)
+    }
+
+    /// Initialize the session manager (for admin ops in async context).
+    pub async fn init_session_manager(&mut self) -> Result<()> {
+        let sm = Arc::clone(&self.session_manager);
+        let res = sm.lock().await.init();
+        res
+    }
+
+    /// Find a session key by name (for admin ops in async context).
+    pub async fn find_session_key(&self, key: &str) -> Option<String> {
+        let sm = Arc::clone(&self.session_manager);
+        let result = sm.lock().await.find_key(key);
+        result
+    }
+
+    /// Switch to a session by ID (for app-level session loading).
+    pub async fn switch_session_to(&mut self, id: &str) -> Result<()> {
+        let sm = Arc::clone(&self.session_manager);
+        let _ = sm.lock().await.switch_session(id)?;
+        Ok(())
+    }
+
+    /// List all sessions (wrapper for SessionsPanel).
+    pub async fn list_sessions_full(&self) -> Vec<oben_models::Session> {
+        let sessions = self.session_manager.lock().await.list_sessions_full();
+        sessions
+    }
+
+    /// Get session messages (wrapper for SessionsPanel preview).
+    pub async fn get_session_messages(&self, session_id: &str) -> Result<Vec<oben_models::Message>> {
+        let msgs = self.session_manager.lock().await.get_session_messages(session_id)?;
+        Ok(msgs)
+    }
+
+    /// Delete a session (wrapper for SessionsPanel).
+    pub async fn delete_session(&mut self, session_id: &str) -> Result<()> {
+        self.session_manager.lock().await.delete(session_id)?;
+        Ok(())
+    }
+
+    /// Switch to a session (wrapper for SessionsPanel compact/switch).
+    pub async fn switch_session(&mut self, session_id: &str) -> Result<()> {
+        let _session = self.session_manager.lock().await.switch_session(session_id)?;
+        Ok(())
+    }
+
+    /// Close current session (wrapper for SessionsPanel).
+    pub async fn close_session(&mut self) -> Result<()> {
+        self.session_manager.lock().await.close()?;
+        Ok(())
     }
 
     /// Run an interactive chat.
@@ -374,38 +470,40 @@ impl Agent {
         continue_with: Option<&str>,
         callbacks: ChatCallbacks,
     ) -> Result<()> {
+        let sm = Arc::clone(&self.session_manager);
         if let Some(key) = continue_with {
             let resolved = if key == "latest" {
-                self.session_manager.active_session()
+                sm.lock().await.active_session()
                     .map(|s| s.name.clone()).unwrap_or_else(|| key.to_string())
             } else {
                 key.to_string()
             };
-            let name = self.continue_session(&resolved)?;
-            if let Some(s) = self.session_manager.active_session() {
+            let name = self.continue_session(&resolved).await?;
+            if let Some(s) = sm.lock().await.active_session() {
                 let count = s.messages.len();
                 (callbacks.print_info)(&format!("Continuing session: {} ({} messages)\n", name, count));
                 print_session_messages(&s.messages, 10);
                 (callbacks.print_info)("");
             }
-        } else if let Some(name) = self.loaded_session_name() {
-            if let Some(s) = self.session_manager.active_session() {
+        } else if let Some(name) = self.loaded_session_name().await {
+            if let Some(s) = sm.lock().await.active_session() {
                 (callbacks.print_info)(&format!("Session: {} ({} messages)\n", name, s.messages.len()));
             }
         }
         (callbacks.print_info)("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
         (callbacks.print_flush)();
 
-        ConversationLoop::run_loop(
+        let sm = Arc::clone(&self.session_manager);
+        let _result = ConversationLoop::run_loop(
             &mut self.context_engine,
             &self.transport,
             &self.tools,
-            &mut self.session_manager,
+            &mut *sm.lock().await,
             &mut self.call_mode,
             stream,
             callbacks,
             &self.nudge_config,
-        ).await
+        ).await; _result
     }
 
     /// Run a background memory/skill review turn (nudge).
@@ -429,11 +527,13 @@ impl Agent {
             return;
         }
 
-        let has_memory_tool = !self
-            .session_manager
-            .active_session()
-            .map(|s| s.messages.iter().any(|m| !m.tool_calls.is_none()))
-            .unwrap_or(true);
+        let sm = Arc::clone(&self.session_manager);
+        let has_memory_tool = {
+            let guard = sm.lock().await;
+            !guard.active_session()
+                .map(|s| s.messages.iter().any(|m| !m.tool_calls.is_none()))
+                .unwrap_or(true)
+        };
 
         if !has_memory_tool {
             on_complete(false, "Nudge skipped: no memory tools available.".to_string());
@@ -452,15 +552,33 @@ impl Agent {
             fallback: None,
         };
 
-        let sid = self.resolve_session();
+        let sm = Arc::clone(&self.session_manager);
+        let sid = {
+            let guard = sm.lock().await;
+            let active_id = guard.active_session().map(|s| s.id.clone());
+            drop(guard);
+            let sid = match active_id {
+                Some(sid) => sid,
+                None => sm.lock().await.new_session(&format!(
+                    "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                )).id.clone(),
+            };
+            sm.lock().await.switch_session(&sid)
+                .map(|s| s.id.clone())
+                .unwrap_or_else(|_| {
+                    // Already ensured we have a valid session above; fall back to a fresh one
+                    format!("chat-{}-fallback", chrono::Utc::now().format("%Y%m%d-%H%M%S"))
+                })
+        };
         let call_mode = self.call_mode.clone().unwrap_or(CallMode::Fresh(sid.clone()));
 
         let review_msg = Message::user(&prompt);
+        let sm = Arc::clone(&self.session_manager);
         let response_text = ConversationLoop::execute_turn_with_options(
             &mut self.context_engine,
             &self.transport,
             &self.tools,
-            &mut self.session_manager,
+            &mut *sm.lock().await,
             &sid,
             review_msg,
             &call_mode,
@@ -498,41 +616,47 @@ impl Agent {
                  1. Has the user revealed things about themselves — their persona, desires, \
                  preferences, or personal details worth remembering?\n\
                  2. Has the user expressed expectations about how you should behave, their work \
-                 style, or ways they want you to operate?\n\n\
+                 preferences, or their communication style?\n\
+                 3. What are the most important lessons from recent interactions?\n\n\
                  SKILL REVIEW:\n\
-                 3. Were there repetitive tasks or workflows that could be turned into reusable \
-                 skills or shortcuts?\n\
-                 4. Are there patterns in how the user works that could be encoded as skills?\n\n\
-                 If anything is worth saving, use the memory tool. \
-                 If any skills should be created, note that for the user. \
-                 If nothing is worth saving or creating, just say 'Nothing to save.' and stop."
+                 1. Did the user reveal a recurring task or workflow that should become a skill?\n\
+                 2. Are there any tools or integrations worth setting up?\n\n\
+                 Only suggest changes if there's something genuinely useful to save. \
+                 If nothing worth saving, say so briefly and stop.\n\n\
+                 Think through your reasoning before deciding."
             )
         } else if memory_enabled {
             format!(
-                "Review the conversation above and consider saving to memory if appropriate.\n\n\
-                 Focus on:\n\
+                "Review the conversation above and consider the following:\n\n\
+                 MEMORY REVIEW:\n\
                  1. Has the user revealed things about themselves — their persona, desires, \
                  preferences, or personal details worth remembering?\n\
                  2. Has the user expressed expectations about how you should behave, their work \
-                 style, or ways they want you to operate?\n\n\
-                 If something stands out, save it using the memory tool. \
-                 If nothing is worth saving, just say 'Nothing to save.' and stop."
-            )
-        } else if skill_enabled {
-            format!(
-                "Review the conversation above. Were there repetitive tasks or workflows that \
-                 could be turned into reusable skills or shortcuts? Are there patterns in how \
-                 the user works that could be encoded as skills? If so, note these for the user. \
-                 If not, just say 'Nothing to note.' and stop."
+                 preferences, or their communication style?\n\
+                 3. What are the most important lessons from recent interactions?\n\n\
+                 Only suggest changes if there's something genuinely useful to save. \
+                 If nothing worth saving, say so briefly and stop.\n\n\
+                 Think through your reasoning before deciding."
             )
         } else {
-            "Review the conversation and note anything worth saving.".into()
+            format!(
+                "Review the conversation above and consider the following:\n\n\
+                 SKILL REVIEW:\n\
+                 1. Did the user reveal a recurring task or workflow that should become a skill?\n\
+                 2. Are there any tools or integrations worth setting up?\n\n\
+                 Only suggest changes if there's something genuinely useful to save. \
+                 If nothing worth saving, say so briefly and stop.\n\n\
+                 Think through your reasoning before deciding."
+            )
         }
     }
 }
 
-fn print_session_messages(messages: &[oben_models::Message], max_show: usize) {
-    if messages.is_empty() { println!("(no messages)"); return; }
+fn print_session_messages(messages: &[Message], max_show: usize) {
+    if messages.is_empty() {
+        println!("(no messages)");
+        return;
+    }
     let show_count = messages.len().min(max_show);
     let show = &messages[..show_count];
     let overflow = messages.len().saturating_sub(max_show);

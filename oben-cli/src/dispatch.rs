@@ -126,7 +126,7 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         callbacks: oben_agent::AgentCallbacks::default(),
         concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
         nudge_config: None,
-    })?;
+    }).await?;
 
     let callbacks = oben_agent::ChatCallbacks::for_cli();
     chat.interactive_chat(stream, continue_with, callbacks).await
@@ -153,7 +153,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         callbacks: oben_agent::AgentCallbacks::default(),
         concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
         nudge_config: None,
-    })?;
+    }).await?;
 
     let response = agent.turn(prompt, stream, stream.then(|| {
         Box::new(|text: &str| {

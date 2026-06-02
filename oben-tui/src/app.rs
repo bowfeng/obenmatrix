@@ -60,8 +60,7 @@ pub struct App {
     /// Timestamp after which the current toast should expire.
     /// Used because ratatui-toaster has no built-in auto-dismiss.
     pub toast_expires_at: Option<std::time::Instant>,
-    /// Registry of all built-in TUI commands.
-    pub command_registry: commands::TuiCommandRegistry,
+
 }
 
 impl App {
@@ -90,18 +89,22 @@ impl App {
     pub async fn execute_command(&mut self, name: &str) {
         match name {
             "clear" => {
+                if self.turn_handle.is_some() {
+                    self.show_toast("Cannot clear: turn in progress", ratatui_toaster::ToastType::Error);
+                    return;
+                }
                 tracing::info!("[clear] START");
                 if let Some(agent) = &self.agent {
                     let result = {
                         let mut guard = agent.lock().await;
                         let has_session = guard
-                            .session_manager()
-                            .active_session()
+                            .active_session_name()
+                            .await
                             .is_some();
                         if has_session {
                             tracing::info!("[clear] deleting active session");
                         }
-                        guard.reset()
+                        guard.reset().await
                     };
                     if let Err(e) = result {
                         self.show_toast(format!("Clear failed: {e}"), ratatui_toaster::ToastType::Error);
@@ -138,6 +141,12 @@ impl App {
                 self.event_bus.clear();
                 tracing::info!("[clear] event_bus state cleared");
                 self.session_id = None;
+                // Refresh SessionsPanel so cleared session list stays in sync.
+                if let Some(sp) = self.panels.get_mut(&PanelId::Sessions)
+                    .and_then(|p| p.downcast_mut::<crate::panels::sessions::SessionsPanel>())
+                {
+                    sp.refresh_list().await;
+                }
                 // Display info message in conversation so user sees "Session cleared"
                 if let Some(chat) = self.get_chat_mut() {
                     chat.append_info_message(
@@ -165,10 +174,14 @@ impl App {
                 }
             }
             "new" => {
+                if self.turn_handle.is_some() {
+                    self.show_toast("Cannot create new session: turn in progress", ratatui_toaster::ToastType::Error);
+                    return;
+                }
                 if let Some(agent) = &self.agent {
                     let result = {
                         let mut guard = agent.lock().await;
-                        guard.new_session()
+                        guard.new_session().await
                     };
                     match result {
                         Ok(new_id) => {
@@ -178,6 +191,12 @@ impl App {
                                 chat.session_name = Some(new_id.clone());
                                 chat.message_count = 0;
                                 chat.clear_display();
+                            }
+                            // Refresh SessionsPanel so the new session appears in the list.
+                            if let Some(sp) = self.panels.get_mut(&PanelId::Sessions)
+                                .and_then(|p| p.downcast_mut::<crate::panels::sessions::SessionsPanel>())
+                            {
+                                sp.refresh_list().await;
                             }
                         }
                         Err(e) => {
@@ -243,11 +262,10 @@ impl App {
                 if let Some(s) = boxed_panel.downcast_mut::<ChatPanel>() {
                     if let Some(agent) = &self.agent {
                         let guard = agent.lock().await;
-                        let session_name = guard.active_session_name().map(|n| n.clone());
+                        let session_name = guard.active_session_name().await.map(|n| n.clone());
                         let messages = guard
-                            .session_manager()
-                            .active_session()
-                            .map(|sess| sess.messages.clone())
+                            .loaded_session_messages()
+                            .await
                             .unwrap_or_default();
                         s.set_session_data(session_name, messages);
                     }
@@ -289,7 +307,6 @@ impl App {
             reasoning_enabled: false,
             toast_engine,
             toast_expires_at: None,
-            command_registry: commands::TuiCommandRegistry::new(),
         })
     }
 
@@ -300,7 +317,7 @@ impl App {
         self.toast_expires_at = Some(std::time::Instant::now() + Duration::from_secs(2));
     }
 
-    pub fn init_agent(&mut self) -> Result<()> {
+    pub async fn init_agent(&mut self) -> Result<()> {
         let identity = oben_config::defaults::default_system_prompt();
         let skills_dirs: Vec<std::path::PathBuf> = vec![];
         let volatile = oben_agent::system_prompt::build_volatile_block(
@@ -365,19 +382,21 @@ impl App {
             ..Default::default()
         };
 
-        self.agent = Some(Arc::new(tokio::sync::Mutex::new(Agent::new(AgentConfig {
-            system_prompt: assembled.prompt,
-            transport,
-            tools: std::sync::Arc::clone(&self.tools),
-            skills_dirs: vec![],
-            max_iterations: self.config.max_iterations.unwrap_or(50),
-            max_messages: self.config.context.max_messages.unwrap_or(100),
-            context_config: oben_agent::CompactCofig::default(),
-            fallback_models: vec![],
-            callbacks,
-            concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
-            nudge_config: None,
-        })?)));
+        self.agent = Some(Arc::new(tokio::sync::Mutex::new(
+            Agent::new(AgentConfig {
+                system_prompt: assembled.prompt,
+                transport,
+                tools: std::sync::Arc::clone(&self.tools),
+                skills_dirs: vec![],
+                max_iterations: self.config.max_iterations.unwrap_or(50),
+                max_messages: self.config.context.max_messages.unwrap_or(100),
+                context_config: oben_agent::CompactCofig::default(),
+                fallback_models: vec![],
+                callbacks,
+                concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
+                nudge_config: None,
+            }).await?,
+        )));
 
         Ok(())
     }
@@ -402,8 +421,14 @@ impl App {
 
     pub async fn create_sessions_panel(&mut self) -> Result<()> {
         tracing::info!("[panel] Creating SessionsPanel");
-        self.panels
-            .insert(PanelId::Sessions, Box::new(SessionsPanel::new_empty()));
+        if let Some(agent) = &self.agent {
+            self.panels
+                .insert(PanelId::Sessions, Box::new(SessionsPanel::new_shared(Arc::clone(agent))));
+        } else {
+            tracing::warn!("[panel] No agent, using fallback");
+            self.panels
+                .insert(PanelId::Sessions, Box::new(SessionsPanel::new_empty()));
+        }
         tracing::info!("[panel] SessionsPanel inserted, panels={:?}", self.panels.keys().collect::<Vec<_>>());
         Ok(())
     }
@@ -607,23 +632,16 @@ impl App {
                 // before we mutably borrow self for get_chat_mut().
                 let (load_id, load_messages) = {
                     if let Some(agent) = &self.agent {
+                        let mut agent = agent.lock().await;
                         // Ensure session manager is initialized so find_key()
                         // can look up sessions by name in the in-memory cache.
-                        {
-                            let mut init_guard = agent.lock().await;
-                            let _ = init_guard.session_manager_mut().init();
-                        }
-                        let guard = agent.lock().await;
-                        let id = guard.session_manager().find_key(session_name);
-                        let msgs = id
-                            .as_ref()
-                            .and_then(|id| {
-                                guard
-                                    .session_manager()
-                                    .get_session_messages(id)
-                                    .ok()
-                            })
-                            .unwrap_or_default();
+                        let _ = agent.init_session_manager().await;
+                        let id = agent.find_session_key(session_name).await;
+                        let msgs = if let Some(ref id) = id {
+                            agent.get_session_messages(id).await.unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
                         (id, msgs)
                     } else {
                         (None, Vec::new())
@@ -631,16 +649,10 @@ impl App {
                 };
 
                 if let Some(ref id) = load_id {
-                    // Actually switch the session manager's active session so
-                    // /rename, /clear etc. can operate on it.
                     if let Some(agent) = &self.agent {
-                        if let Ok(mut g) = agent.try_lock() {
-                            if let Err(e) = g
-                                .session_manager_mut()
-                                .switch_session(id)
-                            {
-                                tracing::error!("Failed to switch session '{id}': {e}");
-                            }
+                        let mut g = agent.lock().await;
+                        if let Err(e) = g.switch_session_to(id).await {
+                            tracing::error!("Failed to switch session '{id}': {e}");
                         }
                     }
                     let chat = self.get_chat_mut();

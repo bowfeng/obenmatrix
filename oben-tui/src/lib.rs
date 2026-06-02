@@ -76,7 +76,7 @@ pub enum TuiEvent {
 
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let mut app = App::new()?;
-    app.init_agent()?;
+    app.init_agent().await?;
     app.init_active_panel(session_name).await?;
     
     // Set up logging
@@ -193,13 +193,13 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         let messages = if let Some(agent) = &app.agent {
                             let guard = agent.lock().await;
                             let count = guard
-                                .session_manager()
+                                .session_manager().lock().await
                                 .active_session()
                                 .map(|s| s.messages.len())
                                 .unwrap_or(0);
                             tracing::info!("[done_rx] agent session has {} messages after lock", count);
                             guard
-                                .session_manager()
+                                .session_manager().lock().await
                                 .active_session()
                                 .map(|s| s.messages.clone())
                                 .unwrap_or_default()
@@ -269,16 +269,16 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         // This avoids an infinite self-loop that would occur
                         // if we re-sent the event via input_tx.
                         if let Some(agent_arc) = &app.agent {
-                            let result = agent_arc.blocking_lock().compact_session().await;
+                            let result = agent_arc.lock().await.compact_session().await;
                             match result {
                                 Ok(()) => {
                                     // After compression, reload active session messages
                                     // into the ChatPanel display.
                                     let sid = app.session_id.clone();
                                     let messages = if let Some(agent_arc) = &app.agent {
-                                        let guard = agent_arc.blocking_lock();
+                                        let guard = agent_arc.lock().await;
                                         guard
-                                            .session_manager()
+                                            .session_manager().lock().await
                                             .active_session()
                                             .map(|s| s.messages.clone())
                                             .unwrap_or_default()
@@ -395,9 +395,9 @@ async fn handle_chat_input(
                     eb.on_stream_delta(text);
                 });
                 let result = guard.turn(&input_clone, false, Some(delta_callback)).await;
-                let sid = guard.active_session_name().map(|s| s.clone());
+                let sid = guard.active_session_name().await.map(|s| s.clone());
                 let msgs = guard
-                    .session_manager()
+                    .session_manager().lock().await
                     .active_session()
                     .map(|s| s.messages.clone())
                     .unwrap_or_default();
