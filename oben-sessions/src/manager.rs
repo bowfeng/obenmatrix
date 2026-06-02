@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at REAL NOT NULL,
     ended_at REAL,
     end_reason TEXT,
-    title TEXT,
+    title TEXT UNIQUE,
     preview TEXT,
     message_count INTEGER DEFAULT 0,
     tool_call_count INTEGER DEFAULT 0,
@@ -85,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_title ON sessions(title);
 ";
 
 const FTS_SQL: &str = "
@@ -144,7 +145,7 @@ fn is_retryable_error(error: &anyhow::Error) -> bool {
 
 
 /// Schema version for data migrations (not column additions).
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 fn reconcile_schema(conn: &Connection) -> Result<()> {
     // Ensure schema_version table exists
@@ -174,8 +175,10 @@ fn reconcile_schema(conn: &Connection) -> Result<()> {
         }
     }
     
-    // Data migrations (version-gated, only when schema_version < 2)
-    // None currently needed — all additions are declarative.
+    // Data migrations (version-gated)
+    if current_version < 3 {
+        migrate_v2_to_v3(conn)?;
+    }
     
     if current_version < SCHEMA_VERSION {
         conn.execute(
@@ -215,6 +218,69 @@ fn parse_expected_columns(schema_sql: &str) -> Result<Vec<(String, Vec<(String, 
     }
     
     Ok(result)
+}
+
+/// Migrate sessions table v2→v3: add UNIQUE constraint on title column.
+///
+/// Since SQLite does not support ALTER TABLE ADD CONSTRAINT, we:
+/// 1. Create a new table with the UNIQUE constraint
+/// 2. INSERT deduplicated rows (keep latest `updated_at` when title collides)
+/// 3. Drop the old table and rename the new one
+fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE sessions_new (
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL DEFAULT 'cli',
+            model TEXT,
+            model_config TEXT,
+            system_prompt TEXT,
+            parent_session_id TEXT,
+            started_at REAL NOT NULL,
+            ended_at REAL,
+            end_reason TEXT,
+            title TEXT UNIQUE,
+            preview TEXT,
+            message_count INTEGER DEFAULT 0,
+            tool_call_count INTEGER DEFAULT 0,
+            input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_write_tokens INTEGER DEFAULT 0,
+            reasoning_tokens INTEGER DEFAULT 0,
+            api_call_count INTEGER DEFAULT 0,
+            user_id TEXT,
+            estimated_cost_usd REAL DEFAULT 0.0,
+            actual_cost_usd REAL DEFAULT 0.0,
+            cost_status TEXT,
+            cost_source TEXT,
+            pricing_version TEXT,
+            billing_provider TEXT,
+            billing_base_url TEXT,
+            billing_mode TEXT,
+            handoff_state TEXT,
+            handoff_platform TEXT,
+            handoff_error TEXT,
+            FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+        );",
+    )?;
+
+    // For duplicate titles keep the latest row (by updated_at).
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions_new \
+         SELECT * FROM sessions \
+         WHERE id IN (\
+             SELECT s1.id FROM sessions s1\
+             LEFT JOIN sessions s2 ON s1.title = s2.title\
+                 AND s1.updated_at < s2.updated_at AND s1.id != s2.id\
+             WHERE s2.id IS NULL\
+         )",
+        [],
+    )?;
+
+    let _ = conn.execute("DROP TABLE sessions", []);
+    conn.execute_batch("ALTER TABLE sessions_new RENAME TO sessions")?;
+    info!("Migrated sessions v2→v3 with UNIQUE title constraint");
+    Ok(())
 }
 
 /// Get live column names for a table via PRAGMA table_info.
@@ -1145,6 +1211,14 @@ impl SessionDB {
     /// Update the title of a session in the database.
     pub fn set_title(&self, session_id: &str, new_title: &str) -> Result<()> {
         self.with_conn_mut(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sessions WHERE title = ? AND id != ?",
+                params![new_title, session_id],
+                |row| row.get(0),
+            )?;
+            if count > 0 {
+                return Err(anyhow::anyhow!("Session title must be unique, '{new_title}' is already in use"));
+            }
             conn.execute(
                 "UPDATE sessions SET title = ? WHERE id = ?",
                 params![new_title, session_id],
