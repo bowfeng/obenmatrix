@@ -226,7 +226,61 @@ fn parse_expected_columns(schema_sql: &str) -> Result<Vec<(String, Vec<(String, 
 /// 1. Create a new table with the UNIQUE constraint
 /// 2. INSERT deduplicated rows (keep latest `updated_at` when title collides)
 /// 3. Drop the old table and rename the new one
+///
+/// For brand-new databases (no `sessions` table yet), just create the table
+/// directly and skip the migration.
 fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
+    // Check if sessions table already exists — if not this is a fresh DB,
+    // just create the table with the new schema and skip migration.
+    let sessions_exist: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions'",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(false);
+
+    if !sessions_exist {
+        // Fresh database — create the table with the new schema directly
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL DEFAULT 'cli',
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                title TEXT UNIQUE,
+                preview TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                api_call_count INTEGER DEFAULT 0,
+                user_id TEXT,
+                estimated_cost_usd REAL DEFAULT 0.0,
+                actual_cost_usd REAL DEFAULT 0.0,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                handoff_state TEXT,
+                handoff_platform TEXT,
+                handoff_error TEXT,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );",
+        )?;
+        info!("Created new sessions table v3");
+        return Ok(());
+    }
+
+    // Existing database — perform table reconstruction migration
     conn.execute_batch(
         "CREATE TABLE sessions_new (
             id TEXT PRIMARY KEY,
