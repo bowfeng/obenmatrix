@@ -138,6 +138,12 @@ impl App {
                 self.event_bus.clear();
                 tracing::info!("[clear] event_bus state cleared");
                 self.session_id = None;
+                // Display info message in conversation so user sees "Session cleared"
+                if let Some(chat) = self.get_chat_mut() {
+                    chat.append_info_message(
+                        "Session cleared. A new session will be created on the next turn.",
+                    );
+                }
                 self.show_toast("Session cleared.", ratatui_toaster::ToastType::Success);
                 tracing::info!("[clear] DONE");
             }
@@ -162,15 +168,23 @@ impl App {
                 if let Some(agent) = &self.agent {
                     let result = {
                         let mut guard = agent.lock().await;
-                        guard.reset()
+                        guard.new_session()
                     };
-                    if let Err(e) = result {
-                        self.show_toast(format!("New session failed: {e}"), ratatui_toaster::ToastType::Error);
-                        return;
+                    match result {
+                        Ok(new_id) => {
+                            tracing::info!("[new] created session: {}", new_id);
+                            if let Some(chat) = self.get_chat_mut() {
+                                // Set the new session (empty messages)
+                                chat.session_name = Some(new_id.clone());
+                                chat.message_count = 0;
+                                chat.clear_display();
+                            }
+                        }
+                        Err(e) => {
+                            self.show_toast(format!("New session failed: {e}"), ratatui_toaster::ToastType::Error);
+                            return;
+                        }
                     }
-                }
-                if let Some(chat) = self.get_chat_mut() {
-                    chat.clear_display();
                 }
                 self.show_toast("New session started.", ratatui_toaster::ToastType::Success);
             }
@@ -196,11 +210,13 @@ impl App {
                 self.show_toast("Press Ctrl+T to cycle themes", ratatui_toaster::ToastType::Info);
             }
             "help" => {
-                self.show_toast(
-                    "Slash commands: /clear /compact /new /quit /reasoning /session [name] /rename [name]\n\
-                     Keyboard: Up/Down=history, Ctrl+A/E=home/end, Ctrl+W=delete word, Ctrl+K=kill line",
-                    ratatui_toaster::ToastType::Info,
-                );
+                if let Some(chat) = self.get_chat_mut() {
+                    chat.append_info_message(
+                        "Slash commands: /clear /compact /new /quit /reasoning /session [name] /rename [name]\n\
+                         Keyboard: Up/Down=history, Ctrl+A/E=home/end, Ctrl+W=delete word, Ctrl+K=kill line",
+                    );
+                }
+                self.show_toast("Help displayed in conversation.", ratatui_toaster::ToastType::Info);
             }
             "details" => {
                 self.show_toast("Commands: /clear /compact /new /quit /reasoning /session [name] /rename [name]", ratatui_toaster::ToastType::Info);
@@ -600,12 +616,22 @@ impl App {
                 // before we mutably borrow self for get_chat_mut().
                 let (load_id, load_messages) = {
                     if let Some(agent) = &self.agent {
+                        // Ensure session manager is initialized so find_key()
+                        // can look up sessions by name in the in-memory cache.
+                        {
+                            let mut init_guard = agent.lock().await;
+                            let _ = init_guard.session_manager_mut().init();
+                        }
                         let guard = agent.lock().await;
                         let id = guard.session_manager().find_key(session_name);
                         let msgs = id
                             .as_ref()
-                            .and_then(|id| guard.session_manager().session(id))
-                            .map(|s| s.messages.clone())
+                            .and_then(|id| {
+                                guard
+                                    .session_manager()
+                                    .get_session_messages(id)
+                                    .ok()
+                            })
                             .unwrap_or_default();
                         (id, msgs)
                     } else {
@@ -621,7 +647,7 @@ impl App {
                             session_name,
                             load_messages.len()
                         );
-                        chat.update_from_messages(&load_messages, Some(id.clone()));
+                        chat.update_from_messages(&load_messages, session_name.to_string().into());
                     }
                 } else {
                     // Session not found — log and continue with Chat panel

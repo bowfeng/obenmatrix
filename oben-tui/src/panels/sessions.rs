@@ -3,10 +3,9 @@
 //! Creates its own SessionManager that connects to the SQLite database.
 //! Session CRUD operations are performed on this local manager.
 
-use super::Panel;
+use super::{KeyAction, Panel};
 use crate::widgets::message_renderer::MessageRenderer;
 use crate::widgets::conversation::ConversationState;
-use crate::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
@@ -235,115 +234,79 @@ impl SessionsPanel {
             .collect()
     }
 
-    fn handle_action(&mut self, app: &mut App, action: Action, key_modifiers: KeyModifiers) {
+    fn handle_action(&mut self, action: Action) {
         let session_id = match self.get_session_id() {
             Some(id) => id,
             None => return,
         };
 
         match action {
-            Action::Switch => self.handle_switch(app, key_modifiers, session_id),
+            Action::Switch(_) => self.handle_switch(session_id),
             Action::Delete => {
-                self.handle_delete(app, session_id);
+                self.handle_delete(session_id);
                 self.refresh_list();
             }
             Action::New => {
-                self.handle_new(app);
+                self.handle_new();
                 self.refresh_list();
             }
             Action::Close => {
-                self.handle_close(app);
+                self.handle_close();
                 self.refresh_list();
             }
-            Action::Rename => self.handle_rename(app),
-            Action::Compact => self.handle_compact(app),
+            Action::Rename => self.handle_rename(),
+            Action::Compact => self.handle_compact(session_id),
             Action::Fork => {
-                self.handle_fork(app);
+                self.handle_fork();
                 self.refresh_list();
             }
         }
         self.selected = self.filtered.len().saturating_sub(1);
     }
 
-    fn handle_switch(&mut self, app: &mut App, key_modifiers: KeyModifiers, session_id: String) {
+    fn handle_switch(&mut self, session_id: String) {
         let session_name = self
             .get_session()
             .map(|s| s.name.clone())
             .unwrap_or_default();
 
-        if key_modifiers.contains(KeyModifiers::ALT) {
-            // Alt+Enter: switch the agent's active session
-            if let Some(agent) = &app.agent {
-                if let Ok(mut g) = agent.try_lock() {
-                    let sid = session_id.clone();
-                    if let Err(e) = g.session_manager_mut().switch_session(&sid) {
-                        app.status = format!("Switch error: {}", e);
-                    } else {
-                        app.status = format!("Switched to: {}", session_name);
-                    }
-                }
-            }
-        } else {
-            // Enter: just preview
-            self.load_preview();
-            app.status = format!("Preview: {}", session_name);
-        }
+        // Just preview — switch in agent session is handled via /session command
+        self.load_preview();
     }
 
-    fn handle_delete(&mut self, app: &mut App, session_id: String) {
+    fn handle_delete(&mut self, session_id: String) {
         if let Ok(mut sm) = self.session_manager.lock() {
-            if let Err(e) = sm.delete(&session_id) {
-                app.status = format!("Delete failed: {}", e);
-                return;
-            }
+            let _ = sm.delete(&session_id);
         }
-        app.status = format!("Deleted: {}", session_id);
     }
 
-    fn handle_new(&mut self, app: &mut App) {
+    fn handle_new(&mut self) {
         let name = format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
         if let Ok(mut sm) = self.session_manager.lock() {
             let _ = sm.new_session(&name);
         }
-        app.status = format!("Created: {}", name);
     }
 
-    fn handle_close(&mut self, app: &mut App) {
+    fn handle_close(&mut self) {
         if self.filtered.is_empty() {
             return;
         }
-        let session = &self.sessions[self.filtered[self.selected]];
-        app.status = format!("Closed: {}", session.name);
         if let Ok(mut sm) = self.session_manager.lock() {
             let _ = sm.close();
         }
     }
 
-    fn handle_rename(&mut self, app: &mut App) {
-        if let Some(session) = self.get_session() {
-            app.status = format!("Rename: {}", session.name);
-        }
+    fn handle_rename(&mut self) {
+        // Rename display only — actual rename handled via /rename command
     }
 
-    fn handle_compact(&mut self, app: &mut App) {
-        let session_id = match self.get_session_id() {
-            Some(id) => id,
-            None => return,
-        };
+    fn handle_compact(&mut self, session_id: String) {
         if let Ok(mut sm) = self.session_manager.lock() {
-            if let Err(e) = sm.switch_session(&session_id) {
-                app.status = format!("Compact error: {}", e);
-                return;
-            }
+            let _ = sm.switch_session(&session_id);
         }
-        let session_name = self
-            .get_session()
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
-        app.status = format!("Compacting session: {}", session_name);
     }
 
-    fn handle_fork(&mut self, app: &mut App) {
+    fn handle_fork(&mut self) {
         if self.filtered.is_empty() {
             return;
         }
@@ -352,21 +315,9 @@ impl SessionsPanel {
             None => return,
         };
         if session.metadata.title.is_none() {
-            app.status = "Cannot fork session without a title".into();
             return;
         }
-        if let Some(agent) = &app.agent {
-            if let Ok(mut g) = agent.try_lock() {
-                let sid = session.id.clone();
-                if let Some(_new_session) = g.session_manager_mut().clone_session(&sid) {
-                    app.status = format!("Forked: {}", session.name);
-                } else {
-                    app.status = format!("Failed to fork: {}", session.name);
-                }
-            }
-        } else {
-            app.status = "Cannot fork - agent not initialized".into();
-        }
+        // Fork is handled via /session command with app context
     }
 
     pub fn get_session_name(&self) -> Option<String> {
@@ -381,7 +332,7 @@ impl SessionsPanel {
 }
 
 enum Action {
-    Switch,
+    Switch(KeyModifiers),
     Delete,
     New,
     Close,
@@ -399,11 +350,11 @@ impl Panel for SessionsPanel {
         self
     }
 
-    async fn on_activate(&mut self, _app: &mut App) {
+    async fn on_activate(&mut self, _app: &mut crate::App) {
         self.ensure_loaded();
     }
 
-    async fn on_deactivate(&mut self, _app: &mut App) {
+    async fn on_deactivate(&mut self, _app: &mut crate::App) {
         // Reset to force reload on next activation
         *self.sessions_loaded.write().unwrap() = false;
     }
@@ -419,7 +370,7 @@ impl Panel for SessionsPanel {
         self.render_message_view(frame, chunks[1]);
     }
 
-    fn handle_key(&mut self, app: &mut App, key: KeyEvent) {
+    async fn handle_key(&mut self, key: KeyEvent) -> KeyAction {
         if self.searching {
             match key.code {
                 KeyCode::Enter => {
@@ -465,12 +416,12 @@ impl Panel for SessionsPanel {
                 }
                 _ => {}
             }
-            return;
+            return KeyAction::None;
         }
 
         match key.code {
             KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
-                app.active_panel = crate::PanelId::Chat;
+                return KeyAction::SwitchPanel(super::PanelId::Chat);
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected > 0 {
@@ -499,19 +450,19 @@ impl Panel for SessionsPanel {
                 }
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(app, Action::Switch, KeyModifiers::NONE);
+                self.handle_action(Action::Switch(KeyModifiers::NONE));
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::ALT => {
-                self.handle_action(app, Action::Switch, KeyModifiers::ALT);
+                self.handle_action(Action::Switch(KeyModifiers::ALT));
             }
             KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(app, Action::New, KeyModifiers::NONE);
+                self.handle_action(Action::New);
             }
             KeyCode::Char('c') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(app, Action::Compact, KeyModifiers::NONE);
+                self.handle_action(Action::Compact);
             }
             KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(app, Action::Delete, KeyModifiers::NONE);
+                self.handle_action(Action::Delete);
             }
             KeyCode::Char('/') if key.modifiers == KeyModifiers::NONE => {
                 self.searching = true;
@@ -519,16 +470,17 @@ impl Panel for SessionsPanel {
                 self.search_cursor = 0;
             }
             KeyCode::Char('x') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(app, Action::Close, KeyModifiers::NONE);
+                self.handle_action(Action::Close);
             }
             KeyCode::Char('r') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(app, Action::Rename, KeyModifiers::NONE);
+                self.handle_action(Action::Rename);
             }
             KeyCode::Char('v') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(app, Action::Fork, KeyModifiers::NONE);
+                self.handle_action(Action::Fork);
             }
             _ => {}
         }
+        KeyAction::None
     }
 }
 
@@ -954,7 +906,7 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         
         // when: filter finds it
-        let mut panel = SessionsPanel::with_session_manager(sm, sessions.clone());
+        let panel = SessionsPanel::with_session_manager(sm, sessions.clone());
         let id = panel.get_session_id();
         // then: returns a non-empty UUID
         assert!(id.is_some());

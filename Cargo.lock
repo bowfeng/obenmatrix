@@ -2277,6 +2277,7 @@ dependencies = [
  "ratatui",
  "ratatui-textarea",
  "ratatui-themes",
+ "ratatui-toaster",
  "serde_json",
  "serde_yaml",
  "tempfile",
@@ -2996,6 +2997,16 @@ checksum = "cd1a71b2897e290f5e18ba55138074b4ceb1a765ba0d7219e55fef5459497d5f"
 dependencies = [
  "ratatui",
  "serde",
+]
+
+[[package]]
+name = "ratatui-toaster"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16839f75328391940df1007b91ed72ef53228c3fbe829de319e82c42d3ea3bb1"
+dependencies = [
+ "ratatui",
+ "textwrap",
 ]
 
 [[package]]

@@ -523,7 +523,7 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         _ => {
             match app.get_chat() {
                 Some(chat) => {
-                    if let Some(ref sid) = chat.session_id {
+                    if let Some(ref sid) = chat.session_name {
                         (sid.clone(), chat.message_count)
                     } else {
                         (app.session_id.clone().unwrap_or_default(), chat.message_count)

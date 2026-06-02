@@ -398,6 +398,25 @@ impl ConversationWidget {
         state.base_lines.push(Line::from(""));
     }
 
+    /// Append an info/system message to the internal display state.
+    /// Uses the System role style (gear icon, accent color).
+    pub fn append_info_message(&mut self, state: &mut ConversationState, text: &str) {
+        use ratatui_themes::ThemeName;
+        let palette = ThemeName::default().palette();
+        for line in text.lines() {
+            let line_owned = line.to_string();
+            let spans = vec![
+                Span::styled(
+                    "\u{2699} ",
+                    Style::default().fg(palette.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(line_owned, Style::default().fg(palette.info)),
+            ];
+            state.base_lines.push(Line::from(spans));
+        }
+        state.base_lines.push(Line::from(""));
+    }
+
     /// Rebuild base lines from session messages using the renderer.
     pub fn rebuild_from_messages(
         &self,

@@ -346,6 +346,17 @@ impl Agent {
         Ok(())
     }
 
+    /// Create a new session and switch to it. The old session is preserved
+    /// and can be restored later via [continue_session].
+    pub fn new_session(&mut self) -> Result<String> {
+        let new_id = self.session_manager.new_session(&format!(
+            "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
+        )).id.clone();
+        // Reset call mode so next turn starts Fresh
+        self.call_mode = None;
+        Ok(new_id)
+    }
+
     /// Get the currently loaded session name.
     pub fn loaded_session_name(&self) -> Option<String> {
         self.session_manager.active_session().map(|s| s.name.clone())

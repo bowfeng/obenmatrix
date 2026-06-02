@@ -1,7 +1,6 @@
 //! Config panel — inline YAML editor for AppConfig.
 
-use super::Panel;
-use crate::App;
+use super::{KeyAction, Panel};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
@@ -30,6 +29,7 @@ impl ConfigPanel {
     }
 }
 
+#[async_trait::async_trait]
 impl Panel for ConfigPanel {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -72,23 +72,22 @@ impl Panel for ConfigPanel {
         frame.render_widget(para, legend_area);
     }
 
-    fn handle_key(&mut self, app: &mut App, key: KeyEvent) {
+    async fn handle_key(&mut self, key: KeyEvent) -> KeyAction {
         match key.code {
             KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
-                app.active_panel = crate::PanelId::Chat;
+                return KeyAction::SwitchPanel(super::PanelId::Chat);
             }
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 match serde_yaml::from_str::<oben_config::AppConfig>(&self.text) {
                     Ok(config) => {
                         if let Err(e) = config.save() {
-                            app.status = format!("Save failed: {}", e);
+                            self.lines = vec![format!("Save error: {}", e)];
                         } else {
-                            app.status = "Config saved to ~/.obenalien/config.yaml".to_string();
-                            app.config = config;
+                            self.lines = vec!["Config saved!".to_string()];
                         }
                     }
                     Err(e) => {
-                        app.status = format!("Invalid YAML: {}", e);
+                        self.lines = vec![format!("Invalid YAML: {}", e)];
                     }
                 }
             }
@@ -117,5 +116,6 @@ impl Panel for ConfigPanel {
             }
             _ => {}
         }
+        KeyAction::None
     }
 }

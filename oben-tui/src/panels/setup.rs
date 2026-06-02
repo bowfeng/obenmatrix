@@ -1,7 +1,6 @@
 //! Setup panel — interactive setup wizard in TUI form.
 
-use super::Panel;
-use crate::App;
+use super::{KeyAction, Panel};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
@@ -171,6 +170,7 @@ impl SetupPanel {
     }
 }
 
+#[async_trait::async_trait]
 impl Panel for SetupPanel {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -185,10 +185,10 @@ impl Panel for SetupPanel {
         frame.render_widget(para, area);
     }
 
-    fn handle_key(&mut self, app: &mut App, key: KeyEvent) {
+    async fn handle_key(&mut self, key: KeyEvent) -> KeyAction {
         match key.code {
             KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
-                app.active_panel = crate::PanelId::Chat;
+                return KeyAction::SwitchPanel(super::PanelId::Chat);
             }
             KeyCode::Esc => {
                 self.step = match self.step {
@@ -260,5 +260,6 @@ impl Panel for SetupPanel {
             },
             _ => {}
         }
+        KeyAction::None
     }
 }

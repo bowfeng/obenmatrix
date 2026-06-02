@@ -13,7 +13,7 @@ use ratatui::prelude::*;
 
 /// Chat panel — message history, input bar, and streaming control.
 pub struct ChatPanel {
-    pub session_id: Option<String>,
+    pub session_name: Option<String>,
     pub streaming: bool,
     pub input: InputState,
     pub message_state: ConversationState,
@@ -23,10 +23,10 @@ pub struct ChatPanel {
 }
 
 impl ChatPanel {
-    pub fn new(session_id: Option<String>, _messages: Option<Vec<Message>>) -> Self {
+    pub fn new(session_name: Option<String>, _messages: Option<Vec<Message>>) -> Self {
         let message_state = ConversationState::new();
         Self {
-            session_id,
+            session_name,
             streaming: false,
             input: InputState::new(),
             message_state,
@@ -43,7 +43,7 @@ impl ChatPanel {
             messages,
             &self.renderer,
         );
-        self.session_id = session_name;
+        self.session_name = session_name;
         self.message_count = messages.len();
         self.streaming = false;
         self.message_state.scroll_to_bottom = true;
@@ -60,6 +60,12 @@ impl ChatPanel {
     pub fn append_user_message(&mut self, text: &str) {
         self.message_display
             .append_user_message(&mut self.message_state, text);
+    }
+
+    /// Append an info/system message to the display (used for slash commands like /help).
+    pub fn append_info_message(&mut self, text: &str) {
+        self.message_display
+            .append_info_message(&mut self.message_state, text);
     }
 
     /// Update from turn state and sync stream_info in display.
@@ -98,7 +104,7 @@ impl ChatPanel {
         self.message_state.base_lines.clear();
         self.message_state.scroll_to_bottom = true;
         self.message_count = 0;
-        self.session_id = None;
+        self.session_name = None;
     }
 
     /// Render the input bar widget.
