@@ -225,7 +225,21 @@ fn parse_expected_columns(schema_sql: &str) -> Result<Vec<(String, Vec<(String, 
 /// SQLite does not support ALTER TABLE ADD CONSTRAINT, so we rebuild the
 /// table: create new with UNIQUE, INSERT deduplicated rows (keep latest
 /// `updated_at` when title collides), drop old table, rename new one.
+///
+/// If `sessions` table doesn't exist yet this is a fresh DB (the schema was
+/// already created with UNIQUE by the caller), so we return early.
 fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
+    let sessions_exist: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !sessions_exist {
+        // Fresh DB — schema already has UNIQUE from SCHEMA_SQL, nothing to migrate
+        return Ok(());
+    }
+
     conn.execute_batch(
         "CREATE TABLE sessions_new (
             id TEXT PRIMARY KEY,
@@ -2465,5 +2479,41 @@ mod tests {
         // DB updated
         let db_session = mgr.db.get_session(&sid).unwrap().unwrap();
         assert_eq!(db_session.metadata.title.as_deref(), Some("new-title"));
+    }
+
+    /// Rename session title test — duplicate title returns error
+    ///
+    /// given: two sessions with different titles, first one is active
+    /// when: rename first to the title of the second
+    /// then: error is returned
+    #[test]
+    fn test_set_title_unique_constraint() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("first-session-name");
+        mgr.create_session("second-session-name");
+
+        // First session is active after creation
+        let sid1 = mgr.active_session().unwrap().id.clone();
+        {
+            let s1 = mgr.active_session_mut().unwrap();
+            s1.metadata.title = Some("target-title".to_string());
+            let _ = mgr.db.set_title(&sid1, "target-title");
+        }
+
+        // Second session shares DB
+        let sid2 = if let Some(s) = mgr.sessions.values().find(|s| s.id != sid1) {
+            s.id.clone()
+        } else {
+            panic!("expected two sessions");
+        };
+        {
+            let s2 = mgr.sessions.get_mut(&sid2).unwrap();
+            s2.metadata.title = Some("other-title".to_string());
+            let _ = mgr.db.set_title(sid2.as_str(), "other-title");
+        }
+
+        // Now switch to second session and try to rename to first session's title
+        mgr.switch_session(&sid2).unwrap();
+        assert!(mgr.set_title("target-title").is_err());
     }
 }
