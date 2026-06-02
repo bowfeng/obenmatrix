@@ -2268,16 +2268,23 @@ mod tests {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path.clone()).unwrap();
         let session = mgr.new_session("persist-test");
+        let sid = session.id.clone();
         session.add_message(Message::user("hello"));
         session.add_message(Message::assistant("hi there"));
         let count = mgr.session_count();
         mgr.incremental_save(None).unwrap();
         let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
-        mgr2.load(None).unwrap();
+        // load(None) loads metadata only, so message_count from cache is 0
+        // Use load(Some(&sid)) to get full roundtrip with messages
+        mgr2.load(Some(&sid)).unwrap();
         assert_eq!(mgr2.session_count(), count);
-        let loaded = mgr2.list_sessions_ref().into_iter().next().unwrap();
+        let loaded = mgr2.active_session().unwrap();
         assert_eq!(loaded.name, "persist-test");
         assert_eq!(loaded.message_count(), 2);
+        // Also verify metadata-only load returns correct session count
+        let mut mgr3 = SessionManager::new_with_path(path.clone()).unwrap();
+        mgr3.load(None).unwrap();
+        assert_eq!(mgr3.session_count(), count);
     }
 
     #[test] fn test_switch_session() {
@@ -2314,14 +2321,16 @@ mod tests {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path.clone()).unwrap();
         let session = mgr.new_session("persist-test");
+        let sid = session.id.clone();
         session.add_message(Message::user("msg1"));
         session.add_message(Message::assistant("msg2"));
         session.add_message(Message::user("msg3"));
         session.add_message(Message::assistant("msg4"));
         mgr.incremental_save(None).unwrap();
         let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
-        mgr2.load(None).unwrap();
-        let loaded = mgr2.list_sessions_ref().into_iter().next().unwrap();
+        // load(None) loads metadata only (no messages), use load(Some) for message roundtrip
+        mgr2.load(Some(&sid)).unwrap();
+        let loaded = mgr2.active_session().unwrap();
         assert_eq!(loaded.message_count(), 4);
     }
 
