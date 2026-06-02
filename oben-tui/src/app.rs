@@ -200,9 +200,6 @@ impl App {
                 };
                 self.show_toast(msg, ratatui_toaster::ToastType::Info);
             }
-            "session" => {
-                self.show_toast("Usage: /session [session_name]", ratatui_toaster::ToastType::Error);
-            }
             "rename" => {
                 self.show_toast("Usage: /rename [new_name]", ratatui_toaster::ToastType::Error);
             }
@@ -217,9 +214,6 @@ impl App {
                     );
                 }
                 self.show_toast("Help displayed in conversation.", ratatui_toaster::ToastType::Info);
-            }
-            "details" => {
-                self.show_toast("Commands: /clear /compact /new /quit /reasoning /session [name] /rename [name]", ratatui_toaster::ToastType::Info);
             }
             "todo" => {
                 self.show_toast("TODO: No pending tasks.", ratatui_toaster::ToastType::Info);
@@ -515,11 +509,6 @@ impl App {
             }
             KeyAction::Command { cmd_name, extra } => {
                 match cmd_name.as_str() {
-                    "session" => {
-                        if !extra.is_empty() {
-                            commands::execute_session_switch(self, &extra);
-                        }
-                    }
                     "rename" => {
                         if !extra.is_empty() {
                             commands::execute_session_rename(self, &extra);

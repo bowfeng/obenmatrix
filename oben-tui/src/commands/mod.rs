@@ -155,76 +155,6 @@ impl TuiCommand for ReasoningCommand {
 
 /// Switch to another existing session by name.
 /// Usage: /session [session_name]
-///
-/// Args are parsed by `handle_submit` before `execute()` is called.
-pub struct SessionCommand;
-
-impl TuiCommand for SessionCommand {
-    fn name(&self) -> &str {
-        "session"
-    }
-    fn description(&self) -> &str {
-        "Switch session (e.g. /session my-chat)"
-    }
-    fn execute(&self, app: &mut App) {
-        app.show_toast("Usage: /session [session_name]", ratatui_toaster::ToastType::Error);
-    }
-}
-
-/// Execute a session switch with the given session name.
-/// Called by `handle_submit` with the parsed args[1].
-pub fn execute_session_switch(app: &mut App, session_name: &str) {
-    // Collect sid in a scoped block so guard is dropped before we mutably borrow app
-    let sid = if let Some(agent) = &app.agent {
-        let guard = agent.blocking_lock();
-        guard.session_manager().find_key(session_name)
-    } else {
-        None
-    };
-
-    let Some(sid) = sid else {
-        app.show_toast(
-            format!("Session '{session_name}' not found"),
-            ratatui_toaster::ToastType::Error,
-        );
-        return;
-    };
-
-    // Collect session data in a scoped block so guard is dropped
-    let session_data = if let Some(agent) = &app.agent {
-        let mut guard = agent.blocking_lock();
-        if let Err(e) = guard.session_manager_mut().switch_session(&sid) {
-            drop(guard);
-            app.show_toast(
-                format!("Switch failed: {e}"),
-                ratatui_toaster::ToastType::Error,
-            );
-            return;
-        }
-        guard
-            .session_manager()
-            .session(&sid)
-            .map(|s| (s.id.clone(), s.messages.clone()))
-    } else {
-        None
-    };
-
-    if let Some((_sid, messages)) = session_data {
-        if let Some(chat) = app.get_chat_mut() {
-            chat.update_from_messages(&messages, Some(sid));
-        }
-        app.show_toast(
-            format!("Switched to session: {session_name}"),
-            ratatui_toaster::ToastType::Success,
-        );
-    } else {
-        app.show_toast(
-            format!("Switched to session: {session_name}"),
-            ratatui_toaster::ToastType::Success,
-        );
-    }
-}
-
 /// Rename the current session.
 /// Usage: /rename [new_name]
 ///
@@ -287,23 +217,6 @@ pub fn execute_session_rename(app: &mut App, new_name: &str) {
 }
 
 /// Show available commands.
-pub struct DetailsCommand;
-
-impl TuiCommand for DetailsCommand {
-    fn name(&self) -> &str {
-        "details"
-    }
-    fn description(&self) -> &str {
-        "Show available commands"
-    }
-    fn execute(&self, app: &mut App) {
-        app.show_toast(
-            "Commands: /clear /compact /new /quit /reasoning /session [name] /rename [name]",
-            ratatui_toaster::ToastType::Info,
-        );
-    }
-}
-
 /// Show help.
 pub struct HelpCommand;
 
@@ -316,7 +229,7 @@ impl TuiCommand for HelpCommand {
     }
     fn execute(&self, app: &mut App) {
         app.show_toast(
-            "Slash commands: /clear /compact /new /quit /reasoning /session [name] /rename [name]\n\
+            "Slash commands: /clear /compact /new /quit /reasoning /rename [name]\n\
              Keyboard: Up/Down=history, Ctrl+A/E=home/end, Ctrl+W=delete word, Ctrl+K=kill line",
             ratatui_toaster::ToastType::Info,
         );
@@ -376,11 +289,9 @@ impl TuiCommandRegistry {
         registry.register(Box::new(NewCommand));
         registry.register(Box::new(QuitCommand));
         registry.register(Box::new(ReasoningCommand));
-        registry.register(Box::new(SessionCommand));
         registry.register(Box::new(RenameCommand));
         registry.register(Box::new(ThemeCommand));
         registry.register(Box::new(HelpCommand));
-        registry.register(Box::new(DetailsCommand));
         registry.register(Box::new(TodoCommand));
         registry
     }
