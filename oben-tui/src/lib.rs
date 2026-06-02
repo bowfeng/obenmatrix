@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod clipboard;
+pub mod commands;
 pub mod event;
 pub mod history;
 pub mod panels;
@@ -27,6 +28,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Paragraph, Tabs};
+use ratatui_toaster::ToastType;
 use ratatui::{Frame, Terminal};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,7 +55,7 @@ impl Layouts {
         let chunks = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(2),
+            Constraint::Length(1),
         ])
         .split(area);
         Self {
@@ -67,6 +69,7 @@ impl Layouts {
 pub enum TuiEvent {
     Key(KeyEvent),
     ChatInput(String),
+    CompactSession,
     Mouse(MouseEvent),
     Resize(u16, u16),
 }
@@ -74,7 +77,6 @@ pub enum TuiEvent {
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let mut app = App::new()?;
     app.init_agent()?;
-    app.init_panels().await?;
     app.init_active_panel(session_name).await?;
     
     // Set up logging
@@ -156,22 +158,59 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         }
         let mut redraw = false;
         tokio::select! {
-            // Timeout: only redraw periodically during streaming so live text
-            // remains visible even when no user events arrive.
+            // Timeout: always check toast expiry so toasts auto-hide even when idle.
+            // Only redraw during streaming so live text remains visible.
             _ = tokio::time::sleep(Duration::from_millis(32)) => {
+                // Check toast expiry even if not streaming
+                let toast_expired = if let Some(expiry) = app.toast_expires_at {
+                    if std::time::Instant::now() >= expiry {
+                        app.toast_engine.hide_toast();
+                        app.toast_expires_at = None;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
                 let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);
-                if is_streaming {
+                if is_streaming || toast_expired {
                     let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
                 }
             }
 
             // Check for completion signal from spawned turn task
             maybe_completion = done_rx.recv() => {
+                tracing::info!("[done_rx] recv returned");
                 if let Some(completion) = maybe_completion {
+                    tracing::info!("[done_rx] success={}, session_name={:?}, messages.len={}", completion.success, completion.session_name, completion.messages.len());
                     app.turn_handle = None;
                     if completion.success {
+                        // Read messages from the agent's current session instead of the
+                        // stale snapshot carried in TurnCompletion. This prevents /clear
+                        // (which resets the agent session and clears the chat) from being
+                        // undone when a previously-spawned turn finally completes.
+                        let messages = if let Some(agent) = &app.agent {
+                            let guard = agent.lock().await;
+                            let count = guard
+                                .session_manager()
+                                .active_session()
+                                .map(|s| s.messages.len())
+                                .unwrap_or(0);
+                            tracing::info!("[done_rx] agent session has {} messages after lock", count);
+                            guard
+                                .session_manager()
+                                .active_session()
+                                .map(|s| s.messages.clone())
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
+                        tracing::info!("[done_rx] messages to display: {}, calling update_from_messages", messages.len());
                         if let Some(chat) = app.get_chat_mut() {
-                            chat.update_from_messages(&completion.messages, completion.session_name);
+                            tracing::info!("[done_rx] chat.message_count before update: {}", chat.message_count);
+                            chat.update_from_messages(&messages, completion.session_name);
+                            tracing::info!("[done_rx] chat.update_from_messages done, streaming={}", chat.streaming);
                         }
                     } else {
                         app.status = "Turn completed with errors".into();
@@ -223,6 +262,51 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         redraw = true;
                     }
                     Some(TuiEvent::Resize(_w, _h)) => {
+                        redraw = true;
+                    }
+                    Some(TuiEvent::CompactSession) => {
+                        // Execute compact directly in the main loop.
+                        // This avoids an infinite self-loop that would occur
+                        // if we re-sent the event via input_tx.
+                        if let Some(agent_arc) = &app.agent {
+                            let result = agent_arc.blocking_lock().compact_session().await;
+                            match result {
+                                Ok(()) => {
+                                    // After compression, reload active session messages
+                                    // into the ChatPanel display.
+                                    let sid = app.session_id.clone();
+                                    let messages = if let Some(agent_arc) = &app.agent {
+                                        let guard = agent_arc.blocking_lock();
+                                        guard
+                                            .session_manager()
+                                            .active_session()
+                                            .map(|s| s.messages.clone())
+                                            .unwrap_or_default()
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    if let Some(chat) = app.get_chat_mut() {
+                                        chat.update_from_messages(&messages, sid);
+                                    }
+                                    app.show_toast(
+                                        "Session context compressed.",
+                                        ToastType::Success,
+                                    );
+                                }
+                                Err(e) => {
+                                    app.show_toast(
+                                        format!("Compact failed: {e}"),
+                                        ToastType::Error,
+                                    );
+                                    tracing::error!("Context compression failed: {e}");
+                                }
+                            }
+                        } else {
+                            app.show_toast(
+                                "Cannot compact: agent not initialized",
+                                ToastType::Warning,
+                            );
+                        }
                         redraw = true;
                     }
                     None => break,
@@ -397,6 +481,34 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
 
     if let Some(panel) = app.panels.get(&app.active_panel) {
         panel.draw(frame, layout.body);
+    }
+
+    // Toast area: top-right of the body region, 2 lines tall.
+    let toast_height = 2u16;
+    let toast_width: u16 = 50;
+    let toast_rect = Rect::new(
+        layout.body.x + layout.body.width.saturating_sub(toast_width),
+        layout.body.y,
+        toast_width,
+        toast_height,
+    );
+    app.toast_engine.set_area(toast_rect);
+
+    // Render toast above the status bar if one is active.
+    // Auto-expire after 3 seconds (ratatui-toaster has no built-in timeout).
+    let has_active_toast = if let Some(expiry) = app.toast_expires_at {
+        if std::time::Instant::now() >= expiry {
+            app.toast_engine.hide_toast();
+            app.toast_expires_at = None;
+            false
+        } else {
+            app.toast_engine.has_toast()
+        }
+    } else {
+        app.toast_engine.has_toast()
+    };
+    if has_active_toast {
+        frame.render_widget(&app.toast_engine, toast_rect);
     }
 
     // Derive session info from stored ChatPanel fields — no Agent locking.

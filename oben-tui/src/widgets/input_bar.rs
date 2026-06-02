@@ -111,6 +111,19 @@ impl InputState {
     }
 }
 
+/// Result returned by `InputBarWidget::handle_key`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputBarResult {
+    /// Key was consumed, no special action.
+    Consumed,
+    /// Key was not consumed by the input bar.
+    PassedThrough,
+    /// Submit this text as chat input.
+    ChatInput(String),
+    /// Execute this slash command.
+    SlashCommand { cmd_name: String, extra: String },
+}
+
 /// Input bar widget.
 ///
 /// Renders the text area block with wrapping, cursor, placeholder, streaming
@@ -193,62 +206,53 @@ impl InputBarWidget {
 
     /// Process a key event for the input bar.
     ///
-    /// Returns true if the event was consumed (caller should NOT re-process).
+    /// Returns an `InputBarResult` indicating how the event was handled.
     pub fn handle_key(
         &mut self,
         state: &mut InputState,
-        app: &mut crate::App,
         key: KeyEvent,
-    ) -> bool {
+    ) -> InputBarResult {
         // Streaming: only Ctrl+C kills it.
         if state.streaming {
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 state.streaming = false;
-                return true;
+                return InputBarResult::Consumed;
             }
-            return true; // suppress all other keys during stream
+            return InputBarResult::Consumed; // suppress all other keys during stream
         }
 
         match key.code {
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
-                self.handle_submit(state, app);
-                return true;
+                return self.handle_submit(state);
             }
             KeyCode::Char('\n') | KeyCode::Char('\r') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_submit(state, app);
-                return true;
+                return self.handle_submit(state);
             }
             KeyCode::Up => {
                 if !state.completion_items.is_empty() {
                     if state.completion_index == 0 {
-                        return true;
+                        return InputBarResult::Consumed;
                     }
                     state.completion_index -= 1;
                     self.apply_completion(state);
-                    return true;
-                } else if let Some(next) = app.input_history.up(&state.text) {
-                    state.text = next;
-                    state.cursor = state.grapheme_count();
+                    return InputBarResult::Consumed;
                 }
-                return true;
+                return InputBarResult::PassedThrough;
             }
             KeyCode::Down => {
                 if !state.completion_items.is_empty() {
                     self.cycle_completion(state, true);
-                    return true;
-                } else if let Some(next) = app.input_history.down() {
-                    state.text = next;
-                    state.cursor = state.grapheme_count();
+                    return InputBarResult::Consumed;
                 }
-                return true;
+                return InputBarResult::PassedThrough;
             }
             KeyCode::Left if state.cursor > 0 => {
                 state.cursor -= 1;
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Right if state.cursor < state.grapheme_count() => {
                 state.cursor += 1;
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Backspace if state.cursor > 0 => {
                 let byte_idx = state.grapheme_to_byte(state.cursor - 1);
@@ -257,7 +261,7 @@ impl InputBarWidget {
                 state.text.drain(byte_idx..byte_idx + len);
                 state.cursor -= 1;
                 self.update_completions(state);
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Delete => {
                 if state.cursor < state.grapheme_count() {
@@ -267,7 +271,7 @@ impl InputBarWidget {
                     state.text.drain(byte_idx..byte_idx + len);
                 }
                 self.update_completions(state);
-                return true;
+                return InputBarResult::Consumed;
             }
             _ if !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT)
@@ -275,19 +279,19 @@ impl InputBarWidget {
             {
                 let ch = match key.code {
                     KeyCode::Char(c) => c,
-                    _ => return false,
+                    _ => return InputBarResult::PassedThrough,
                 };
                 let byte_idx = state.grapheme_to_byte(state.cursor);
                 state.text.insert_str(byte_idx, &ch.to_string());
                 state.cursor += 1;
                 self.update_completions(state);
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 state.text.clear();
                 state.cursor = 0;
                 state.completion_items.clear();
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if state.cursor > 0 {
@@ -311,21 +315,21 @@ impl InputBarWidget {
                     state.cursor = word_end;
                     self.update_completions(state);
                 }
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 state.cursor = 0;
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 state.cursor = state.grapheme_count();
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let byte_idx = state.grapheme_to_byte(state.cursor);
                 state.text.truncate(byte_idx);
                 self.update_completions(state);
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
                 // Word back
@@ -343,7 +347,7 @@ impl InputBarWidget {
                     state.cursor = i;
                 }
                 self.update_completions(state);
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
                 // Word forward
@@ -361,7 +365,7 @@ impl InputBarWidget {
                     state.cursor += j;
                 }
                 self.update_completions(state);
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(text) = crate::clipboard::read_clipboard() {
@@ -372,31 +376,31 @@ impl InputBarWidget {
                     }
                 }
                 self.update_completions(state);
-                return true;
+                return InputBarResult::Consumed;
             }
             KeyCode::Tab => {
                 if !state.completion_items.is_empty() {
                     self.cycle_completion(state, true);
-                    return true;
+                    return InputBarResult::Consumed;
                 }
             }
             _ => {}
         }
 
-        false
+        InputBarResult::PassedThrough
     }
 
-    fn handle_submit(&self, state: &mut InputState, app: &mut crate::App) {
+    fn handle_submit(&self, state: &mut InputState) -> InputBarResult {
         let trimmed = state.text.trim().to_string();
         if trimmed.is_empty() {
-            return;
+            return InputBarResult::Consumed;
         }
 
         // Prevent double submit
         if let Some(stamp) = state.last_enter_time {
             if stamp.elapsed().as_millis() < 150 {
                 state.last_enter_time = None;
-                return;
+                return InputBarResult::Consumed;
             }
         }
         state.last_enter_time = Some(Instant::now());
@@ -404,75 +408,21 @@ impl InputBarWidget {
         state.completion_items.clear();
         state.completion_index = 0;
 
-        let should_send = match trimmed.as_str() {
-            "/quit" => {
-                app.running = false;
-                false
-            }
-            "/clear" => {
-                state.text.clear();
-                state.cursor = 0;
-                false
-            }
-            "/new" => {
-                if let Some(tx) = &app.input_tx {
-                    let _ = tx.send(crate::TuiEvent::ChatInput("start new session".into()));
-                }
-                state.text.clear();
-                state.cursor = 0;
-                false
-            }
-            "/compact" => {
-                app.status = "Compacting session context...".to_string();
-                if let Some(tx) = &app.input_tx {
-                    let _ = tx.send(crate::TuiEvent::ChatInput("compact session".into()));
-                }
-                state.text.clear();
-                state.cursor = 0;
-                false
-            }
-            "/reasoning" => {
-                if let Some(tx) = &app.input_tx {
-                    let _ = tx.send(crate::TuiEvent::ChatInput(state.text.clone()));
-                }
-                true
-            }
-            "/help" => {
-                app.status = format!(
-                    "{}",
-                    "Slash commands: /clear /compact /new /quit /session /theme /reasoning /todo /details\n\
-                    Keyboard: Up/Down=history, Ctrl+A/E=home/end, Ctrl+W=D=delete word, Ctrl+K=kill line"
-                );
-                false
-            }
-            "/session" => {
-                app.status = "Session management via F2 (Sessions panel)".to_string();
-                false
-            }
-            "/theme" => {
-                app.status = "Press Ctrl+T to cycle themes".to_string();
-                false
-            }
-            "/todo" => {
-                app.status = "TODO: No pending tasks.".to_string();
-                false
-            }
-            "/details" => {
-                app.status = "Use /help for available commands.".to_string();
-                false
-            }
-            _ => true,
-        };
-
-        if should_send {
-            if let Some(tx) = &app.input_tx {
-                let _ = tx.send(crate::TuiEvent::ChatInput(state.text.clone()));
-            }
-            app.input_history.append(&state.text);
+        // Slash command dispatch — pass through to panel which maps to KeyAction
+        if trimmed.starts_with('/') {
+            let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
+            let cmd_name = parts[0][1..].to_lowercase(); // strip '/' and lowercase
+            let extra = if parts.len() > 1 { parts[1].trim() } else { "" };
+            state.text.clear();
+            state.cursor = 0;
+            return InputBarResult::SlashCommand { cmd_name, extra: extra.to_string() };
         }
 
+        // Default: submit as chat input
+        let input = state.text.clone();
         state.text.clear();
         state.cursor = 0;
+        InputBarResult::ChatInput(input)
     }
 
     /// Update tab completion candidates.
@@ -632,7 +582,6 @@ impl InputBarWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::style::Theme;
 
     fn make_state(text: &str) -> InputState {
         let mut s = InputState::new();
@@ -660,7 +609,7 @@ mod tests {
     fn test_calculate_input_height_word_wraps() {
         let ib = InputBarWidget;
         let state = make_state("hello world foo bar baz qux quux corge extra long text here");
-        // text_cols = 40-2 = 38; wraps into 2 lines → 2 + 2 + 0 + 0 = 4
+        // text_cols = 40-2 = 38; wraps into 2 lines -> 2 + 2 + 0 + 0 = 4
         let h = ib.calculate_input_height(&state, 40);
         assert_eq!(h, 4, "word wrap should add height");
     }
@@ -669,7 +618,7 @@ mod tests {
     fn test_calculate_input_height_explicit_newline() {
         let ib = InputBarWidget;
         let state = make_state("line1\nline2\nline3");
-        // 3 lines → 2 + 3 + 0 + 0 = 5
+        // 3 lines -> 2 + 3 + 0 + 0 = 5
         assert_eq!(ib.calculate_input_height(&state, 40), 5);
     }
 
@@ -716,10 +665,9 @@ mod tests {
     fn test_space_key_inserts_single_space() {
         let mut ib = InputBarWidget;
         let mut state = make_state("");
-        let mut app = crate::App::new().unwrap();
         let key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
-        let consumed = ib.handle_key(&mut state, &mut app, key);
-        assert!(consumed, "space key should be consumed");
+        let result = ib.handle_key(&mut state, key);
+        assert!(matches!(result, InputBarResult::Consumed));
         assert_eq!(state.text, " ");
     }
 
@@ -731,9 +679,8 @@ mod tests {
         let mut ib = InputBarWidget;
         let mut state = make_state("ab");
         state.cursor = 1;
-        let mut app = crate::App::new().unwrap();
         let key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
-        ib.handle_key(&mut state, &mut app, key);
+        ib.handle_key(&mut state, key);
         assert_eq!(state.text, "a b");
     }
 
@@ -745,45 +692,38 @@ mod tests {
         let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.cursor = 5;
-        let mut app = crate::App::new().unwrap();
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
-        ib.handle_key(&mut state, &mut app, key);
+        ib.handle_key(&mut state, key);
         assert_eq!(state.text, "hell");
         assert_eq!(state.cursor, 4);
     }
 
     /// Given: an InputState with text "hi" and cursor at end
     /// When: Enter is pressed
-    /// Then: handle_submit is triggered (text is non-empty, consumed=true)
+    /// Then: handle_submit is triggered (text is non-empty, ChatInput)
     #[test]
     fn test_enter_consumed_with_text() {
         let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.cursor = 5;
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = crate::App::new().unwrap();
-        app.input_tx = Some(tx);
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        let consumed = ib.handle_key(&mut state, &mut app, key);
-        assert!(consumed, "enter with text should be consumed");
+        let result = ib.handle_key(&mut state, key);
+        assert!(matches!(result, InputBarResult::ChatInput(_)));
         assert!(state.text.is_empty(), "text cleared after submit");
     }
 
     /// Given: an empty InputState
     /// When: Enter is pressed
-    /// Then: nothing is submitted, consumed=false (empty input rejected)
+    /// Then: nothing is submitted, consumed=Consumed (empty input rejected)
     #[test]
     fn test_enter_not_consumed_when_empty() {
         let mut ib = InputBarWidget;
         let mut state = make_state("");
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let mut app = crate::App::new().unwrap();
-        app.input_tx = Some(tx);
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        let consumed = ib.handle_key(&mut state, &mut app, key);
+        let result = ib.handle_key(&mut state, key);
         // Enter is always consumed; empty input just clears state without submitting.
-        assert!(consumed, "enter should always be consumed");
+        assert!(matches!(result, InputBarResult::Consumed));
     }
 
     /// Given: an InputState with 5 CJK characters
@@ -800,10 +740,9 @@ mod tests {
             completion_index: 0,
             last_enter_time: None,
         };
-        let mut app = crate::App::new().unwrap();
         for _ in 0..3 {
             let key = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
-            ib.handle_key(&mut state, &mut app, key);
+            ib.handle_key(&mut state, key);
         }
         assert_eq!(state.cursor, 3);
     }
@@ -816,12 +755,11 @@ mod tests {
         let mut ib = InputBarWidget;
         let mut state = make_state("hello world");
         state.cursor = 11; // end of "world"
-        let mut app = crate::App::new().unwrap();
         let key = KeyEvent::new(
             KeyCode::Char('w'),
             KeyModifiers::CONTROL,
         );
-        ib.handle_key(&mut state, &mut app, key);
+        ib.handle_key(&mut state, key);
         assert_eq!(state.text, "hello ");
     }
 
@@ -832,46 +770,43 @@ mod tests {
     fn test_ctrl_u_clears_all() {
         let mut ib = InputBarWidget;
         let mut state = make_state("some text here");
-        let mut app = crate::App::new().unwrap();
         let key = KeyEvent::new(
             KeyCode::Char('u'),
             KeyModifiers::CONTROL,
         );
-        ib.handle_key(&mut state, &mut app, key);
+        ib.handle_key(&mut state, key);
         assert_eq!(state.text, "");
         assert_eq!(state.cursor, 0);
     }
 
     /// Given: streaming=true state
     /// When: any key except Ctrl+C
-    /// Then: consumed=true, streaming stays true
+    /// Then: consumed=Consumed, streaming stays true
     #[test]
     fn test_streaming_suppresses_all_keys_except_ctrl_c() {
         let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.streaming = true;
-        let mut app = crate::App::new().unwrap();
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
-        let consumed = ib.handle_key(&mut state, &mut app, key);
-        assert!(consumed);
+        let result = ib.handle_key(&mut state, key);
+        assert!(matches!(result, InputBarResult::Consumed));
         assert!(state.streaming, "streaming should stay true");
     }
 
     /// Given: streaming=true with Ctrl+C
     /// When: Ctrl+C is pressed
-    /// Then: streaming becomes false, consumed=true
+    /// Then: streaming becomes false, consumed=Consumed
     #[test]
     fn test_ctrl_c_exits_streaming() {
         let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.streaming = true;
-        let mut app = crate::App::new().unwrap();
         let key = KeyEvent::new(
             KeyCode::Char('c'),
             KeyModifiers::CONTROL,
         );
-        let consumed = ib.handle_key(&mut state, &mut app, key);
-        assert!(consumed);
+        let result = ib.handle_key(&mut state, key);
+        assert!(matches!(result, InputBarResult::Consumed));
         assert!(!state.streaming, "ctrl+c should stop streaming");
     }
 
@@ -885,14 +820,14 @@ mod tests {
         state.cursor = 3;
         InputBarWidget.update_completions(&mut state);
         assert!(!state.completion_items.is_empty());
-        // Should match /compact, /details (starts with "/co"? no, /comp*"
+        // Should match /compact
         let found_compact = state
             .completion_items
             .iter()
             .any(|c| c.cmd == "/compact");
         assert!(
             found_compact,
-            "should find /compact for /comm"
+            "should find /compact for /co"
         );
     }
 
@@ -922,9 +857,8 @@ mod tests {
         assert!(state2.completion_items.len() >= 2);
 
         let mut ib = InputBarWidget;
-        let mut app = crate::App::new().unwrap();
         let up_key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        ib.handle_key(&mut state2, &mut app, up_key);
+        ib.handle_key(&mut state2, up_key);
         // At index 0, up does nothing (first item is already selected)
         assert_eq!(state2.completion_index, 0);
     }
@@ -939,11 +873,10 @@ mod tests {
         state.cursor = 1;
         InputBarWidget.update_completions(&mut state);
         let mut ib = InputBarWidget;
-        let mut app = crate::App::new().unwrap();
         // go forward past the end
         for _ in 0..state.completion_items.len() {
             let down_key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-            ib.handle_key(&mut state, &mut app, down_key);
+            ib.handle_key(&mut state, down_key);
         }
         assert_eq!(state.completion_index, 0);
     }

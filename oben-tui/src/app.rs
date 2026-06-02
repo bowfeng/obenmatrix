@@ -1,13 +1,18 @@
 //! Application state and core logic.
 
 use anyhow::Result;
+use ratatui::layout::Rect;
+use ratatui_toaster::{ToastBuilder, ToastEngine, ToastEngineBuilder, ToastType};
+use crate::commands;
 use crate::panels::chat::ChatPanel;
 use crate::panels::config::ConfigPanel;
 use crate::panels::sessions::SessionsPanel;
 use crate::panels::setup::SetupPanel;
-use crate::panels::{Panel, PanelId};
+use crate::panels::{KeyAction, Panel, PanelId};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::info;
 
 use crate::event::EventBus;
@@ -45,6 +50,18 @@ pub struct App {
     pub event_bus: Arc<EventBus>,
     /// Pending session name to load on startup (from CLI `-s` argument).
     pub pending_session: Option<String>,
+    /// Whether step-by-step reasoning mode is enabled.
+    pub reasoning_enabled: bool,
+    /// Temporary toast notification engine.
+    /// Commands (clear, new, reasoning, etc.) show toasts instead of
+    /// persistent status-bar text. Status bar keeps using `status`
+    /// for persistent state (Streaming, Ready, Error).
+    pub toast_engine: ToastEngine<()>,
+    /// Timestamp after which the current toast should expire.
+    /// Used because ratatui-toaster has no built-in auto-dismiss.
+    pub toast_expires_at: Option<std::time::Instant>,
+    /// Registry of all built-in TUI commands.
+    pub command_registry: commands::TuiCommandRegistry,
 }
 
 impl App {
@@ -68,9 +85,137 @@ impl App {
             .get(&PanelId::Sessions)
             .and_then(|p| p.downcast_ref::<SessionsPanel>())
     }
+    /// Execute a TUI command by name. Matches the command name directly
+    /// to avoid borrow conflicts between registry access and app mutation.
+    pub async fn execute_command(&mut self, name: &str) {
+        match name {
+            "clear" => {
+                tracing::info!("[clear] START");
+                if let Some(agent) = &self.agent {
+                    let result = {
+                        let mut guard = agent.lock().await;
+                        let has_session = guard
+                            .session_manager()
+                            .active_session()
+                            .is_some();
+                        if has_session {
+                            tracing::info!("[clear] deleting active session");
+                        }
+                        guard.reset()
+                    };
+                    if let Err(e) = result {
+                        self.show_toast(format!("Clear failed: {e}"), ratatui_toaster::ToastType::Error);
+                        return;
+                    }
+                    tracing::info!("[clear] session reset complete, agent has no active session");
+                } else {
+                    tracing::info!("[clear] no agent, skipping reset");
+                }
+                let chat_panel_present = self.panels.contains_key(&PanelId::Chat);
+                tracing::info!("[clear] panels contain Chat key: {}", chat_panel_present);
+                tracing::info!("[clear] all panel keys: {:?}", self.panels.keys().collect::<Vec<_>>());
+                if chat_panel_present {
+                    let panel_type = self.panels.get(&PanelId::Chat).map(|p| {
+                        if p.downcast_ref::<ChatPanel>().is_some() { "ChatPanel" }
+                        else if p.downcast_ref::<SessionsPanel>().is_some() { "SessionsPanel" }
+                        else if p.downcast_ref::<ConfigPanel>().is_some() { "ConfigPanel" }
+                        else if p.downcast_ref::<SetupPanel>().is_some() { "SetupPanel" }
+                        else { "unknown" }
+                    });
+                    tracing::info!("[clear] Chat panel type: {:?}", panel_type);
+                }
+                if let Some(chat) = self.get_chat_mut() {
+                    let streaming_before = chat.streaming;
+                    let count_before = chat.message_count;
+                    tracing::info!("[clear] chat: streaming={}, message_count={}", streaming_before, count_before);
+                    chat.clear_display();
+                    tracing::info!("[clear] chat clear_display done");
+                    // Also reset streaming flag — prevents 32ms redraw loop from repopulating
+                    chat.streaming = false;
+                    tracing::info!("[clear] chat streaming set to false");
+                }
+                // Clear event bus turn state to prevent stale streaming text from being redrawn
+                self.event_bus.clear();
+                tracing::info!("[clear] event_bus state cleared");
+                self.session_id = None;
+                self.show_toast("Session cleared.", ratatui_toaster::ToastType::Success);
+                tracing::info!("[clear] DONE");
+            }
+            "compact" => {
+                if self.agent.is_none() {
+                    self.show_toast("Cannot compact: agent not initialized", ratatui_toaster::ToastType::Error);
+                    return;
+                }
+                if self.turn_handle.is_some() {
+                    self.show_toast("Cannot compact: turn in progress", ratatui_toaster::ToastType::Warning);
+                    return;
+                }
+                if let Some(chat) = self.get_chat_mut() {
+                    chat.streaming = true;
+                }
+                self.show_toast("Compacting session context...", ratatui_toaster::ToastType::Info);
+                if let Some(tx) = &self.input_tx {
+                    let _ = tx.send(crate::TuiEvent::CompactSession);
+                }
+            }
+            "new" => {
+                if let Some(agent) = &self.agent {
+                    let result = {
+                        let mut guard = agent.lock().await;
+                        guard.reset()
+                    };
+                    if let Err(e) = result {
+                        self.show_toast(format!("New session failed: {e}"), ratatui_toaster::ToastType::Error);
+                        return;
+                    }
+                }
+                if let Some(chat) = self.get_chat_mut() {
+                    chat.clear_display();
+                }
+                self.show_toast("New session started.", ratatui_toaster::ToastType::Success);
+            }
+            "quit" => {
+                self.running = false;
+            }
+            "reasoning" => {
+                self.reasoning_enabled = !self.reasoning_enabled;
+                let msg = if self.reasoning_enabled {
+                    "Reasoning mode: ON"
+                } else {
+                    "Reasoning mode: OFF"
+                };
+                self.show_toast(msg, ratatui_toaster::ToastType::Info);
+            }
+            "session" => {
+                self.show_toast("Usage: /session [session_name]", ratatui_toaster::ToastType::Error);
+            }
+            "rename" => {
+                self.show_toast("Usage: /rename [new_name]", ratatui_toaster::ToastType::Error);
+            }
+            "theme" => {
+                self.show_toast("Press Ctrl+T to cycle themes", ratatui_toaster::ToastType::Info);
+            }
+            "help" => {
+                self.show_toast(
+                    "Slash commands: /clear /compact /new /quit /reasoning /session [name] /rename [name]\n\
+                     Keyboard: Up/Down=history, Ctrl+A/E=home/end, Ctrl+W=delete word, Ctrl+K=kill line",
+                    ratatui_toaster::ToastType::Info,
+                );
+            }
+            "details" => {
+                self.show_toast("Commands: /clear /compact /new /quit /reasoning /session [name] /rename [name]", ratatui_toaster::ToastType::Info);
+            }
+            "todo" => {
+                self.show_toast("TODO: No pending tasks.", ratatui_toaster::ToastType::Info);
+            }
+            _ => {}
+        }
+    }
+
     /// Activate a panel and call its on_activate/on_deactivate hooks.
     pub async fn activate_panel(&mut self, panel: PanelId) {
         let old = self.active_panel;
+        tracing::info!("[panel] Activating {:?} (was {:?})", panel, old);
 
         // Deactivate old panel
         if old != panel {
@@ -108,6 +253,13 @@ impl App {
         let mut tools = ToolRegistry::new();
         oben_tools::discover_builtin_tools(&mut tools);
         let tool_names: Vec<String> = tools.list_tools().iter().map(|t| t.name.clone()).collect();
+        // Placeholder toast engine — area is set dynamically in draw_ui.
+        let toast_engine = ToastEngine::new(
+            ToastEngine::<()>::from_builder(
+                ToastEngineBuilder::<()>::new(Rect::new(0, 0, 0, 0))
+                    .default_duration(Duration::from_secs(3))
+            )
+        );
         Ok(Self {
             running: true,
             active_panel: PanelId::Chat,
@@ -124,7 +276,18 @@ impl App {
             paste_mode: false,
             event_bus: Arc::new(EventBus::new()),
             pending_session: None,
+            reasoning_enabled: false,
+            toast_engine,
+            toast_expires_at: None,
+            command_registry: commands::TuiCommandRegistry::new(),
         })
+    }
+
+    /// Show a temporary toast notification.
+    pub fn show_toast<S: Into<Cow<'static, str>>>(&mut self, msg: S, toast_type: ToastType) {
+        let builder = ToastBuilder::new(msg.into()).toast_type(toast_type);
+        self.toast_engine.show_toast(builder);
+        self.toast_expires_at = Some(std::time::Instant::now() + Duration::from_secs(2));
     }
 
     pub fn init_agent(&mut self) -> Result<()> {
@@ -218,16 +381,20 @@ impl App {
     }
 
     pub async fn create_chat_panel(&mut self) -> Result<()> {
+        tracing::info!("[panel] Creating ChatPanel");
         self.panels.insert(
             PanelId::Chat,
             Box::new(ChatPanel::new(None, None)),
         );
+        tracing::info!("[panel] ChatPanel inserted, panels={:?}", self.panels.keys().collect::<Vec<_>>());
         Ok(()) 
     }
 
     pub async fn create_sessions_panel(&mut self) -> Result<()> {
+        tracing::info!("[panel] Creating SessionsPanel");
         self.panels
             .insert(PanelId::Sessions, Box::new(SessionsPanel::new_empty()));
+        tracing::info!("[panel] SessionsPanel inserted, panels={:?}", self.panels.keys().collect::<Vec<_>>());
         Ok(())
     }
 
@@ -302,13 +469,60 @@ impl App {
             }
             _ => {}
         }
-        if let Some(_panel) = self.panels.get_mut(&self.active_panel) {
-            let panel_id = self.active_panel;
-            if let Some(boxed_panel) = self.panels.remove(&panel_id) {
-                let mut panel = boxed_panel;
-                panel.handle_key(self, key);
-                self.panels.insert(panel_id, panel);
+
+        // Call panel handle_key and process returned action
+        let action = if let Some(panel) = self.panels.get_mut(&self.active_panel) {
+            panel.handle_key(key).await
+        } else {
+            KeyAction::None
+        };
+
+        // Process the action
+        match action {
+            KeyAction::Clear => {
+                self.execute_command("clear").await;
             }
+            KeyAction::New => {
+                self.execute_command("new").await;
+            }
+            KeyAction::Compact => {
+                self.execute_command("compact").await;
+            }
+            KeyAction::Quit => {
+                self.execute_command("quit").await;
+            }
+            KeyAction::Reasoning => {
+                self.execute_command("reasoning").await;
+            }
+            KeyAction::Theme => {
+                self.execute_command("theme").await;
+            }
+            KeyAction::Command { cmd_name, extra } => {
+                match cmd_name.as_str() {
+                    "session" => {
+                        if !extra.is_empty() {
+                            commands::execute_session_switch(self, &extra);
+                        }
+                    }
+                    "rename" => {
+                        if !extra.is_empty() {
+                            commands::execute_session_rename(self, &extra);
+                        }
+                    }
+                    _ => {
+                        self.execute_command(&cmd_name).await;
+                    }
+                }
+            }
+            KeyAction::ChatInput(text) => {
+                if let Some(tx) = &self.input_tx {
+                    let _ = tx.send(crate::TuiEvent::ChatInput(text));
+                }
+            }
+            KeyAction::SwitchPanel(panel_id) => {
+                self.active_panel = panel_id;
+            }
+            KeyAction::None => {}
         }
     }
 

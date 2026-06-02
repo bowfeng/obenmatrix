@@ -292,11 +292,57 @@ impl Agent {
         Ok(name)
     }
 
-    /// Reset the current session (clear messages).
+    /// Reset the current session: delete it (messages + DB record) and enter
+    /// a no-session state. The next [turn] will lazily create a new session
+    /// via [resolve_session].
     pub fn reset(&mut self) -> Result<()> {
-        if let Some(session) = self.session_manager.active_session_mut() {
-            session.messages.clear();
+        let sid = self.session_manager.active_session().map(|s| s.id.clone());
+        if let Some(sid) = sid {
+            // Delete from DB and in-memory cache; sets active_session_id = None
+            self.session_manager.delete_session(&sid)?;
         }
+        // Reset call mode so the next turn starts as Fresh.
+        self.call_mode = None;
+        Ok(())
+    }
+
+    /// Compact (summarize) the current session context.
+    ///
+    /// Retrieves the active session messages, mutates them in-place via the
+    /// context engine's compaction logic, then saves the session back.
+    pub async fn compact_session(&mut self) -> Result<()> {
+        // Ensure session manager is initialized
+        self.session_manager.init()?;
+
+        // Get the active session
+        let sid = self.session_manager.active_session()
+            .map(|s| s.id.clone())
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?;
+
+        // Get messages from the active session (need mutable access)
+        let mut messages = {
+            let session = self.session_manager.active_session_mut()
+                .ok_or_else(|| anyhow::anyhow!("No active session"))?;
+            session.messages.clone()
+        };
+
+        // Check if compaction is needed
+        if !self.context_engine.should_compact(&messages) {
+            return Ok(()); // Nothing to do
+        }
+
+        // Perform compaction
+        self.context_engine
+            .compact(&mut messages, Some(self.transport.as_ref()), None)
+            .await?;
+
+        // Save the compacted messages back to the session
+        if let Some(session) = self.session_manager.active_session_mut() {
+            session.messages = messages;
+            // Save the updated session
+            self.session_manager.save_session(Some(&sid))?;
+        }
+
         Ok(())
     }
 

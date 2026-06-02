@@ -38,6 +38,7 @@ tui-scrollview = "0.6.4"
 textwrap = "0.16"
 ratatui-themes = "0.2"
 tui-widget-list = "0.15"
+ratatui-toaster = "0.1.3"
 
 [features]
 default = []
@@ -46,3 +47,4 @@ cli-wired = []
 [dev-dependencies]
 tempfile = { workspace = true }
 tui-widget-list = "0.15.2"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

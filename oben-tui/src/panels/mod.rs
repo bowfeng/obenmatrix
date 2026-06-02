@@ -10,8 +10,6 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
-use super::App;
-
 /// Unique identifier for each panel type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanelId {
@@ -19,6 +17,31 @@ pub enum PanelId {
     Sessions,
     Config,
     Setup,
+}
+
+/// Actions returned by `Panel::handle_key` for `App::handle_key` to process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyAction {
+    /// No action taken.
+    None,
+    /// Execute /clear command.
+    Clear,
+    /// Execute /new command.
+    New,
+    /// Execute /compact command.
+    Compact,
+    /// Exit TUI.
+    Quit,
+    /// Toggle reasoning mode.
+    Reasoning,
+    /// Cycle theme.
+    Theme,
+    /// Execute slash command with optional arguments.
+    Command { cmd_name: String, extra: String },
+    /// Switch to a different panel.
+    SwitchPanel(PanelId),
+    /// Send chat input text.
+    ChatInput(String),
 }
 
 /// Trait that every panel must implement.
@@ -33,8 +56,10 @@ pub trait Panel: Send + Sync {
     /// Draw the panel content in the given area.
     fn draw(&self, frame: &mut Frame, area: Rect);
 
-    /// Handle a keyboard event. Returns true if the event was consumed.
-    fn handle_key(&mut self, app: &mut App, key: KeyEvent);
+    /// Handle a keyboard event. Returns a `KeyAction` for the app to process.
+    /// The panel does NOT execute commands itself — `App::handle_key`
+    /// processes the returned action after the panel has consumed the key.
+    async fn handle_key(&mut self, key: KeyEvent) -> KeyAction;
 
     /// Handle a mouse event. Default no-op (returns false).
     fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
@@ -42,10 +67,10 @@ pub trait Panel: Send + Sync {
     }
 
     /// Called when this panel becomes active. Default no-op.
-    async fn on_activate(&mut self, _app: &mut App) {}
+    async fn on_activate(&mut self, _app: &mut crate::App) {}
 
     /// Called when this panel becomes inactive. Default no-op.
-    async fn on_deactivate(&mut self, _app: &mut App) {}
+    async fn on_deactivate(&mut self, _app: &mut crate::App) {}
 }
 
 impl dyn Panel {

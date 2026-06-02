@@ -1,11 +1,10 @@
 //! Chat panel — message history, streaming, input bar.
 
-use super::Panel;
-use crate::widgets::input_bar::{InputBarWidget, InputState};
+use super::{KeyAction, Panel};
+use crate::widgets::input_bar::{InputBarWidget, InputBarResult, InputState};
 use crate::widgets::conversation::{ConversationWidget, ConversationState};
 use crate::widgets::message_renderer::MessageRenderer;
 use crate::widgets::style::Theme;
-use crate::App;
 use crate::turn::turn_state;
 use crossterm::event::KeyEvent;
 use oben_models::Message;
@@ -73,7 +72,7 @@ impl ChatPanel {
     pub fn copy_selection_to_clipboard(&mut self) {
         use crate::clipboard;
         if let Some(text) = self.message_display.get_selected_text(&mut self.message_state) {
-            if !text.is_empty() && clipboard::write_clipboard(&text) {
+            if !text.is_empty() && crate::clipboard::write_clipboard(&text) {
                 self.message_state.clear_selection();
             }
         }
@@ -94,12 +93,21 @@ impl ChatPanel {
         self.renderer.set_theme(next);
     }
 
+    /// Clear all messages from the display and reset the message count.
+    pub fn clear_display(&mut self) {
+        self.message_state.base_lines.clear();
+        self.message_state.scroll_to_bottom = true;
+        self.message_count = 0;
+        self.session_id = None;
+    }
+
     /// Render the input bar widget.
     fn render_input_bar(&self, frame: &mut Frame, area: Rect, state: &InputState) {
         InputBarWidget.render(frame, area, state, &Theme::default());
     }
 }
 
+#[async_trait::async_trait]
 impl Panel for ChatPanel {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -124,9 +132,23 @@ impl Panel for ChatPanel {
         self.render_input_bar(frame, chunks[1], &self.input);
     }
 
-    fn handle_key(&mut self, app: &mut App, key: KeyEvent) {
-        if InputBarWidget.handle_key(&mut self.input, app, key) {
-            return;
+    async fn handle_key(&mut self, key: KeyEvent) -> KeyAction {
+        let result = InputBarWidget.handle_key(&mut self.input, key);
+        match result {
+            InputBarResult::Consumed => KeyAction::None,
+            InputBarResult::PassedThrough => KeyAction::None,
+            InputBarResult::ChatInput(text) => KeyAction::ChatInput(text),
+            InputBarResult::SlashCommand { cmd_name, extra: _ } => {
+                match cmd_name.as_str() {
+                    "clear" => KeyAction::Clear,
+                    "new" => KeyAction::New,
+                    "compact" => KeyAction::Compact,
+                    "quit" => KeyAction::Quit,
+                    "reasoning" => KeyAction::Reasoning,
+                    "theme" => KeyAction::Theme,
+                    _ => KeyAction::Command { cmd_name, extra: String::new() },
+                }
+            }
         }
     }
 }
