@@ -207,14 +207,14 @@ pub async fn execute_session_rename(app: &mut App, new_name: &str) {
     }
 }
 
-async fn rename_inner(agent: Arc<tokio::sync::Mutex<oben_agent::Agent>>, new_name: &str) -> Result<String, &'static str> {
+async fn rename_inner(agent: Arc<tokio::sync::Mutex<oben_agent::Agent>>, new_name: &str) -> Result<String, String> {
     let mut guard = agent.lock().await;
     let old_title = guard.session_manager_mut().active_session()
         .and_then(|s| s.metadata.title.clone())
         .map(|t| t.clone())
         .unwrap_or_else(|| get_session_display_name(guard.session_manager()));
     
-    guard.session_manager_mut().set_title(new_name).map_err(|_| "failed to rename session")?;
+    guard.session_manager_mut().set_title(new_name).map_err(|e| e.to_string())?;
     Ok(old_title)
 }
 

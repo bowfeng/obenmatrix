@@ -229,19 +229,21 @@ fn parse_expected_columns(schema_sql: &str) -> Result<Vec<(String, Vec<(String, 
 /// If `sessions` table doesn't exist yet this is a fresh DB (the schema was
 /// already created with UNIQUE by the caller), so we return early.
 fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
-    let sessions_exist: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='sessions'",
+    // Skip if already v3+ (sessions table already has UNIQUE on title).
+    // Check by looking for any autoindex on sessions (SQLite creates one for UNIQUE).
+    let has_autoindex: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name LIKE 'sqlite_autoindex_sessions%'",
         [],
         |row| row.get(0),
     )?;
 
-    if !sessions_exist {
-        // Fresh DB — schema already has UNIQUE from SCHEMA_SQL, nothing to migrate
+    if has_autoindex {
+        // Already v3 with UNIQUE, nothing to migrate
         return Ok(());
     }
 
     conn.execute_batch(
-        "CREATE TABLE sessions_new (
+        "DROP TABLE IF EXISTS sessions_new; CREATE TABLE sessions_new (
             id TEXT PRIMARY KEY,
             source TEXT NOT NULL DEFAULT 'cli',
             model TEXT,
@@ -280,14 +282,7 @@ fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
     // Deduplicate: for conflicting titles keep the row with the latest
     // `updated_at` (i.e. the newest session).
     conn.execute(
-        "INSERT OR IGNORE INTO sessions_new \
-         SELECT * FROM sessions \
-         WHERE id IN (\
-             SELECT s1.id FROM sessions s1\
-             LEFT JOIN sessions s2 ON s1.title = s2.title\
-                 AND s1.updated_at < s2.updated_at AND s1.id != s2.id\
-             WHERE s2.id IS NULL\
-         )",
+        "INSERT OR IGNORE INTO sessions_new SELECT * FROM sessions WHERE id IN (SELECT s1.id FROM sessions s1 LEFT JOIN sessions s2 ON s1.title = s2.title AND s1.started_at < s2.started_at AND s1.id != s2.id WHERE s2.id IS NULL)",
         [],
     )?;
 

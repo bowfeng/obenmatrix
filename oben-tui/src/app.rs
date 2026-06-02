@@ -516,7 +516,6 @@ impl App {
                             commands::execute_session_rename(self, &extra).await;
                         }
                     }
-                    }
                     _ => {
                         self.execute_command(&cmd_name).await;
                     }
