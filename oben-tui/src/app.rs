@@ -554,6 +554,11 @@ impl App {
             KeyAction::SwitchPanel(panel_id) => {
                 self.active_panel = panel_id;
             }
+            KeyAction::SessionChanged => {
+                // Reload session messages into ChatPanel after switching sessions.
+                // Re-use activate_panel which already knows how to fetch messages.
+                self.activate_panel(PanelId::Chat).await;
+            }
             KeyAction::None => {}
         }
     }

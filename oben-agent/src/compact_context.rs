@@ -91,14 +91,34 @@ impl ContextEngine for CompactContextEngine {
     }
 
     fn should_compact(&self, messages: &[Message]) -> bool {
-        if !self.active || self.is_thrashing() {
+        if !self.active {
+            tracing::info!(
+                "should_compact: inactive (compression_count={}, ineffective_count={})",
+                self.compression_count,
+                self.ineffective_compression_count
+            );
             return false;
         }
+        if self.is_thrashing() {
+            tracing::info!("should_compact: thrashing detected, skipping");
+            return false;
+        }
+        let threshold = self.config.threshold_tokens();
         if self.last_total_tokens > 0 {
-            return self.last_total_tokens > self.config.threshold_tokens();
+            let result = self.last_total_tokens > threshold;
+            tracing::info!(
+                "should_compact: using API token count api_tokens={} threshold={} result={}",
+                self.last_total_tokens, threshold, result
+            );
+            return result;
         }
         let tokens = self.estimate_tokens(messages);
-        tokens > self.config.threshold_tokens()
+        let result = tokens > threshold;
+        tracing::info!(
+            "should_compact: estimated tokens={} (messages={}) threshold={} result={}",
+            tokens, messages.len(), threshold, result
+        );
+        result
     }
 
     async fn compact(

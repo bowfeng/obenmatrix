@@ -1583,6 +1583,30 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Save compacted messages: delete all old DB messages, then insert the
+    /// compacted set.  The incremental `save()` path cannot handle compaction
+    /// because `persisted_message_count > messages.len()` after compression.
+    pub fn save_compacted(&mut self, session_id: &str, messages: &[Message]) -> Result<()> {
+        // 1. Delete all old messages from DB
+        self.db.clear_messages(session_id)?;
+        // 2. Insert compacted messages
+        let mut msg_copy: Vec<Message> = messages.iter().cloned().collect();
+        self.db.save_new_messages(session_id, &mut msg_copy)?;
+        // 3. Update in-memory session
+        if let Some(s) = self.sessions.get_mut(session_id) {
+            s.messages = msg_copy;
+            s.persisted_message_count = s.messages.len();
+        }
+        // 4. Update session metadata (message_count, ended_at)
+        self.db.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE sessions SET message_count = ? WHERE id = ?",
+                params![messages.len() as i64, session_id],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Load session messages into the cache.
     ///
     /// **State transition: Init → Loaded**.
@@ -2510,5 +2534,85 @@ mod tests {
         // Now switch to second session and try to rename to first session's title
         mgr.switch_session(&sid2).unwrap();
         assert!(mgr.set_title("target-title").is_err());
+    }
+
+    /// Test `save_compacted()` persists correctly after compaction.
+    ///
+    /// This is the regression test for the compact persistence bug:
+    /// before the fix, `save()` did `new_count = messages.len() - persisted_message_count`,
+    /// which after compaction caused usize underflow (messages.len() < persisted_message_count).
+    /// Even if it didn't panic, DB old messages were never deleted, so restart would see
+    /// a mix of old (uncompressed) and new (compacted) messages.
+    ///
+    /// given: a session with 20 messages saved to DB (persisted_message_count = 20)
+    /// when: save_compacted() is called with 5 compaction-reduced messages
+    /// then: DB contains exactly those 5 messages (old 20 deleted), not 25 (20+5)
+    #[test]
+    fn test_save_compacted_replaces_db_messages() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let session = mgr.new_session("compaction-test");
+        let sid = session.id.clone();
+
+        // Write 20 messages
+        let mut msgs: Vec<Message> = (0..20)
+            .map(|i| Message::user(format!("message {} of the original 20", i)))
+            .collect();
+        mgr.db.save_messages(&sid, &mut msgs).unwrap();
+        mgr.load(Some(&sid)).unwrap();
+        let active = mgr.active_session_mut().unwrap();
+        active.persisted_message_count = 20;
+
+        // Verify: DB has 20 messages
+        let loaded_before = mgr.db.load_messages(&sid).unwrap();
+        assert_eq!(loaded_before.len(), 20, "should have 20 original messages");
+
+        // Simulate compaction: messages reduced from 20 to 5
+        let compacted_msgs: Vec<Message> = vec![
+            Message::system("You are a helpful coding assistant."),
+            Message::user("Question 1: What is Rust?".to_string()),
+            Message::assistant("Answer 1: Rust is a systems programming language.".to_string()),
+            Message::user("Question 2: What is borrowing?".to_string()),
+            Message::assistant("Answer 2: Borrowing is Rust's ownership mechanism.".to_string()),
+        ];
+
+        // Call save_compacted — this should replace ALL messages
+        mgr.save_compacted(&sid, &compacted_msgs).unwrap();
+
+        // Verify: DB has exactly 5 messages (old 20 should be GONE)
+        let loaded_after = mgr.db.load_messages(&sid).unwrap();
+        assert_eq!(
+            loaded_after.len(),
+            5,
+            "DB should have exactly 5 compacted messages, not 25 (20+5 mix)"
+        );
+
+        // Verify: old messages are gone from DB
+        for msg in &loaded_after {
+            assert!(
+                !msg.content.to_text().contains("original 20"),
+                "old message should not be in DB after compaction"
+            );
+        }
+
+        // Verify: in-memory session also updated
+        let mem_session = mgr.sessions.get(&sid).unwrap();
+        assert_eq!(
+            mem_session.messages.len(),
+            5,
+            "in-memory messages should be 5"
+        );
+        assert_eq!(
+            mem_session.persisted_message_count,
+            5,
+            "persisted_message_count should match"
+        );
+
+        // Verify: message_count in session metadata updated
+        let db_session = mgr.db.get_session(&sid).unwrap().unwrap();
+        assert_eq!(
+            db_session.metadata.message_count,
+            5,
+            "session metadata message_count should be 5"
+        );
     }
 }

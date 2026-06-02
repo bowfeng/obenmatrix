@@ -359,14 +359,14 @@ impl Agent {
             .compact(&mut messages, Some(self.transport.as_ref()), None)
             .await?;
 
-        // Save the compacted messages back to the session
+        // Save the compacted messages back to the session.
+        // The incremental save() path (tail.append) can't handle compaction
+        // because persisted_message_count > messages.len() after compression.
+        // save_compacted() handles: clear old DB messages, insert compacted set,
+        // update in-memory session and persisted_message_count.
         {
             let mut guard = sm.lock().await;
-            if let Some(session) = guard.active_session_mut() {
-                session.messages = messages;
-                // Save the updated session
-                guard.save_session(Some(&sid))?;
-            }
+            guard.save_compacted(&sid, &messages)?;
         }
 
         Ok(())

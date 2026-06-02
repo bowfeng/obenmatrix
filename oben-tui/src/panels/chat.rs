@@ -10,6 +10,8 @@ use crossterm::event::KeyEvent;
 use oben_models::Message;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
+use ratatui::widgets::ScrollbarState;
+use std::sync::atomic::Ordering;
 
 /// Chat panel — message history, input bar, and streaming control.
 pub struct ChatPanel {
@@ -155,6 +157,24 @@ impl Panel for ChatPanel {
                     _ => KeyAction::Command { cmd_name, extra },
                 }
             }
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &crossterm::event::MouseEvent) -> bool {
+        use crossterm::event::MouseEventKind;
+        let scroll_step: i32 = 3;
+        match event.kind {
+            MouseEventKind::ScrollDown => {
+                self.message_state.scroll_to_bottom = false;
+                self.message_state.user_scroll_offset.fetch_add(scroll_step, Ordering::SeqCst);
+                true
+            }
+            MouseEventKind::ScrollUp => {
+                self.message_state.scroll_to_bottom = false;
+                self.message_state.user_scroll_offset.fetch_sub(scroll_step, Ordering::SeqCst);
+                true
+            }
+            _ => false,
         }
     }
 }

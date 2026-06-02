@@ -6,6 +6,7 @@
 
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use textwrap::wrap as textwrap_wrap;
 use unicode_width::UnicodeWidthStr;
@@ -20,9 +21,13 @@ use oben_models::{Message, MessageRole};
 pub struct ConversationState {
     pub scroll_state: Arc<StdMutex<ScrollbarState>>,
     pub scroll_to_bottom: bool,
+    /// Persisted scroll position across frames (AtomicUsize so render(&self) can update it).
+    pub scroll_pos: Arc<AtomicUsize>,
     pub base_lines: Vec<Line<'static>>,
     pub stream_info: Arc<StdMutex<String>>,
     pub turn_state_ref: Option<Arc<StdMutex<TurnState>>>,
+    /// Accumulated scroll delta from user mouse scroll. Reset by render.
+    pub user_scroll_offset: Arc<AtomicI32>,
     /// Selection start/end as (visual_line_idx, char_offset).
     pub selection_start: Option<(usize, usize)>,
     pub selection_end: Option<(usize, usize)>,
@@ -33,9 +38,11 @@ impl ConversationState {
         Self {
             scroll_state: Arc::new(StdMutex::new(ScrollbarState::new(0))),
             scroll_to_bottom: true,
+            scroll_pos: Arc::new(AtomicUsize::new(0)),
             base_lines: Vec::new(),
             stream_info: Arc::new(StdMutex::new(String::new())),
             turn_state_ref: None,
+            user_scroll_offset: Arc::new(AtomicI32::new(0)),
             selection_start: None,
             selection_end: None,
         }
@@ -229,20 +236,32 @@ impl ConversationWidget {
 
         let content_height = visual_lines.len().max(1) as u16;
 
-        // Update scroll position: preserve current position, clamp to valid range.
+        // Update scroll position: apply accumulated offset, clamp to valid range.
         let max_scroll = content_height.saturating_sub(inner_height) as usize;
         let scroll_pos = {
             let mut scroll_state = state.scroll_state.lock().unwrap();
-            let current_pos = scroll_state.get_position();
-            let target = if state.scroll_to_bottom {
-                max_scroll
-            } else {
-                current_pos.min(max_scroll)
-            };
+            let current_pos = state.scroll_pos.load(Ordering::SeqCst);
+
+            // Drain accumulated scroll offset atomically.
+            let offset = state.user_scroll_offset.swap(0, Ordering::SeqCst);
+
+            // Compute target: offset always takes priority over scroll_to_bottom.
+            // When user scrolls, offset != 0 — apply it regardless of scroll_to_bottom.
+            // Only snap to bottom when there's NO scroll activity (offset == 0).
+            let mut target = current_pos;
+            if offset != 0 {
+                target = ((current_pos as i64 + offset as i64).max(0) as usize).min(max_scroll);
+            } else if state.scroll_to_bottom {
+                target = max_scroll;
+            }
+
+            // Persist position (AtomicUsize is writeable through &ref).
+            state.scroll_pos.store(target, Ordering::SeqCst);
+
             *scroll_state = ScrollbarState::new(visual_lines.len())
                 .viewport_content_length(inner_height as usize)
                 .position(target);
-            scroll_state.get_position()
+            target
         };
 
         let paragraph = Paragraph::new(visual_lines.iter().cloned().collect::<Vec<_>>())

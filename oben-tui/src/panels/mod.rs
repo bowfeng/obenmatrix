@@ -42,6 +42,8 @@ pub enum KeyAction {
     SwitchPanel(PanelId),
     /// Send chat input text.
     ChatInput(String),
+    /// Session switched by SessionsPanel — refresh ChatPanel.
+    SessionChanged,
 }
 
 /// Trait that every panel must implement.

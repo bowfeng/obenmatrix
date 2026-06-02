@@ -491,6 +491,7 @@ impl Panel for SessionsPanel {
             KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
                 self.load_session().await;
                 self.refresh_list().await;
+                return KeyAction::SessionChanged;
             }
             _ => {}
         }

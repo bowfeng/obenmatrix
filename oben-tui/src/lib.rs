@@ -460,7 +460,7 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         .get_chat()
         .map(|cp| format!("streaming={}", cp.streaming))
         .unwrap_or("no_chat_panel".to_string());
-    tracing::info!("[draw_ui] chat_panel={}", chat_panel_info);
+    tracing::debug!("[draw_ui] chat_panel={}", chat_panel_info);
 
     let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);
 
