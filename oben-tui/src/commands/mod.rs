@@ -3,6 +3,8 @@
 //! Dispatch is handled in `InputBarWidget::handle_submit()`. The command is
 //! parsed there and routed to the matching command's `execute()` method.
 
+use std::sync::Arc;
+
 use crate::TuiEvent;
 use crate::App;
 
@@ -178,42 +180,48 @@ impl TuiCommand for RenameCommand {
 
 /// Execute a session rename with the given new name.
 /// Called by `handle_submit` with the parsed args[1].
-pub fn execute_session_rename(app: &mut App, new_name: &str) {
-    if app.agent.is_none() {
-        app.show_toast("Rename failed: agent not initialized", ratatui_toaster::ToastType::Error);
-        return;
-    }
-
-    let success = {
-        let mut guard = app.agent.as_ref().unwrap().blocking_lock();
-        if let Some(session) = guard.session_manager_mut().active_session_mut() {
-            session.name = new_name.to_string();
-            // Save the session while guard is still held
-            if let Err(e) = guard.session_manager_mut().save(None) {
-                drop(guard);
-                app.show_toast(
-                    format!("Rename saved with error: {e}"),
-                    ratatui_toaster::ToastType::Warning,
-                );
-                return;
-            }
-            true
-        } else {
-            false
+pub async fn execute_session_rename(app: &mut App, new_name: &str) {
+    let agent = match &app.agent {
+        Some(a) => Arc::clone(a),
+        None => {
+            app.show_toast("Rename failed: agent not initialized", ratatui_toaster::ToastType::Error);
+            return;
         }
     };
 
-    if success {
-        app.show_toast(
-            format!("Renamed session to: {new_name}"),
-            ratatui_toaster::ToastType::Success,
-        );
-    } else {
-        app.show_toast(
-            "Rename failed: no active session",
-            ratatui_toaster::ToastType::Error,
-        );
+    let result = rename_inner(agent, new_name).await;
+
+    match result {
+        Ok(old_name) => {
+            if let Some(chat) = app.get_chat_mut() {
+                chat.session_name = Some(new_name.to_string());
+            }
+            app.show_toast(
+                format!("Session renamed: {old_name} → {new_name}"),
+                ratatui_toaster::ToastType::Success,
+            );
+        }
+        Err(e) => {
+            app.show_toast(e, ratatui_toaster::ToastType::Error);
+        }
     }
+}
+
+async fn rename_inner(agent: Arc<tokio::sync::Mutex<oben_agent::Agent>>, new_name: &str) -> Result<String, &'static str> {
+    let mut guard = agent.lock().await;
+    let old_title = guard.session_manager_mut().active_session()
+        .and_then(|s| s.metadata.title.clone())
+        .map(|t| t.clone())
+        .unwrap_or_else(|| get_session_display_name(guard.session_manager()));
+    
+    guard.session_manager_mut().set_title(new_name).map_err(|_| "failed to rename session")?;
+    Ok(old_title)
+}
+
+fn get_session_display_name(sm: &oben_sessions::SessionManager) -> String {
+    sm.active_session()
+        .map(|s| s.metadata.title.as_deref().unwrap_or(&s.name).to_string())
+        .unwrap_or_else(|| "unnamed".to_string())
 }
 
 /// Show available commands.

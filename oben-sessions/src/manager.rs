@@ -1142,6 +1142,17 @@ impl SessionDB {
         })
     }
 
+    /// Update the title of a session in the database.
+    pub fn set_title(&self, session_id: &str, new_title: &str) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ?",
+                params![new_title, session_id],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn close(&self) -> Result<()> {
         let mut lock = self.conn.lock().unwrap();
         if let Some(conn) = lock.take() {
@@ -1330,9 +1341,6 @@ impl SessionManager {
                 metadata: meta,
             };
             self.sessions.insert(s.id.clone(), s);
-        }
-        if let Some(last) = self.sessions.values().max_by_key(|s| s.updated_at) {
-            self.active_session_id = Some(last.id.clone());
         }
         self.state = SessionState::Init;
         Ok(())
@@ -1570,6 +1578,22 @@ impl SessionManager {
     /// Save pending messages. Accepts `Option<&str>` to match `SessionManagerExt`.
     pub fn save_session(&mut self, session_id: Option<&str>) -> Result<()> {
         self.save(session_id)
+    }
+
+    /// Update the title of the current session in both the in-memory cache and the database.
+    pub fn set_title(&mut self, new_title: &str) -> Result<()> {
+        let sid = self.active_session_id.clone()
+            .ok_or_else(|| anyhow::anyhow!("No active session to rename"))?;
+        
+        // Update in-memory session
+        if let Some(session) = self.sessions.get_mut(&sid) {
+            session.metadata.title = Some(new_title.to_string());
+        }
+        
+        // Persist to database
+        self.db.set_title(&sid, new_title)?;
+        
+        Ok(())
     }
 
     /// Split a session after compression: end the parent, create a child.
@@ -2343,5 +2367,29 @@ mod tests {
         // Verify all messages were persisted
         let loaded = db.load_messages(&sid).unwrap();
         assert_eq!(loaded.len(), num_threads * msgs_per_thread);
+    }
+
+    /// Rename session title test
+    ///
+    /// given: a session with title "old-title"
+    /// when: set_title is called with a new title
+    /// then: in-memory metadata.title and DB title are both updated
+    #[test]
+    fn test_set_title_updates_memory_and_db() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let session = mgr.create_session("old-session-name");
+        session.metadata.title = Some("old-title".to_string());
+        let sid = session.id.clone();
+        mgr.save(None).unwrap();
+
+        mgr.set_title("new-title").unwrap();
+
+        // In-memory cache updated
+        let mem_session = mgr.sessions.get(&sid).unwrap();
+        assert_eq!(mem_session.metadata.title.as_deref(), Some("new-title"));
+
+        // DB updated
+        let db_session = mgr.db.get_session(&sid).unwrap().unwrap();
+        assert_eq!(db_session.metadata.title.as_deref(), Some("new-title"));
     }
 }

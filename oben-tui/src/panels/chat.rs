@@ -144,7 +144,7 @@ impl Panel for ChatPanel {
             InputBarResult::Consumed => KeyAction::None,
             InputBarResult::PassedThrough => KeyAction::None,
             InputBarResult::ChatInput(text) => KeyAction::ChatInput(text),
-            InputBarResult::SlashCommand { cmd_name, extra: _ } => {
+            InputBarResult::SlashCommand { cmd_name, extra } => {
                 match cmd_name.as_str() {
                     "clear" => KeyAction::Clear,
                     "new" => KeyAction::New,
@@ -152,7 +152,7 @@ impl Panel for ChatPanel {
                     "quit" => KeyAction::Quit,
                     "reasoning" => KeyAction::Reasoning,
                     "theme" => KeyAction::Theme,
-                    _ => KeyAction::Command { cmd_name, extra: String::new() },
+                    _ => KeyAction::Command { cmd_name, extra },
                 }
             }
         }

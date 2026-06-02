@@ -510,9 +510,12 @@ impl App {
             KeyAction::Command { cmd_name, extra } => {
                 match cmd_name.as_str() {
                     "rename" => {
-                        if !extra.is_empty() {
-                            commands::execute_session_rename(self, &extra);
+                        if extra.is_empty() {
+                            self.show_toast("Usage: /rename [new_name]", ratatui_toaster::ToastType::Error);
+                        } else {
+                            commands::execute_session_rename(self, &extra).await;
                         }
+                    }
                     }
                     _ => {
                         self.execute_command(&cmd_name).await;
