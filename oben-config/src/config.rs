@@ -78,6 +78,7 @@ impl Default for DisplayConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ContextConfig {
     /// Max messages to keep in context before compression.
     #[serde(default)]
@@ -85,17 +86,38 @@ pub struct ContextConfig {
     /// Compression method: "summary", "token_count", "none".
     #[serde(default = "default_compression")]
     pub compression: String,
+    /// Total context window size in tokens (default: 128000).
+    #[serde(default = "default_context_length")]
+    pub context_length: usize,
+    /// Token threshold as percentage of context_length for compaction (default: 0.75 = 75%).
+    #[serde(default = "default_threshold_percent")]
+    pub threshold_percent: f64,
 }
 
 fn default_compression() -> String {
     "summary".to_string()
 }
 
+fn default_context_length() -> usize {
+    128_000
+}
+
+fn default_threshold_percent() -> f64 {
+    0.75
+}
+
 impl Default for ContextConfig {
     fn default() -> Self {
-        Self { max_messages: Some(100), compression: "summary".to_string() }
+        Self {
+            max_messages: Some(100),
+            compression: "summary".to_string(),
+            context_length: default_context_length(),
+            threshold_percent: default_threshold_percent(),
+        }
     }
 }
+
+impl ContextConfig {}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -124,6 +146,8 @@ impl Default for AppConfig {
             context: ContextConfig {
                 max_messages: Some(100),
                 compression: "summary".to_string(),
+                context_length: 128_000,
+                threshold_percent: 0.75,
             },
             providers: Vec::new(),
             custom_providers: Vec::new(),

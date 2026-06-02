@@ -181,7 +181,7 @@ fn test_reset_removes_session_from_database() {
     let session_id = create_session_with_messages(&mut mgr, "db-test", 5);
 
     // Save to DB
-    mgr.save(None).unwrap();
+    mgr.incremental_save(None).unwrap();
 
     // Verify it's in the DB by reloading
     mgr.close().unwrap();

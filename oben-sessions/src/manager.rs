@@ -835,6 +835,56 @@ impl SessionDB {
                 }
             }
             drop(stmt);
+            // Update session message_count after inserting
+            let total: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                params![session_id],
+                |row| row.get(0),
+            )?;
+            eprintln!("DB::save_new_messages: session_id={} total_msgs={}", session_id, total);
+            conn.execute(
+                "UPDATE sessions SET message_count = ? WHERE id = ?",
+                params![total, session_id],
+            )?;
+            eprintln!("DB::save_new_messages: updated sessions.message_count to {}", total);
+            Ok(())
+        })
+    }
+
+    /// Ensure the session record exists in the sessions table.
+    /// Returns immediately if the session already exists.
+    pub fn ensure_session_in_db(&self, session_id: &str, metadata: &SessionMetadata) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            let exists: bool = conn.query_row(
+                "SELECT 1 FROM sessions WHERE id = ?",
+                params![session_id],
+                |row| row.get(0),
+            ).unwrap_or(false);
+            if exists {
+                return Ok(());
+            }
+            let started_at_ts = metadata.started_at.timestamp_millis() as f64 / 1000.0;
+            conn.execute(
+                "INSERT INTO sessions (id, name, title, source, started_at, message_count) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                params![
+                    &metadata.id,
+                    &metadata.name,
+                    metadata.title.as_deref().unwrap_or(&metadata.name),
+                    match metadata.source {
+                        SessionSource::Cli => "cli",
+                        SessionSource::Gateway => "gateway",
+                        SessionSource::Telegram => "telegram",
+                        SessionSource::Discord => "discord",
+                        SessionSource::Slack => "slack",
+                        SessionSource::Web => "web",
+                        SessionSource::Tool => "tool",
+                        SessionSource::Cron => "cron",
+                        SessionSource::Batch => "batch",
+                        _ => "cli",
+                    },
+                    started_at_ts,
+                ],
+            )?;
             Ok(())
         })
     }
@@ -1324,7 +1374,8 @@ pub enum SessionState {
     /// No messages loaded — messages are loaded on-demand.
     Init,
     /// One specific session's messages are loaded and ready for use.
-    Loaded(String),
+    /// When `Option` is `None`, only session metadata is loaded (no messages).
+    Loaded(Option<String>),
 }
 
 /// In-memory session cache with SQLite persistence via SessionDB.
@@ -1448,7 +1499,7 @@ impl SessionManager {
                 if session.messages.is_empty() {
                     self.load_session_into_cache(&key).ok();
                 }
-                self.state = SessionState::Loaded(key.clone());
+                self.state = SessionState::Loaded(Some(key.clone()));
                 self.sessions.get_mut(&key).unwrap()
             }
             None => {
@@ -1461,7 +1512,7 @@ impl SessionManager {
                 full_session.persisted_message_count = msg_count;
                 self.sessions.insert(id.clone(), full_session);
                 self.active_session_id = Some(id.clone());
-                self.state = SessionState::Loaded(id.clone());
+                self.state = SessionState::Loaded(Some(id.clone()));
                 self.sessions.get_mut(&id).unwrap()
             }
         }
@@ -1481,7 +1532,7 @@ impl SessionManager {
         let id = session.id.clone();
         self.sessions.insert(id.clone(), session);
         self.active_session_id = Some(id);
-        self.state = SessionState::Loaded(self.active_session_id.as_ref().unwrap().clone());
+        self.state = SessionState::Loaded(self.active_session_id.clone());
         self.sessions.get_mut(self.active_session_id.as_ref().unwrap()).unwrap()
     }
 
@@ -1503,7 +1554,7 @@ impl SessionManager {
         let current_active = self.active_session_id.clone();
         if let Some(ref active_id) = current_active {
             if active_id != session_id {
-                self.save(Some(active_id))?;
+                self.incremental_save(Some(active_id))?;
             }
         }
         self.load(Some(session_id))?;
@@ -1555,7 +1606,7 @@ impl SessionManager {
         self.list_sessions_ref()
     }
 
-    pub fn save(&mut self, session_id: Option<&str>) -> Result<()> {
+    pub fn incremental_save(&mut self, session_id: Option<&str>) -> Result<()> {
         let sid: String = match session_id {
             Some(id) => id.to_string(),
             None => match &self.active_session_id {
@@ -1565,7 +1616,10 @@ impl SessionManager {
         };
         let session = self.sessions.get(&sid)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", sid))?;
-        let new_count = session.messages.len() - session.persisted_message_count;
+        self.db.ensure_session_in_db(&sid, &session.metadata)?;
+        // Clamp: after compression, messages.len() can be < persisted_message_count.
+        // Treat this as "nothing new to persist" — the DB state is already ahead of memory.
+        let new_count = session.messages.len().saturating_sub(session.persisted_message_count);
 
         // No new messages to persist
         if new_count == 0 {
@@ -1584,7 +1638,7 @@ impl SessionManager {
     }
 
     /// Save compacted messages: delete all old DB messages, then insert the
-    /// compacted set.  The incremental `save()` path cannot handle compaction
+    /// compacted set.  The `incremental_save()` path cannot handle compaction
     /// because `persisted_message_count > messages.len()` after compression.
     pub fn save_compacted(&mut self, session_id: &str, messages: &[Message]) -> Result<()> {
         // 1. Delete all old messages from DB
@@ -1619,16 +1673,54 @@ impl SessionManager {
             SessionState::Init => {}
             SessionState::Loaded(_) => return Ok(()), // already loaded
         }
-        // If no session_id given and no active session, just load metadata (no-op for empty DB)
-        if session_id.is_none() && self.active_session_id.is_none() {
+        // If a specific session_id is given, load just that one (messages + metadata)
+        if let Some(sid) = session_id {
+            self.load_session_into_cache(sid)?;
+            self.active_session_id = Some(sid.to_string());
+            self.state = SessionState::Loaded(Some(sid.to_string()));
             return Ok(());
         }
-        let target_id = match session_id {
-            Some(id) => id.to_string(),
-            None => self.active_session_id.as_ref().unwrap().clone(),
-        };
-        self.load_session_into_cache(&target_id)?;
-        self.state = SessionState::Loaded(target_id);
+        // load(None): only load session metadata (not messages) into cache.
+        // Messages are loaded on-demand via load_session_into_cache when
+        // the user switches to or selects a specific session.
+        let metas = self.db.list_sessions(None, &[], 1000, 0, false)?;
+        for meta in metas {
+            let msg_count = 0; // no messages loaded for metadata-only sessions
+            let session = Session {
+                id: meta.id.clone(),
+                name: meta.name.clone(),
+                created_at: meta.started_at,
+                updated_at: meta.started_at,
+                messages: Vec::new(),
+                memory_context: None,
+                summary_chunks: Vec::new(),
+                persisted_message_count: msg_count,
+                metadata: meta,
+            };
+            self.sessions.insert(session.id.clone(), session);
+        }
+        
+        // Set active to most recently modified session
+        if let Some(active_id) = self
+            .sessions
+            .values()
+            .max_by_key(|s| s.metadata.started_at)
+            .map(|s| s.id.clone())
+        {
+            self.active_session_id = Some(active_id);
+        }
+        self.state = SessionState::Loaded(self.active_session_id.clone());
+        info!(
+            "load(None) complete: sessions={}, active={} [state={}]",
+            self.sessions.len(),
+            self.active_session_id.as_deref().unwrap_or("(none)"),
+            match &self.state {
+                SessionState::Loaded(Some(id)) => format!("Loaded(Some({id}))"),
+                SessionState::Loaded(None) => "Loaded(None)".to_string(),
+                SessionState::Off => "Off".to_string(),
+                SessionState::Init => "Init".to_string(),
+            }
+        );
         Ok(())
     }
 
@@ -1684,7 +1776,7 @@ impl SessionManager {
 
     /// Save pending messages. Accepts `Option<&str>` to match `SessionManagerExt`.
     pub fn save_session(&mut self, session_id: Option<&str>) -> Result<()> {
-        self.save(session_id)
+        self.incremental_save(session_id)
     }
 
     /// Update the title of the current session in both the in-memory cache and the database.
@@ -2084,7 +2176,7 @@ impl SessionManagerExt for SessionManager {
         SessionManager::prune_sessions(self, max_age_days)
     }
     fn save_session(&mut self, session_id: Option<&str>) -> Result<()> {
-        SessionManager::save(self, session_id)
+        SessionManager::incremental_save(self, session_id)
     }
     fn active_session_id(&self) -> Option<String> {
         SessionManager::active_session_id(self)
@@ -2110,6 +2202,9 @@ impl SessionManagerExt for SessionManager {
     }
     fn session(&self, session_id: &str) -> Option<&Session> {
         SessionManager::session(self, session_id)
+    }
+    fn save_compacted(&mut self, session_id: &str, messages: &[Message]) -> Result<()> {
+        SessionManager::save_compacted(self, session_id, messages)
     }
 }
 
@@ -2176,7 +2271,7 @@ mod tests {
         session.add_message(Message::user("hello"));
         session.add_message(Message::assistant("hi there"));
         let count = mgr.session_count();
-        mgr.save(None).unwrap();
+        mgr.incremental_save(None).unwrap();
         let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
         mgr2.load(None).unwrap();
         assert_eq!(mgr2.session_count(), count);
@@ -2190,7 +2285,7 @@ mod tests {
         let mut mgr = SessionManager::new_with_path(path).unwrap();
         let s1 = mgr.new_session("s1"); s1.add_message(Message::user("msg in s1"));
         let s1_id = s1.id.clone();
-        mgr.save(None).unwrap(); // persist s1 to DB
+        mgr.incremental_save(None).unwrap(); // persist s1 to DB
         let s2 = mgr.new_session("s2"); s2.add_message(Message::user("msg in s2"));
         assert!(mgr.active_session().unwrap().name == "s2");
         let switched = mgr.switch_session(&s1_id).unwrap();
@@ -2208,7 +2303,7 @@ mod tests {
     #[test] fn test_load_empty_directory() {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path.clone()).unwrap();
-        mgr.save(None).unwrap();
+        mgr.incremental_save(None).unwrap();
         let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
         mgr2.load(None).unwrap();
         assert_eq!(mgr2.session_count(), 0);
@@ -2223,7 +2318,7 @@ mod tests {
         session.add_message(Message::assistant("msg2"));
         session.add_message(Message::user("msg3"));
         session.add_message(Message::assistant("msg4"));
-        mgr.save(None).unwrap();
+        mgr.incremental_save(None).unwrap();
         let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
         mgr2.load(None).unwrap();
         let loaded = mgr2.list_sessions_ref().into_iter().next().unwrap();
@@ -2329,7 +2424,7 @@ mod tests {
             parent.add_message(Message::assistant("hi there"));
             parent.id.clone()
         };
-        mgr.save(None).unwrap();
+        mgr.incremental_save(None).unwrap();
 
         let child = mgr.split_after_compression(&parent_id).unwrap();
 
@@ -2356,7 +2451,7 @@ mod tests {
             parent.add_message(Message::user("hello"));
             parent.id.clone()
         };
-        mgr.save(None).unwrap();
+        mgr.incremental_save(None).unwrap();
 
         let child = mgr.split_after_compression(&parent_id).unwrap();
 
@@ -2377,7 +2472,7 @@ mod tests {
             let parent = mgr.new_session("chat-12345");
             parent.id.clone()
         };
-        mgr.save(None).unwrap();
+        mgr.incremental_save(None).unwrap();
 
         let child = mgr.split_after_compression(&parent_id).unwrap();
 
@@ -2400,7 +2495,7 @@ mod tests {
             parent.add_message(Message::assistant("msg2"));
             parent.id.clone()
         };
-        mgr.save(None).unwrap();
+        mgr.incremental_save(None).unwrap();
 
         let child = mgr.split_after_compression(&parent_id).unwrap();
 
@@ -2487,7 +2582,7 @@ mod tests {
         let session = mgr.create_session("old-session-name");
         session.metadata.title = Some("old-title".to_string());
         let sid = session.id.clone();
-        mgr.save(None).unwrap();
+        mgr.incremental_save(None).unwrap();
 
         mgr.set_title("new-title").unwrap();
 

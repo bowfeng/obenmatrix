@@ -157,9 +157,33 @@ pub async fn compact_session_messages(
     // Step 3: Split into head/tail/middle
     let (head, middle, tail) = split_messages(&pruned, config);
 
+    // Early return: no middle messages means nothing to summarize.
+    // Avoid wasting an LLM call — return 0% savings (compact == original).
+    if middle.is_empty() {
+        tracing::info!(
+            "No middle messages to compress (head={}, tail={}), skipping LLM call",
+            head.len(),
+            tail.len()
+        );
+        let compacted_count = pruned.len();
+        return Ok(CompressionResult {
+            messages: pruned,
+            stats: CompressionStats {
+                original_count,
+                compacted_count,
+                original_tokens,
+                compacted_tokens: original_tokens,
+                savings_pct: 0.0,
+                pruned_tool_results: pruned_count,
+                summary_generated: false,
+            },
+            summary: None,
+        });
+    }
+
     // Step 4: Compute middle tokens once, pass to generate_summary
     let middle_tokens: usize = middle.iter().map(|m| message_token_estimate(m)).sum();
-    let summary = if !middle.is_empty() {
+    let summary = {
         let summary_text = generate_summary(
             transport,
             &middle,
@@ -170,8 +194,6 @@ pub async fn compact_session_messages(
         )
         .await?;
         Some(summary_text)
-    } else {
-        None
     };
 
     let summary_generated = summary.is_some();
@@ -592,7 +614,8 @@ fn split_messages<'a>(
 
 /// Walk backward from the end, accumulating tokens until budget is reached.
 /// Enforces a hard minimum of `tail_min_messages` messages.
-fn find_tail_cut_by_tokens(messages: &[Message], config: &CompactCofig) -> usize {
+/// Returns the index where the tail segment starts.
+pub(crate) fn find_tail_cut_by_tokens(messages: &[Message], config: &CompactCofig) -> usize {
     let min_protect = config.tail_min_messages.min(messages.len());
     let budget = (config.tail_token_budget as f64 * config.tail_overhead) as usize;
     let mut accumulated = 0;

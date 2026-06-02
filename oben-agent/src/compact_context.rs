@@ -103,6 +103,19 @@ impl ContextEngine for CompactContextEngine {
             tracing::info!("should_compact: thrashing detected, skipping");
             return false;
         }
+        // If head + tail cover all messages, there's nothing to compress —
+        // skip to avoid a wasted LLM call.
+        let head_end = self.config.protect_first_n.min(messages.len());
+        let tail_start =
+            compact::find_tail_cut_by_tokens(messages, &self.config).max(head_end);
+        if tail_start <= head_end {
+            tracing::info!(
+                "should_compact: no middle messages to compress (head={}, tail={}), skipping",
+                head_end,
+                tail_start - head_end,
+            );
+            return false;
+        }
         let threshold = self.config.threshold_tokens();
         if self.last_total_tokens > 0 {
             let result = self.last_total_tokens > threshold;
@@ -126,11 +139,10 @@ impl ContextEngine for CompactContextEngine {
         messages: &mut Vec<Message>,
         transport: Option<&dyn TransportProvider>,
         focus_topic: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let should = self.should_compact(messages);
-        eprintln!("ContextEngine::compact: should_compact={}, tokens={}", should, self.estimate_tokens(messages));
         if !should {
-            return Ok(());
+            return Ok(false);
         }
 
         info!(
@@ -169,8 +181,8 @@ impl ContextEngine for CompactContextEngine {
                 }
             };
 
-            messages.clear();
-            messages.extend(result.messages);
+            // We don't clear `messages` before calling compact_session_messages,
+            // so on failure we simply discard `result` and leave `messages` intact.
             self.compression_count += 1;
 
             if result.stats.summary_generated {
@@ -185,28 +197,25 @@ impl ContextEngine for CompactContextEngine {
                 self.ineffective_compression_count += 1;
                 self.consecutive_effective_compressions = 0;
                 tracing::warn!(
-                    "Compression saved only {:.1}% — ineffective (threshold: {}%, consecutive: {})",
+                    "Compression saved only {:.1}% — ineffective (threshold: {}%, consecutive: {}), keeping original messages",
                     savings,
                     self.config.ineffective_threshold,
                     self.ineffective_compression_count,
                 );
+                // Discard result — original messages are untouched.
+                // Return false so callers skip session rotation / DB save.
+                return Ok(false);
             } else {
                 self.consecutive_effective_compressions += 1;
                 self.ineffective_compression_count = 0;
+                // Apply compressed result
+                messages.clear();
+                messages.extend(result.messages);
+                return Ok(true);
             }
-
-            info!(
-                "Compression complete: {} -> {} messages, {} tokens saved ({:.0}%)",
-                result.stats.original_count,
-                result.stats.compacted_count,
-                result.stats.original_tokens.saturating_sub(result.stats.compacted_tokens),
-                result.stats.savings_pct,
-            );
         } else {
             return Err(anyhow::anyhow!("compression requires a transport provider"));
         }
-
-        Ok(())
     }
 
     fn on_session_start(&mut self, session_id: &str, model_name: &str, context_length: Option<usize>) {
@@ -428,5 +437,366 @@ mod tests {
 
         assert!(engine._last_summary_error.is_none());
         assert!(engine._last_aux_model_failure_model.is_none());
+    }
+
+    // ─── Async compact() tests with mock transport ─────────────────────────────
+
+    /// Mock transport that returns a predictable summary for testing.
+    struct MockCompactTransport {
+        summary: String,
+    }
+
+    #[async_trait::async_trait]
+    impl TransportProvider for MockCompactTransport {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        async fn chat(
+            &self,
+            _messages: &[Message],
+            _mode: &oben_models::CallMode,
+        ) -> Result<oben_models::TransportResponse> {
+            Ok(oben_models::TransportResponse {
+                text: self.summary.clone(),
+                tool_calls: vec![],
+                tokens_used: None,
+            })
+        }
+
+        async fn stream_chat(
+            &self,
+            _messages: &[Message],
+            _mode: &oben_models::CallMode,
+            _delta_callback: oben_models::StreamDeltaCallback,
+        ) -> Result<oben_models::TransportResponse> {
+            Ok(oben_models::TransportResponse {
+                text: self.summary.clone(),
+                tool_calls: vec![],
+                tokens_used: None,
+            })
+        }
+    }
+
+    fn make_long_messages(n: usize) -> Vec<Message> {
+        let mut msgs = vec![Message::system("You are a helpful coding assistant.")];
+        for i in 0..n {
+            msgs.push(Message::user(format!("Question {}: What is the best way to implement a concurrent hashmap in Rust? Please explain the tradeoffs between Mutex and DashMap. Consider lock contention, read throughput, write throughput, and memory overhead.", i)));
+            msgs.push(Message::assistant(format!("Answer {}: Here's a comprehensive comparison:\n1. Mutex: High read throughput but writes block all reads. Simple to use. Good for read-heavy workloads with low contention.\n2. DashMap: Lock-free reads, sharded writes. Best overall performance for concurrent access. Higher memory overhead due to sharding.\nRecommendation: Use DashMap for general-purpose concurrent HashMap.", i)));
+        }
+        msgs
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_compact_effective_returns_true_and_replaces_messages() {
+        // Effective compression (savings >= threshold) → Ok(true), messages replaced
+        let config = CompactCofig {
+            context_length: 100_000,
+            ineffective_threshold: 10.0,
+            tail_token_budget: 500, // Narrow tail so middle is non-empty
+            tail_overhead: 1.3,
+            ..Default::default()
+        };
+        let mut engine = CompactContextEngine::with_config(config);
+        // Prime should_compact with real token count above threshold
+        engine.update_from_response(50000, 50000, 100000);
+
+        let mut messages = make_long_messages(50);
+        let original_count = messages.len();
+        let _original_last = messages.last().unwrap().content.to_text().to_string();
+
+        let transport = MockCompactTransport {
+            summary: "## Context Summary\nCompressed 50 turns of Rust concurrency discussion into a single summary.\n## Completed Actions\nReviewed Mutex vs DashMap tradeoffs.".to_string(),
+        };
+
+        let result = engine.compact(&mut messages, Some(&transport), None).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "effective compression should return Ok(true)");
+        // Messages should have been replaced (fewer after compression)
+        assert!(messages.len() < original_count, "messages should be reduced after effective compression");
+        assert_eq!(engine.compression_count, 1);
+        assert_eq!(engine.consecutive_effective_compressions, 1);
+        assert_eq!(engine.ineffective_compression_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_compact_ineffective_returns_false_and_keeps_original_messages() {
+        // Ineffective compression (savings < threshold) → Ok(false), messages untouched
+        // Use a large protect_first_n so only a few messages are in middle,
+        // allowing a mock summary to make compacted_tokens close to original.
+        let config = CompactCofig {
+            context_length: 100_000,
+            ineffective_threshold: 10.0,
+            protect_first_n: 90, // Protect 90 of 101 messages — only ~10 in middle
+            tail_token_budget: 500,
+            tail_overhead: 1.3,
+            ..Default::default()
+        };
+        let mut engine = CompactContextEngine::with_config(config);
+        engine.update_from_response(50000, 50000, 100000);
+
+        let mut messages = make_long_messages(50);
+        let original_count = messages.len();
+        let original_first = messages.first().unwrap().content.to_text().to_string();
+        let original_last = messages.last().unwrap().content.to_text().to_string();
+
+        // Return a large mock summary (~5000 tokens) so compacted has
+        // tokens close to original → savings < 10% (ineffective).
+        let transport = MockCompactTransport {
+            summary: "X".repeat(20000),
+        };
+
+        let result = engine.compact(&mut messages, Some(&transport), None).await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "ineffective compression should return Ok(false)");
+        // Messages must be UNCHANGED (compute-then-commit pattern)
+        assert_eq!(messages.len(), original_count, "message count should be unchanged after ineffective compression");
+        assert_eq!(messages.first().unwrap().content.to_text(), original_first, "first message should be unchanged");
+        assert_eq!(messages.last().unwrap().content.to_text(), original_last, "last message should be unchanged");
+        assert_eq!(engine.compression_count, 1);
+        assert_eq!(engine.ineffective_compression_count, 1);
+        assert_eq!(engine.consecutive_effective_compressions, 0);
+    }
+
+    #[tokio::test]
+    async fn test_compact_without_transport_returns_err() {
+        // Need to prime last_total_tokens so should_compact returns true,
+        // forcing the code path to reach the transport-null check (line 204).
+        let config = CompactCofig {
+            context_length: 100_000,
+            tail_token_budget: 500, // Narrow tail so middle is non-empty
+            tail_overhead: 1.3,
+            ..Default::default()
+        };
+        let mut engine = CompactContextEngine::with_config(config);
+        engine.update_from_response(50000, 50000, 100000);
+        let mut messages = make_long_messages(50);
+
+        let result = engine.compact(&mut messages, None, None).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("transport provider"));
+    }
+
+    #[tokio::test]
+    async fn test_compact_below_threshold_skips_compression() {
+        // should_compact returns false when tokens < threshold → Ok(false) without calling transport
+        let config = CompactCofig {
+            context_length: 100_000,
+            ..Default::default()
+        };
+        let mut engine = CompactContextEngine::with_config(config);
+        // last_total_tokens = 0 and estimated tokens < threshold → no compaction
+        // Don't prime update_from_response, so should_compact uses estimate
+
+        let mut messages = vec![Message::user("hi")];
+
+        struct CountingTransport;
+
+        #[async_trait::async_trait]
+        impl TransportProvider for CountingTransport {
+            fn name(&self) -> &str { "counting" }
+            async fn chat(&self, _: &[Message], _: &oben_models::CallMode) -> Result<oben_models::TransportResponse> {
+                unreachable!("transport should not be called when below threshold")
+            }
+            async fn stream_chat(&self, _: &[Message], _: &oben_models::CallMode, _: oben_models::StreamDeltaCallback) -> Result<oben_models::TransportResponse> {
+                unreachable!("stream_chat should not be called when below threshold")
+            }
+        }
+
+        let transport = CountingTransport;
+        let result = engine.compact(&mut messages, Some(&transport), None).await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "below threshold should return Ok(false)");
+    }
+
+    #[tokio::test]
+    async fn test_compact_thrashing_detection_after_multiple_ineffective() {
+        // After max_ineffective_consecutive ineffective compressions, should_compact returns false
+        let config = CompactCofig {
+            context_length: 100_000,
+            ineffective_threshold: 10.0,
+            max_ineffective_consecutive: 3,
+            protect_first_n: 90,     // Protect most messages so middle is tiny
+            tail_token_budget: 500,  // Narrow tail so middle is non-empty
+            tail_overhead: 1.3,
+            ..Default::default()
+        };
+        let mut engine = CompactContextEngine::with_config(config);
+        engine.update_from_response(50000, 50000, 100000);
+
+        let messages = make_long_messages(50);
+        // Return a huge summary made of non-whitespace text so estimate_tokens
+        // counts it. With protect_first_n:90, middle is ~1 msg (~650 token).
+        // Mock ~5005 token → compacted > original → negative savings → ineffective.
+        let transport = MockCompactTransport {
+            summary: "X".repeat(20000),
+        };
+
+        // First ineffective compression
+        let mut test_msgs = messages.clone();
+        let r1 = engine.compact(&mut test_msgs, Some(&transport), None).await;
+        assert!(!r1.unwrap());
+
+        // Second ineffective compression
+        let mut test_msgs = messages.clone();
+        let r2 = engine.compact(&mut test_msgs, Some(&transport), None).await;
+        assert!(!r2.unwrap());
+
+        // Third ineffective compression → triggers thrashing
+        let mut test_msgs = messages.clone();
+        let r3 = engine.compact(&mut test_msgs, Some(&transport), None).await;
+        assert!(!r3.unwrap());
+
+        // Now should_compact should return false even if tokens are high
+        assert!(engine.is_thrashing(), "should be thrashing after 3 consecutive ineffective compressions");
+
+        // Fourth attempt should skip due to thrashing
+        let mut test_msgs = messages.clone();
+        let r4 = engine.compact(&mut test_msgs, Some(&transport), None).await;
+        assert!(!r4.unwrap(), "thrashing should prevent further compression attempts");
+        assert_eq!(engine.compression_count, 3, "should not count thrashed attempt");
+    }
+
+    #[tokio::test]
+    async fn test_compact_thrashing_cleared_on_effective() {
+        // Effective compression clears ineffective_count and resets consecutive_effective.
+        // Thrashing prevention (should_compact blocking when thrashing) is tested in
+        // test_compact_thrashing_detection_after_multiple_ineffective — this test just
+        // verifies the state transition on a successful compression.
+        let config = CompactCofig {
+            context_length: 100_000,
+            ineffective_threshold: 10.0,
+            max_ineffective_consecutive: 2,
+            tail_token_budget: 500,
+            tail_overhead: 1.3,
+            ..Default::default()
+        };
+        let mut engine = CompactContextEngine::with_config(config);
+        // Prime last_total_tokens so should_compact returns true for 101 messages
+        engine.update_from_response(50000, 50000, 100000);
+
+        // Simulate some previous ineffective compressions (before thrashing triggers)
+        engine.ineffective_compression_count = 1;
+        engine.consecutive_effective_compressions = 0;
+
+        let messages = make_long_messages(50);
+        let good_transport = MockCompactTransport {
+            summary: "## Summary\nThis is a valid compression summary with lots of content to ensure good savings. The summary covers all the key points from the conversation including the Rust concurrency discussion, Mutex vs DashMap comparison, and performance benchmarks."
+                .to_string(),
+        };
+
+        let mut test_msgs = messages;
+        let r = engine.compact(&mut test_msgs, Some(&good_transport), None).await;
+        assert!(r.unwrap(), "effective compression should succeed");
+        // Ineffective count is reset on effective compression
+        assert_eq!(engine.ineffective_compression_count, 0);
+        assert_eq!(engine.consecutive_effective_compressions, 1);
+    }
+    #[tokio::test]
+    async fn test_compact_previous_summary_updated() {
+        // Previous summary is set on effective compression
+        let config = CompactCofig {
+            context_length: 100_000,
+            ineffective_threshold: 10.0,
+            max_ineffective_consecutive: 2,
+            tail_token_budget: 500,
+            tail_overhead: 1.3,
+            ..Default::default()
+        };
+        let mut engine = CompactContextEngine::with_config(config);
+        // Prime last_total_tokens so should_compact returns true
+        engine.update_from_response(50000, 50000, 100000);
+        // Seed _previous_summary for iterative update mode (doesn't affect whether
+        // compression is effective — the LLM generates a smaller summary than the
+        // raw middle messages, so savings are still large).
+        engine._previous_summary = Some(format!("{:>30000}", ""));
+
+        let messages = make_long_messages(50);
+        let transport = MockCompactTransport {
+            summary: "## Iterative Summary\nPrevious context + new findings.\n## Completed Actions\nWorked on concurrency."
+                .to_string(),
+        };
+
+        let mut test_msgs = messages;
+        let result = engine.compact(&mut test_msgs, Some(&transport), None).await;
+        assert!(result.unwrap());
+
+        // result.summary wraps the transport response with [CONTEXT COMPACTION...] header.
+        // Use contains() instead of exact match.
+        assert!(
+            engine._previous_summary.as_deref().unwrap().contains("Iterative Summary"),
+            "previous_summary should contain the summary text"
+        );
+    }
+    #[tokio::test]
+    async fn test_compact_last_savings_pct_updated() {
+        // Seed _previous_summary so incremental savings are below threshold (ineffective).
+        // Then verify savings_pct is tracked even for ineffective compressions.
+        let mut engine = CompactContextEngine::with_config(CompactCofig {
+            context_length: 100_000,
+            ineffective_threshold: 10.0,
+            tail_token_budget: 500,
+            tail_overhead: 1.3,
+            ..Default::default()
+        });
+        // Seed large previous summary to keep incremental savings low.
+        // We need new_tokens >= 0.9 * old_tokens for ineffective result.
+        // old_tokens ≈ 7763, first+last ≈ 300, so seed must be ~6600+ tokens (~26400 chars).
+        engine._previous_summary = Some(format!("{:>30000}", ""));
+
+        let messages = make_long_messages(50);
+        let transport = MockCompactTransport {
+            summary: "## Summary\nGood compression result.".to_string(),
+        };
+
+        let mut test_msgs = messages;
+        let result = engine.compact(&mut test_msgs, Some(&transport), None).await;
+        // With seeded _previous_summary, incremental savings < threshold → ineffective
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "should be ineffective with seeded summary");
+        // savings_pct should still be tracked
+        assert!(engine.last_compression_savings_pct >= 0.0,
+            "savings_pct should be >= 0 (got {:.1})", engine.last_compression_savings_pct);
+    }
+    #[tokio::test]
+    async fn test_compact_on_session_start_resets_thrashing() {
+        // on_session_start resets ineffective and effective counters
+        let config = CompactCofig {
+            context_length: 100_000,
+            max_ineffective_consecutive: 2,
+            protect_first_n: 90,     // Protect most messages so middle is tiny
+            tail_token_budget: 500,  // Narrow tail so middle is non-empty
+            tail_overhead: 1.3,
+            ..Default::default()
+        };
+        let mut engine = CompactContextEngine::with_config(config);
+        engine.update_from_response(50000, 50000, 100000);
+
+        let messages = make_long_messages(50);
+        // Return huge summary made of non-whitespace so estimate_tokens
+        // counts it. With protect_first_n:90, middle is ~1 msg (~650 token).
+        // Mock ~5005 token → compacted > original → negative savings → ineffective.
+        let transport = MockCompactTransport {
+            summary: "X".repeat(20000),
+        };
+
+        // Trigger thrashing
+        let mut test_msgs = messages.clone();
+        let _ = engine.compact(&mut test_msgs, Some(&transport), None).await;
+        let mut test_msgs = messages.clone();
+        let _ = engine.compact(&mut test_msgs, Some(&transport), None).await;
+        assert!(engine.is_thrashing());
+
+        // New session clears thrashing
+        engine.on_session_start("new-session", "gpt-4", None);
+
+        assert_eq!(engine.ineffective_compression_count, 0);
+        assert_eq!(engine.consecutive_effective_compressions, 0);
+        assert!(!engine.is_thrashing());
     }
 }

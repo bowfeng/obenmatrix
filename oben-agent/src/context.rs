@@ -44,14 +44,17 @@ pub trait ContextEngine: Send + Sync {
 
     /// Compact the message list if it's over the token threshold.
     ///
-    /// Mutates `messages` in-place when compaction fires.
-    /// Caller is responsible for getting messages from the session store.
+    /// Mutates `messages` in-place when compaction fires. Returns `Ok(true)`
+    /// when a meaningful compaction was applied (savings >= threshold).
+    /// Returns `Ok(false)` when compression was attempted but produced no
+    /// useful summary — `messages` are left unchanged so the caller can skip
+    /// session rotation and other post-compact operations.
     async fn compact(
         &mut self,
         messages: &mut Vec<Message>,
         transport: Option<&dyn TransportProvider>,
         focus_topic: Option<&str>,
-    ) -> Result<()>;
+    ) -> Result<bool>;
 
     // -- Lifecycle hooks ----------------------------------------------------
 
@@ -96,7 +99,7 @@ impl ContextEngine for Box<dyn ContextEngine> {
     fn should_compact(&self, messages: &[Message]) -> bool {
         (**self).should_compact(messages)
     }
-    async fn compact(&mut self, messages: &mut Vec<Message>, transport: Option<&dyn TransportProvider>, focus_topic: Option<&str>) -> Result<()> {
+    async fn compact(&mut self, messages: &mut Vec<Message>, transport: Option<&dyn TransportProvider>, focus_topic: Option<&str>) -> Result<bool> {
         (**self).compact(messages, transport, focus_topic).await
     }
     fn on_session_start(&mut self, session_id: &str, model_name: &str, context_length: Option<usize>) {

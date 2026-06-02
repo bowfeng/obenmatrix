@@ -370,7 +370,10 @@ async fn handle_chat_input(
             chat.streaming = true;
             chat.message_state.turn_state_ref = Some(eb_state);
             chat.append_user_message(&input);
-            tracing::info!("handle_chat_input: appended user message to chat, msg_count=0");
+            tracing::info!(
+                "handle_chat_input: appended user message to chat, msg_count={}",
+                chat.message_count
+            );
         }
     }
 

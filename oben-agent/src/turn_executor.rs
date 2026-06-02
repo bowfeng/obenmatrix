@@ -209,67 +209,96 @@ impl TurnExecutor {
                     session.messages.len(),
                     context_engine.estimate_tokens(&session.messages),
                 );
-                context_engine
+                let compacted = context_engine
                     .compact(&mut session.messages, Some(transport), None)
                     .await?;
 
-                // Session rotation: end parent, create child with lineage.
-                // This mirrors Hermes Agent's `compress_context()` which splits
-                // the session into parent (ended) + child (continuation).
-                //
-                // We can't hold `session` (borrowed from `session_manager`)
-                // while calling `session_manager` methods. Drop the borrow,
-                // do the rotation, then re-acquire.
-                let parent_id = current_session_id.clone();
-                let _ = session;
-
-                // 1. End the parent session
-                context_engine.on_session_end(&parent_id);
-
-                // 2. Split: end parent in DB, create child with lineage
-                let child_session = match session_manager.split_after_compression(&parent_id) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!("Session rotation failed: {} (continuing with parent)", e);
-                        // Re-acquire old session reference
-                        current_session = Some(
-                            session_manager
-                                .session_mut(&parent_id)
-                                .ok_or_else(|| anyhow::anyhow!("Parent session disappeared: {}", parent_id))?,
-                        );
-                        session = current_session
-                            .as_mut()
-                            .ok_or_else(|| anyhow::anyhow!("Parent session disappeared: {}", parent_id))?;
-                        continue;
-                    }
-                };
-                let child_id = child_session.id.clone();
-
-                // 3. Update our tracking
-                current_session_id = child_id.clone();
-                current_session = Some(
-                    session_manager
-                        .session_mut(&child_id)
-                        .ok_or_else(|| anyhow::anyhow!("Child session disappeared: {}", child_id))?,
-                );
-                session = current_session
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("Child session disappeared: {}", child_id))?;
-
-                // 5. Start the new session on the context engine
-                let model = session.metadata.model.as_deref().unwrap_or("unknown");
-                let context_length = if session.metadata.last_prompt_tokens > 0 {
-                    Some(session.metadata.last_prompt_tokens * 2)
+                if !compacted {
+                    // Compression was ineffective — messages unchanged,
+                    // skip rotation and continue with the current session.
+                    tracing::warn!(
+                        "Compression ineffective ({} messages, {} est. tokens), skipping rotation",
+                        session.messages.len(),
+                        context_engine.estimate_tokens(&session.messages),
+                    );
                 } else {
-                    Some(128_000)
-                };
-                context_engine.on_session_start(&child_id, model, context_length);
+                    // Session rotation: end parent, create child with lineage.
+                    // This mirrors Hermes Agent's `compress_context()` which splits
+                    // the session into parent (ended) + child (continuation).
+                    //
+                    // We can't hold `session` (borrowed from `session_manager`)
+                    // while calling `session_manager` methods. Drop the borrow,
+                    // do the rotation, then re-acquire.
+                    let parent_id = current_session_id.clone();
+                    // Clone compacted messages before dropping the borrow — they need
+                    // to be copied into the child session after rotation.
+                    let compacted_msgs = session.messages.clone();
+                    let _ = session;
 
-                info!(
-                    "Session rotated: {} → {}",
-                    parent_id,
-                    child_id,
-                );
+                    // 1. End the parent session
+                    context_engine.on_session_end(&parent_id);
+
+                    // 2. Split: end parent in DB, create child with lineage
+                    let child_session = match session_manager.split_after_compression(&parent_id) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!("Session rotation failed: {} (continuing with parent)", e);
+                            // Re-acquire old session reference
+                            current_session = Some(
+                                session_manager
+                                    .session_mut(&parent_id)
+                                    .ok_or_else(|| anyhow::anyhow!("Parent session disappeared: {}", parent_id))?,
+                            );
+                            session = current_session
+                                .as_mut()
+                                .ok_or_else(|| anyhow::anyhow!("Parent session disappeared: {}", parent_id))?;
+                            continue;
+                        }
+                    };
+                    let child_id = child_session.id.clone();
+
+                    // 3. Before taking &mut session, clone parent messages and persist to DB.
+                    //    Both session_manager.session() and save_compacted need access to
+                    //    session_manager, and they conflict with &mut session.
+                    let compacted = {
+                        let parent = session_manager.session(&parent_id)
+                            .ok_or_else(|| anyhow::anyhow!("Parent session disappeared after split: {}", parent_id))?;
+                        parent.messages.clone()
+                    };
+                    // Now the &borrow on parent is released, so we can call save_compacted.
+                    session_manager.save_compacted(&child_id, &compacted)
+                        .map_err(|e| anyhow::anyhow!("Failed to persist compacted messages to child {}: {}", child_id, e))?;
+
+                    // 4. Update our tracking — take mutable ref to child session
+                    current_session_id = child_id.clone();
+                    current_session = Some(
+                        session_manager
+                            .session_mut(&child_id)
+                            .ok_or_else(|| anyhow::anyhow!("Child session disappeared: {}", child_id))?,
+                    );
+                    session = current_session
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("Child session disappeared: {}", child_id))?;
+
+                    // 5. Copy compacted messages into child session's in-memory state
+                    session.messages = compacted_msgs;
+
+                    // 6. Start the new session on the context engine
+                    let model = session.metadata.model.as_deref().unwrap_or("unknown");
+                    let context_length = if session.metadata.last_prompt_tokens > 0 {
+                        Some(session.metadata.last_prompt_tokens * 2)
+                    } else {
+                        Some(128_000)
+                    };
+                    context_engine.on_session_start(&child_id, model, context_length);
+
+                    info!(
+                        "Session rotated: {} → {}, copied {} compacted messages",
+                        parent_id,
+                        child_id,
+                        session.messages.len(),
+                    );
+                }
             }
 
             // Sanitize messages before API call

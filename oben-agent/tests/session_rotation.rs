@@ -4,9 +4,10 @@
 /// public API — this is the integration tier per AGENTS.md.
 
 use oben_agent::compact_context::CompactContextEngine;
+use oben_agent::compact::CompactCofig;
 use oben_agent::context::ContextEngine;
 use oben_agent::turn_executor::TurnExecutor;
-use oben_models::{CallMode, Message, SessionManagerExt, TransportProvider};
+use oben_models::{CallMode, Message, TransportProvider};
 use oben_sessions::SessionManager;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -54,8 +55,14 @@ impl TransportProvider for MockTransport {
 /// Create a context engine pre-loaded with a high token count so that
 /// `should_compact` returns true immediately (bypassing message estimation).
 fn make_compacting_engine() -> CompactContextEngine {
-    let mut engine = CompactContextEngine::new();
-    // Default threshold is ~96K tokens. Set last_total_tokens above it.
+    let mut engine = CompactContextEngine::with_config(CompactCofig {
+        context_length: 100_000,
+        threshold_percent: 0.75,
+        tail_token_budget: 50, // Very small tail → middle always non-empty
+        tail_overhead: 1.3,
+        ..Default::default()
+    });
+    // Set last_total_tokens above threshold so should_compact returns true
     engine.update_from_response(60_000, 40_000, 100_001);
     engine
 }
@@ -66,9 +73,15 @@ fn create_populated_session(mgr: &mut SessionManager, msg_count: usize) -> Strin
     let session = mgr.new_session("test-chat");
     for i in 0..msg_count {
         let msg = if i % 2 == 0 {
-            Message::user(format!("User message number {}", i))
+            Message::user(format!(
+                "This is user message number {}. It is a long conversational turn that spans multiple sentences and contains sufficient content to exceed the default tail budget and force middle message compression during session compaction.",
+                i
+            ))
         } else {
-            Message::assistant(format!("Assistant message number {}", i))
+            Message::assistant(format!(
+                "This is assistant message number {}. It provides a thorough response with detailed explanations and analysis that exceeds the default tail budget and ensures meaningful compression results during session rotation.",
+                i
+            ))
         };
         session.messages.push(msg);
     }
@@ -87,7 +100,7 @@ fn create_populated_session(mgr: &mut SessionManager, msg_count: usize) -> Strin
 #[tokio::test]
 async fn test_turn_exec_rotates_session_on_compaction() {
     let mut mgr = SessionManager::new_with_path(make_test_dir().path().join("rot-test")).unwrap();
-    let session_id = create_populated_session(&mut mgr, 50);
+    let session_id = create_populated_session(&mut mgr, 1500);
 
     let mut context_engine = make_compacting_engine();
     let transport = MockTransport;
@@ -148,7 +161,7 @@ async fn test_turn_exec_rotates_session_on_compaction() {
 #[tokio::test]
 async fn test_rotation_updates_active_session() {
     let mut mgr = SessionManager::new_with_path(make_test_dir().path().join("active-test")).unwrap();
-    let parent_id = create_populated_session(&mut mgr, 50);
+    let parent_id = create_populated_session(&mut mgr, 1500);
 
     let mut context_engine = make_compacting_engine();
     let transport = MockTransport;
@@ -191,7 +204,7 @@ async fn test_rotation_updates_active_session() {
 #[tokio::test]
 async fn test_multiple_rotations_increment_numbering() {
     let mut mgr = SessionManager::new_with_path(make_test_dir().path().join("multi-test")).unwrap();
-    let session_id = create_populated_session(&mut mgr, 50);
+    let session_id = create_populated_session(&mut mgr, 1500);
 
     let mut context_engine = make_compacting_engine();
     let transport = MockTransport;
@@ -254,7 +267,7 @@ async fn test_multiple_rotations_increment_numbering() {
 #[tokio::test]
 async fn test_rotation_failure_does_not_panic() {
     let mut mgr = SessionManager::new_with_path(make_test_dir().path().join("fail-test")).unwrap();
-    let session_id = create_populated_session(&mut mgr, 50);
+    let session_id = create_populated_session(&mut mgr, 300);
 
     let mut context_engine = make_compacting_engine();
     let transport = MockTransport;

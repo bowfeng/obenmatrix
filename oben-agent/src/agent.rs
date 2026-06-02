@@ -266,7 +266,7 @@ impl Agent {
             },
         ).await?;
 
-        sm.lock().await.save(None)?;
+        sm.lock().await.incremental_save(None)?;
 
         Ok(response)
     }
@@ -355,18 +355,23 @@ impl Agent {
         }
 
         // Perform compaction
-        self.context_engine
+        let compacted = self.context_engine
             .compact(&mut messages, Some(self.transport.as_ref()), None)
             .await?;
 
-        // Save the compacted messages back to the session.
-        // The incremental save() path (tail.append) can't handle compaction
-        // because persisted_message_count > messages.len() after compression.
-        // save_compacted() handles: clear old DB messages, insert compacted set,
-        // update in-memory session and persisted_message_count.
-        {
-            let mut guard = sm.lock().await;
-            guard.save_compacted(&sid, &messages)?;
+        if compacted {
+            // Save the compacted messages back to the session.
+            // The incremental save() path (tail.append) can't handle compaction
+            // because persisted_message_count > messages.len() after compression.
+            // save_compacted() handles: clear old DB messages, insert compacted set,
+            // update in-memory session and persisted_message_count.
+            {
+                let mut guard = sm.lock().await;
+                guard.save_compacted(&sid, &messages)?;
+            }
+        } else {
+            // Compression was ineffective — messages unchanged, nothing to persist.
+            tracing::warn!("Manual compaction ineffective (session {}), skipping DB update", sid);
         }
 
         Ok(())

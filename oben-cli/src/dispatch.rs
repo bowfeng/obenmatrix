@@ -121,7 +121,11 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         skills_dirs,
         max_iterations: config.max_iterations.unwrap_or(50),
         max_messages: config.context.max_messages.unwrap_or(100),
-        context_config: oben_agent::CompactCofig::default(),
+        context_config: oben_agent::compact::CompactCofig {
+            context_length: config.context.context_length,
+            threshold_percent: config.context.threshold_percent,
+            ..oben_agent::compact::CompactCofig::default()
+        },
         fallback_models: vec![],
         callbacks: oben_agent::AgentCallbacks::default(),
         concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
@@ -259,7 +263,11 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
     println!("Compacting session '{}' ({} messages)...", session.name, session.message_count());
 
     let transport = create_transport(&config, "", &oben_tools::ToolRegistry::new());
-    let comp_config = oben_agent::compact::CompactCofig::default();
+    let comp_config = oben_agent::compact::CompactCofig {
+        context_length: config.context.context_length,
+        threshold_percent: config.context.threshold_percent,
+        ..oben_agent::compact::CompactCofig::default()
+    };
 
     let result = oben_agent::compact_session_messages(
         &transport,

@@ -230,6 +230,10 @@ pub trait SessionManagerExt: Send + Sync {
 
     /// Get a read reference to a session by ID.
     fn session(&self, session_id: &str) -> Option<&Session>;
+
+    /// Save compacted messages: delete all old DB messages, then insert
+    /// the compacted set and update `persisted_message_count`.
+    fn save_compacted(&mut self, session_id: &str, messages: &[crate::Message]) -> Result<(), anyhow::Error>;
 }
 
 /// Entry in the session list view.

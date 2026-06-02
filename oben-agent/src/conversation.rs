@@ -234,12 +234,12 @@ impl ConversationLoop {
                     let err_str = format!("Turn error: {}", e);
                     // Drop e to end borrow chain, then save.
                     std::mem::drop(e);
-                    let _ = session_manager.save(None);
+                    let _ = session_manager.incremental_save(None);
                     return Err(anyhow::anyhow!(err_str));
                 }
             };
             // Save after the match — execute_turn's borrow has ended.
-            let _ = session_manager.save(None);
+            let _ = session_manager.incremental_save(None);
             if let Some(resp) = response_text {
                 if !stream {
                     // Non-streaming: print the full response.

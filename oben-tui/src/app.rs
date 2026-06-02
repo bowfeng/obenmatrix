@@ -390,7 +390,11 @@ impl App {
                 skills_dirs: vec![],
                 max_iterations: self.config.max_iterations.unwrap_or(50),
                 max_messages: self.config.context.max_messages.unwrap_or(100),
-                context_config: oben_agent::CompactCofig::default(),
+                context_config: oben_agent::compact::CompactCofig {
+                    context_length: self.config.context.context_length,
+                    threshold_percent: self.config.context.threshold_percent,
+                    ..oben_agent::compact::CompactCofig::default()
+                },
                 fallback_models: vec![],
                 callbacks,
                 concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
