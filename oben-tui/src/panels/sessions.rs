@@ -271,6 +271,23 @@ impl SessionsPanel {
         self.load_preview().await;
     }
 
+    /// Load/switch to the selected session in the agent.
+    /// If there's no active session, the selected becomes active.
+    /// If there's an active session, switch to the selected one.
+    pub async fn load_session(&mut self) {
+        let session_id = match self.get_session_id() {
+            Some(id) => id,
+            None => return,
+        };
+        if let Err(e) = self.agent.lock().await.switch_session_to(&session_id).await {
+            tracing::error!(
+                "[SessionsPanel] Failed to switch to session {}: {}",
+                session_id,
+                e
+            );
+        }
+    }
+
     async fn handle_delete(&mut self, session_id: String) {
         let _ = self.agent.lock().await.delete_session(&session_id).await;
     }
@@ -470,6 +487,10 @@ impl Panel for SessionsPanel {
             }
             KeyCode::Char('v') if key.modifiers == KeyModifiers::NONE => {
                 self.handle_action(Action::Fork).await;
+            }
+            KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
+                self.load_session().await;
+                self.refresh_list().await;
             }
             _ => {}
         }
