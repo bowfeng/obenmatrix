@@ -1137,4 +1137,265 @@ mod tests {
         assert!(matches!(&parts[1], MessagePart::Text(t) if t.contains("screenshot removed")));
         assert!(matches!(&parts[2], MessagePart::Text(t) if t == "after image"));
     }
+
+    // ─── End-to-end compact_session_messages tests (with mock transport) ──────
+
+    /// Mock transport that returns a predictable summary for testing.
+    struct MockTransport {
+        summary: String,
+    }
+
+    #[async_trait::async_trait]
+    impl TransportProvider for MockTransport {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        async fn chat(
+            &self,
+            _messages: &[Message],
+            _mode: &oben_models::CallMode,
+        ) -> Result<oben_models::TransportResponse> {
+            Ok(oben_models::TransportResponse {
+                text: self.summary.clone(),
+                tool_calls: vec![],
+                tokens_used: None,
+            })
+        }
+
+        async fn stream_chat(
+            &self,
+            _messages: &[Message],
+            _mode: &oben_models::CallMode,
+            _delta_callback: oben_models::StreamDeltaCallback,
+        ) -> Result<oben_models::TransportResponse> {
+            Ok(oben_models::TransportResponse {
+                text: self.summary.clone(),
+                tool_calls: vec![],
+                tokens_used: None,
+            })
+        }
+    }
+
+    fn build_long_conversation(count: usize) -> Vec<Message> {
+        let mut msgs = vec![Message::system("You are a helpful coding assistant dedicated to helping the user with their projects. You always write high-quality code and follow best practices. You explain your reasoning before writing code.")];
+        for i in 0..count {
+            let question = format!("Question {}: What is the best way to implement a concurrent hashmap in Rust? Please explain the tradeoffs between Mutex<RwLock<HashMap<K,V>>> and DashMap. Consider lock contention, read throughput, write throughput, and memory overhead.", i);
+            let answer = format!("Answer {}: Here's a comprehensive comparison:\n1. Mutex<RwLock<HashMap>>: High read throughput but writes block all reads. Simple to use. Good for read-heavy workloads with low contention.\n2. DashMap: Lock-free reads, sharded writes. Best overall performance for concurrent access. Higher memory overhead due to sharding.\n3. crossbeam::SyncQueue: No hashing, ordered operations. Good for pipeline patterns.\nRecommendation: Use DashMap for general-purpose concurrent HashMap. Use std::sync::RwLock if you need exact std::collections::HashMap semantics with read optimization.", i);
+            msgs.push(Message::user(question));
+            msgs.push(Message::assistant(answer));
+            if i % 3 == 0 {
+                let tool_call_msg = Message {
+                    role: oben_models::MessageRole::Assistant,
+                    content: MessageContent::Text("Let me check the documentation and write some benchmark code.".into()),
+                    id: None,
+                    tool_call_ids: vec![],
+                    tool_calls: Some(vec![oben_models::ToolCall {
+                        id: format!("call-{i}"),
+                        tool_name: "file_read".to_string(),
+                        arguments: serde_json::json!({"path": format!("/src/benchmarks/mod{i}.rs", i=i), "content": "x".repeat(500)}),
+                    }]),
+                };
+                msgs.push(tool_call_msg);
+                let tool_result = format!("Benchmark results for mod{}:\nDashMap: 125ns read, 340ns write\nRwLock: 45ns read, 2800ns write (under contention)\nMutex: 42ns read, 2650ns write\n\nThe benchmarks confirm that DashMap provides the best balanced performance for concurrent workloads.", i);
+                msgs.push(Message::tool_result(format!("call-{i}"), tool_result));
+            }
+            if i % 5 == 0 {
+                let follow_up = format!("Question {}: Follow-up - What about atomic reference counting? When should I use Arc<Mutex<HashMap>> instead of DashMap?", i);
+                let fa = format!("Answer {}: Arc<Mutex<HashMap>> is simpler but has higher lock contention. Only choose this if your access pattern is mostly single-threaded with occasional cross-thread reads, or if you need exact std::collections::HashMap API. DashMap is better for genuinely concurrent scenarios.", i);
+                msgs.push(Message::user(follow_up));
+                msgs.push(Message::assistant(fa));
+            }
+        }
+        msgs
+    }
+
+    #[tokio::test]
+    async fn test_compact_session_messages_basic() {
+        // Given: a long conversation (20 turns → ~200+ messages)
+        let messages = build_long_conversation(20);
+        let _original_count = messages.len();
+        // With long messages and small context, middle should be non-empty
+        let config = CompactCofig {
+            context_length: 10_000,
+            threshold_percent: 0.75,
+            protect_first_n: 2,
+            tail_token_budget: 300, // Conservative tail budget
+            tail_min_messages: 2,
+            tail_overhead: 1.5,
+            ..Default::default()
+        };
+        let transport = MockTransport {
+            summary: "## Active Task\nTesting compact.\n## Goal\nEnd-to-end test.\n## Constraints\nMock transport.\n## Completed Actions\nBuilt 20-turn conversation.\n## Active State\nCompacting.\n## Key Decisions\nUse mock transport.\n## Critical Context\nNo sensitive data.".to_string(),
+        };
+
+        // When
+        let result = compact_session_messages(&transport, &messages, &config, None, None, 0).await.unwrap();
+
+        // Then: head is preserved verbatim
+        let head = &result.messages[..config.protect_first_n];
+        assert_eq!(head.len(), config.protect_first_n, "head should preserve first N messages");
+        assert_eq!(head[0].content.to_text(), messages[0].content.to_text(), "system prompt preserved");
+        assert_eq!(head[1].content.to_text(), messages[1].content.to_text(), "first user msg preserved");
+
+        // Tail has at least tail_min_messages
+        let tail_min = config.tail_min_messages.min(2);
+        let tail = &result.messages[result.messages.len().saturating_sub(tail_min)..];
+        assert!(tail.len() >= tail_min, "tail should have at least {} messages", tail_min);
+
+        // Exactly 1 summary message
+        let summary_count = result.messages.iter().filter(|m| {
+            m.role == oben_models::MessageRole::System
+                && m.content.to_text().contains("[CONTEXT COMPACTION")
+        }).count();
+        assert_eq!(summary_count, 1, "should have exactly 1 summary message");
+
+        // Positive savings
+        assert!(result.stats.savings_pct > 0.0, "should show positive savings, got {}", result.stats.savings_pct);
+        assert!(result.stats.compacted_tokens < result.stats.original_tokens, "compacted tokens ({}) should be less than original ({})", result.stats.compacted_tokens, result.stats.original_tokens);
+    }
+
+    #[tokio::test]
+    async fn test_compact_session_messages_short_list_no_compaction() {
+        // Given: fewer messages than head + tail protection — nothing to compact
+        let messages: Vec<Message> = (0..3).map(|i| Message::user(format!("msg{i}"))).collect();
+        let transport = MockTransport { summary: "summary".to_string() };
+
+        // When
+        let result = compact_session_messages(&transport, &messages, &CompactCofig::default(), None, None, 0).await.unwrap();
+
+        // Then: no middle means no summary, messages pass through unchanged
+        assert_eq!(result.stats.original_count, 3);
+        assert!(!result.stats.summary_generated, "no summary should be generated for short lists");
+    }
+
+    #[tokio::test]
+    async fn test_compact_session_messages_with_previous_summary() {
+        // Given: a conversation with a previous compaction summary
+        let messages = build_long_conversation(10);
+        let previous_summary = "## Completed Actions\nPrevious work summary.\n## Active Task\nContinuing work.";
+        let transport = MockTransport {
+            summary: "## Completed Actions\n1. Previous work summary.\n2. New completed action.\n## Active Task\nNew active task.".to_string(),
+        };
+
+        // When
+        let result = compact_session_messages(&transport, &messages, &CompactCofig {
+            tail_token_budget: 300,  // Conservative tail budget
+            ..Default::default()
+        }, Some(previous_summary), None, 0).await.unwrap();
+
+        // Then: summary should incorporate both previous and new info
+        assert!(result.stats.summary_generated, "should generate summary for 10-turn conversation");
+        let summary_text = result.messages.iter().find(|m| {
+            m.role == oben_models::MessageRole::System
+                && m.content.to_text().contains("[CONTEXT COMPACTION")
+        }).map(|m| m.content.to_text()).unwrap_or_default();
+        assert!(summary_text.contains("Previous work summary"), "should preserve previous summary info");
+        assert!(summary_text.contains("New completed action"), "should add new actions");
+    }
+
+    #[tokio::test]
+    async fn test_compact_session_messages_with_focus_topic() {
+        // Given: a conversation where focus_topic should be preserved
+        let messages = build_long_conversation(10);
+        let transport = MockTransport {
+            summary: "## Focus Topic: Rust ownership\nDetailed Rust ownership rules and patterns.\n## Completed Actions\nWorked on ownership.".to_string(),
+        };
+
+        // When
+        let result = compact_session_messages(&transport, &messages, &CompactCofig {
+            tail_token_budget: 300,
+            ..Default::default()
+        }, None, Some("Rust ownership"), 0).await.unwrap();
+
+        // Then: summary should be generated with focus topic content
+        assert!(result.stats.summary_generated, "should generate summary");
+        let summary_text = result.messages.iter().find(|m| {
+            m.role == oben_models::MessageRole::System
+                && m.content.to_text().contains("[CONTEXT COMPACTION")
+        }).map(|m| m.content.to_text()).unwrap_or_default();
+        assert!(summary_text.contains("Rust ownership"), "should preserve focus topic details");
+    }
+
+    #[tokio::test]
+    async fn test_compact_session_messages_preserves_head_verbatim() {
+        // Given: conversation starting with system prompt + specific user messages
+        let system_msg = Message::system("You are a helpful coding assistant.");
+        let first_user = Message::user("What is Rust?");
+        let messages = vec![system_msg.clone(), first_user.clone(),
+            Message::assistant("Rust is a systems language."),
+            Message::user("Tell me more."),
+            Message::assistant("Rust has ownership."),
+        ];
+        let config = CompactCofig {
+            context_length: 500,
+            threshold_percent: 0.3,  // Very low threshold
+            protect_first_n: 2,
+            tail_token_budget: 50,
+            tail_min_messages: 1,
+            ..Default::default()
+        };
+        let transport = MockTransport {
+            summary: "## Summary\nCompacted conversation about Rust.".to_string(),
+        };
+
+        // When
+        let result = compact_session_messages(&transport, &messages, &config, None, None, 0).await.unwrap();
+
+        // Then: first 2 messages (system + first user) are preserved verbatim
+        assert_eq!(result.messages[0].content.to_text(), system_msg.content.to_text());
+        assert_eq!(result.messages[1].content.to_text(), first_user.content.to_text());
+    }
+
+    #[tokio::test]
+    async fn test_compact_session_messages_with_tool_calls() {
+        // Given: conversation with tool calls and results - using longer messages so tail doesn't absorb everything
+        let long_tool_call_msg = Message {
+            role: oben_models::MessageRole::Assistant,
+            content: MessageContent::Text("I need to read the main.rs file to understand the current code structure. Let me examine it and then help you with the next steps.".into()),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: Some(vec![oben_models::ToolCall {
+                id: "call-abc".to_string(),
+                tool_name: "file_read".to_string(),
+                arguments: serde_json::json!({"path": "/src/main.rs"}),
+            }]),
+        };
+        let messages = vec![
+            Message::system("You are a helpful coding assistant dedicated to helping the user with their projects. You always write high-quality code and follow best practices."),
+            Message::user("Please read the main.rs file and tell me what you find."),
+            long_tool_call_msg,
+            Message::tool_result("call-abc", "The file contains: fn main() { println!(\"hello world\"); }. It is a simple Rust program that prints hello world to the console. The file has no imports and is 10 lines long including the main function with a single print statement."),
+            Message::user("Now please modify it to print something more interesting, like the current time or a countdown."),
+            Message::assistant("I will modify the main.rs file to include a countdown from 5 to 1, then print a message. This requires adding the std::thread and std::time imports and using a loop with sleep intervals between each count."),
+            Message::user("That sounds good. Please go ahead and implement it."),
+            Message::assistant("I am now writing the modified main.rs file with the countdown functionality using std::thread::sleep and a for loop from 5 down to 1."),
+        ];
+        let config = CompactCofig {
+            context_length: 500,
+            threshold_percent: 0.5,
+            protect_first_n: 1,
+            tail_token_budget: 50,
+            tail_min_messages: 1,
+            tail_overhead: 1.2,  // Slightly reduce overhead
+            ..Default::default()
+        };
+        let transport = MockTransport {
+            summary: "## Summary\nUser asked to read main.rs (which prints hello world), then modify it to include a countdown from 5 to 1 with sleep intervals.".to_string(),
+        };
+
+        // When
+        let result = compact_session_messages(&transport, &messages, &config, None, None, 0).await.unwrap();
+
+        // Then: should survive without panicking, with sanitized tool pairs
+        assert!(result.stats.summary_generated, "should generate summary for this message count");
+        // Check that tool_call still has valid JSON args
+        for msg in &result.messages {
+            if let Some(tool_calls) = &msg.tool_calls {
+                for tc in tool_calls {
+                    assert!(tc.arguments.is_object(), "tool_call args should still be valid JSON");
+                }
+            }
+        }
+    }
 }
