@@ -394,7 +394,7 @@ impl SessionDB {
     }
     
     /// Try WAL mode first; fall back to DELETE on network filesystems.
-    /// 
+    ///
     /// Returns the journal mode actually set ("wal" or "delete").
     /// Try WAL mode first; fall back to DELETE on network filesystems.
     /// Returns the journal mode actually set ("wal" or "delete").
@@ -1471,7 +1471,7 @@ impl SessionManager {
                 messages: Vec::new(), // metadata only — no messages loaded
                 memory_context: None,
                 summary_chunks: Vec::new(),
-                persisted_message_count: 0,
+                persisted_message_count: meta.message_count,
                 metadata: meta,
             };
             self.sessions.insert(s.id.clone(), s);
@@ -1685,7 +1685,6 @@ impl SessionManager {
         // the user switches to or selects a specific session.
         let metas = self.db.list_sessions(None, &[], 1000, 0, false)?;
         for meta in metas {
-            let msg_count = 0; // no messages loaded for metadata-only sessions
             let session = Session {
                 id: meta.id.clone(),
                 name: meta.name.clone(),
@@ -1694,7 +1693,7 @@ impl SessionManager {
                 messages: Vec::new(),
                 memory_context: None,
                 summary_chunks: Vec::new(),
-                persisted_message_count: msg_count,
+                persisted_message_count: meta.message_count,
                 metadata: meta,
             };
             self.sessions.insert(session.id.clone(), session);
@@ -2273,18 +2272,23 @@ mod tests {
         session.add_message(Message::assistant("hi there"));
         let count = mgr.session_count();
         mgr.incremental_save(None).unwrap();
+        // Test metadata-only load (no messages)
+        let mut mgr3 = SessionManager::new_with_path(path.clone()).unwrap();
+        mgr3.load(None).unwrap();
+        assert_eq!(mgr3.session_count(), count);
+        let meta_loaded = mgr3.active_session().unwrap();
+        assert_eq!(meta_loaded.name, "persist-test");
+        assert_eq!(meta_loaded.metadata.message_count, 2, "metadata message_count should be 2");
+        // Test metadata-only load — message_count from metadata is correct,
+        // but message_count() (from memory) is 0 since messages aren't loaded
+        assert_eq!(meta_loaded.metadata.message_count, 2, "metadata message_count should be 2");
+        // Test full roundtrip with messages
         let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
-        // load(None) loads metadata only, so message_count from cache is 0
-        // Use load(Some(&sid)) to get full roundtrip with messages
         mgr2.load(Some(&sid)).unwrap();
         assert_eq!(mgr2.session_count(), count);
         let loaded = mgr2.active_session().unwrap();
         assert_eq!(loaded.name, "persist-test");
         assert_eq!(loaded.message_count(), 2);
-        // Also verify metadata-only load returns correct session count
-        let mut mgr3 = SessionManager::new_with_path(path.clone()).unwrap();
-        mgr3.load(None).unwrap();
-        assert_eq!(mgr3.session_count(), count);
     }
 
     #[test] fn test_switch_session() {
