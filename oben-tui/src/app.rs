@@ -629,6 +629,18 @@ impl App {
                 };
 
                 if let Some(ref id) = load_id {
+                    // Actually switch the session manager's active session so
+                    // /rename, /clear etc. can operate on it.
+                    if let Some(agent) = &self.agent {
+                        if let Ok(mut g) = agent.try_lock() {
+                            if let Err(e) = g
+                                .session_manager_mut()
+                                .switch_session(id)
+                            {
+                                tracing::error!("Failed to switch session '{id}': {e}");
+                            }
+                        }
+                    }
                     let chat = self.get_chat_mut();
                     if let Some(chat) = chat {
                         info!(

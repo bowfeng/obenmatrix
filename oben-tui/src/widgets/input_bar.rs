@@ -443,16 +443,15 @@ impl InputBarWidget {
         if last_word.starts_with('/') {
             let prefix = last_word.to_lowercase();
             let commands = [
-                ("/clear", "Clear chat messages"),
-                ("/compact", "Compress current session context"),
-                ("/details", "Show available commands"),
-                ("/help", "Show this help message"),
+                ("/rename", "Rename current session"),
                 ("/new", "Start a new session"),
-                ("/quit", "Exit TUI"),
+                ("/compact", "Compress current session context"),
+                ("/clear", "Clear chat messages"),
+                ("/help", "Show this help message"),
                 ("/reasoning", "Enable step-by-step reasoning mode"),
-                ("/session", "Show session info"),
                 ("/theme", "Current theme info"),
                 ("/todo", "Show pending tasks"),
+                ("/quit", "Exit TUI"),
             ];
             state.completion_items = commands
                 .iter()
