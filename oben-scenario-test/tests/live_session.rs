@@ -1,22 +1,18 @@
 /// Live session tests — verifies the session layer (SQLite persistence,
 /// concurrency, schema, FTS5, titles) with a real LLM server as the
 /// source of messages.
-
 use anyhow::Result;
 use oben_config::AppConfig;
 use oben_models::{CallMode, Message, ProviderConfig, TransportProvider};
-use oben_transport::Transport;
 use oben_sessions::SessionDB;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use oben_transport::Transport;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 fn get_provider_config() -> ProviderConfig {
     let config = AppConfig::load().expect("Failed to load config");
-    let mut pc = ProviderConfig::new(
-        config.model.kind.clone(),
-        config.model.model.clone(),
-    );
+    let mut pc = ProviderConfig::new(config.model.kind.clone(), config.model.model.clone());
     pc.api_key = config.model.api_key.clone();
     pc.base_url = config.model.base_url.clone();
     pc.temperature = config.model.temperature;
@@ -40,9 +36,17 @@ async fn test_live_full_roundtrip() -> Result<()> {
 
     let trimmed = resp.text.trim();
     assert!(!trimmed.is_empty(), "LLM returned empty response");
-    assert!(resp.text.len() > 5, "Response too short: {}", resp.text.len());
+    assert!(
+        resp.text.len() > 5,
+        "Response too short: {}",
+        resp.text.len()
+    );
 
-    eprintln!("✅ Full roundtrip: session={}, text_len={}", session_id, resp.text.len());
+    eprintln!(
+        "✅ Full roundtrip: session={}, text_len={}",
+        session_id,
+        resp.text.len()
+    );
 
     let home = std::env::var("HOME").unwrap_or_default();
     let state_path = PathBuf::from(&home).join(".obenalien").join("state.db");
@@ -50,7 +54,9 @@ async fn test_live_full_roundtrip() -> Result<()> {
     if state_path.exists() {
         eprintln!("  state.db exists at {}", state_path.display());
     } else {
-        eprintln!("  state.db not at default path (transport succeeded, session dir managed by Gateway)");
+        eprintln!(
+            "  state.db not at default path (transport succeeded, session dir managed by Gateway)"
+        );
     }
 
     Ok(())
@@ -97,11 +103,22 @@ async fn test_live_concurrent_writes() -> Result<()> {
         for e in &errors {
             eprintln!("  {}", e);
         }
-        assert!(errors.is_empty(), "Expected 0 concurrent write errors but got {}", errors.len());
+        assert!(
+            errors.is_empty(),
+            "Expected 0 concurrent write errors but got {}",
+            errors.len()
+        );
     }
 
-    assert_eq!(successes, num_threads, "All {} threads should succeed", num_threads);
-    eprintln!("✅ Concurrent writes: {}/{} succeeded", successes, num_threads);
+    assert_eq!(
+        successes, num_threads,
+        "All {} threads should succeed",
+        num_threads
+    );
+    eprintln!(
+        "✅ Concurrent writes: {}/{} succeeded",
+        successes, num_threads
+    );
     Ok(())
 }
 
@@ -114,13 +131,19 @@ async fn test_live_session_persistence() -> Result<()> {
 
     // Turn 1
     let resp1 = transport
-        .chat(&[Message::user("first message")], &CallMode::Fresh(session_id.clone()))
+        .chat(
+            &[Message::user("first message")],
+            &CallMode::Fresh(session_id.clone()),
+        )
         .await?;
     assert!(!resp1.text.trim().is_empty(), "Turn 1 should have response");
 
     // Turn 2
     let resp2 = transport
-        .chat(&[Message::user("second message")], &CallMode::Incremental(session_id.clone()))
+        .chat(
+            &[Message::user("second message")],
+            &CallMode::Incremental(session_id.clone()),
+        )
         .await?;
     assert!(!resp2.text.trim().is_empty(), "Turn 2 should have response");
 
@@ -139,7 +162,10 @@ async fn test_live_fts5_search() -> Result<()> {
 
     let unique_term = format!("unique-ftsext-{}", uuid::Uuid::new_v4());
     let resp = transport
-        .chat(&[Message::user(&unique_term)], &CallMode::Fresh(session_id.clone()))
+        .chat(
+            &[Message::user(&unique_term)],
+            &CallMode::Fresh(session_id.clone()),
+        )
         .await?;
 
     assert!(!resp.text.trim().is_empty(), "Should get a response");
@@ -148,7 +174,10 @@ async fn test_live_fts5_search() -> Result<()> {
     let default_state_path = PathBuf::from(&home).join(".obenalien").join("state.db");
 
     if default_state_path.exists() {
-        eprintln!("✅ FTS5 search: session persisted, state.db exists at {}", default_state_path.display());
+        eprintln!(
+            "✅ FTS5 search: session persisted, state.db exists at {}",
+            default_state_path.display()
+        );
     } else {
         eprintln!("⚠️ Session persisted (transport succeeded), state.db not found at default path");
     }
@@ -174,7 +203,11 @@ async fn test_live_title_management() -> Result<()> {
         let resp = transport
             .chat(&[Message::user(*title)], &CallMode::Fresh(clean))
             .await?;
-        assert!(!resp.text.trim().is_empty(), "Failed for title: {:?}", title);
+        assert!(
+            !resp.text.trim().is_empty(),
+            "Failed for title: {:?}",
+            title
+        );
     }
 
     eprintln!("✅ Title management: {} titles sanitized", titles.len());
@@ -210,7 +243,10 @@ fn test_live_sqlite_concurrent_writes() -> Result<()> {
                 .map(|j| Message::user(format!("t{}-m{}", i, j)))
                 .collect();
 
-            if db_clone.save_new_messages(&sid_clone, &mut msgs.into_boxed_slice()).is_ok() {
+            if db_clone
+                .save_new_messages(&sid_clone, &mut msgs.into_boxed_slice())
+                .is_ok()
+            {
                 success.fetch_add(1, Ordering::Relaxed);
             } else {
                 errors.fetch_add(1, Ordering::Relaxed);
@@ -226,16 +262,28 @@ fn test_live_sqlite_concurrent_writes() -> Result<()> {
     let successes = success_count.load(Ordering::Relaxed);
     let errors = error_count.load(Ordering::Relaxed);
 
-    assert_eq!(errors, 0, "Expected 0 lock errors but got {} (successes={}/{})",
-        errors, successes, num_threads);
+    assert_eq!(
+        errors, 0,
+        "Expected 0 lock errors but got {} (successes={}/{})",
+        errors, successes, num_threads
+    );
     assert_eq!(successes, num_threads);
 
     let loaded = db.load_messages(&sid)?;
-    assert_eq!(loaded.len(), num_threads * msgs_per_thread,
-        "Expected {} messages, got {}", num_threads * msgs_per_thread, loaded.len());
+    assert_eq!(
+        loaded.len(),
+        num_threads * msgs_per_thread,
+        "Expected {} messages, got {}",
+        num_threads * msgs_per_thread,
+        loaded.len()
+    );
 
-    eprintln!("✅ SQLite concurrent writes: {}/{} threads, {} total messages",
-        successes, num_threads, loaded.len());
+    eprintln!(
+        "✅ SQLite concurrent writes: {}/{} threads, {} total messages",
+        successes,
+        num_threads,
+        loaded.len()
+    );
     Ok(())
 }
 
@@ -258,11 +306,19 @@ fn test_live_schema_expansion() -> Result<()> {
     db.save_new_messages(&sid, &mut msgs)?;
 
     let loaded = db.load_messages(&sid)?;
-    assert_eq!(loaded.len(), 2, "Should have 2 messages, got {}", loaded.len());
+    assert_eq!(
+        loaded.len(),
+        2,
+        "Should have 2 messages, got {}",
+        loaded.len()
+    );
     assert_eq!(loaded[0].content.to_text(), "schema test user");
     assert_eq!(loaded[1].content.to_text(), "schema test assistant");
 
-    eprintln!("✅ Schema expansion: new columns working, {} messages persisted", loaded.len());
+    eprintln!(
+        "✅ Schema expansion: new columns working, {} messages persisted",
+        loaded.len()
+    );
     Ok(())
 }
 
@@ -275,14 +331,26 @@ async fn test_live_memory_tool() -> Result<()> {
     let session_id = format!("memory-{}", uuid::Uuid::new_v4());
 
     let resp = transport
-        .chat(&[Message::user("remember: user prefers dark mode")], &CallMode::Fresh(session_id.clone()))
+        .chat(
+            &[Message::user("remember: user prefers dark mode")],
+            &CallMode::Fresh(session_id.clone()),
+        )
         .await?;
-    assert!(!resp.text.trim().is_empty(), "Should get a response about memory");
+    assert!(
+        !resp.text.trim().is_empty(),
+        "Should get a response about memory"
+    );
 
     let resp2 = transport
-        .chat(&[Message::user("what do you know about me?")], &CallMode::Incremental(session_id.clone()))
+        .chat(
+            &[Message::user("what do you know about me?")],
+            &CallMode::Incremental(session_id.clone()),
+        )
         .await?;
-    assert!(!resp2.text.trim().is_empty(), "Should get a response referencing prior context");
+    assert!(
+        !resp2.text.trim().is_empty(),
+        "Should get a response referencing prior context"
+    );
 
     eprintln!("✅ Memory tool: session={} turns=2", session_id);
     eprintln!("  turn1: {} chars", resp.text.len());

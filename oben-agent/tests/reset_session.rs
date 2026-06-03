@@ -5,7 +5,6 @@
 /// "no session" state, and the next turn lazily creates a new session.
 ///
 /// All tests use only public APIs — integration tier per AGENTS.md.
-
 use std::sync::Arc;
 
 use oben_agent::compact_context::CompactContextEngine;
@@ -126,13 +125,19 @@ fn test_reset_then_create_new_session() {
 
     // Create a new session (simulates what resolve_session() / first turn does)
     let new_sid = mgr.new_session("chat-new").id.clone();
-    assert_ne!(new_sid, old_id, "new session ID should differ from deleted one");
+    assert_ne!(
+        new_sid, old_id,
+        "new session ID should differ from deleted one"
+    );
     assert!(mgr.active_session().is_some());
     assert_eq!(mgr.active_session().unwrap().id, new_sid);
     assert_eq!(mgr.session_count(), 1);
 
     // Verify the old session is truly gone from memory
-    assert!(mgr.session(&old_id).is_none(), "deleted session should not exist in cache");
+    assert!(
+        mgr.session(&old_id).is_none(),
+        "deleted session should not exist in cache"
+    );
 }
 
 /// Tests that reset() is idempotent — calling it multiple times
@@ -153,13 +158,15 @@ fn test_reset_is_idempotent() {
     assert!(mgr.active_session().is_some());
 
     // First delete — simulates reset()
-    mgr.delete_session(&mgr.active_session_id().unwrap()).unwrap();
+    mgr.delete_session(&mgr.active_session_id().unwrap())
+        .unwrap();
 
     // Second delete — simulates second reset() when already empty
     // Should not panic even if there's no active session
-    mgr.delete_session(&mgr.active_session_id().unwrap_or_default()).unwrap_or_else(|_| {
-        // Expected: delete on empty session may return error, that's fine
-    });
+    mgr.delete_session(&mgr.active_session_id().unwrap_or_default())
+        .unwrap_or_else(|_| {
+            // Expected: delete on empty session may return error, that's fine
+        });
 
     assert!(mgr.active_session().is_none());
     assert_eq!(mgr.session_count(), 0);

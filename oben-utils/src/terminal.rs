@@ -40,7 +40,9 @@ impl Spinner {
             let stderr = io::stderr();
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut s = state.lock().unwrap();
-                if s.stopped { break; }
+                if s.stopped {
+                    break;
+                }
                 let frame = s.frames[s.index % s.frames.len()];
                 s.index += 1;
                 let _ = stderr.lock().flush();

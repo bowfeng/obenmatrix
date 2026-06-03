@@ -30,7 +30,10 @@ pub struct ToolsConfig {
 
 impl Default for ToolsConfig {
     fn default() -> Self {
-        Self { enabled: vec![], auto_detect: true }
+        Self {
+            enabled: vec![],
+            auto_detect: true,
+        }
     }
 }
 
@@ -42,7 +45,10 @@ pub struct SkillsConfig {
 
 impl Default for SkillsConfig {
     fn default() -> Self {
-        Self { enabled: vec![], auto_use: vec![] }
+        Self {
+            enabled: vec![],
+            auto_use: vec![],
+        }
     }
 }
 
@@ -158,9 +164,9 @@ impl Default for AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use crate::defaults;
     use oben_models::ProviderKind;
+    use std::fs;
 
     #[test]
     fn test_default_model_is_openrouter_qwen() {
@@ -257,7 +263,10 @@ mod tests {
         let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.model.kind, oben_models::ProviderKind::Custom);
         assert_eq!(config.model.model, "qwen35-local");
-        assert_eq!(config.model.base_url.as_deref(), Some("http://10.0.0.177:8000/v1"));
+        assert_eq!(
+            config.model.base_url.as_deref(),
+            Some("http://10.0.0.177:8000/v1")
+        );
         assert_eq!(config.tools.enabled, Vec::<String>::new());
         assert!(config.tools.auto_detect);
         assert_eq!(config.display.theme, "dark");
@@ -316,7 +325,12 @@ impl AppConfig {
             config.model.max_tokens = Some(m);
         }
 
-        if config.model.api_key.as_ref().map_or(true, |v| v.trim().is_empty()) {
+        if config
+            .model
+            .api_key
+            .as_ref()
+            .map_or(true, |v| v.trim().is_empty())
+        {
             if let Some(key) =
                 oben_models::provider_registry::resolve_api_key_from_env(config.model.kind.as_str())
             {
@@ -324,7 +338,12 @@ impl AppConfig {
             }
         }
 
-        if config.model.base_url.as_ref().map_or(true, |v| v.trim().is_empty()) {
+        if config
+            .model
+            .base_url
+            .as_ref()
+            .map_or(true, |v| v.trim().is_empty())
+        {
             if let Some(env_var) = config.model.kind.base_url_env_var() {
                 if let Ok(val) = std::env::var(env_var) {
                     let val = val.trim().to_string();

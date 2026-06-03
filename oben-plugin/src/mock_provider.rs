@@ -7,9 +7,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::provider::{
-    BrowserOutput, BrowserProvider, ContextEngine, ContextEngineOutput, ImageGenOutput, ImageGenProvider,
-    ModelProvider, ProviderProfile, SearchResult, VideoGenOutput, VideoGenProvider, WebSearchOutput,
-    WebSearchProvider,
+    BrowserOutput, BrowserProvider, ContextEngine, ContextEngineOutput, ImageGenOutput,
+    ImageGenProvider, ModelProvider, ProviderProfile, SearchResult, VideoGenOutput,
+    VideoGenProvider, WebSearchOutput, WebSearchProvider,
 };
 
 // ────────────────────────────────────────────────────────────────────────
@@ -64,7 +64,10 @@ impl ImageGenProvider for MockImageGenProvider {
         _n: Option<u8>,
     ) -> Result<ImageGenOutput> {
         Ok(ImageGenOutput {
-            url: Some(format!("https://mock.provider/{}.png", prompt.chars().take(8).collect::<String>())),
+            url: Some(format!(
+                "https://mock.provider/{}.png",
+                prompt.chars().take(8).collect::<String>()
+            )),
             data: None,
             mime_type: "image/png".to_string(),
             width: 512,
@@ -196,11 +199,7 @@ impl BrowserProvider for MockBrowserProvider {
         }]
     }
 
-    async fn browse(
-        &self,
-        url: &str,
-        _wait_for_selector: Option<&str>,
-    ) -> Result<BrowserOutput> {
+    async fn browse(&self, url: &str, _wait_for_selector: Option<&str>) -> Result<BrowserOutput> {
         Ok(BrowserOutput {
             title: format!("Page: {}", url),
             content: format!("<html><body>Mock content for {}", url),
@@ -319,7 +318,10 @@ impl VideoGenProvider for MockVideoGenProvider {
         _format: Option<&str>,
     ) -> Result<VideoGenOutput> {
         Ok(VideoGenOutput {
-            url: Some(format!("https://mock.provider/{}.mp4", prompt.chars().take(8).collect::<String>())),
+            url: Some(format!(
+                "https://mock.provider/{}.mp4",
+                prompt.chars().take(8).collect::<String>()
+            )),
             data: None,
             mime_type: "video/mp4".to_string(),
             duration: 30,
@@ -418,7 +420,10 @@ mod tests {
         let provider = MockImageGenProvider::new("mock-gen", true);
 
         rt.block_on(async {
-            let result = provider.generate("test prompt", None, None, None, None).await.unwrap();
+            let result = provider
+                .generate("test prompt", None, None, None, None)
+                .await
+                .unwrap();
             assert!(result.url.is_some());
             assert_eq!(result.mime_type, "image/png");
             assert_eq!(result.width, 512);
@@ -488,7 +493,10 @@ mod tests {
         let provider = MockModelProvider::new("mock-model", true);
 
         rt.block_on(async {
-            let result = provider.chat_completion(&[], None, None, None).await.unwrap();
+            let result = provider
+                .chat_completion(&[], None, None, None)
+                .await
+                .unwrap();
             assert_eq!(result.content, Some("Mock response".to_string()));
             assert!(result.usage.is_some());
             assert_eq!(result.usage.as_ref().unwrap().total_tokens, 30);

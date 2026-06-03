@@ -1,5 +1,4 @@
 /// Parse a markdown checklist into a PlanState.
-
 use crate::plan::{NodeStatus, PlanNode};
 use crate::plan_state::PlanState;
 
@@ -63,7 +62,11 @@ pub fn parse_plan_from_markdown(text: &str) -> Option<PlanState> {
             _ => NodeStatus::Pending,
         };
 
-        items.push(ListItem { level, status, title });
+        items.push(ListItem {
+            level,
+            status,
+            title,
+        });
     }
 
     if items.is_empty() {
@@ -116,7 +119,8 @@ trait LtrimWhitespace {
 
 impl LtrimWhitespace for str {
     fn ltrim_whitespace(&self) -> &str {
-        self.find(|c: char| !c.is_whitespace()).map_or("", |i| &self[i..])
+        self.find(|c: char| !c.is_whitespace())
+            .map_or("", |i| &self[i..])
     }
 }
 
@@ -242,7 +246,8 @@ mod tests {
 
     #[test]
     fn test_parse_node_complete_success() {
-        let msg = "### Node Complete: 'implement fetcher' — Result: Created scraper.rs with fetch_url()";
+        let msg =
+            "### Node Complete: 'implement fetcher' — Result: Created scraper.rs with fetch_url()";
         let (title, result) = parse_node_complete(msg).unwrap();
         assert_eq!(title, "implement fetcher");
         assert_eq!(result, "Created scraper.rs with fetch_url()");

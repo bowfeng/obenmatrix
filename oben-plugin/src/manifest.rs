@@ -2,7 +2,6 @@
 ///
 /// Maps to Hermes' `PluginManifest` dataclass which represents a plugin's
 /// `plugin.yaml` declaration.
-
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -134,22 +133,27 @@ impl PluginManifest {
         } else if fallback.exists() {
             &fallback
         } else {
-            return Err(anyhow!("No plugin.yaml or plugin.yml found in {}", plugin_dir.display()));
+            return Err(anyhow!(
+                "No plugin.yaml or plugin.yml found in {}",
+                plugin_dir.display()
+            ));
         };
 
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
 
-        let data: HashMap<String, serde_yaml::Value> =
-            serde_yaml::from_str(&content).with_context(|| {
-                format!("Failed to parse YAML in {}", path.display())
-            })?;
+        let data: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&content)
+            .with_context(|| format!("Failed to parse YAML in {}", path.display()))?;
 
         let name = data
             .get("name")
             .and_then(|v| v.as_str())
             .map(String::from)
-            .or_else(|| plugin_dir.file_name().map(|n| n.to_string_lossy().to_string()))
+            .or_else(|| {
+                plugin_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+            })
             .unwrap_or_default();
 
         let raw_kind = data
@@ -160,18 +164,13 @@ impl PluginManifest {
         let kind = parse_plugin_kind(raw_kind);
 
         // Auto-detect kind if not explicitly set
-        let kind = if raw_kind.trim().to_lowercase() == "standalone"
-            && !data.contains_key("kind")
-        {
+        let kind = if raw_kind.trim().to_lowercase() == "standalone" && !data.contains_key("kind") {
             Self::detect_kind(plugin_dir)
         } else {
             kind
         };
 
-        let key = data
-            .get("key")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&name);
+        let key = data.get("key").and_then(|v| v.as_str()).unwrap_or(&name);
 
         // Try to build path-derived key from directory structure
         let key = Self::derive_key_from_path(plugin_dir, key);
@@ -204,16 +203,13 @@ impl PluginManifest {
                     .unwrap_or_default(),
             ),
             provides_tools: Self::parse_string_list(
-                data.get("provides_tools")
-                    .and_then(|v| v.as_sequence()),
+                data.get("provides_tools").and_then(|v| v.as_sequence()),
             ),
             provides_hooks: Self::parse_string_list(
-                data.get("provides_hooks")
-                    .and_then(|v| v.as_sequence()),
+                data.get("provides_hooks").and_then(|v| v.as_sequence()),
             ),
             provides_providers: Self::parse_string_list(
-                data.get("provides_providers")
-                    .and_then(|v| v.as_sequence()),
+                data.get("provides_providers").and_then(|v| v.as_sequence()),
             ),
             source,
             path: Some(plugin_dir.display().to_string()),
@@ -231,9 +227,7 @@ impl PluginManifest {
 
         if let Ok(content) = fs::read_to_string(&init_file) {
             let content = &content[..content.len().min(8192)];
-            if content.contains("register_memory_provider")
-                || content.contains("MemoryProvider")
-            {
+            if content.contains("register_memory_provider") || content.contains("MemoryProvider") {
                 debug!(
                     "Plugin {}: detected memory provider, treating as kind='exclusive'",
                     plugin_dir.display()
@@ -329,10 +323,7 @@ mod tests {
         /// when: from_yaml() is called
         /// then: returns valid PluginManifest with defaults
         let dir = TempDir::new().unwrap();
-        create_test_manifest(
-            dir.path(),
-            "name: test-plugin\n",
-        );
+        create_test_manifest(dir.path(), "name: test-plugin\n");
 
         let manifest = PluginManifest::from_yaml(dir.path(), PluginSource::Bundled).unwrap();
         assert_eq!(manifest.name, "test-plugin");

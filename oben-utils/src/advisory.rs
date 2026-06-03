@@ -82,12 +82,11 @@ fn advisory_shai_hulud() -> Advisory {
     Advisory {
         id: "shai-hulud-2026-05".to_string(),
         title: "Mini Shai-Hulud worm — mistralai 2.4.6 compromised on PyPI".to_string(),
-        summary:
-            "PyPI quarantined the mistralai package on 2026-05-12 after a malicious \
+        summary: "PyPI quarantined the mistralai package on 2026-05-12 after a malicious \
              2.4.6 release. The worm steals credentials from environment variables \
              and credential files (~/.npmrc, ~/.pypirc, ~/.aws/credentials, GitHub \
              PATs, cloud SDK tokens) and exfils them to a hardcoded webhook."
-                .to_string(),
+            .to_string(),
         url: "https://socket.dev/blog/mini-shai-hulud-worm-pypi".to_string(),
         compromised: vec![CompromisedPackage {
             name: "mistralai".to_string(),
@@ -120,10 +119,7 @@ pub type VersionLookup = fn(&str) -> Option<String>;
 /// * `lookup` — A function that returns the installed version of a package
 ///   name, or `None` if not installed.
 /// * `advisories` — Optional override list. If `None`, uses the built-in catalog.
-pub fn detect_compromised<F>(
-    lookup: F,
-    advisories: Option<&[Advisory]>,
-) -> Vec<AdvisoryHit>
+pub fn detect_compromised<F>(lookup: F, advisories: Option<&[Advisory]>) -> Vec<AdvisoryHit>
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -142,8 +138,7 @@ where
                 None => continue,
             };
 
-            let matched = pkg.bad_versions.is_empty()
-                || pkg.bad_versions.contains(&installed);
+            let matched = pkg.bad_versions.is_empty() || pkg.bad_versions.contains(&installed);
 
             if matched {
                 hits.push(AdvisoryHit {
@@ -180,10 +175,7 @@ pub fn severity_label(severity: &Severity, color: bool) -> String {
 pub fn short_banner(hit: &AdvisoryHit) -> String {
     format!(
         "[{}] {}: {}=={}",
-        hit.advisory.id,
-        hit.advisory.title,
-        hit.package,
-        hit.installed_version,
+        hit.advisory.id, hit.advisory.title, hit.package, hit.installed_version,
     )
 }
 
@@ -197,7 +189,8 @@ pub fn remediation_text(hit: &AdvisoryHit) -> String {
         hit.advisory.id,
         hit.advisory.severity.as_str(),
         hit.advisory.published
-    ).ok();
+    )
+    .ok();
     writeln!(out, "Detected: {}=={}", hit.package, hit.installed_version).ok();
     writeln!(out, "Reference: {}", hit.advisory.url).ok();
     writeln!(out).ok();
@@ -213,7 +206,10 @@ pub fn remediation_text(hit: &AdvisoryHit) -> String {
 /// Render a full doctor-style report for multiple hits.
 pub fn render_report(hits: &[AdvisoryHit], color: bool) -> (bool, String) {
     if hits.is_empty() {
-        return (false, "No active security advisories detected.\n".to_string());
+        return (
+            false,
+            "No active security advisories detected.\n".to_string(),
+        );
     }
 
     let mut out = String::new();
@@ -227,7 +223,10 @@ pub fn render_report(hits: &[AdvisoryHit], color: bool) -> (bool, String) {
                 Severity::Medium => "\x1b[33m",
                 Severity::High | Severity::Critical => "\x1b[1;31m",
             };
-            format!("{}[SECURITY ADVISORY: {}] {}", sev_col, hit.advisory.title, "\x1b[0m")
+            format!(
+                "{}[SECURITY ADVISORY: {}] {}",
+                sev_col, hit.advisory.title, "\x1b[0m"
+            )
         } else {
             format!("[SECURITY ADVISORY: {}]", hit.advisory.title)
         };
@@ -245,11 +244,7 @@ pub fn render_report(hits: &[AdvisoryHit], color: bool) -> (bool, String) {
 pub fn gateway_log_message(hit: &AdvisoryHit) -> String {
     format!(
         "Security advisory [{}] active: {}=={} matches {}. See {}",
-        hit.advisory.id,
-        hit.package,
-        hit.installed_version,
-        hit.advisory.title,
-        hit.advisory.url,
+        hit.advisory.id, hit.package, hit.installed_version, hit.advisory.title, hit.advisory.url,
     )
 }
 
@@ -302,7 +297,11 @@ const OSV_ENDPOINT: &str = "https://api.osv.dev/v1/query";
 const OSV_TIMEOUT_SECS: u64 = 10;
 
 fn infer_osv_ecosystem(command: &str) -> Option<&'static str> {
-    let base = command.trim_end_matches('/').split('/').last().unwrap_or("");
+    let base = command
+        .trim_end_matches('/')
+        .split('/')
+        .last()
+        .unwrap_or("");
     let base = base.to_lowercase();
     match base.as_str() {
         "npx" | "npx.cmd" => Some("npm"),
@@ -311,10 +310,7 @@ fn infer_osv_ecosystem(command: &str) -> Option<&'static str> {
     }
 }
 
-fn parse_package_from_args(
-    args: &[String],
-    ecosystem: &str,
-) -> (Option<String>, Option<String>) {
+fn parse_package_from_args(args: &[String], ecosystem: &str) -> (Option<String>, Option<String>) {
     let package_token = args.iter().find(|a| !a.starts_with('-')).cloned();
     let token = match package_token {
         Some(t) => t,
@@ -363,11 +359,7 @@ fn parse_pypi_package(token: &str) -> (Option<String>, Option<String>) {
     (Some(clean), None)
 }
 
-fn query_osv(
-    package: &str,
-    ecosystem: &str,
-    version: Option<&str>,
-) -> Option<String> {
+fn query_osv(package: &str, ecosystem: &str, version: Option<&str>) -> Option<String> {
     let mut payload = serde_json::Map::new();
     let mut pkg = serde_json::Map::new();
     pkg.insert("name".to_string(), serde_json::json!(package));
@@ -446,23 +438,21 @@ mod tests {
     use super::*;
 
     fn lookup_table(t: &[(&str, Option<String>)]) -> impl Fn(&str) -> Option<String> {
-        let map: Vec<(String, Option<String>)> = t.iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect();
-        move |name: &str| map.iter()
-            .find(|(k, _)| k.as_str() == name)
-            .map(|(_, v)| v.clone())
-            .flatten()
+        let map: Vec<(String, Option<String>)> =
+            t.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        move |name: &str| {
+            map.iter()
+                .find(|(k, _)| k.as_str() == name)
+                .map(|(_, v)| v.clone())
+                .flatten()
+        }
     }
 
     /// Given no matching packages, When detect_compromised runs,
     /// Then returns an empty list.
     #[test]
     fn test_detect_compromised_empty() {
-        let hits = detect_compromised(
-            lookup_table(&[("nonexistent", None)]),
-            None,
-        );
+        let hits = detect_compromised(lookup_table(&[("nonexistent", None)]), None);
         assert!(hits.is_empty());
     }
 
@@ -647,10 +637,7 @@ mod tests {
                     s
                 },
             }],
-            remediation: vec![
-                "uninstall evil-pkg".to_string(),
-                "rotate keys".to_string(),
-            ],
+            remediation: vec!["uninstall evil-pkg".to_string(), "rotate keys".to_string()],
             published: "2026-03-01".to_string(),
             severity: Severity::High,
         }];

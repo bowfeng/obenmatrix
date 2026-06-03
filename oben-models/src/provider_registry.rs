@@ -172,27 +172,79 @@ pub const ALIAS_CANONICAL_PAIRS: &[(&str, &str)] = &[
 /// Provider-specific metadata for known providers.
 /// Maps to `HERMES_OVERLAYS` from `providers.py`.
 pub(crate) const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
-    ("anthropic", TransportType::AnthropicMessages, "https://api.anthropic.com/v1"),
+    (
+        "anthropic",
+        TransportType::AnthropicMessages,
+        "https://api.anthropic.com/v1",
+    ),
     ("openai", TransportType::OpenAIChat, ""),
-    ("openrouter", TransportType::OpenAIChat, "https://openrouter.ai/api/v1"),
-    ("google-gemini", TransportType::GeminiNative, "https://generativelanguage.googleapis.com/v1beta"),
-    ("google-gemini-cli", TransportType::OpenAIChat, "cloudcode-pa://google"),
-    ("zai", TransportType::OpenAIChat, "https://open.bigmodel.cn/api/paas/v4/"),
-    ("kimi-for-coding", TransportType::OpenAIChat, "https://api.moonshot.cn/v1"),
+    (
+        "openrouter",
+        TransportType::OpenAIChat,
+        "https://openrouter.ai/api/v1",
+    ),
+    (
+        "google-gemini",
+        TransportType::GeminiNative,
+        "https://generativelanguage.googleapis.com/v1beta",
+    ),
+    (
+        "google-gemini-cli",
+        TransportType::OpenAIChat,
+        "cloudcode-pa://google",
+    ),
+    (
+        "zai",
+        TransportType::OpenAIChat,
+        "https://open.bigmodel.cn/api/paas/v4/",
+    ),
+    (
+        "kimi-for-coding",
+        TransportType::OpenAIChat,
+        "https://api.moonshot.cn/v1",
+    ),
     ("deepseek", TransportType::OpenAIChat, ""),
-    ("alibaba", TransportType::OpenAIChat, "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    (
+        "alibaba",
+        TransportType::OpenAIChat,
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ),
     ("alibaba-coding-plan", TransportType::OpenAIChat, ""),
-    ("stepfun", TransportType::OpenAIChat, "https://api.stepfun.ai/step_plan/v1"),
+    (
+        "stepfun",
+        TransportType::OpenAIChat,
+        "https://api.stepfun.ai/step_plan/v1",
+    ),
     ("minimax", TransportType::AnthropicMessages, ""),
-    ("minimax-oauth", TransportType::AnthropicMessages, "https://api.minimax.io/anthropic"),
+    (
+        "minimax-oauth",
+        TransportType::AnthropicMessages,
+        "https://api.minimax.io/anthropic",
+    ),
     ("minimax-cn", TransportType::AnthropicMessages, ""),
     ("tencent-tokenhub", TransportType::OpenAIChat, ""),
     ("xai", TransportType::CodexResponses, ""),
     ("xai-oauth", TransportType::CodexResponses, ""),
-    ("nvidia", TransportType::OpenAIChat, "https://integrate.api.nvidia.com/v1"),
-    ("baidu", TransportType::OpenAIChat, "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/"),
-    ("lmstudio", TransportType::OpenAIChat, "http://127.0.0.1:1234/v1"),
-    ("nous", TransportType::OpenAIChat, "https://inference-api.nousresearch.com/v1"),
+    (
+        "nvidia",
+        TransportType::OpenAIChat,
+        "https://integrate.api.nvidia.com/v1",
+    ),
+    (
+        "baidu",
+        TransportType::OpenAIChat,
+        "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/",
+    ),
+    (
+        "lmstudio",
+        TransportType::OpenAIChat,
+        "http://127.0.0.1:1234/v1",
+    ),
+    (
+        "nous",
+        TransportType::OpenAIChat,
+        "https://inference-api.nousresearch.com/v1",
+    ),
     ("vercel", TransportType::OpenAIChat, ""),
     ("opencode", TransportType::OpenAIChat, ""),
     ("opencode-go", TransportType::OpenAIChat, ""),
@@ -200,9 +252,21 @@ pub(crate) const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
     ("huggingface", TransportType::OpenAIChat, ""),
     ("novita", TransportType::OpenAIChat, ""),
     ("xiaomi", TransportType::OpenAIChat, ""),
-    ("arcee", TransportType::OpenAIChat, "https://api.arcee.ai/api/v1"),
-    ("gmi", TransportType::OpenAIChat, "https://api.gmi-serving.com/v1"),
-    ("ollama-custom", TransportType::OpenAIChat, "https://ollama.com/v1"),
+    (
+        "arcee",
+        TransportType::OpenAIChat,
+        "https://api.arcee.ai/api/v1",
+    ),
+    (
+        "gmi",
+        TransportType::OpenAIChat,
+        "https://api.gmi-serving.com/v1",
+    ),
+    (
+        "ollama-custom",
+        TransportType::OpenAIChat,
+        "https://ollama.com/v1",
+    ),
     ("local", TransportType::OpenAIChat, ""),
 ];
 
@@ -212,40 +276,50 @@ pub(crate) const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
 /// try.  The first non-empty value wins.  An empty slice means the provider has
 /// no env-var fallback (OAuth-based, cloud-only, or local).
 const PROVIDER_API_KEY_CHAINS: &[(&str, &'static [&'static str])] = &[
-    ("openai",            &["OPENAI_API_KEY", "OPENAI_TOKEN"]),
-    ("openrouter",        &["OPENROUTER_API_KEY"]),
-    ("anthropic",         &["ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]),
-    ("bedrock",           &[]),
-    ("google-gemini",     &["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
+    ("openai", &["OPENAI_API_KEY", "OPENAI_TOKEN"]),
+    ("openrouter", &["OPENROUTER_API_KEY"]),
+    (
+        "anthropic",
+        &[
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ],
+    ),
+    ("bedrock", &[]),
+    ("google-gemini", &["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
     ("google-gemini-cli", &["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
-    ("lmstudio",          &["LM_API_KEY"]),
-    ("deepseek",          &["DEEPSEEK_API_KEY"]),
-    ("alibaba",           &["DASHSCOPE_API_KEY"]),
-    ("alibaba-coding-plan", &["ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"]),
-    ("stepfun",           &["STEPFUN_API_KEY"]),
-    ("minimax",           &["MINIMAX_API_KEY"]),
-    ("minimax-oauth",     &[]),
-    ("minimax-cn",        &["MINIMAX_CN_API_KEY"]),
-    ("tencent-tokenhub",  &["TOKENHUB_API_KEY"]),
-    ("xai",               &["XAI_API_KEY"]),
-    ("xai-oauth",         &[]),
-    ("nvidia",            &["NVIDIA_API_KEY"]),
-    ("nous",              &[]),
-    ("vercel",            &["AI_GATEWAY_API_KEY"]),
-    ("opencode",          &["OPENCODE_ZEN_API_KEY"]),
-    ("opencode-go",       &["OPENCODE_GO_API_KEY"]),
-    ("kilo",              &["KILOCODE_API_KEY"]),
-    ("huggingface",       &["HF_TOKEN"]),
-    ("novita",            &["NOVITA_API_KEY"]),
-    ("xiaomi",            &["XIAOMI_API_KEY"]),
-    ("arcee",             &["ARCEEAI_API_KEY"]),
-    ("gmi",               &["GMI_API_KEY"]),
-    ("ollama-custom",     &["OLLAMA_API_KEY"]),
-    ("zai",               &["GLM_API_KEY", "ZAI_API_KEY"]),
-    ("kimi",              &["MOONSHOT_API_KEY"]),
-    ("baidu",             &["BAIDU_API_KEY"]),
-    ("local",             &[]),
-    ("custom",            &[]),
+    ("lmstudio", &["LM_API_KEY"]),
+    ("deepseek", &["DEEPSEEK_API_KEY"]),
+    ("alibaba", &["DASHSCOPE_API_KEY"]),
+    (
+        "alibaba-coding-plan",
+        &["ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"],
+    ),
+    ("stepfun", &["STEPFUN_API_KEY"]),
+    ("minimax", &["MINIMAX_API_KEY"]),
+    ("minimax-oauth", &[]),
+    ("minimax-cn", &["MINIMAX_CN_API_KEY"]),
+    ("tencent-tokenhub", &["TOKENHUB_API_KEY"]),
+    ("xai", &["XAI_API_KEY"]),
+    ("xai-oauth", &[]),
+    ("nvidia", &["NVIDIA_API_KEY"]),
+    ("nous", &[]),
+    ("vercel", &["AI_GATEWAY_API_KEY"]),
+    ("opencode", &["OPENCODE_ZEN_API_KEY"]),
+    ("opencode-go", &["OPENCODE_GO_API_KEY"]),
+    ("kilo", &["KILOCODE_API_KEY"]),
+    ("huggingface", &["HF_TOKEN"]),
+    ("novita", &["NOVITA_API_KEY"]),
+    ("xiaomi", &["XIAOMI_API_KEY"]),
+    ("arcee", &["ARCEEAI_API_KEY"]),
+    ("gmi", &["GMI_API_KEY"]),
+    ("ollama-custom", &["OLLAMA_API_KEY"]),
+    ("zai", &["GLM_API_KEY", "ZAI_API_KEY"]),
+    ("kimi", &["MOONSHOT_API_KEY"]),
+    ("baidu", &["BAIDU_API_KEY"]),
+    ("local", &[]),
+    ("custom", &[]),
 ];
 
 /// Provider base URL environment variable mapping.
@@ -354,43 +428,42 @@ pub fn resolve_provider_info(name: &str) -> Option<ProviderInfo<'_>> {
 /// transport depends on the user-provided base URL.
 pub fn provider_kind_to_transport(kind: crate::providers::ProviderKind) -> Option<TransportType> {
     Some(match kind {
-        crate::providers::ProviderKind::Anthropic |
-        crate::providers::ProviderKind::MiniMax |
-        crate::providers::ProviderKind::MiniMaxOAuth |
-        crate::providers::ProviderKind::MiniMaxCN => TransportType::AnthropicMessages,
+        crate::providers::ProviderKind::Anthropic
+        | crate::providers::ProviderKind::MiniMax
+        | crate::providers::ProviderKind::MiniMaxOAuth
+        | crate::providers::ProviderKind::MiniMaxCN => TransportType::AnthropicMessages,
         crate::providers::ProviderKind::Bedrock => TransportType::BedrockConverse,
-        crate::providers::ProviderKind::XAI |
-        crate::providers::ProviderKind::XAIOAuth => TransportType::CodexResponses,
+        crate::providers::ProviderKind::XAI | crate::providers::ProviderKind::XAIOAuth => {
+            TransportType::CodexResponses
+        }
         crate::providers::ProviderKind::Gemini => TransportType::GeminiNative,
-        crate::providers::ProviderKind::OpenAI |
-        crate::providers::ProviderKind::OpenRouter |
-        crate::providers::ProviderKind::LMStudio |
-        crate::providers::ProviderKind::Custom |
-        crate::providers::ProviderKind::DeepSeek |
-        crate::providers::ProviderKind::Alibaba |
-        crate::providers::ProviderKind::AlibabaCodingPlan |
-        crate::providers::ProviderKind::StepFun |
-        crate::providers::ProviderKind::TencentTokenHub |
-        crate::providers::ProviderKind::NVIDIA |
-        crate::providers::ProviderKind::Nous |
-        crate::providers::ProviderKind::Vercel |
-        crate::providers::ProviderKind::OpenCode |
-        crate::providers::ProviderKind::OpenCodeGo |
-        crate::providers::ProviderKind::Kilo |
-        crate::providers::ProviderKind::HuggingFace |
-        crate::providers::ProviderKind::Novita |
-        crate::providers::ProviderKind::Xiaomi |
-        crate::providers::ProviderKind::Arcee |
-        crate::providers::ProviderKind::GMI |
-        crate::providers::ProviderKind::OllamaCloud |
-            crate::providers::ProviderKind::Local |
-            crate::providers::ProviderKind::Zai |
-            crate::providers::ProviderKind::Kimi |
-            crate::providers::ProviderKind::Baidu => TransportType::OpenAIChat,
+        crate::providers::ProviderKind::OpenAI
+        | crate::providers::ProviderKind::OpenRouter
+        | crate::providers::ProviderKind::LMStudio
+        | crate::providers::ProviderKind::Custom
+        | crate::providers::ProviderKind::DeepSeek
+        | crate::providers::ProviderKind::Alibaba
+        | crate::providers::ProviderKind::AlibabaCodingPlan
+        | crate::providers::ProviderKind::StepFun
+        | crate::providers::ProviderKind::TencentTokenHub
+        | crate::providers::ProviderKind::NVIDIA
+        | crate::providers::ProviderKind::Nous
+        | crate::providers::ProviderKind::Vercel
+        | crate::providers::ProviderKind::OpenCode
+        | crate::providers::ProviderKind::OpenCodeGo
+        | crate::providers::ProviderKind::Kilo
+        | crate::providers::ProviderKind::HuggingFace
+        | crate::providers::ProviderKind::Novita
+        | crate::providers::ProviderKind::Xiaomi
+        | crate::providers::ProviderKind::Arcee
+        | crate::providers::ProviderKind::GMI
+        | crate::providers::ProviderKind::OllamaCloud
+        | crate::providers::ProviderKind::Local
+        | crate::providers::ProviderKind::Zai
+        | crate::providers::ProviderKind::Kimi
+        | crate::providers::ProviderKind::Baidu => TransportType::OpenAIChat,
     })
-
 }
-
 
 /// Look up a model in the remote catalog.
 ///
@@ -401,9 +474,9 @@ pub fn resolve_catalog_model(model_id: &str) -> Option<ModelCatalogInfo> {
     let catalog = crate::CatalogManifest::get();
     let remote = catalog.find_model(model_id)?;
     let canonical = remote.id.split('/').next()?;
-    let transport = provider_kind_to_transport(
-        crate::providers::ProviderKind::from_alias(canonical)
-    ).unwrap_or(TransportType::OpenAIChat);
+    let transport =
+        provider_kind_to_transport(crate::providers::ProviderKind::from_alias(canonical))
+            .unwrap_or(TransportType::OpenAIChat);
     Some(ModelCatalogInfo {
         model_id: remote.id.clone(),
         description: remote.description.clone(),
@@ -425,7 +498,10 @@ mod tests {
 
     #[test]
     fn anthropic_transports_as_str() {
-        assert_eq!(TransportType::AnthropicMessages.as_str(), "anthropic_messages");
+        assert_eq!(
+            TransportType::AnthropicMessages.as_str(),
+            "anthropic_messages"
+        );
         assert_eq!(TransportType::OpenAIChat.as_str(), "openai_chat");
         assert_eq!(TransportType::BedrockConverse.as_str(), "bedrock_converse");
         assert_eq!(TransportType::CodexResponses.as_str(), "codex_responses");
@@ -460,20 +536,47 @@ mod tests {
         use crate::providers::ProviderKind;
 
         // Anthropic/MiniMax family → AnthropicMessages
-        assert_eq!(provider_kind_to_transport(ProviderKind::Anthropic), Some(TransportType::AnthropicMessages));
-        assert_eq!(provider_kind_to_transport(ProviderKind::MiniMax), Some(TransportType::AnthropicMessages));
-        assert_eq!(provider_kind_to_transport(ProviderKind::MiniMaxOAuth), Some(TransportType::AnthropicMessages));
-        assert_eq!(provider_kind_to_transport(ProviderKind::MiniMaxCN), Some(TransportType::AnthropicMessages));
+        assert_eq!(
+            provider_kind_to_transport(ProviderKind::Anthropic),
+            Some(TransportType::AnthropicMessages)
+        );
+        assert_eq!(
+            provider_kind_to_transport(ProviderKind::MiniMax),
+            Some(TransportType::AnthropicMessages)
+        );
+        assert_eq!(
+            provider_kind_to_transport(ProviderKind::MiniMaxOAuth),
+            Some(TransportType::AnthropicMessages)
+        );
+        assert_eq!(
+            provider_kind_to_transport(ProviderKind::MiniMaxCN),
+            Some(TransportType::AnthropicMessages)
+        );
 
         // Bedrock → BedrockConverse
-        assert_eq!(provider_kind_to_transport(ProviderKind::Bedrock), Some(TransportType::BedrockConverse));
+        assert_eq!(
+            provider_kind_to_transport(ProviderKind::Bedrock),
+            Some(TransportType::BedrockConverse)
+        );
 
         // XAI → CodexResponses
-        assert_eq!(provider_kind_to_transport(ProviderKind::XAI), Some(TransportType::CodexResponses));
+        assert_eq!(
+            provider_kind_to_transport(ProviderKind::XAI),
+            Some(TransportType::CodexResponses)
+        );
 
         // All others → OpenAIChat
-        assert_eq!(provider_kind_to_transport(ProviderKind::OpenAI), Some(TransportType::OpenAIChat));
-        assert_eq!(provider_kind_to_transport(ProviderKind::Custom), Some(TransportType::OpenAIChat));
-        assert_eq!(provider_kind_to_transport(ProviderKind::Gemini), Some(TransportType::GeminiNative));
+        assert_eq!(
+            provider_kind_to_transport(ProviderKind::OpenAI),
+            Some(TransportType::OpenAIChat)
+        );
+        assert_eq!(
+            provider_kind_to_transport(ProviderKind::Custom),
+            Some(TransportType::OpenAIChat)
+        );
+        assert_eq!(
+            provider_kind_to_transport(ProviderKind::Gemini),
+            Some(TransportType::GeminiNative)
+        );
     }
 }

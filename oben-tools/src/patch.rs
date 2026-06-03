@@ -1,15 +1,14 @@
+use serde_json::Value;
 /// Patch tool — fuzzy text replacement in files.
 ///
 /// Implements a multi-strategy matching chain to robustly find and replace text,
 /// accommodating variations in whitespace, indentation, and escaping.
-
 use std::path::Path;
 use std::sync::Arc;
-use serde_json::Value;
 
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{SelfRegisteringTool, ToolHandler};
 use oben_utils::path_security::is_path_safe;
 
 // ---------------------------------------------------------------------------
@@ -18,11 +17,11 @@ use oben_utils::path_security::is_path_safe;
 
 /// Unicode normalization map: [from_char, to_string, ...]
 const UNICODE_REPLACEMENTS: &[(char, &str)] = &[
-    ('\u{201c}', "\""),   // smart double quotes
+    ('\u{201c}', "\""), // smart double quotes
     ('\u{201d}', "\""),
-    ('\u{2018}', "'"),   // smart single quotes
+    ('\u{2018}', "'"), // smart single quotes
     ('\u{2019}', "'"),
-    ('\u{2014}', "--"),  // em/en dashes
+    ('\u{2014}', "--"), // em/en dashes
     ('\u{2013}', "-"),
     ('\u{2026}', "..."), // ellipsis
     ('\u{00a0}', " "),   // non-breaking space
@@ -49,12 +48,12 @@ fn try_exact(content: &str, old: &str) -> Option<usize> {
 fn try_line_trimmed(content: &str, old: &str) -> Option<usize> {
     let old_lines: Vec<&str> = old.lines().collect();
     let content_lines: Vec<&str> = content.lines().collect();
-    
+
     for i in 0..content_lines.len() {
         if i + old_lines.len() > content_lines.len() {
             break;
         }
-        
+
         let mut matched = true;
         for (j, old_line) in old_lines.iter().enumerate() {
             let trimmed_old = old_line.trim();
@@ -64,7 +63,7 @@ fn try_line_trimmed(content: &str, old: &str) -> Option<usize> {
                 break;
             }
         }
-        
+
         if matched {
             // Calculate start position
             let mut pos = 0;
@@ -81,11 +80,11 @@ fn try_line_trimmed(content: &str, old: &str) -> Option<usize> {
 fn try_whitespace_normalized(content: &str, old: &str) -> Option<usize> {
     let original_tokens: Vec<&str> = content.split_whitespace().collect();
     let old_tokens: Vec<&str> = old.split_whitespace().collect();
-    
+
     if original_tokens.len() < old_tokens.len() {
         return None;
     }
-    
+
     for i in 0..=original_tokens.len().saturating_sub(old_tokens.len()) {
         if original_tokens[i..i + old_tokens.len()] == old_tokens[..] {
             // Compute start position by accumulating original token lengths + separator space
@@ -103,20 +102,20 @@ fn try_whitespace_normalized(content: &str, old: &str) -> Option<usize> {
 fn fuzzy_find(content: &str, old: &str) -> (Option<usize>, String) {
     let old_normalized = unicode_normalize(old);
     let content_normalized = unicode_normalize(content);
-    
+
     // Try each strategy in order
     if let Some(pos) = try_exact(&content_normalized, &old_normalized) {
         return (Some(pos), "exact".to_string());
     }
-    
+
     if let Some(pos) = try_line_trimmed(&content_normalized, &old_normalized) {
         return (Some(pos), "line_trimmed".to_string());
     }
-    
+
     if let Some(pos) = try_whitespace_normalized(&content_normalized, &old_normalized) {
         return (Some(pos), "whitespace_normalized".to_string());
     }
-    
+
     (None, "no_match".to_string())
 }
 
@@ -130,25 +129,26 @@ fn replace_at(content: &str, pos: usize, old: &str, new: &str) -> String {
     if pos > content.len() {
         return content.to_string();
     }
-    
+
     // Clamp pos to char boundary.
-    let orig_start = content.char_indices()
+    let orig_start = content
+        .char_indices()
         .find(|(i, _)| *i >= pos)
         .map(|(i, _)| i)
         .unwrap_or(content.len());
-    
+
     // We search in the normalized strings to find the span in the
     // *normalized* domain, then map back to the original.
     let content_normalized = unicode_normalize(content);
     let old_normalized = unicode_normalize(old);
-    
+
     if let Some(norm_pos) = content_normalized.find(&old_normalized) {
         let norm_old_len = old_normalized.chars().count();
         // Map normalized start/end back to original char positions.
         let mut norm_idx = 0;
         let mut orig_start = 0;
         let mut orig_end = 0;
-        
+
         for (i, _nc) in content_normalized.chars().enumerate() {
             if norm_idx == norm_pos {
                 orig_start = i;
@@ -159,20 +159,20 @@ fn replace_at(content: &str, pos: usize, old: &str, new: &str) -> String {
             }
             norm_idx += 1;
         }
-        
+
         let before: String = content.chars().take(orig_start).collect();
         let after: String = content.chars().skip(orig_end).collect();
-        
+
         return format!("{}{}{}", before, new, after);
     }
-    
+
     // Fallback: try the original pos directly.
     let old_char_len = old.chars().count();
     let orig_end = orig_start.saturating_add(old_char_len);
-    
+
     let before: String = content.chars().take(orig_start).collect();
     let after: String = content.chars().skip(orig_end).collect();
-    
+
     format!("{}{}{}", before, new, after)
 }
 
@@ -183,26 +183,28 @@ fn replace_at(content: &str, pos: usize, old: &str, new: &str) -> String {
 fn generate_diff(old_content: &str, new_content: &str, path: &str) -> String {
     let old_lines: Vec<&str> = old_content.lines().collect();
     let new_lines: Vec<&str> = new_content.lines().collect();
-    
+
     let mut diff = String::new();
     diff.push_str(&format!("--- {}\n", path));
     diff.push_str(&format!("+++ {}\n", path));
-    
+
     let mut old_idx = 0;
     let mut new_idx = 0;
     let mut changed = false;
-    
+
     while old_idx < old_lines.len() || new_idx < new_lines.len() {
         let old_line = old_lines.get(old_idx).copied().unwrap_or("");
         let new_line = new_lines.get(new_idx).copied().unwrap_or("");
-        
+
         if old_line == new_line {
             if !changed {
-                diff.push_str(&format!("@@ -{},{} +{},{} @@\n", 
-                    old_idx.saturating_sub(1).max(0), 
-                    1, 
-                    new_idx.saturating_sub(1).max(0), 
-                    1));
+                diff.push_str(&format!(
+                    "@@ -{},{} +{},{} @@\n",
+                    old_idx.saturating_sub(1).max(0),
+                    1,
+                    new_idx.saturating_sub(1).max(0),
+                    1
+                ));
                 changed = true;
             }
             diff.push_str(&format!(" {}\n", old_line));
@@ -210,11 +212,13 @@ fn generate_diff(old_content: &str, new_content: &str, path: &str) -> String {
             new_idx += 1;
         } else {
             if !changed {
-                diff.push_str(&format!("@@ -{},{} +{},{} @@\n", 
-                    old_idx.saturating_sub(1).max(0), 
-                    old_lines.len() - old_idx, 
-                    new_idx.saturating_sub(1).max(0), 
-                    new_lines.len() - new_idx));
+                diff.push_str(&format!(
+                    "@@ -{},{} +{},{} @@\n",
+                    old_idx.saturating_sub(1).max(0),
+                    old_lines.len() - old_idx,
+                    new_idx.saturating_sub(1).max(0),
+                    new_lines.len() - new_idx
+                ));
                 changed = true;
             }
             diff.push_str(&format!("-{}\n", old_line));
@@ -223,7 +227,7 @@ fn generate_diff(old_content: &str, new_content: &str, path: &str) -> String {
             new_idx += 1;
         }
     }
-    
+
     diff
 }
 
@@ -253,7 +257,8 @@ fn make_patch_tool() -> Tool {
         },
         ToolParameter {
             name: "replace_all".into(),
-            description: "If true, replace all occurrences (default: false, requires unique match).".into(),
+            description:
+                "If true, replace all occurrences (default: false, requires unique match).".into(),
             parameter_type: "boolean".into(),
             required: false,
         },
@@ -288,7 +293,8 @@ fn make_patch_handler() -> ToolHandler {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            let call_id = args.get("call_id")
+            let call_id = args
+                .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -325,12 +331,8 @@ fn make_patch_handler() -> ToolHandler {
 
             // Fuzzy find
             let (match_pos, strategy) = fuzzy_find(&content, old_string);
-            
-            let match_count = if let Some(_) = match_pos {
-                1
-            } else {
-                0
-            };
+
+            let match_count = if let Some(_) = match_pos { 1 } else { 0 };
 
             if match_count == 0 {
                 return Ok(ToolResult {
@@ -345,7 +347,10 @@ fn make_patch_handler() -> ToolHandler {
                 return Ok(ToolResult {
                     call_id,
                     output: String::new(),
-                    error: Some("Multiple occurrences found. Set replace_all=true to replace all.".to_string()),
+                    error: Some(
+                        "Multiple occurrences found. Set replace_all=true to replace all."
+                            .to_string(),
+                    ),
                 });
             }
 
@@ -357,20 +362,16 @@ fn make_patch_handler() -> ToolHandler {
 
             // Write file
             match tokio::fs::write(path, &new_content).await {
-                Ok(_) => {
-                    Ok(ToolResult {
-                        call_id,
-                        output: format!("Patch applied successfully.\n\n{}", diff),
-                        error: None,
-                    })
-                }
-                Err(e) => {
-                    Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!("Failed to write file: {}", e)),
-                    })
-                }
+                Ok(_) => Ok(ToolResult {
+                    call_id,
+                    output: format!("Patch applied successfully.\n\n{}", diff),
+                    error: None,
+                }),
+                Err(e) => Ok(ToolResult {
+                    call_id,
+                    output: String::new(),
+                    error: Some(format!("Failed to write file: {}", e)),
+                }),
             }
         })
     })
@@ -405,8 +406,8 @@ pub fn register(registry: &mut super::registry::ToolRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::fs;
+    use tempfile::tempdir;
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
@@ -421,16 +422,21 @@ mod tests {
         fs::write(&file_path, "hello world\nhello universe").unwrap();
 
         let registry = make_registry();
-        let result = registry.execute("patch", &serde_json::json!({
-            "path": file_path.to_str().unwrap(),
-            "old_string": "hello world",
-            "new_string": "hello there",
-            "call_id": "test-1",
-        })).await;
+        let result = registry
+            .execute(
+                "patch",
+                &serde_json::json!({
+                    "path": file_path.to_str().unwrap(),
+                    "old_string": "hello world",
+                    "new_string": "hello there",
+                    "call_id": "test-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("Patch applied successfully"));
-        
+
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "hello there\nhello universe");
     }
@@ -442,12 +448,17 @@ mod tests {
         fs::write(&file_path, "hello world").unwrap();
 
         let registry = make_registry();
-        let result = registry.execute("patch", &serde_json::json!({
-            "path": file_path.to_str().unwrap(),
-            "old_string": "nonexistent",
-            "new_string": "replacement",
-            "call_id": "test-2",
-        })).await;
+        let result = registry
+            .execute(
+                "patch",
+                &serde_json::json!({
+                    "path": file_path.to_str().unwrap(),
+                    "old_string": "nonexistent",
+                    "new_string": "replacement",
+                    "call_id": "test-2",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("No match found"));
@@ -460,12 +471,17 @@ mod tests {
         fs::write(&file_path, "    hello world  \n    hello universe  \n").unwrap();
 
         let registry = make_registry();
-        let result = registry.execute("patch", &serde_json::json!({
-            "path": file_path.to_str().unwrap(),
-            "old_string": "hello world",
-            "new_string": "hello there",
-            "call_id": "test-3",
-        })).await;
+        let result = registry
+            .execute(
+                "patch",
+                &serde_json::json!({
+                    "path": file_path.to_str().unwrap(),
+                    "old_string": "hello world",
+                    "new_string": "hello there",
+                    "call_id": "test-3",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         let content = fs::read_to_string(&file_path).unwrap();
@@ -480,12 +496,17 @@ mod tests {
         fs::write(&file_path, "\u{201c}hello\u{201d} world").unwrap();
 
         let registry = make_registry();
-        let result = registry.execute("patch", &serde_json::json!({
-            "path": file_path.to_str().unwrap(),
-            "old_string": "\"hello\" world",
-            "new_string": "\"there\" world",
-            "call_id": "test-4",
-        })).await;
+        let result = registry
+            .execute(
+                "patch",
+                &serde_json::json!({
+                    "path": file_path.to_str().unwrap(),
+                    "old_string": "\"hello\" world",
+                    "new_string": "\"there\" world",
+                    "call_id": "test-4",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         let content = fs::read_to_string(&file_path).unwrap();
@@ -499,12 +520,17 @@ mod tests {
         fs::write(&file_path, "hello world").unwrap();
 
         let registry = make_registry();
-        let result = registry.execute("patch", &serde_json::json!({
-            "path": file_path.to_str().unwrap(),
-            "old_string": "",
-            "new_string": "replacement",
-            "call_id": "test-5",
-        })).await;
+        let result = registry
+            .execute(
+                "patch",
+                &serde_json::json!({
+                    "path": file_path.to_str().unwrap(),
+                    "old_string": "",
+                    "new_string": "replacement",
+                    "call_id": "test-5",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("empty"));
@@ -517,12 +543,17 @@ mod tests {
         fs::write(&file_path, "hello world\n").unwrap();
 
         let registry = make_registry();
-        let result = registry.execute("patch", &serde_json::json!({
-            "path": file_path.to_str().unwrap(),
-            "old_string": "hello world",
-            "new_string": "hello there",
-            "call_id": "test-6",
-        })).await;
+        let result = registry
+            .execute(
+                "patch",
+                &serde_json::json!({
+                    "path": file_path.to_str().unwrap(),
+                    "old_string": "hello world",
+                    "new_string": "hello there",
+                    "call_id": "test-6",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         let content = fs::read_to_string(&file_path).unwrap();

@@ -11,28 +11,24 @@
 /// ├── list_models() — fetch available models
 /// └── find_model(id) — find a specific model
 /// ```
-
 use std::sync::Arc;
 
 use anyhow::Result;
 use oben_models::{
-    provider_kind_to_transport, CallMode, Message, ProviderKind,
+    provider_kind_to_transport,
     providers::{ProviderConfig, TransportProvider, TransportResponse},
-    Tool,
+    CallMode, Message, ProviderKind, Tool,
 };
 
 use super::{
-    anthropic_messages::AnthropicMessagesTransport,
-    chat_completions::ChatCompletionsTransport,
+    anthropic_messages::AnthropicMessagesTransport, chat_completions::ChatCompletionsTransport,
     registry,
 };
 
 /// Internal transport enum — wraps ChatCompletionsTransport + AnthropicMessagesTransport.
 pub enum Transport {
     /// OpenAI-compatible API (Chat Completions).
-    OpenAIChat {
-        transport: ChatCompletionsTransport,
-    },
+    OpenAIChat { transport: ChatCompletionsTransport },
     /// Anthropic native Messages API.
     Anthropic {
         transport: AnthropicMessagesTransport,
@@ -58,10 +54,7 @@ impl Transport {
     /// - Everything else -> `ChatCompletionsTransport` (OpenAI-compatible /v1/chat/completions)
     ///
     /// **NOTE:** Prefer `from_config_with_tools_via_registry()` for new code.
-    pub fn from_config(
-        config: &ProviderConfig,
-        system_prompt: impl Into<String>,
-    ) -> Self {
+    pub fn from_config(config: &ProviderConfig, system_prompt: impl Into<String>) -> Self {
         let system_prompt = system_prompt.into();
 
         if uses_anthropic_protocol(&config.kind) {
@@ -86,13 +79,17 @@ impl Transport {
         if uses_anthropic_protocol(&config.kind) {
             Self::Anthropic {
                 transport: AnthropicMessagesTransport::from_config_with_tools(
-                    config, system_prompt, tools,
+                    config,
+                    system_prompt,
+                    tools,
                 ),
             }
         } else {
             Self::OpenAIChat {
                 transport: ChatCompletionsTransport::from_config_with_tools(
-                    config, system_prompt, tools,
+                    config,
+                    system_prompt,
+                    tools,
                 ),
             }
         }
@@ -119,7 +116,8 @@ impl Transport {
             None
         } else {
             Some(serde_json::to_value(tools).ok())
-        }.flatten();
+        }
+        .flatten();
 
         // Clone `kind` before the match to keep `config_with_tools` intact for later.
         let kind = config_with_tools.kind.clone();
@@ -135,22 +133,25 @@ impl Transport {
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
-        registry::get_transport(transport_name, &config_with_tools, &sp)
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    "Transport '{}' not found in registry, falling back to direct construction",
-                    transport_name
-                );
-                if uses_anthropic_protocol(&kind) {
-                    Arc::new(AnthropicMessagesTransport::from_config_with_tools(
-                        &config_with_tools, sp, tools_vec,
-                    )) as Arc<dyn TransportProvider + Send + Sync>
-                } else {
-                    Arc::new(ChatCompletionsTransport::from_config_with_tools(
-                        &config_with_tools, sp, tools_vec,
-                    )) as Arc<dyn TransportProvider + Send + Sync>
-                }
-            })
+        registry::get_transport(transport_name, &config_with_tools, &sp).unwrap_or_else(|| {
+            tracing::warn!(
+                "Transport '{}' not found in registry, falling back to direct construction",
+                transport_name
+            );
+            if uses_anthropic_protocol(&kind) {
+                Arc::new(AnthropicMessagesTransport::from_config_with_tools(
+                    &config_with_tools,
+                    sp,
+                    tools_vec,
+                )) as Arc<dyn TransportProvider + Send + Sync>
+            } else {
+                Arc::new(ChatCompletionsTransport::from_config_with_tools(
+                    &config_with_tools,
+                    sp,
+                    tools_vec,
+                )) as Arc<dyn TransportProvider + Send + Sync>
+            }
+        })
     }
 
     /// Get the provider kind this transport is configured for.
@@ -229,7 +230,10 @@ mod tests {
     use super::*;
 
     fn make_anthropic_config() -> ProviderConfig {
-        ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514")
+        ProviderConfig::new(
+            oben_models::ProviderKind::Anthropic,
+            "claude-sonnet-4-20250514",
+        )
     }
 
     fn make_openai_config() -> ProviderConfig {
@@ -250,7 +254,10 @@ mod tests {
         let config = make_anthropic_config();
         let transport = Transport::from_config(&config, "test prompt");
         assert!(matches!(transport, Transport::Anthropic { .. }));
-        assert_eq!(transport.provider_kind(), oben_models::ProviderKind::Anthropic);
+        assert_eq!(
+            transport.provider_kind(),
+            oben_models::ProviderKind::Anthropic
+        );
     }
 
     #[test]
@@ -279,9 +286,7 @@ mod tests {
         // when: Transport::from_config_with_tools_via_registry is called
         // then: returns Arc<dyn TransportProvider> with correct name
         let config = make_openai_config();
-        let transport = Transport::from_config_with_tools_via_registry(
-            &config, "test prompt", &[],
-        );
+        let transport = Transport::from_config_with_tools_via_registry(&config, "test prompt", &[]);
         assert_eq!(transport.name(), "chat-completions");
     }
 
@@ -291,9 +296,7 @@ mod tests {
         // when: Transport::from_config_with_tools_via_registry is called
         // then: returns Arc<dyn TransportProvider> named "anthropic-messages"
         let config = make_anthropic_config();
-        let transport = Transport::from_config_with_tools_via_registry(
-            &config, "test prompt", &[],
-        );
+        let transport = Transport::from_config_with_tools_via_registry(&config, "test prompt", &[]);
         assert_eq!(transport.name(), "anthropic-messages");
     }
 }

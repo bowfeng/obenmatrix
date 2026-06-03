@@ -77,7 +77,8 @@ pub trait MemoryProvider {
     fn on_session_end(&mut self, _messages: &[serde_json::Value]) {}
 
     /// Optional: session_id rotation.
-    fn on_session_switch(&mut self, _new_session_id: &str, _parent_session_id: &str, _reset: bool) {}
+    fn on_session_switch(&mut self, _new_session_id: &str, _parent_session_id: &str, _reset: bool) {
+    }
 
     /// Optional: extract insights before compression.
     fn on_pre_compress(&self, _messages: &[serde_json::Value]) -> String {
@@ -111,7 +112,11 @@ impl BuiltinProvider {
             return String::new();
         }
         let content = entries.join("\n§\n");
-        let limit = if target == "user" { 1375usize } else { 2200usize };
+        let limit = if target == "user" {
+            1375usize
+        } else {
+            2200usize
+        };
         let current = content.len();
         let pct = (current as f64 / limit as f64 * 100.0).min(100.0) as usize;
         let header = if target == "user" {
@@ -125,7 +130,13 @@ impl BuiltinProvider {
                 pct, current, limit
             )
         };
-        format!("{}\n{}\n{}\n{}", "═".repeat(46), header, "═".repeat(46), content)
+        format!(
+            "{}\n{}\n{}\n{}",
+            "═".repeat(46),
+            header,
+            "═".repeat(46),
+            content
+        )
     }
 }
 
@@ -234,7 +245,10 @@ impl MemoryProvider for BuiltinProvider {
     fn handle_tool_call(&mut self, tool_name: &str, args: &serde_json::Value) -> serde_json::Value {
         match tool_name {
             "memory.add" => {
-                let target = args.get("target").and_then(|v| v.as_str()).unwrap_or("memory");
+                let target = args
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("memory");
                 let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 if content.is_empty() {
                     return serde_json::json!({ "success": false, "error": "Content cannot be empty." });
@@ -245,7 +259,14 @@ impl MemoryProvider for BuiltinProvider {
                 }
                 let result = self.store.add(target, content);
                 match result {
-                    crate::skill_curation::MemoryResult::Success { success, target, usage_percent: _, usage_text, entry_count, message } => {
+                    crate::skill_curation::MemoryResult::Success {
+                        success,
+                        target,
+                        usage_percent: _,
+                        usage_text,
+                        entry_count,
+                        message,
+                    } => {
                         serde_json::json!({
                             "success": success,
                             "target": target,
@@ -257,7 +278,13 @@ impl MemoryProvider for BuiltinProvider {
                     crate::skill_curation::MemoryResult::Error { error } => {
                         serde_json::json!({ "success": false, "error": error })
                     }
-                    crate::skill_curation::MemoryResult::Exceeded { current, limit, new_content_len: _, entries, error } => {
+                    crate::skill_curation::MemoryResult::Exceeded {
+                        current,
+                        limit,
+                        new_content_len: _,
+                        entries,
+                        error,
+                    } => {
                         serde_json::json!({
                             "success": false,
                             "error": error,
@@ -271,12 +298,25 @@ impl MemoryProvider for BuiltinProvider {
                 }
             }
             "memory.replace" => {
-                let target = args.get("target").and_then(|v| v.as_str()).unwrap_or("memory");
+                let target = args
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("memory");
                 let old_text = args.get("old_text").and_then(|v| v.as_str()).unwrap_or("");
-                let new_content = args.get("new_content").and_then(|v| v.as_str()).unwrap_or("");
+                let new_content = args
+                    .get("new_content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let result = self.store.replace(target, old_text, new_content);
                 match result {
-                    crate::skill_curation::MemoryResult::Success { success, target, usage_percent: _, usage_text, entry_count, message } => {
+                    crate::skill_curation::MemoryResult::Success {
+                        success,
+                        target,
+                        usage_percent: _,
+                        usage_text,
+                        entry_count,
+                        message,
+                    } => {
                         serde_json::json!({
                             "success": success,
                             "target": target,
@@ -288,7 +328,13 @@ impl MemoryProvider for BuiltinProvider {
                     crate::skill_curation::MemoryResult::Error { error } => {
                         serde_json::json!({ "success": false, "error": error })
                     }
-                    crate::skill_curation::MemoryResult::Exceeded { current, limit, new_content_len: _, entries, error } => {
+                    crate::skill_curation::MemoryResult::Exceeded {
+                        current,
+                        limit,
+                        new_content_len: _,
+                        entries,
+                        error,
+                    } => {
                         serde_json::json!({
                             "success": false,
                             "error": error,
@@ -302,11 +348,21 @@ impl MemoryProvider for BuiltinProvider {
                 }
             }
             "memory.remove" => {
-                let target = args.get("target").and_then(|v| v.as_str()).unwrap_or("memory");
+                let target = args
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("memory");
                 let old_text = args.get("old_text").and_then(|v| v.as_str()).unwrap_or("");
                 let result = self.store.remove(target, old_text);
                 match result {
-                    crate::skill_curation::MemoryResult::Success { success, target, usage_percent: _, usage_text, entry_count, message } => {
+                    crate::skill_curation::MemoryResult::Success {
+                        success,
+                        target,
+                        usage_percent: _,
+                        usage_text,
+                        entry_count,
+                        message,
+                    } => {
                         serde_json::json!({
                             "success": success,
                             "target": target,
@@ -318,7 +374,13 @@ impl MemoryProvider for BuiltinProvider {
                     crate::skill_curation::MemoryResult::Error { error } => {
                         serde_json::json!({ "success": false, "error": error })
                     }
-                    crate::skill_curation::MemoryResult::Exceeded { current, limit, new_content_len: _, entries, error } => {
+                    crate::skill_curation::MemoryResult::Exceeded {
+                        current,
+                        limit,
+                        new_content_len: _,
+                        entries,
+                        error,
+                    } => {
                         serde_json::json!({
                             "success": false,
                             "error": error,
@@ -400,7 +462,11 @@ impl MemoryManager {
             .iter()
             .filter_map(|p| {
                 let block = p.system_prompt_block();
-                if block.trim().is_empty() { None } else { Some(block) }
+                if block.trim().is_empty() {
+                    None
+                } else {
+                    Some(block)
+                }
             })
             .collect();
         blocks.join("\n\n")
@@ -412,7 +478,11 @@ impl MemoryManager {
             .iter()
             .filter_map(|p| {
                 let result = p.prefetch(query, session_id);
-                if result.trim().is_empty() { None } else { Some(result) }
+                if result.trim().is_empty() {
+                    None
+                } else {
+                    Some(result)
+                }
             })
             .collect();
         parts.join("\n\n")
@@ -451,7 +521,11 @@ impl MemoryManager {
         self.tool_to_provider.contains_key(tool_name)
     }
 
-    pub fn handle_tool_call(&mut self, tool_name: &str, args: &serde_json::Value) -> serde_json::Value {
+    pub fn handle_tool_call(
+        &mut self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> serde_json::Value {
         match self.tool_to_provider.get(tool_name) {
             Some(&idx) => self.providers[idx].handle_tool_call(tool_name, args),
             None => serde_json::json!({
@@ -473,7 +547,12 @@ impl MemoryManager {
         }
     }
 
-    pub fn on_session_switch(&mut self, new_session_id: &str, parent_session_id: &str, reset: bool) {
+    pub fn on_session_switch(
+        &mut self,
+        new_session_id: &str,
+        parent_session_id: &str,
+        reset: bool,
+    ) {
         for p in &mut self.providers {
             p.on_session_switch(new_session_id, parent_session_id, reset);
         }
@@ -485,7 +564,11 @@ impl MemoryManager {
             .iter()
             .filter_map(|p| {
                 let result = p.on_pre_compress(messages);
-                if result.trim().is_empty() { None } else { Some(result) }
+                if result.trim().is_empty() {
+                    None
+                } else {
+                    Some(result)
+                }
             })
             .collect();
         parts.join("\n\n")
@@ -668,7 +751,8 @@ impl StreamingContextScrubber {
 
 fn sanitize_context(text: &str) -> String {
     // Strip fence tags and system notes
-    let text = match regex::Regex::new(r"(?i)<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>") {
+    let text = match regex::Regex::new(r"(?i)<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>")
+    {
         Ok(re) => re.replace_all(text, "").into_owned(),
         Err(_) => text.to_string(),
     };

@@ -44,8 +44,7 @@ impl Default for DiscoveryConfig {
 impl DiscoveryConfig {
     /// Create a default discovery config with user dir from ~/.obenalien/plugins/.
     pub fn new() -> Self {
-        let user_dir = dirs::config_dir()
-            .map(|d| d.join("openalien").join("plugins"));
+        let user_dir = dirs::config_dir().map(|d| d.join("openalien").join("plugins"));
 
         Self {
             user_dir,
@@ -80,8 +79,11 @@ impl DiscoveryConfig {
 ///
 /// Returns a map of plugin key → manifest for all discovered plugins
 /// that have valid plugin.yaml files.
-pub fn discover_plugins(config: &DiscoveryConfig) -> Result<std::collections::HashMap<String, PluginManifest>> {
-    let mut discovered: std::collections::HashMap<String, PluginManifest> = std::collections::HashMap::new();
+pub fn discover_plugins(
+    config: &DiscoveryConfig,
+) -> Result<std::collections::HashMap<String, PluginManifest>> {
+    let mut discovered: std::collections::HashMap<String, PluginManifest> =
+        std::collections::HashMap::new();
 
     // Scan in order: bundled → user → project (later overrides earlier)
     let sources = build_source_scan(config);
@@ -93,7 +95,8 @@ pub fn discover_plugins(config: &DiscoveryConfig) -> Result<std::collections::Ha
         }
     }
 
-    info!("Plugin discovery: {} plugins found across {} sources",
+    info!(
+        "Plugin discovery: {} plugins found across {} sources",
         discovered.len(),
         source_count
     );
@@ -130,13 +133,21 @@ fn build_source_scan(config: &DiscoveryConfig) -> Vec<(PluginSource, Option<Path
 /// Supports two layouts:
 /// 1. Flat: `<dir>/<plugin_name>/plugin.yaml`
 /// 2. Category: `<dir>/<category>/<plugin_name>/plugin.yaml` (depth-capped at 2)
-fn scan_directory(dir: &Path, source: PluginSource, discovered: &mut std::collections::HashMap<String, PluginManifest>) {
+fn scan_directory(
+    dir: &Path,
+    source: PluginSource,
+    discovered: &mut std::collections::HashMap<String, PluginManifest>,
+) {
     if !dir.exists() {
         debug!("Plugin directory does not exist: {}", dir.display());
         return;
     }
 
-    debug!("Scanning plugin directory: {} (source={})", dir.display(), source.as_str());
+    debug!(
+        "Scanning plugin directory: {} (source={})",
+        dir.display(),
+        source.as_str()
+    );
 
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -146,7 +157,6 @@ fn scan_directory(dir: &Path, source: PluginSource, discovered: &mut std::collec
         }
     };
 
-    
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
@@ -160,7 +170,7 @@ fn scan_directory(dir: &Path, source: PluginSource, discovered: &mut std::collec
         if !path.is_dir() {
             continue;
         }
-        
+
         debug!("Found subdirectory: {:?}", path);
 
         scan_plugin_path(&path, source.clone(), discovered);
@@ -169,12 +179,14 @@ fn scan_directory(dir: &Path, source: PluginSource, discovered: &mut std::collec
 }
 
 /// Scan a single plugin path (supports flat and category layouts).
-fn scan_plugin_path(path: &Path, source: PluginSource, discovered: &mut std::collections::HashMap<String, PluginManifest>) {
-    
+fn scan_plugin_path(
+    path: &Path,
+    source: PluginSource,
+    discovered: &mut std::collections::HashMap<String, PluginManifest>,
+) {
     // Try flat layout first: <path>/plugin.yaml
     let yaml = path.join("plugin.yaml");
     let yml = path.join("plugin.yml");
-
 
     if yaml.exists() || yml.exists() {
         if let Ok(manifest) = PluginManifest::from_yaml(path, source.clone()) {
@@ -187,7 +199,7 @@ fn scan_plugin_path(path: &Path, source: PluginSource, discovered: &mut std::col
     }
 
     // Try category layout: <path>/<category>/<name>/plugin.yaml
-    // Support flat plugins inside category (web_search/tavily/) 
+    // Support flat plugins inside category (web_search/tavily/)
     // and nested plugins (web_search/ollama/v1/)
     let categories = list_subdirs(path);
     for category in categories {
@@ -200,7 +212,8 @@ fn scan_plugin_path(path: &Path, source: PluginSource, discovered: &mut std::col
                 discovered.insert(key.clone(), manifest);
                 debug!(
                     "Discovered category-level plugin: {} (source={})",
-                    key, source.as_str()
+                    key,
+                    source.as_str()
                 );
                 continue; // Don't look for deeper nesting in this directory
             }
@@ -216,7 +229,8 @@ fn scan_plugin_path(path: &Path, source: PluginSource, discovered: &mut std::col
                     discovered.insert(key.clone(), manifest);
                     debug!(
                         "Discovered nested plugin: {} (source={})",
-                        key, source.as_str()
+                        key,
+                        source.as_str()
                     );
                 }
             }
@@ -268,9 +282,7 @@ pub fn is_plugin_enabled(
     match enabled {
         None => true, // No allow list = everything passes (except disabled)
         Some(list) if list.is_empty() => true, // Empty list = everything passes
-        Some(list) => {
-            list.iter().any(|e| e == key || e == name)
-        }
+        Some(list) => list.iter().any(|e| e == key || e == name),
     }
 }
 
@@ -315,10 +327,8 @@ mod tests {
         fs::create_dir_all(&category).unwrap();
         create_test_plugin(&category, "tavily", PluginSource::Bundled);
 
-
         let mut discovered = std::collections::HashMap::new();
         scan_directory(dir.path(), PluginSource::Bundled, &mut discovered);
-
 
         assert_eq!(discovered.len(), 1);
         assert!(discovered.contains_key("web_search/tavily"));
@@ -381,7 +391,11 @@ mod tests {
             key: "test".into(),
         };
 
-        assert!(!is_plugin_enabled(&manifest, None, Some(&vec!["test".into()])));
+        assert!(!is_plugin_enabled(
+            &manifest,
+            None,
+            Some(&vec!["test".into()])
+        ));
     }
 
     #[test]
@@ -404,7 +418,11 @@ mod tests {
             key: "test".into(),
         };
 
-        assert!(is_plugin_enabled(&manifest, Some(&vec!["test".into()]), None));
+        assert!(is_plugin_enabled(
+            &manifest,
+            Some(&vec!["test".into()]),
+            None
+        ));
     }
 
     #[test]
@@ -427,7 +445,11 @@ mod tests {
             key: "other".into(),
         };
 
-        assert!(!is_plugin_enabled(&manifest, Some(&vec!["test".into()]), None));
+        assert!(!is_plugin_enabled(
+            &manifest,
+            Some(&vec!["test".into()]),
+            None
+        ));
     }
 
     #[test]
@@ -471,8 +493,7 @@ mod tests {
         )
         .unwrap();
 
-        let config = DiscoveryConfig::new()
-            .with_bundled_dir(dir.path().to_path_buf());
+        let config = DiscoveryConfig::new().with_bundled_dir(dir.path().to_path_buf());
 
         let discovered = discover_plugins(&config).unwrap();
         assert_eq!(discovered.len(), 1);

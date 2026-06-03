@@ -6,7 +6,6 @@
 /// - `exclusive`: category with exactly one active provider (e.g. memory)
 /// - `platform`: gateway messaging platform adapter (auto-load if bundled)
 /// - `model-provider`: handled by provider discovery (auto-load)
-
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -77,12 +76,15 @@ impl FromStr for PluginKind {
             "exclusive" => Ok(Self::Exclusive),
             "platform" => Ok(Self::Platform),
             "model-provider" => Ok(Self::ModelProvider),
-            _ => Err(anyhow!("Unknown plugin kind: '{}'. Valid kinds: {}",
+            _ => Err(anyhow!(
+                "Unknown plugin kind: '{}'. Valid kinds: {}",
                 s,
-                Self::all().iter()
+                Self::all()
+                    .iter()
                     .map(|k| format!("'{}'", k.as_str()))
                     .collect::<Vec<_>>()
-                    .join(", "))),
+                    .join(", ")
+            )),
         }
     }
 }

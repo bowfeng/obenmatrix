@@ -165,7 +165,7 @@ impl ProviderKind {
                 | ProviderKind::Xiaomi
                 | ProviderKind::Arcee
                 | ProviderKind::GMI
-                |             ProviderKind::OllamaCloud
+                | ProviderKind::OllamaCloud
                 | ProviderKind::Local
                 | ProviderKind::Zai
                 | ProviderKind::Kimi
@@ -177,7 +177,10 @@ impl ProviderKind {
     pub fn is_anthropic_protocol(&self) -> bool {
         matches!(
             self,
-            ProviderKind::Anthropic | ProviderKind::MiniMax | ProviderKind::MiniMaxOAuth | ProviderKind::MiniMaxCN
+            ProviderKind::Anthropic
+                | ProviderKind::MiniMax
+                | ProviderKind::MiniMaxOAuth
+                | ProviderKind::MiniMaxCN
         )
     }
 
@@ -304,7 +307,9 @@ pub enum ToolChoice {
     Auto,
     Any,
     /// Force a specific tool by name.
-    Tool { name: String },
+    Tool {
+        name: String,
+    },
 }
 
 /// Reasoning effort level for providers that support extended thinking.
@@ -327,7 +332,10 @@ pub struct CacheControl {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Caching strategy: "ephemeral" works for most providers.
-    #[serde(default = "default_cache_strategy", skip_serializing_if = "is_default_cache")]
+    #[serde(
+        default = "default_cache_strategy",
+        skip_serializing_if = "is_default_cache"
+    )]
     pub strategy: String,
 }
 
@@ -484,11 +492,20 @@ impl<T: TransportProvider + ?Sized + Send + Sync> TransportProvider for std::syn
         (**self).name()
     }
 
-    async fn chat(&self, messages: &[super::Message], mode: &super::CallMode) -> Result<TransportResponse> {
+    async fn chat(
+        &self,
+        messages: &[super::Message],
+        mode: &super::CallMode,
+    ) -> Result<TransportResponse> {
         (**self).chat(messages, mode).await
     }
 
-    async fn stream_chat(&self, messages: &[super::Message], mode: &super::CallMode, delta_callback: StreamDeltaCallback) -> Result<TransportResponse> {
+    async fn stream_chat(
+        &self,
+        messages: &[super::Message],
+        mode: &super::CallMode,
+        delta_callback: StreamDeltaCallback,
+    ) -> Result<TransportResponse> {
         (**self).stream_chat(messages, mode, delta_callback).await
     }
 
@@ -515,29 +532,40 @@ pub trait TransportProvider: Send + Sync {
     ///
     /// See [`CallMode`] for semantics. `mode` is borrowed to avoid
     /// cloning the session ID in hot paths (e.g. multi-tool loops).
-    async fn chat(&self, messages: &[super::Message], mode: &super::CallMode) -> Result<TransportResponse>;
+    async fn chat(
+        &self,
+        messages: &[super::Message],
+        mode: &super::CallMode,
+    ) -> Result<TransportResponse>;
 
     /// Send a streaming chat completion request.
     ///
     /// Fires `delta_callback` with each text delta as it arrives.
     /// Returns the accumulated response with full text and tool calls.
-    async fn stream_chat(&self, messages: &[super::Message], mode: &super::CallMode, delta_callback: StreamDeltaCallback) -> Result<TransportResponse>;
+    async fn stream_chat(
+        &self,
+        messages: &[super::Message],
+        mode: &super::CallMode,
+        delta_callback: StreamDeltaCallback,
+    ) -> Result<TransportResponse>;
 
     /// Optional: estimate tokens without full API call.
     fn estimate_tokens(&self, messages: &[super::Message]) -> usize {
         // Default: rough heuristic
-        messages.iter().map(|m| {
-            match &m.content {
+        messages
+            .iter()
+            .map(|m| match &m.content {
                 super::MessageContent::Text(s) => s.len() / 4 + 5,
                 super::MessageContent::Image { .. } => 500,
-                super::MessageContent::Parts(parts) => {
-                    parts.iter().map(|p| match p {
+                super::MessageContent::Parts(parts) => parts
+                    .iter()
+                    .map(|p| match p {
                         super::MessagePart::Text(s) => s.len() / 4 + 5,
                         super::MessagePart::Image { .. } => 500,
-                    }).sum::<usize>()
-                }
-            }
-        }).sum()
+                    })
+                    .sum::<usize>(),
+            })
+            .sum()
     }
 
     /// Fetch the list of available models from the provider.

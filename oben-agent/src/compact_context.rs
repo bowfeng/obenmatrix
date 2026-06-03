@@ -6,7 +6,6 @@
 /// It borrows messages from the Session (the single source of truth), tracks
 /// real token usage from API responses, decides when compression should fire,
 /// and mutates the message buffer in-place via `compress()`.
-
 use anyhow::Result;
 use tracing::info;
 
@@ -76,7 +75,12 @@ impl CompactContextEngine {
 
 #[async_trait::async_trait]
 impl ContextEngine for CompactContextEngine {
-    fn update_from_response(&mut self, prompt_tokens: usize, completion_tokens: usize, total_tokens: usize) {
+    fn update_from_response(
+        &mut self,
+        prompt_tokens: usize,
+        completion_tokens: usize,
+        total_tokens: usize,
+    ) {
         self.last_prompt_tokens = prompt_tokens;
         self.last_completion_tokens = completion_tokens;
         self.last_total_tokens = total_tokens;
@@ -106,8 +110,7 @@ impl ContextEngine for CompactContextEngine {
         // If head + tail cover all messages, there's nothing to compress —
         // skip to avoid a wasted LLM call.
         let head_end = self.config.protect_first_n.min(messages.len());
-        let tail_start =
-            compact::find_tail_cut_by_tokens(messages, &self.config).max(head_end);
+        let tail_start = compact::find_tail_cut_by_tokens(messages, &self.config).max(head_end);
         if tail_start <= head_end {
             tracing::info!(
                 "should_compact: no middle messages to compress (head={}, tail={}), skipping",
@@ -121,7 +124,9 @@ impl ContextEngine for CompactContextEngine {
             let result = self.last_total_tokens > threshold;
             tracing::info!(
                 "should_compact: using API token count api_tokens={} threshold={} result={}",
-                self.last_total_tokens, threshold, result
+                self.last_total_tokens,
+                threshold,
+                result
             );
             return result;
         }
@@ -129,7 +134,10 @@ impl ContextEngine for CompactContextEngine {
         let result = tokens > threshold;
         tracing::info!(
             "should_compact: estimated tokens={} (messages={}) threshold={} result={}",
-            tokens, messages.len(), threshold, result
+            tokens,
+            messages.len(),
+            threshold,
+            result
         );
         result
     }
@@ -177,7 +185,10 @@ impl ContextEngine for CompactContextEngine {
                     if self.config.max_tool_result_tokens == 0 {
                         return Err(anyhow::anyhow!("compression aborted: {}", err_str));
                     }
-                    return Err(anyhow::anyhow!("compression failed (messages unchanged): {}", err_str));
+                    return Err(anyhow::anyhow!(
+                        "compression failed (messages unchanged): {}",
+                        err_str
+                    ));
                 }
             };
 
@@ -218,7 +229,12 @@ impl ContextEngine for CompactContextEngine {
         }
     }
 
-    fn on_session_start(&mut self, session_id: &str, model_name: &str, context_length: Option<usize>) {
+    fn on_session_start(
+        &mut self,
+        session_id: &str,
+        model_name: &str,
+        context_length: Option<usize>,
+    ) {
         self.ineffective_compression_count = 0;
         self.consecutive_effective_compressions = 0;
         self.last_compression_savings_pct = 0.0;
@@ -229,7 +245,9 @@ impl ContextEngine for CompactContextEngine {
         self._last_aux_model_failure_model = None;
         tracing::info!(
             "ContextEngine::on_session_start: session={} model={} context_length={}",
-            session_id, model_name, self.config.context_length
+            session_id,
+            model_name,
+            self.config.context_length
         );
     }
 
@@ -241,13 +259,18 @@ impl ContextEngine for CompactContextEngine {
         self._previous_summary = None;
         self._last_summary_error = None;
         self._last_aux_model_failure_model = None;
-        tracing::info!("ContextEngine::on_session_reset: compression_count={}", self.compression_count);
+        tracing::info!(
+            "ContextEngine::on_session_reset: compression_count={}",
+            self.compression_count
+        );
     }
 
     fn on_session_end(&mut self, session_id: &str) {
         tracing::info!(
             "ContextEngine::on_session_end: session={} compression_count={} last_error={:?}",
-            session_id, self.compression_count, self._last_summary_error
+            session_id,
+            self.compression_count,
+            self._last_summary_error
         );
         self._last_summary_error = None;
         self._last_aux_model_failure_model = None;
@@ -279,7 +302,12 @@ impl ContextEngine for CompactContextEngine {
             }
 
             passes += 1;
-            tracing::info!("Preflight compression pass {}: tokens={}/{}", passes, tokens, threshold);
+            tracing::info!(
+                "Preflight compression pass {}: tokens={}/{}",
+                passes,
+                tokens,
+                threshold
+            );
 
             self.ineffective_compression_count = 0;
             self.consecutive_effective_compressions = 0;
@@ -292,7 +320,11 @@ impl ContextEngine for CompactContextEngine {
             }
         }
 
-        info!("Preflight check complete: {} pass(es), session tokens now {}", passes, self.estimate_tokens(messages));
+        info!(
+            "Preflight check complete: {} pass(es), session tokens now {}",
+            passes,
+            self.estimate_tokens(messages)
+        );
         Ok(passes)
     }
 
@@ -513,9 +545,15 @@ mod tests {
         let result = engine.compact(&mut messages, Some(&transport), None).await;
 
         assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Compacted), "effective compression should return CompactStatus::Compacted");
+        assert!(
+            matches!(result.unwrap(), crate::context::CompactStatus::Compacted),
+            "effective compression should return CompactStatus::Compacted"
+        );
         // Messages should have been replaced (fewer after compression)
-        assert!(messages.len() < original_count, "messages should be reduced after effective compression");
+        assert!(
+            messages.len() < original_count,
+            "messages should be reduced after effective compression"
+        );
         assert_eq!(engine.compression_count, 1);
         assert_eq!(engine.consecutive_effective_compressions, 1);
         assert_eq!(engine.ineffective_compression_count, 0);
@@ -551,11 +589,26 @@ mod tests {
         let result = engine.compact(&mut messages, Some(&transport), None).await;
 
         assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Unchanged), "ineffective compression should return CompactStatus::Unchanged");
+        assert!(
+            matches!(result.unwrap(), crate::context::CompactStatus::Unchanged),
+            "ineffective compression should return CompactStatus::Unchanged"
+        );
         // Messages must be UNCHANGED (compute-then-commit pattern)
-        assert_eq!(messages.len(), original_count, "message count should be unchanged after ineffective compression");
-        assert_eq!(messages.first().unwrap().content.to_text(), original_first, "first message should be unchanged");
-        assert_eq!(messages.last().unwrap().content.to_text(), original_last, "last message should be unchanged");
+        assert_eq!(
+            messages.len(),
+            original_count,
+            "message count should be unchanged after ineffective compression"
+        );
+        assert_eq!(
+            messages.first().unwrap().content.to_text(),
+            original_first,
+            "first message should be unchanged"
+        );
+        assert_eq!(
+            messages.last().unwrap().content.to_text(),
+            original_last,
+            "last message should be unchanged"
+        );
         assert_eq!(engine.compression_count, 1);
         assert_eq!(engine.ineffective_compression_count, 1);
         assert_eq!(engine.consecutive_effective_compressions, 0);
@@ -578,7 +631,10 @@ mod tests {
         let result = engine.compact(&mut messages, None, None).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("transport provider"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("transport provider"));
     }
 
     #[tokio::test]
@@ -598,11 +654,22 @@ mod tests {
 
         #[async_trait::async_trait]
         impl TransportProvider for CountingTransport {
-            fn name(&self) -> &str { "counting" }
-            async fn chat(&self, _: &[Message], _: &oben_models::CallMode) -> Result<oben_models::TransportResponse> {
+            fn name(&self) -> &str {
+                "counting"
+            }
+            async fn chat(
+                &self,
+                _: &[Message],
+                _: &oben_models::CallMode,
+            ) -> Result<oben_models::TransportResponse> {
                 unreachable!("transport should not be called when below threshold")
             }
-            async fn stream_chat(&self, _: &[Message], _: &oben_models::CallMode, _: oben_models::StreamDeltaCallback) -> Result<oben_models::TransportResponse> {
+            async fn stream_chat(
+                &self,
+                _: &[Message],
+                _: &oben_models::CallMode,
+                _: oben_models::StreamDeltaCallback,
+            ) -> Result<oben_models::TransportResponse> {
                 unreachable!("stream_chat should not be called when below threshold")
             }
         }
@@ -611,7 +678,10 @@ mod tests {
         let result = engine.compact(&mut messages, Some(&transport), None).await;
 
         assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Unchanged), "below threshold should return CompactStatus::Unchanged");
+        assert!(
+            matches!(result.unwrap(), crate::context::CompactStatus::Unchanged),
+            "below threshold should return CompactStatus::Unchanged"
+        );
     }
 
     #[tokio::test]
@@ -621,8 +691,8 @@ mod tests {
             context_length: 100_000,
             ineffective_threshold: 10.0,
             max_ineffective_consecutive: 3,
-            protect_first_n: 90,     // Protect most messages so middle is tiny
-            tail_token_budget: 500,  // Narrow tail so middle is non-empty
+            protect_first_n: 90,    // Protect most messages so middle is tiny
+            tail_token_budget: 500, // Narrow tail so middle is non-empty
             tail_overhead: 1.3,
             ..Default::default()
         };
@@ -640,26 +710,44 @@ mod tests {
         // First ineffective compression
         let mut test_msgs = messages.clone();
         let r1 = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(matches!(r1.unwrap(), crate::context::CompactStatus::Unchanged));
+        assert!(matches!(
+            r1.unwrap(),
+            crate::context::CompactStatus::Unchanged
+        ));
 
         // Second ineffective compression
         let mut test_msgs = messages.clone();
         let r2 = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(matches!(r2.unwrap(), crate::context::CompactStatus::Unchanged));
+        assert!(matches!(
+            r2.unwrap(),
+            crate::context::CompactStatus::Unchanged
+        ));
 
         // Third ineffective compression → triggers thrashing
         let mut test_msgs = messages.clone();
         let r3 = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(matches!(r3.unwrap(), crate::context::CompactStatus::Unchanged));
+        assert!(matches!(
+            r3.unwrap(),
+            crate::context::CompactStatus::Unchanged
+        ));
 
         // Now should_compact should return false even if tokens are high
-        assert!(engine.is_thrashing(), "should be thrashing after 3 consecutive ineffective compressions");
+        assert!(
+            engine.is_thrashing(),
+            "should be thrashing after 3 consecutive ineffective compressions"
+        );
 
         // Fourth attempt should skip due to thrashing
         let mut test_msgs = messages.clone();
         let r4 = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(matches!(r4.unwrap(), crate::context::CompactStatus::Unchanged), "thrashing should prevent further compression attempts");
-        assert_eq!(engine.compression_count, 3, "should not count thrashed attempt");
+        assert!(
+            matches!(r4.unwrap(), crate::context::CompactStatus::Unchanged),
+            "thrashing should prevent further compression attempts"
+        );
+        assert_eq!(
+            engine.compression_count, 3,
+            "should not count thrashed attempt"
+        );
     }
 
     #[tokio::test]
@@ -691,8 +779,13 @@ mod tests {
         };
 
         let mut test_msgs = messages;
-        let r = engine.compact(&mut test_msgs, Some(&good_transport), None).await;
-        assert!(matches!(r.unwrap(), crate::context::CompactStatus::Compacted), "effective compression should succeed");
+        let r = engine
+            .compact(&mut test_msgs, Some(&good_transport), None)
+            .await;
+        assert!(
+            matches!(r.unwrap(), crate::context::CompactStatus::Compacted),
+            "effective compression should succeed"
+        );
         // Ineffective count is reset on effective compression
         assert_eq!(engine.ineffective_compression_count, 0);
         assert_eq!(engine.consecutive_effective_compressions, 1);
@@ -724,12 +817,19 @@ mod tests {
 
         let mut test_msgs = messages;
         let result = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Compacted));
+        assert!(matches!(
+            result.unwrap(),
+            crate::context::CompactStatus::Compacted
+        ));
 
         // result.summary wraps the transport response with [CONTEXT COMPACTION...] header.
         // Use contains() instead of exact match.
         assert!(
-            engine._previous_summary.as_deref().unwrap().contains("Iterative Summary"),
+            engine
+                ._previous_summary
+                .as_deref()
+                .unwrap()
+                .contains("Iterative Summary"),
             "previous_summary should contain the summary text"
         );
     }
@@ -758,10 +858,16 @@ mod tests {
         let result = engine.compact(&mut test_msgs, Some(&transport), None).await;
         // With seeded _previous_summary, incremental savings < threshold → ineffective
         assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Unchanged), "should be ineffective with seeded summary");
+        assert!(
+            matches!(result.unwrap(), crate::context::CompactStatus::Unchanged),
+            "should be ineffective with seeded summary"
+        );
         // savings_pct should still be tracked
-        assert!(engine.last_compression_savings_pct >= 0.0,
-            "savings_pct should be >= 0 (got {:.1})", engine.last_compression_savings_pct);
+        assert!(
+            engine.last_compression_savings_pct >= 0.0,
+            "savings_pct should be >= 0 (got {:.1})",
+            engine.last_compression_savings_pct
+        );
     }
     #[tokio::test]
     async fn test_compact_on_session_start_resets_thrashing() {
@@ -769,8 +875,8 @@ mod tests {
         let config = CompactCofig {
             context_length: 100_000,
             max_ineffective_consecutive: 2,
-            protect_first_n: 90,     // Protect most messages so middle is tiny
-            tail_token_budget: 500,  // Narrow tail so middle is non-empty
+            protect_first_n: 90,    // Protect most messages so middle is tiny
+            tail_token_budget: 500, // Narrow tail so middle is non-empty
             tail_overhead: 1.3,
             ..Default::default()
         };

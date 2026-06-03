@@ -1,4 +1,3 @@
-
 /// System prompt cache backed by a session store.
 pub struct SystemPromptCache {
     /// The cached system prompt.

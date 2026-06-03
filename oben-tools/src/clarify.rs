@@ -1,12 +1,11 @@
+use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
+use serde_json::Value;
 /// Clarify tool — asks the user for clarification on ambiguous tasks.
 ///
 /// Pauses execution and requests user input to resolve ambiguity.
-
 use std::sync::Arc;
-use serde_json::Value;
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{SelfRegisteringTool, ToolHandler};
 
 /// Clarify tool definition
 fn make_clarify_tool() -> Tool {
@@ -43,14 +42,11 @@ fn make_clarify_handler() -> ToolHandler {
             let options = args
                 .get("options")
                 .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                })
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
                 .unwrap_or_default();
 
-            let call_id = args.get("call_id")
+            let call_id = args
+                .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -108,10 +104,15 @@ mod tests {
     #[tokio::test]
     async fn asks_question() {
         let registry = make_registry();
-        let result = registry.execute("clarify", &json!({
-            "question": "Which programming language should I use?",
-            "call_id": "test-1",
-        })).await;
+        let result = registry
+            .execute(
+                "clarify",
+                &json!({
+                    "question": "Which programming language should I use?",
+                    "call_id": "test-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("Question:"));
@@ -121,11 +122,16 @@ mod tests {
     #[tokio::test]
     async fn includes_options() {
         let registry = make_registry();
-        let result = registry.execute("clarify", &json!({
-            "question": "What format for output?",
-            "options": ["JSON", "Markdown", "CSV"],
-            "call_id": "test-2",
-        })).await;
+        let result = registry
+            .execute(
+                "clarify",
+                &json!({
+                    "question": "What format for output?",
+                    "options": ["JSON", "Markdown", "CSV"],
+                    "call_id": "test-2",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("JSON"));
@@ -136,11 +142,20 @@ mod tests {
     #[tokio::test]
     async fn handles_missing_question() {
         let registry = make_registry();
-        let result = registry.execute("clarify", &json!({
-            "call_id": "test-3",
-        })).await;
+        let result = registry
+            .execute(
+                "clarify",
+                &json!({
+                    "call_id": "test-3",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Missing 'question'"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Missing 'question'"));
     }
 }

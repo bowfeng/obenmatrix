@@ -62,7 +62,10 @@ fn session_roundtrip_json_with_messages() {
     assert_eq!(restored.messages.len(), 3);
     assert_eq!(restored.messages[0].role, oben_models::MessageRole::System);
     assert_eq!(restored.messages[1].role, oben_models::MessageRole::User);
-    assert_eq!(restored.messages[2].role, oben_models::MessageRole::Assistant);
+    assert_eq!(
+        restored.messages[2].role,
+        oben_models::MessageRole::Assistant
+    );
 }
 
 #[test]

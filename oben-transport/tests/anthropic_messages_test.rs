@@ -7,10 +7,10 @@
 
 use std::sync::{Arc, Mutex};
 use wiremock::matchers::{method, path};
-use wiremock::{MockServer, Mock, ResponseTemplate};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use oben_transport::anthropic_messages::AnthropicMessagesTransport;
 use oben_models::{CallMode, Message, TransportProvider};
+use oben_transport::anthropic_messages::AnthropicMessagesTransport;
 
 /// Start a mock Anthropic server with the expected endpoint.
 async fn mock_server() -> MockServer {
@@ -101,7 +101,10 @@ async fn test_chat_with_tool_call() {
     assert_eq!(result.tool_calls.len(), 1);
     assert_eq!(result.tool_calls[0].tool_name, "shell");
     assert_eq!(result.tool_calls[0].id, "call-abc");
-    assert_eq!(result.tool_calls[0].arguments["command"].as_str().unwrap(), "ls");
+    assert_eq!(
+        result.tool_calls[0].arguments["command"].as_str().unwrap(),
+        "ls"
+    );
 }
 
 #[tokio::test]
@@ -176,7 +179,10 @@ data: {"type":"message_stop"}
     let received_deltas = Arc::new(Mutex::new(Vec::<String>::new()));
     let received_deltas_clone = received_deltas.clone();
     let cb = Box::new(move |delta: &str| {
-        received_deltas_clone.lock().unwrap().push(delta.to_string());
+        received_deltas_clone
+            .lock()
+            .unwrap()
+            .push(delta.to_string());
     });
     let result = transport
         .stream_chat(&messages, &CallMode::Fresh("test-stream-1".into()), cb)
@@ -256,7 +262,10 @@ data: {"type":"message_stop"}
     assert_eq!(result.tool_calls.len(), 1);
     assert_eq!(result.tool_calls[0].id, "call-xyz");
     assert_eq!(result.tool_calls[0].tool_name, "shell");
-    assert_eq!(result.tool_calls[0].arguments["command"].as_str().unwrap(), "ls");
+    assert_eq!(
+        result.tool_calls[0].arguments["command"].as_str().unwrap(),
+        "ls"
+    );
     assert_eq!(result.tokens_used, Some(20));
 }
 

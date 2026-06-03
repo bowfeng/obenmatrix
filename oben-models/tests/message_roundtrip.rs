@@ -1,6 +1,4 @@
-use oben_models::{
-    Message, MessageContent, MessagePart, MessageRole, Tool, ToolCall, ToolResult,
-};
+use oben_models::{Message, MessageContent, MessagePart, MessageRole, Tool, ToolCall, ToolResult};
 
 // ─── Message serialization ──────────────────────────────────────────
 
@@ -117,7 +115,10 @@ fn message_roundtrip_yaml() {
     let msg = Message::user("test yaml roundtrip");
     let yaml = serde_yaml::to_string(&msg).unwrap();
     let restored: Message = serde_yaml::from_str(&yaml).unwrap();
-    assert_eq!(restored.content, MessageContent::Text("test yaml roundtrip".to_string()));
+    assert_eq!(
+        restored.content,
+        MessageContent::Text("test yaml roundtrip".to_string())
+    );
 }
 
 // ─── ToolCall and ToolResult round-trip ─────────────────────────────

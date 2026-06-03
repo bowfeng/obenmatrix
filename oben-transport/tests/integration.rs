@@ -26,7 +26,12 @@ fn streaming_response_with_tool_calls(id: &str, name: &str, args: &str) -> Strin
     )
 }
 
-fn streaming_response_with_usage(text: &str, prompt: usize, completion: usize, total: usize) -> String {
+fn streaming_response_with_usage(
+    text: &str,
+    prompt: usize,
+    completion: usize,
+    total: usize,
+) -> String {
     format!(
         "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}},\"index\":0,\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":{},\"completion_tokens\":{},\"total_tokens\":{}}}}}\n\ndata: [DONE]",
         text, prompt, completion, total
@@ -47,11 +52,7 @@ fn non_streaming_response(text: &str, tokens: Option<usize>) -> String {
     }
 }
 
-fn non_streaming_response_with_tool_calls(
-    id: &str,
-    name: &str,
-    args: &str,
-) -> String {
+fn non_streaming_response_with_tool_calls(id: &str, name: &str, args: &str) -> String {
     let args_escaped = args.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
         "{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{{\"id\":\"{}\",\"type\":\"function\",\"function\":{{\"name\":\"{}\",\"arguments\":\"{}\"}}}}]}}}}],\"model\":\"test\"}}",
@@ -69,15 +70,20 @@ async fn test_chat_completions_text_response() -> Result<()> {
 
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            non_streaming_response("Hello, how can I help you?", Some(42)),
-        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(non_streaming_response(
+                "Hello, how can I help you?",
+                Some(42),
+            )),
+        )
         .mount(&server)
         .await;
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("Hi there")];
-    let resp = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await?;
+    let resp = transport
+        .chat(&messages, &CallMode::Fresh("test-session".to_string()))
+        .await?;
 
     assert_eq!(resp.text, "Hello, how can I help you?");
     assert_eq!(resp.tool_calls.len(), 0);
@@ -91,15 +97,15 @@ async fn test_chat_completions_empty_content() -> Result<()> {
 
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            non_streaming_response("", None),
-        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(non_streaming_response("", None)))
         .mount(&server)
         .await;
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("test")];
-    let resp = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await?;
+    let resp = transport
+        .chat(&messages, &CallMode::Fresh("test-session".to_string()))
+        .await?;
 
     assert_eq!(resp.text, "");
     Ok(())
@@ -109,11 +115,8 @@ async fn test_chat_completions_empty_content() -> Result<()> {
 async fn test_chat_completions_tool_calls() -> Result<()> {
     let server = MockServer::start().await;
 
-    let body = non_streaming_response_with_tool_calls(
-        "call-tool-1",
-        "shell",
-        "{\"command\": \"ls -la\"}",
-    );
+    let body =
+        non_streaming_response_with_tool_calls("call-tool-1", "shell", "{\"command\": \"ls -la\"}");
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
@@ -122,7 +125,9 @@ async fn test_chat_completions_tool_calls() -> Result<()> {
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("list files")];
-    let resp = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await?;
+    let resp = transport
+        .chat(&messages, &CallMode::Fresh("test-session".to_string()))
+        .await?;
 
     assert_eq!(resp.tool_calls.len(), 1);
     assert_eq!(resp.tool_calls[0].id, "call-tool-1");
@@ -137,15 +142,18 @@ async fn test_chat_completions_api_error() -> Result<()> {
 
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(400).set_body_string(
-            "{\"error\":{\"message\":\"bad request\",\"code\":400}}",
-        ))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_string("{\"error\":{\"message\":\"bad request\",\"code\":400}}"),
+        )
         .mount(&server)
         .await;
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("test")];
-    let result = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await;
+    let result = transport
+        .chat(&messages, &CallMode::Fresh("test-session".to_string()))
+        .await;
 
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -160,18 +168,21 @@ async fn test_chat_completions_no_choices() -> Result<()> {
 
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "{\"choices\":[]}",
-        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{\"choices\":[]}"))
         .mount(&server)
         .await;
 
     let transport = make_transport(&server.uri(), "test-model");
     let messages = vec![Message::user("test")];
-    let result = transport.chat(&messages, &CallMode::Fresh("test-session".to_string())).await;
+    let result = transport
+        .chat(&messages, &CallMode::Fresh("test-session".to_string()))
+        .await;
 
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("No response choices"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("No response choices"));
     Ok(())
 }
 
@@ -201,7 +212,11 @@ async fn test_stream_chat_text_response() -> Result<()> {
         Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&[Message::user("Hi")], &CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(
+            &[Message::user("Hi")],
+            &CallMode::Fresh("test-session".to_string()),
+            cb,
+        )
         .await?;
 
     assert_eq!(resp.text, "Streamed hello");
@@ -232,7 +247,11 @@ async fn test_stream_chat_with_usage() -> Result<()> {
         Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&[Message::user("test")], &CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(
+            &[Message::user("test")],
+            &CallMode::Fresh("test-session".to_string()),
+            cb,
+        )
         .await?;
 
     assert_eq!(resp.text, "Done");
@@ -245,11 +264,8 @@ async fn test_stream_chat_with_usage() -> Result<()> {
 async fn test_stream_chat_tool_calls() -> Result<()> {
     let server = MockServer::start().await;
 
-    let sse = streaming_response_with_tool_calls(
-        "call-abc",
-        "shell",
-        "{\"command\": \"echo hello\"}",
-    );
+    let sse =
+        streaming_response_with_tool_calls("call-abc", "shell", "{\"command\": \"echo hello\"}");
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(
@@ -264,7 +280,11 @@ async fn test_stream_chat_tool_calls() -> Result<()> {
     let cb: oben_models::StreamDeltaCallback = Box::new(|_text: &str| {});
 
     let resp = transport
-        .stream_chat(&[Message::user("run command")], &CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(
+            &[Message::user("run command")],
+            &CallMode::Fresh("test-session".to_string()),
+            cb,
+        )
         .await?;
 
     assert_eq!(resp.tool_calls.len(), 1);
@@ -298,7 +318,11 @@ async fn test_stream_chat_empty_content() -> Result<()> {
         Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&[Message::user("test")], &CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(
+            &[Message::user("test")],
+            &CallMode::Fresh("test-session".to_string()),
+            cb,
+        )
         .await?;
 
     assert_eq!(resp.text, "");
@@ -312,9 +336,7 @@ async fn test_stream_chat_api_error() -> Result<()> {
 
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(500).set_body_string(
-            "Internal Server Error",
-        ))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
         .mount(&server)
         .await;
 
@@ -322,7 +344,11 @@ async fn test_stream_chat_api_error() -> Result<()> {
     let cb: oben_models::StreamDeltaCallback = Box::new(|_text: &str| {});
 
     let result = transport
-        .stream_chat(&[Message::user("test")], &CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(
+            &[Message::user("test")],
+            &CallMode::Fresh("test-session".to_string()),
+            cb,
+        )
         .await;
 
     assert!(result.is_err());
@@ -353,7 +379,11 @@ async fn test_stream_chat_separate_instances() -> Result<()> {
         Box::new(move |text: &str| output_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&[Message::user("test")], &CallMode::Fresh("test-session".to_string()), cb)
+        .stream_chat(
+            &[Message::user("test")],
+            &CallMode::Fresh("test-session".to_string()),
+            cb,
+        )
         .await?;
 
     assert_eq!(resp.text, "Captured text");

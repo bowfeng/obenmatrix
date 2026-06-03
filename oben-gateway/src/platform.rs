@@ -1,7 +1,6 @@
 /// Platform abstraction for messaging services.
 ///
 /// Each platform (Telegram, Discord, Slack) implements this trait.
-
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -166,7 +165,8 @@ mod tests {
         async fn stop(&mut self) {}
 
         async fn send(&self, _msg: OutgoingMessage) -> Result<()> {
-            self.send_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.send_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
 
@@ -197,8 +197,14 @@ mod tests {
             content: "test message".to_string(),
         };
         adapter.send(msg.clone()).await.unwrap();
-        assert_eq!(adapter.send_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            adapter.send_count.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
         adapter.send(msg).await.unwrap();
-        assert_eq!(adapter.send_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            adapter.send_count.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
     }
 }

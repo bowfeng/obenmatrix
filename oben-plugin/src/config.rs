@@ -14,8 +14,8 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 /// Plugin configuration from config.yaml.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -54,19 +54,24 @@ impl PluginConfig {
                         let key = k.as_str().unwrap_or("");
                         if key == "enabled" {
                             if let Some(enabled) = v.as_sequence() {
-                                config.enabled = Some(enabled.iter()
-                                    .filter_map(|val| val.as_str().map(String::from))
-                                    .collect());
+                                config.enabled = Some(
+                                    enabled
+                                        .iter()
+                                        .filter_map(|val| val.as_str().map(String::from))
+                                        .collect(),
+                                );
                             }
                         } else if key == "disabled" {
                             if let Some(disabled) = v.as_sequence() {
-                                config.disabled = disabled.iter()
+                                config.disabled = disabled
+                                    .iter()
                                     .filter_map(|val| val.as_str().map(String::from))
                                     .collect();
                             }
                         } else if key == "trusted" {
                             if let Some(trusted) = v.as_sequence() {
-                                config.trusted = trusted.iter()
+                                config.trusted = trusted
+                                    .iter()
                                     .filter_map(|val| val.as_str().map(String::from))
                                     .collect();
                             }
@@ -85,7 +90,11 @@ impl PluginConfig {
                 }
             }
 
-            if config.enabled.is_some() || !config.disabled.is_empty() || !config.trusted.is_empty() || !config.providers.is_empty() {
+            if config.enabled.is_some()
+                || !config.disabled.is_empty()
+                || !config.trusted.is_empty()
+                || !config.providers.is_empty()
+            {
                 return Ok(config);
             }
         }
@@ -159,7 +168,10 @@ providers:
         .unwrap();
 
         let config = PluginConfig::from_file(&config_path).unwrap();
-        assert_eq!(config.enabled, Some(vec!["plugin-a".into(), "plugin-b".into()]));
+        assert_eq!(
+            config.enabled,
+            Some(vec!["plugin-a".into(), "plugin-b".into()])
+        );
         assert_eq!(config.disabled, vec!["broken-plugin".to_string()]);
         assert_eq!(config.get_provider("image_gen"), Some("mock"));
         assert_eq!(config.get_provider("web_search"), Some("tavily"));

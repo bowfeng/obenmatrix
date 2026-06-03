@@ -47,10 +47,10 @@ pub struct CostResult {
 /// Cost status classification.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CostStatus {
-    Included,    // Free or subscription-included
-    Known,       // Has pricing data
-    Estimated,   // Estimated from similar models
-    Unknown,     // No pricing data available
+    Included,  // Free or subscription-included
+    Known,     // Has pricing data
+    Estimated, // Estimated from similar models
+    Unknown,   // No pricing data available
 }
 
 impl std::fmt::Display for CostStatus {
@@ -87,40 +87,201 @@ impl PricingStore {
 
     fn load_defaults(&mut self) {
         // ── Anthropic Claude ────────────────────────────────────────
-        self.add_pricing("anthropic", "claude-opus-4-20250514", Some(15.0), Some(75.0), Some(1.50), Some(18.75));
-        self.add_pricing("anthropic", "claude-sonnet-4-20250514", Some(3.0), Some(15.0), Some(0.30), Some(3.75));
-        self.add_pricing("anthropic", "claude-sonnet-4-5", Some(3.0), Some(15.0), Some(0.30), Some(3.75));
-        self.add_pricing("anthropic", "claude-sonnet-4-6", Some(3.0), Some(15.0), Some(0.30), Some(3.75));
-        self.add_pricing("anthropic", "claude-opus-4-7", Some(5.0), Some(25.0), Some(0.50), Some(6.25));
-        self.add_pricing("anthropic", "claude-opus-4-6", Some(5.0), Some(25.0), Some(0.50), Some(6.25));
-        self.add_pricing("anthropic", "claude-haiku-4-5", Some(1.0), Some(5.0), Some(0.10), Some(1.25));
-        self.add_pricing("anthropic", "claude-3-5-sonnet-20241022", Some(3.0), Some(15.0), Some(0.30), Some(3.75));
-        self.add_pricing("anthropic", "claude-3-haiku-20240307", Some(0.25), Some(1.25), Some(0.03), Some(0.30));
-        self.add_pricing("anthropic", "claude-3-opus-20240229", Some(15.0), Some(75.0), Some(1.50), Some(18.75));
-        self.add_pricing("anthropic", "claude-3-5-haiku-20241022", Some(0.80), Some(4.0), Some(0.08), Some(1.00));
+        self.add_pricing(
+            "anthropic",
+            "claude-opus-4-20250514",
+            Some(15.0),
+            Some(75.0),
+            Some(1.50),
+            Some(18.75),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-sonnet-4-20250514",
+            Some(3.0),
+            Some(15.0),
+            Some(0.30),
+            Some(3.75),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-sonnet-4-5",
+            Some(3.0),
+            Some(15.0),
+            Some(0.30),
+            Some(3.75),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-sonnet-4-6",
+            Some(3.0),
+            Some(15.0),
+            Some(0.30),
+            Some(3.75),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-opus-4-7",
+            Some(5.0),
+            Some(25.0),
+            Some(0.50),
+            Some(6.25),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-opus-4-6",
+            Some(5.0),
+            Some(25.0),
+            Some(0.50),
+            Some(6.25),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-haiku-4-5",
+            Some(1.0),
+            Some(5.0),
+            Some(0.10),
+            Some(1.25),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-3-5-sonnet-20241022",
+            Some(3.0),
+            Some(15.0),
+            Some(0.30),
+            Some(3.75),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-3-haiku-20240307",
+            Some(0.25),
+            Some(1.25),
+            Some(0.03),
+            Some(0.30),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-3-opus-20240229",
+            Some(15.0),
+            Some(75.0),
+            Some(1.50),
+            Some(18.75),
+        );
+        self.add_pricing(
+            "anthropic",
+            "claude-3-5-haiku-20241022",
+            Some(0.80),
+            Some(4.0),
+            Some(0.08),
+            Some(1.00),
+        );
 
         // ── OpenAI ────────────────────────────────────────────────
         self.add_pricing("openai", "gpt-4o", Some(2.50), Some(10.0), Some(1.25), None);
-        self.add_pricing("openai", "gpt-4o-mini", Some(0.15), Some(0.60), Some(0.075), None);
+        self.add_pricing(
+            "openai",
+            "gpt-4o-mini",
+            Some(0.15),
+            Some(0.60),
+            Some(0.075),
+            None,
+        );
         self.add_pricing("openai", "gpt-4.1", Some(2.00), Some(8.0), Some(0.50), None);
-        self.add_pricing("openai", "gpt-4.1-mini", Some(0.40), Some(1.60), Some(0.10), None);
-        self.add_pricing("openai", "gpt-4.1-nano", Some(0.10), Some(0.40), Some(0.025), None);
+        self.add_pricing(
+            "openai",
+            "gpt-4.1-mini",
+            Some(0.40),
+            Some(1.60),
+            Some(0.10),
+            None,
+        );
+        self.add_pricing(
+            "openai",
+            "gpt-4.1-nano",
+            Some(0.10),
+            Some(0.40),
+            Some(0.025),
+            None,
+        );
         self.add_pricing("openai", "o3", Some(10.0), Some(40.0), Some(2.50), None);
-        self.add_pricing("openai", "o3-mini", Some(1.10), Some(4.40), Some(0.55), None);
+        self.add_pricing(
+            "openai",
+            "o3-mini",
+            Some(1.10),
+            Some(4.40),
+            Some(0.55),
+            None,
+        );
 
         // ── DeepSeek ──────────────────────────────────────────────
-        self.add_pricing("deepseek", "deepseek-chat", Some(0.14), Some(0.28), None, None);
-        self.add_pricing("deepseek", "deepseek-reasoner", Some(0.55), Some(2.19), None, None);
-        self.add_pricing("deepseek", "deepseek-v4-pro", Some(1.74), Some(3.48), Some(0.0145), None);
+        self.add_pricing(
+            "deepseek",
+            "deepseek-chat",
+            Some(0.14),
+            Some(0.28),
+            None,
+            None,
+        );
+        self.add_pricing(
+            "deepseek",
+            "deepseek-reasoner",
+            Some(0.55),
+            Some(2.19),
+            None,
+            None,
+        );
+        self.add_pricing(
+            "deepseek",
+            "deepseek-v4-pro",
+            Some(1.74),
+            Some(3.48),
+            Some(0.0145),
+            None,
+        );
 
         // ── Google Gemini ─────────────────────────────────────────
-        self.add_pricing("google", "gemini-2.5-pro", Some(1.25), Some(10.0), None, None);
-        self.add_pricing("google", "gemini-2.5-flash", Some(0.15), Some(0.60), None, None);
-        self.add_pricing("google", "gemini-2.0-flash", Some(0.10), Some(0.40), None, None);
+        self.add_pricing(
+            "google",
+            "gemini-2.5-pro",
+            Some(1.25),
+            Some(10.0),
+            None,
+            None,
+        );
+        self.add_pricing(
+            "google",
+            "gemini-2.5-flash",
+            Some(0.15),
+            Some(0.60),
+            None,
+            None,
+        );
+        self.add_pricing(
+            "google",
+            "gemini-2.0-flash",
+            Some(0.10),
+            Some(0.40),
+            None,
+            None,
+        );
 
         // ── MiniMax ───────────────────────────────────────────────
-        self.add_pricing("minimax", "minimax-m2.7", Some(0.30), Some(1.20), None, None);
-        self.add_pricing("minimax-cn", "minimax-m2.7", Some(0.30), Some(1.20), None, None);
+        self.add_pricing(
+            "minimax",
+            "minimax-m2.7",
+            Some(0.30),
+            Some(1.20),
+            None,
+            None,
+        );
+        self.add_pricing(
+            "minimax-cn",
+            "minimax-m2.7",
+            Some(0.30),
+            Some(1.20),
+            None,
+            None,
+        );
     }
 
     pub fn add_pricing(
@@ -133,13 +294,16 @@ impl PricingStore {
         cache_write: Option<f64>,
     ) {
         let key = (provider.to_lowercase(), model.to_lowercase());
-        self.entries.insert(key, PricingEntry {
-            input_cost_per_million: input,
-            output_cost_per_million: output,
-            cache_read_cost_per_million: cache_read,
-            cache_write_cost_per_million: cache_write,
-            request_cost: None,
-        });
+        self.entries.insert(
+            key,
+            PricingEntry {
+                input_cost_per_million: input,
+                output_cost_per_million: output,
+                cache_read_cost_per_million: cache_read,
+                cache_write_cost_per_million: cache_write,
+                request_cost: None,
+            },
+        );
     }
 
     pub fn add_per_request(&mut self, provider: &str, model: &str, cost: f64) {
@@ -147,18 +311,22 @@ impl PricingStore {
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.request_cost = Some(cost);
         } else {
-            self.entries.insert(key, PricingEntry {
-                input_cost_per_million: None,
-                output_cost_per_million: None,
-                cache_read_cost_per_million: None,
-                cache_write_cost_per_million: None,
-                request_cost: Some(cost),
-            });
+            self.entries.insert(
+                key,
+                PricingEntry {
+                    input_cost_per_million: None,
+                    output_cost_per_million: None,
+                    cache_read_cost_per_million: None,
+                    cache_write_cost_per_million: None,
+                    request_cost: Some(cost),
+                },
+            );
         }
     }
 
     pub fn get_pricing(&self, provider: &str, model: &str) -> Option<&PricingEntry> {
-        self.entries.get(&(provider.to_lowercase(), model.to_lowercase()))
+        self.entries
+            .get(&(provider.to_lowercase(), model.to_lowercase()))
     }
 
     /// Infer provider from model name patterns (e.g. "claude-4" -> "anthropic").
@@ -167,7 +335,11 @@ impl PricingStore {
         if lower.starts_with("claude") {
             return "anthropic";
         }
-        if lower.starts_with("opus") || lower.starts_with("sonnet") || lower.starts_with("haiku") || lower.starts_with("codex") {
+        if lower.starts_with("opus")
+            || lower.starts_with("sonnet")
+            || lower.starts_with("haiku")
+            || lower.starts_with("codex")
+        {
             return "anthropic";
         }
         if lower.starts_with("gpt") || lower.starts_with("o1") || lower.starts_with("o3") {
@@ -200,7 +372,11 @@ impl PricingStore {
             if provider_name.is_empty() {
                 // Fallback to inference
                 let inferred = Self::infer_provider_from_model(model);
-                prov = if inferred.is_empty() { "unknown".to_string() } else { inferred.to_string() };
+                prov = if inferred.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    inferred.to_string()
+                };
             } else {
                 prov = provider_name;
             }
@@ -211,29 +387,50 @@ impl PricingStore {
             if model.contains('/') {
                 let parts: Vec<_> = model.splitn(2, '/').collect();
                 prov = parts.first().unwrap_or(&"unknown").to_string();
-                bare_model = parts.get(1).map(|s| s.to_string()).unwrap_or(model.to_string());
+                bare_model = parts
+                    .get(1)
+                    .map(|s| s.to_string())
+                    .unwrap_or(model.to_string());
             } else {
                 // Infer from model name itself
                 let inferred = Self::infer_provider_from_model(model);
-                prov = if inferred.is_empty() { "unknown".to_string() } else { inferred.to_string() };
+                prov = if inferred.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    inferred.to_string()
+                };
                 bare_model = model.to_string();
             }
         }
 
         // Handle special billing modes
         if prov == "openai-codex" || prov == "openrouter" {
-            return BillingRoute { provider: prov, model: bare_model };
+            return BillingRoute {
+                provider: prov,
+                model: bare_model,
+            };
         }
         if prov == "custom" || prov == "local" {
-            return BillingRoute { provider: prov, model: bare_model };
+            return BillingRoute {
+                provider: prov,
+                model: bare_model,
+            };
         }
 
-        BillingRoute { provider: prov, model: bare_model }
+        BillingRoute {
+            provider: prov,
+            model: bare_model,
+        }
     }
 
     /// Compute cost for a single turn, given an optional pricing store.
     /// Returns Some(CostResult) always.
-    pub fn cost_for_turn(&self, provider: &str, model: &str, usage: &TokenUsage) -> Option<CostResult> {
+    pub fn cost_for_turn(
+        &self,
+        provider: &str,
+        model: &str,
+        usage: &TokenUsage,
+    ) -> Option<CostResult> {
         // Handle local/custom/frozen providers
         if provider == "custom" || provider == "local" {
             return Some(CostResult {
@@ -384,11 +581,15 @@ mod tests {
     #[test]
     fn test_claude_sonnet_cost() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("anthropic", "claude-sonnet-4-20250514", &TokenUsage {
-            input_tokens: 1000,
-            output_tokens: 500,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "anthropic",
+            "claude-sonnet-4-20250514",
+            &TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 500,
+                ..Default::default()
+            },
+        );
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.status, CostStatus::Known);
@@ -399,11 +600,15 @@ mod tests {
     #[test]
     fn test_gpt4o_cost() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("openai", "gpt-4o", &TokenUsage {
-            input_tokens: 1000000,
-            output_tokens: 1000000,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "openai",
+            "gpt-4o",
+            &TokenUsage {
+                input_tokens: 1000000,
+                output_tokens: 1000000,
+                ..Default::default()
+            },
+        );
         assert!(result.is_some());
         // 1M * 2.5/1M + 1M * 10/1M = 2.5 + 10.0 = 12.5
         assert!(result.unwrap().amount_usd.unwrap() == 12.5);
@@ -412,12 +617,16 @@ mod tests {
     #[test]
     fn test_cache_write_cost() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("anthropic", "claude-sonnet-4-20250514", &TokenUsage {
-            input_tokens: 1000,
-            output_tokens: 500,
-            cache_write_tokens: 500000,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "anthropic",
+            "claude-sonnet-4-20250514",
+            &TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 500,
+                cache_write_tokens: 500000,
+                ..Default::default()
+            },
+        );
         // cache_write for sonnet-4-20250514 is 3.75/M
         // 1000*3/1M + 500*15/1M + 500000*3.75/1M = 0.003 + 0.0075 + 1.875 = 1.8855
         assert!(result.is_some());
@@ -428,12 +637,16 @@ mod tests {
     #[test]
     fn test_cache_read_cost() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("openai", "gpt-4o", &TokenUsage {
-            input_tokens: 1000,
-            output_tokens: 500,
-            cache_read_tokens: 1000000,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "openai",
+            "gpt-4o",
+            &TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 500,
+                cache_read_tokens: 1000000,
+                ..Default::default()
+            },
+        );
         // cache_read for gpt-4o is 1.25. cache_write is none
         // 1M * 1.25/1M + 1000*2.5/1M + 500*10/1M = 1.25 + 0.0025 + 0.005 = 1.2575
         assert!(result.is_some());
@@ -444,11 +657,15 @@ mod tests {
     #[test]
     fn test_deepseek_cost() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("deepseek", "deepseek-chat", &TokenUsage {
-            input_tokens: 1000000,
-            output_tokens: 1000000,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "deepseek",
+            "deepseek-chat",
+            &TokenUsage {
+                input_tokens: 1000000,
+                output_tokens: 1000000,
+                ..Default::default()
+            },
+        );
         assert!(result.is_some());
         // 1M * 0.14/1M + 1M * 0.28/1M = 0.42
         assert!((result.unwrap().amount_usd.unwrap() - 0.42).abs() < 0.001);
@@ -457,11 +674,15 @@ mod tests {
     #[test]
     fn test_gemini_cost() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("google", "gemini-2.5-flash", &TokenUsage {
-            input_tokens: 1000000,
-            output_tokens: 1000000,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "google",
+            "gemini-2.5-flash",
+            &TokenUsage {
+                input_tokens: 1000000,
+                output_tokens: 1000000,
+                ..Default::default()
+            },
+        );
         assert!(result.is_some());
         assert!((result.unwrap().amount_usd.unwrap() - 0.75).abs() < 0.001);
     }
@@ -477,11 +698,15 @@ mod tests {
     #[test]
     fn test_local_model() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("local", "custom-model", &TokenUsage {
-            input_tokens: 1000,
-            output_tokens: 100,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "local",
+            "custom-model",
+            &TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 100,
+                ..Default::default()
+            },
+        );
         assert!(result.is_some());
         assert_eq!(result.unwrap().status, CostStatus::Included);
     }
@@ -489,10 +714,26 @@ mod tests {
     #[test]
     fn test_resolve_route_explicit_provider() {
         let store = PricingStore::new();
-        assert_eq!(store.resolve_route("gpt-4o", Some("openai")).provider, "openai");
-        assert_eq!(store.resolve_route("claude-3-5-sonnet", Some("anthropic")).provider, "anthropic");
-        assert_eq!(store.resolve_route("anthropic/claude-sonnet-4", None).provider, "anthropic");
-        assert_eq!(store.resolve_route("custom/model", Some("local")).provider, "local");
+        assert_eq!(
+            store.resolve_route("gpt-4o", Some("openai")).provider,
+            "openai"
+        );
+        assert_eq!(
+            store
+                .resolve_route("claude-3-5-sonnet", Some("anthropic"))
+                .provider,
+            "anthropic"
+        );
+        assert_eq!(
+            store
+                .resolve_route("anthropic/claude-sonnet-4", None)
+                .provider,
+            "anthropic"
+        );
+        assert_eq!(
+            store.resolve_route("custom/model", Some("local")).provider,
+            "local"
+        );
     }
 
     #[test]
@@ -506,28 +747,51 @@ mod tests {
     #[test]
     fn test_resolve_route_infer_from_name_claude() {
         let store = PricingStore::new();
-        assert_eq!(store.resolve_route("claude-3-5-sonnet-20241022", None).provider, "anthropic");
-        assert_eq!(store.resolve_route("claude-sonnet-4-6", None).provider, "anthropic");
+        assert_eq!(
+            store
+                .resolve_route("claude-3-5-sonnet-20241022", None)
+                .provider,
+            "anthropic"
+        );
+        assert_eq!(
+            store.resolve_route("claude-sonnet-4-6", None).provider,
+            "anthropic"
+        );
     }
 
     #[test]
     fn test_resolve_route_infer_from_name_gemini() {
         let store = PricingStore::new();
-        assert_eq!(store.resolve_route("gemini-2.5-pro", None).provider, "google");
-        assert_eq!(store.resolve_route("gemini-2.0-flash", None).provider, "google");
+        assert_eq!(
+            store.resolve_route("gemini-2.5-pro", None).provider,
+            "google"
+        );
+        assert_eq!(
+            store.resolve_route("gemini-2.0-flash", None).provider,
+            "google"
+        );
     }
 
     #[test]
     fn test_resolve_route_infer_from_name_deepseek() {
         let store = PricingStore::new();
-        assert_eq!(store.resolve_route("deepseek-chat", None).provider, "deepseek");
-        assert_eq!(store.resolve_route("deepseek-reasoner", None).provider, "deepseek");
+        assert_eq!(
+            store.resolve_route("deepseek-chat", None).provider,
+            "deepseek"
+        );
+        assert_eq!(
+            store.resolve_route("deepseek-reasoner", None).provider,
+            "deepseek"
+        );
     }
 
     #[test]
     fn test_resolve_route_unknown() {
         let store = PricingStore::new();
-        assert_eq!(store.resolve_route("random-model", None).provider, "unknown");
+        assert_eq!(
+            store.resolve_route("random-model", None).provider,
+            "unknown"
+        );
     }
 
     #[test]
@@ -550,11 +814,14 @@ mod tests {
 
     #[test]
     fn test_shorthand_compute_full_cost() {
-        let result = compute_cost("gpt-4o", &TokenUsage {
-            input_tokens: 100,
-            output_tokens: 50,
-            ..Default::default()
-        });
+        let result = compute_cost(
+            "gpt-4o",
+            &TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                ..Default::default()
+            },
+        );
         // 100*2.5/1M + 50*10/1M = 0.00025 + 0.0005 = 0.00075
         assert!(result.is_some());
         assert!((result.unwrap().amount_usd.unwrap() - 0.00075).abs() < 0.001);
@@ -615,11 +882,15 @@ mod tests {
         let mut store = PricingStore::new();
         // OpenRouter charges per request + tokens
         store.add_per_request("openrouter", "gpt-4o", 0.01);
-        let result = store.cost_for_turn("openrouter", "gpt-4o", &TokenUsage {
-            input_tokens: 1000,
-            output_tokens: 1000,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "openrouter",
+            "gpt-4o",
+            &TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 1000,
+                ..Default::default()
+            },
+        );
         assert!(result.is_some());
         let cost = result.unwrap().amount_usd.unwrap();
         // 0.01 (request) + no other costs since openrouter route skips token pricing
@@ -630,11 +901,15 @@ mod tests {
     fn test_openrouter_inferred_cost() {
         let store = PricingStore::new();
         // openrouter model should return request cost or unknown
-        let result = store.cost_for_turn("openrouter", "gpt-4o", &TokenUsage {
-            input_tokens: 100,
-            output_tokens: 50,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "openrouter",
+            "gpt-4o",
+            &TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                ..Default::default()
+            },
+        );
         // No pricing entry for openrouter/gpt-4o in store, so should return Unknown
         assert!(result.is_some());
         assert_eq!(result.unwrap().status, CostStatus::Unknown);
@@ -643,11 +918,15 @@ mod tests {
     #[test]
     fn test_large_token_count() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("anthropic", "claude-opus-4-20250514", &TokenUsage {
-            input_tokens: 1000000,
-            output_tokens: 1000000,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "anthropic",
+            "claude-opus-4-20250514",
+            &TokenUsage {
+                input_tokens: 1000000,
+                output_tokens: 1000000,
+                ..Default::default()
+            },
+        );
         assert!(result.is_some());
         // 1M * 15/1M + 1M * 75/1M = 90.0
         assert!(result.unwrap().amount_usd.unwrap() == 90.0);
@@ -656,39 +935,68 @@ mod tests {
     #[test]
     fn test_unknown_pricing() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("unknown_provider", "nobody-knows", &TokenUsage {
-            input_tokens: 1000,
-            output_tokens: 100,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "unknown_provider",
+            "nobody-knows",
+            &TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 100,
+                ..Default::default()
+            },
+        );
         match result {
-            Some(CostResult { status: CostStatus::Unknown, .. }) => {},
+            Some(CostResult {
+                status: CostStatus::Unknown,
+                ..
+            }) => {}
             other => panic!("Expected CostStatus::Unknown, got {:?}", other),
         }
     }
 
     #[test]
     fn test_infer_provider_from_model_name() {
-        assert_eq!(PricingStore::infer_provider_from_model("claude-3-opus"), "anthropic");
-        assert_eq!(PricingStore::infer_provider_from_model("claude-sonnet-4-6"), "anthropic");
+        assert_eq!(
+            PricingStore::infer_provider_from_model("claude-3-opus"),
+            "anthropic"
+        );
+        assert_eq!(
+            PricingStore::infer_provider_from_model("claude-sonnet-4-6"),
+            "anthropic"
+        );
         assert_eq!(PricingStore::infer_provider_from_model("gpt-4o"), "openai");
         assert_eq!(PricingStore::infer_provider_from_model("o3-mini"), "openai");
-        assert_eq!(PricingStore::infer_provider_from_model("gemini-2.5-pro"), "google");
-        assert_eq!(PricingStore::infer_provider_from_model("deepseek-chat"), "deepseek");
-        assert_eq!(PricingStore::infer_provider_from_model("nova-pro"), "bedrock");
-        assert_eq!(PricingStore::infer_provider_from_model("minimax-m2"), "minimax");
+        assert_eq!(
+            PricingStore::infer_provider_from_model("gemini-2.5-pro"),
+            "google"
+        );
+        assert_eq!(
+            PricingStore::infer_provider_from_model("deepseek-chat"),
+            "deepseek"
+        );
+        assert_eq!(
+            PricingStore::infer_provider_from_model("nova-pro"),
+            "bedrock"
+        );
+        assert_eq!(
+            PricingStore::infer_provider_from_model("minimax-m2"),
+            "minimax"
+        );
         assert_eq!(PricingStore::infer_provider_from_model("unknown-model"), "");
     }
 
     #[test]
     fn test_opus_4_7_cost() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("anthropic", "claude-opus-4-7", &TokenUsage {
-            input_tokens: 100000,
-            output_tokens: 100000,
-            cache_write_tokens: 500000,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "anthropic",
+            "claude-opus-4-7",
+            &TokenUsage {
+                input_tokens: 100000,
+                output_tokens: 100000,
+                cache_write_tokens: 500000,
+                ..Default::default()
+            },
+        );
         assert!(result.is_some());
         // 100K * 5/1M + 100K * 25/1M + 500K * 6.25/1M
         // = 0.5 + 2.5 + 3.125 = 6.125
@@ -699,11 +1007,15 @@ mod tests {
     #[test]
     fn test_custom_provider_included() {
         let store = PricingStore::new();
-        let result = store.cost_for_turn("custom", "my-model", &TokenUsage {
-            input_tokens: 1000,
-            output_tokens: 100,
-            ..Default::default()
-        });
+        let result = store.cost_for_turn(
+            "custom",
+            "my-model",
+            &TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 100,
+                ..Default::default()
+            },
+        );
         assert!(result.is_some());
         assert_eq!(result.unwrap().status, CostStatus::Included);
     }

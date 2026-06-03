@@ -1,5 +1,4 @@
 /// Skill usage telemetry — tracks per-skill metrics in a sidecar JSON file.
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -78,18 +77,16 @@ pub fn load_usage() -> HashMap<String, UsageRecord> {
     }
 
     match fs::read_to_string(&path) {
-        Ok(content) => {
-            match serde_json::from_str::<HashMap<String, UsageRecord>>(&content) {
-                Ok(records) => {
-                    debug!("Loaded {} usage records", records.len());
-                    records
-                }
-                Err(e) => {
-                    warn!("Failed to parse usage file: {}", e);
-                    HashMap::new()
-                }
+        Ok(content) => match serde_json::from_str::<HashMap<String, UsageRecord>>(&content) {
+            Ok(records) => {
+                debug!("Loaded {} usage records", records.len());
+                records
             }
-        }
+            Err(e) => {
+                warn!("Failed to parse usage file: {}", e);
+                HashMap::new()
+            }
+        },
         Err(e) => {
             warn!("Failed to read usage file: {}", e);
             HashMap::new()
@@ -184,7 +181,8 @@ pub fn activity_count(record: &UsageRecord) -> usize {
 /// Check if a skill is agent-created.
 pub fn is_agent_created(skill_name: &str) -> bool {
     let records = load_usage();
-    records.get(skill_name)
+    records
+        .get(skill_name)
         .and_then(|r| r.created_by.as_ref())
         .map(|created| created == "agent")
         .unwrap_or(false)
@@ -193,7 +191,8 @@ pub fn is_agent_created(skill_name: &str) -> bool {
 /// Get list of agent-created skill names.
 pub fn list_agent_created_names() -> Vec<String> {
     let records = load_usage();
-    records.into_iter()
+    records
+        .into_iter()
         .filter(|(_, r)| r.created_by.as_deref() == Some("agent"))
         .map(|(name, _)| name)
         .collect()
@@ -232,7 +231,7 @@ mod tests {
     #[test]
     fn test_save_and_load_usage() {
         let path = temp_usage_file();
-        
+
         let mut records = HashMap::new();
         let record = UsageRecord {
             use_count: 5,
@@ -240,17 +239,18 @@ mod tests {
             ..Default::default()
         };
         records.insert("test-skill".to_string(), record);
-        
+
         // Override usage_file to use temp path
         // Note: In real code, we'd use a different approach, but for testing this is OK
-        
+
         let json = serde_json::to_string_pretty(&records).unwrap();
         fs::write(&path, json).unwrap();
-        
-        let loaded: HashMap<String, UsageRecord> = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+        let loaded: HashMap<String, UsageRecord> =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded["test-skill"].use_count, 5);
-        
+
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

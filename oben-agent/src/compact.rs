@@ -13,7 +13,6 @@
 /// The `ContextEngine` in `context.rs` is the unified entry point that owns
 /// the message buffer, tracks token usage, decides when to compress,
 /// and calls the functions in this module.
-
 use anyhow::Result;
 
 use oben_models::{Message, MessageContent, MessagePart, TransportProvider};
@@ -119,11 +118,22 @@ pub enum CompactOutcome {
     /// Session messages are within token budget — nothing to compact.
     AlreadyCompact,
     /// All messages are protected (head/tail) — no middle messages to summarize.
-    NoMiddleMessages { head_count: usize, tail_count: usize },
+    NoMiddleMessages {
+        head_count: usize,
+        tail_count: usize,
+    },
     /// Compression attempted but savings below threshold — messages unchanged.
-    Ineffective { original_tokens: usize, compacted_tokens: usize, savings_pct: f64 },
+    Ineffective {
+        original_tokens: usize,
+        compacted_tokens: usize,
+        savings_pct: f64,
+    },
     /// Compression succeeded — messages were replaced with a summary.
-    Compressed { original_count: usize, compacted_count: usize, savings_pct: f64 },
+    Compressed {
+        original_count: usize,
+        compacted_count: usize,
+        savings_pct: f64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +172,10 @@ pub async fn compact_session_messages(
     _compression_round: usize,
 ) -> Result<CompressionResult> {
     // Step 1: Token estimation — computed once, reused
-    let original_tokens = messages.iter().map(|m| message_token_estimate(m)).sum::<usize>();
+    let original_tokens = messages
+        .iter()
+        .map(|m| message_token_estimate(m))
+        .sum::<usize>();
     let original_count = messages.len();
 
     // Step 2: Prune tool results
@@ -239,14 +252,21 @@ pub async fn compact_session_messages(
     // Step 7: Strip historical image content
     let stripped_media = strip_historical_media(&mut compacted);
     if stripped_media > 0 {
-        tracing::info!("Stripped {} image part(s) from historical messages", stripped_media);
+        tracing::info!(
+            "Stripped {} image part(s) from historical messages",
+            stripped_media
+        );
     }
 
-    let compacted_tokens = compacted.iter().map(|m| message_token_estimate(m)).sum::<usize>();
+    let compacted_tokens = compacted
+        .iter()
+        .map(|m| message_token_estimate(m))
+        .sum::<usize>();
     let compacted_count = compacted.len();
 
     let savings_pct = if original_tokens > 0 {
-        ((original_tokens as f64 - compacted_tokens as f64) / original_tokens as f64 * 100.0).round()
+        ((original_tokens as f64 - compacted_tokens as f64) / original_tokens as f64 * 100.0)
+            .round()
     } else {
         0.0
     };
@@ -271,10 +291,13 @@ pub fn message_token_estimate(msg: &Message) -> usize {
         MessageContent::Text(s) => s,
         MessageContent::Image { .. } => return 500,
         MessageContent::Parts(parts) => {
-            return parts.iter().map(|p| match p {
-                MessagePart::Text(s) => s.len() / 4,
-                MessagePart::Image { .. } => 500,
-            }).sum();
+            return parts
+                .iter()
+                .map(|p| match p {
+                    MessagePart::Text(s) => s.len() / 4,
+                    MessagePart::Image { .. } => 500,
+                })
+                .sum();
         }
     };
     text.len() / 4 + 5 // per-message overhead
@@ -293,8 +316,7 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>
     // with a back-reference.
     let mut seen_contents: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    let mut duplicate_indices: std::collections::HashSet<usize> =
-        std::collections::HashSet::new();
+    let mut duplicate_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for (i, msg) in messages.iter().enumerate() {
         if msg.role != oben_models::MessageRole::Tool {
@@ -343,9 +365,7 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>
         match &msg.content {
             MessageContent::Image { .. } => {
                 // Replace image content with placeholder
-                msg.content = MessageContent::Text(
-                    "[screenshot removed to save context]".into(),
-                );
+                msg.content = MessageContent::Text("[screenshot removed to save context]".into());
                 pruned_count += 1;
                 continue;
             }
@@ -353,14 +373,16 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>
                 // Check for image parts
                 let has_image = parts.iter().any(|p| matches!(p, MessagePart::Image { .. }));
                 if has_image {
-                    let text_parts: Vec<String> = parts.iter().filter_map(|p| match p {
-                        MessagePart::Text(s) => Some(s.clone()),
-                        _ => None,
-                    }).collect();
+                    let text_parts: Vec<String> = parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            MessagePart::Text(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .collect();
                     if text_parts.is_empty() {
-                        msg.content = MessageContent::Text(
-                            "[screenshot removed to save context]".into(),
-                        );
+                        msg.content =
+                            MessageContent::Text("[screenshot removed to save context]".into());
                     } else {
                         msg.content = MessageContent::Text(text_parts.join("\n"));
                     }
@@ -379,18 +401,25 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>
 
         if text_len > max_output_len {
             // Extract tool name from tool_call_ids (first ID is the parent call)
-            let tool_name = msg.tool_call_ids.first().map(|id| {
-                // Try to extract tool name from context — if available, use it
-                // Otherwise use a generic label
-                id.chars().take(20).collect::<String>()
-            }).unwrap_or_else(|| "tool".to_string());
+            let tool_name = msg
+                .tool_call_ids
+                .first()
+                .map(|id| {
+                    // Try to extract tool name from context — if available, use it
+                    // Otherwise use a generic label
+                    id.chars().take(20).collect::<String>()
+                })
+                .unwrap_or_else(|| "tool".to_string());
 
             // Create informative 1-line summary
             let summary = format!(
                 "[{}] {} -> {} chars output (truncated)",
                 tool_name,
                 if text_len > 0 && msg.content.to_text().contains('\n') {
-                    format!("{} lines output", msg.content.to_text().matches('\n').count() + 1)
+                    format!(
+                        "{} lines output",
+                        msg.content.to_text().matches('\n').count() + 1
+                    )
                 } else {
                     format!("{} chars output", text_len)
                 },
@@ -446,7 +475,9 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>
 /// placeholders. Messages at/after the anchor are preserved verbatim.
 fn strip_historical_media(messages: &mut Vec<Message>) -> usize {
     // Find the newest user message with image content (the anchor)
-    let anchor_idx = messages.iter().enumerate()
+    let anchor_idx = messages
+        .iter()
+        .enumerate()
         .rev()
         .find(|(_, msg)| {
             msg.role == oben_models::MessageRole::User && has_image_content(&msg.content)
@@ -489,9 +520,7 @@ fn strip_images_from_content(content: &mut MessageContent) -> usize {
     let mut count = 0;
     match content {
         MessageContent::Image { .. } => {
-            *content = MessageContent::Text(
-                "[screenshot removed to save context]".into()
-            );
+            *content = MessageContent::Text("[screenshot removed to save context]".into());
             count = 1;
         }
         MessageContent::Parts(parts) => {
@@ -500,7 +529,7 @@ fn strip_images_from_content(content: &mut MessageContent) -> usize {
                 match part {
                     MessagePart::Image { .. } => {
                         new_parts.push(MessagePart::Text(
-                            "[screenshot removed to save context]".into()
+                            "[screenshot removed to save context]".into(),
                         ));
                         count += 1;
                     }
@@ -537,8 +566,7 @@ fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> (usize, usize) {
     }
 
     // Collect call_ids from tool results to know which are "covered"
-    let mut covered_call_ids: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut covered_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     messages.retain(|msg| {
         if msg.role != oben_models::MessageRole::Tool {
             return true;
@@ -554,15 +582,18 @@ fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> (usize, usize) {
     });
 
     // Find orphaned tool_calls (no matching tool_result)
-    let orphaned_call_ids: Vec<String> = surviving_call_ids.iter()
+    let orphaned_call_ids: Vec<String> = surviving_call_ids
+        .iter()
         .filter(|id| !covered_call_ids.contains(*id))
         .cloned()
         .collect();
 
     // Add stub results for orphaned calls
     for call_id in orphaned_call_ids {
-        messages.push(Message::tool_result(&call_id,
-            "[Result from earlier conversation — see context summary above]"));
+        messages.push(Message::tool_result(
+            &call_id,
+            "[Result from earlier conversation — see context summary above]",
+        ));
         added_stub_results += 1;
     }
 
@@ -588,13 +619,15 @@ fn shrink_json_strings(value: &serde_json::Value, max_chars: usize) -> serde_jso
             }
         }
         serde_json::Value::Object(map) => {
-            let new_map: serde_json::Map<String, serde_json::Value> = map.iter()
+            let new_map: serde_json::Map<String, serde_json::Value> = map
+                .iter()
                 .map(|(k, v)| (k.clone(), shrink_json_strings(v, max_chars)))
                 .collect();
             serde_json::Value::Object(new_map)
         }
         serde_json::Value::Array(arr) => {
-            let new_arr: Vec<serde_json::Value> = arr.iter()
+            let new_arr: Vec<serde_json::Value> = arr
+                .iter()
                 .map(|v| shrink_json_strings(v, max_chars))
                 .collect();
             serde_json::Value::Array(new_arr)
@@ -602,8 +635,6 @@ fn shrink_json_strings(value: &serde_json::Value, max_chars: usize) -> serde_jso
         other => other.clone(),
     }
 }
-
-
 
 fn split_messages<'a>(
     messages: &'a [Message],
@@ -669,7 +700,7 @@ async fn generate_summary(
     cached_tokens: usize,
 ) -> Result<String> {
     let prefix = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. Respond ONLY to the latest user message that appears AFTER this summary. The current session state (files, config, etc.) may reflect work described here — avoid repeating it";
-    
+
     // Serialize messages into structured text for the summarizer
     let content_to_summarize = serialize_for_summary(messages);
 
@@ -720,7 +751,13 @@ async fn generate_summary(
             tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
         }
 
-        match transport.chat(&[summary_msg.clone()], &oben_models::CallMode::Fresh(String::new())).await {
+        match transport
+            .chat(
+                &[summary_msg.clone()],
+                &oben_models::CallMode::Fresh(String::new()),
+            )
+            .await
+        {
             Ok(response) => {
                 let summary = response.text.trim().to_string();
                 if summary.is_empty() {
@@ -777,7 +814,10 @@ async fn generate_summary(
     }
 
     // All retries exhausted or permanent error
-    let err_msg = last_error.as_ref().map(|e| e.to_string()).unwrap_or_else(|| "unknown".to_string());
+    let err_msg = last_error
+        .as_ref()
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
 
     // Check abort mode: when max_tool_result_tokens is 0, signal abort_on_summary_failure=true
     if config.max_tool_result_tokens == 0 {
@@ -817,17 +857,20 @@ fn serialize_for_summary(messages: &[Message]) -> String {
             oben_models::MessageRole::System => "SYSTEM",
             oben_models::MessageRole::User => "USER",
             oben_models::MessageRole::Assistant => "ASSISTANT",
-            oben_models::MessageRole::Tool => {"TOOL"},
+            oben_models::MessageRole::Tool => "TOOL",
         };
 
         let content = match &msg.content {
             MessageContent::Text(s) => s.clone(),
             MessageContent::Image { .. } => "[image attached]".to_string(),
             MessageContent::Parts(parts) => {
-                let texts: Vec<String> = parts.iter().filter_map(|p| match p {
-                    MessagePart::Text(s) => Some(s.clone()),
-                    _ => None,
-                }).collect();
+                let texts: Vec<String> = parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        MessagePart::Text(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect();
                 if texts.is_empty() {
                     "[multimodal content]".to_string()
                 } else {
@@ -837,7 +880,11 @@ fn serialize_for_summary(messages: &[Message]) -> String {
         };
 
         let trimmed = if content.len() > CONTENT_MAX {
-            format!("{}\n...[truncated]...\n{}", &content[..CONTENT_HEAD], &content[content.len().saturating_sub(CONTENT_TAIL)..])
+            format!(
+                "{}\n...[truncated]...\n{}",
+                &content[..CONTENT_HEAD],
+                &content[content.len().saturating_sub(CONTENT_TAIL)..]
+            )
         } else {
             content
         };
@@ -870,7 +917,9 @@ mod tests {
         };
 
         // Messages: 10 messages, each ~20 chars
-        let messages: Vec<Message> = (0..10).map(|i| Message::user(format!("msg{}", i))).collect();
+        let messages: Vec<Message> = (0..10)
+            .map(|i| Message::user(format!("msg{}", i)))
+            .collect();
         let (head, middle, tail) = split_messages(&messages, &config);
 
         // Head: first 2 messages
@@ -953,15 +1002,16 @@ mod tests {
         assert_eq!(dup_msg.role, oben_models::MessageRole::Tool);
         assert!(dup_msg.content.to_text().contains("Duplicate tool output"));
         // The later one (index 3) should be preserved
-        assert!(!pruned[3].content.to_text().contains("Duplicate tool output"));
+        assert!(!pruned[3]
+            .content
+            .to_text()
+            .contains("Duplicate tool output"));
     }
 
     #[test]
     fn test_prune_tool_results_truncates_large_outputs() {
         let long_content = "x".repeat(300);
-        let msgs = vec![
-            Message::tool_result("call-1", long_content.clone()),
-        ];
+        let msgs = vec![Message::tool_result("call-1", long_content.clone())];
         let (pruned, count) = prune_tool_results(&msgs, 10000);
         assert_eq!(count, 1, "should truncate 1 large output");
         assert!(pruned[0].content.to_text().contains("300 chars output"));
@@ -988,7 +1038,10 @@ mod tests {
         assert_eq!(count, 1);
 
         // Verify JSON is still valid
-        let args = pruned[0].tool_calls.as_ref().unwrap()[0].arguments.as_str().unwrap();
+        let args = pruned[0].tool_calls.as_ref().unwrap()[0]
+            .arguments
+            .as_str()
+            .unwrap();
         assert!(serde_json::from_str::<serde_json::Value>(args).is_ok());
     }
 
@@ -1018,10 +1071,20 @@ mod tests {
         let mut messages: Vec<Message> = msgs;
         let (removed, added) = sanitize_tool_pairs(&mut messages);
         assert_eq!(removed, 1, "should remove 1 orphaned result (call-99)");
-        assert_eq!(added, 1, "should add 1 stub for call-2 (no matching result)");
+        assert_eq!(
+            added, 1,
+            "should add 1 stub for call-2 (no matching result)"
+        );
         // Only 1 tool result should remain (call-1 valid, call-99 removed, call-2 stub added)
-        let tool_msgs: Vec<_> = messages.iter().filter(|m| m.role == oben_models::MessageRole::Tool).collect();
-        assert_eq!(tool_msgs.len(), 2, "should have call-1 result + call-2 stub");
+        let tool_msgs: Vec<_> = messages
+            .iter()
+            .filter(|m| m.role == oben_models::MessageRole::Tool)
+            .collect();
+        assert_eq!(
+            tool_msgs.len(),
+            2,
+            "should have call-1 result + call-2 stub"
+        );
     }
 
     #[test]
@@ -1031,24 +1094,27 @@ mod tests {
             tool_name: "test".to_string(),
             arguments: serde_json::Value::String("{}".to_string()),
         };
-        let msgs = vec![
-            Message {
-                role: oben_models::MessageRole::Assistant,
-                content: MessageContent::Text("hi".into()),
-                id: None,
-                tool_call_ids: vec![],
-                tool_calls: Some(vec![assistant_call]),
-            },
-        ];
+        let msgs = vec![Message {
+            role: oben_models::MessageRole::Assistant,
+            content: MessageContent::Text("hi".into()),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: Some(vec![assistant_call]),
+        }];
         let mut messages: Vec<Message> = msgs;
         let (removed, added) = sanitize_tool_pairs(&mut messages);
         assert_eq!(removed, 0);
         assert_eq!(added, 1, "should add 1 stub result");
         // Check stub content
-        let stub_msg = messages.iter().find(|m| {
-            m.role == oben_models::MessageRole::Tool &&
-            m.content.to_text().contains("Result from earlier conversation")
-        }).expect("should find stub tool result");
+        let stub_msg = messages
+            .iter()
+            .find(|m| {
+                m.role == oben_models::MessageRole::Tool
+                    && m.content
+                        .to_text()
+                        .contains("Result from earlier conversation")
+            })
+            .expect("should find stub tool result");
         assert!(stub_msg.content.to_text().contains("context summary above"));
     }
 
@@ -1099,15 +1165,13 @@ mod tests {
 
     #[test]
     fn test_strip_historical_media_no_anchor() {
-        let msgs = vec![
-            Message {
-                role: oben_models::MessageRole::User,
-                content: MessageContent::Text("hello".into()),
-                id: None,
-                tool_call_ids: vec![],
-                tool_calls: None,
-            },
-        ];
+        let msgs = vec![Message {
+            role: oben_models::MessageRole::User,
+            content: MessageContent::Text("hello".into()),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        }];
         let mut messages: Vec<Message> = msgs;
         let count = strip_historical_media(&mut messages);
         assert_eq!(count, 0, "no images to strip");
@@ -1115,18 +1179,16 @@ mod tests {
 
     #[test]
     fn test_strip_historical_media_anchor_first_message() {
-        let msgs = vec![
-            Message {
-                role: oben_models::MessageRole::User,
-                content: MessageContent::Image {
-                    url: "data:image/png;base64,AAAA".into(),
-                    detail: None,
-                },
-                id: None,
-                tool_call_ids: vec![],
-                tool_calls: None,
+        let msgs = vec![Message {
+            role: oben_models::MessageRole::User,
+            content: MessageContent::Image {
+                url: "data:image/png;base64,AAAA".into(),
+                detail: None,
             },
-        ];
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        }];
         let mut messages: Vec<Message> = msgs;
         let count = strip_historical_media(&mut messages);
         assert_eq!(count, 0, "anchor is first message — nothing to strip");
@@ -1224,7 +1286,9 @@ mod tests {
             if i % 3 == 0 {
                 let tool_call_msg = Message {
                     role: oben_models::MessageRole::Assistant,
-                    content: MessageContent::Text("Let me check the documentation and write some benchmark code.".into()),
+                    content: MessageContent::Text(
+                        "Let me check the documentation and write some benchmark code.".into(),
+                    ),
                     id: None,
                     tool_call_ids: vec![],
                     tool_calls: Some(vec![oben_models::ToolCall {
@@ -1267,68 +1331,137 @@ mod tests {
         };
 
         // When
-        let result = compact_session_messages(&transport, &messages, &config, None, None, 0).await.unwrap();
+        let result = compact_session_messages(&transport, &messages, &config, None, None, 0)
+            .await
+            .unwrap();
 
         // Then: head is preserved verbatim
         let head = &result.messages[..config.protect_first_n];
-        assert_eq!(head.len(), config.protect_first_n, "head should preserve first N messages");
-        assert_eq!(head[0].content.to_text(), messages[0].content.to_text(), "system prompt preserved");
-        assert_eq!(head[1].content.to_text(), messages[1].content.to_text(), "first user msg preserved");
+        assert_eq!(
+            head.len(),
+            config.protect_first_n,
+            "head should preserve first N messages"
+        );
+        assert_eq!(
+            head[0].content.to_text(),
+            messages[0].content.to_text(),
+            "system prompt preserved"
+        );
+        assert_eq!(
+            head[1].content.to_text(),
+            messages[1].content.to_text(),
+            "first user msg preserved"
+        );
 
         // Tail has at least tail_min_messages
         let tail_min = config.tail_min_messages.min(2);
         let tail = &result.messages[result.messages.len().saturating_sub(tail_min)..];
-        assert!(tail.len() >= tail_min, "tail should have at least {} messages", tail_min);
+        assert!(
+            tail.len() >= tail_min,
+            "tail should have at least {} messages",
+            tail_min
+        );
 
         // Exactly 1 summary message
-        let summary_count = result.messages.iter().filter(|m| {
-            m.role == oben_models::MessageRole::System
-                && m.content.to_text().contains("[CONTEXT COMPACTION")
-        }).count();
+        let summary_count = result
+            .messages
+            .iter()
+            .filter(|m| {
+                m.role == oben_models::MessageRole::System
+                    && m.content.to_text().contains("[CONTEXT COMPACTION")
+            })
+            .count();
         assert_eq!(summary_count, 1, "should have exactly 1 summary message");
 
         // Positive savings
-        assert!(result.stats.savings_pct > 0.0, "should show positive savings, got {}", result.stats.savings_pct);
-        assert!(result.stats.compacted_tokens < result.stats.original_tokens, "compacted tokens ({}) should be less than original ({})", result.stats.compacted_tokens, result.stats.original_tokens);
+        assert!(
+            result.stats.savings_pct > 0.0,
+            "should show positive savings, got {}",
+            result.stats.savings_pct
+        );
+        assert!(
+            result.stats.compacted_tokens < result.stats.original_tokens,
+            "compacted tokens ({}) should be less than original ({})",
+            result.stats.compacted_tokens,
+            result.stats.original_tokens
+        );
     }
 
     #[tokio::test]
     async fn test_compact_session_messages_short_list_no_compaction() {
         // Given: fewer messages than head + tail protection — nothing to compact
         let messages: Vec<Message> = (0..3).map(|i| Message::user(format!("msg{i}"))).collect();
-        let transport = MockTransport { summary: "summary".to_string() };
+        let transport = MockTransport {
+            summary: "summary".to_string(),
+        };
 
         // When
-        let result = compact_session_messages(&transport, &messages, &CompactCofig::default(), None, None, 0).await.unwrap();
+        let result = compact_session_messages(
+            &transport,
+            &messages,
+            &CompactCofig::default(),
+            None,
+            None,
+            0,
+        )
+        .await
+        .unwrap();
 
         // Then: no middle means no summary, messages pass through unchanged
         assert_eq!(result.stats.original_count, 3);
-        assert!(!result.stats.summary_generated, "no summary should be generated for short lists");
+        assert!(
+            !result.stats.summary_generated,
+            "no summary should be generated for short lists"
+        );
     }
 
     #[tokio::test]
     async fn test_compact_session_messages_with_previous_summary() {
         // Given: a conversation with a previous compaction summary
         let messages = build_long_conversation(10);
-        let previous_summary = "## Completed Actions\nPrevious work summary.\n## Active Task\nContinuing work.";
+        let previous_summary =
+            "## Completed Actions\nPrevious work summary.\n## Active Task\nContinuing work.";
         let transport = MockTransport {
             summary: "## Completed Actions\n1. Previous work summary.\n2. New completed action.\n## Active Task\nNew active task.".to_string(),
         };
 
         // When
-        let result = compact_session_messages(&transport, &messages, &CompactCofig {
-            tail_token_budget: 300,  // Conservative tail budget
-            ..Default::default()
-        }, Some(previous_summary), None, 0).await.unwrap();
+        let result = compact_session_messages(
+            &transport,
+            &messages,
+            &CompactCofig {
+                tail_token_budget: 300, // Conservative tail budget
+                ..Default::default()
+            },
+            Some(previous_summary),
+            None,
+            0,
+        )
+        .await
+        .unwrap();
 
         // Then: summary should incorporate both previous and new info
-        assert!(result.stats.summary_generated, "should generate summary for 10-turn conversation");
-        let summary_text = result.messages.iter().find(|m| {
-            m.role == oben_models::MessageRole::System
-                && m.content.to_text().contains("[CONTEXT COMPACTION")
-        }).map(|m| m.content.to_text()).unwrap_or_default();
-        assert!(summary_text.contains("Previous work summary"), "should preserve previous summary info");
-        assert!(summary_text.contains("New completed action"), "should add new actions");
+        assert!(
+            result.stats.summary_generated,
+            "should generate summary for 10-turn conversation"
+        );
+        let summary_text = result
+            .messages
+            .iter()
+            .find(|m| {
+                m.role == oben_models::MessageRole::System
+                    && m.content.to_text().contains("[CONTEXT COMPACTION")
+            })
+            .map(|m| m.content.to_text())
+            .unwrap_or_default();
+        assert!(
+            summary_text.contains("Previous work summary"),
+            "should preserve previous summary info"
+        );
+        assert!(
+            summary_text.contains("New completed action"),
+            "should add new actions"
+        );
     }
 
     #[tokio::test]
@@ -1340,18 +1473,35 @@ mod tests {
         };
 
         // When
-        let result = compact_session_messages(&transport, &messages, &CompactCofig {
-            tail_token_budget: 300,
-            ..Default::default()
-        }, None, Some("Rust ownership"), 0).await.unwrap();
+        let result = compact_session_messages(
+            &transport,
+            &messages,
+            &CompactCofig {
+                tail_token_budget: 300,
+                ..Default::default()
+            },
+            None,
+            Some("Rust ownership"),
+            0,
+        )
+        .await
+        .unwrap();
 
         // Then: summary should be generated with focus topic content
         assert!(result.stats.summary_generated, "should generate summary");
-        let summary_text = result.messages.iter().find(|m| {
-            m.role == oben_models::MessageRole::System
-                && m.content.to_text().contains("[CONTEXT COMPACTION")
-        }).map(|m| m.content.to_text()).unwrap_or_default();
-        assert!(summary_text.contains("Rust ownership"), "should preserve focus topic details");
+        let summary_text = result
+            .messages
+            .iter()
+            .find(|m| {
+                m.role == oben_models::MessageRole::System
+                    && m.content.to_text().contains("[CONTEXT COMPACTION")
+            })
+            .map(|m| m.content.to_text())
+            .unwrap_or_default();
+        assert!(
+            summary_text.contains("Rust ownership"),
+            "should preserve focus topic details"
+        );
     }
 
     #[tokio::test]
@@ -1359,14 +1509,16 @@ mod tests {
         // Given: conversation starting with system prompt + specific user messages
         let system_msg = Message::system("You are a helpful coding assistant.");
         let first_user = Message::user("What is Rust?");
-        let messages = vec![system_msg.clone(), first_user.clone(),
+        let messages = vec![
+            system_msg.clone(),
+            first_user.clone(),
             Message::assistant("Rust is a systems language."),
             Message::user("Tell me more."),
             Message::assistant("Rust has ownership."),
         ];
         let config = CompactCofig {
             context_length: 500,
-            threshold_percent: 0.3,  // Very low threshold
+            threshold_percent: 0.3, // Very low threshold
             protect_first_n: 2,
             tail_token_budget: 50,
             tail_min_messages: 1,
@@ -1377,11 +1529,19 @@ mod tests {
         };
 
         // When
-        let result = compact_session_messages(&transport, &messages, &config, None, None, 0).await.unwrap();
+        let result = compact_session_messages(&transport, &messages, &config, None, None, 0)
+            .await
+            .unwrap();
 
         // Then: first 2 messages (system + first user) are preserved verbatim
-        assert_eq!(result.messages[0].content.to_text(), system_msg.content.to_text());
-        assert_eq!(result.messages[1].content.to_text(), first_user.content.to_text());
+        assert_eq!(
+            result.messages[0].content.to_text(),
+            system_msg.content.to_text()
+        );
+        assert_eq!(
+            result.messages[1].content.to_text(),
+            first_user.content.to_text()
+        );
     }
 
     #[tokio::test]
@@ -1414,7 +1574,7 @@ mod tests {
             protect_first_n: 1,
             tail_token_budget: 50,
             tail_min_messages: 1,
-            tail_overhead: 1.2,  // Slightly reduce overhead
+            tail_overhead: 1.2, // Slightly reduce overhead
             ..Default::default()
         };
         let transport = MockTransport {
@@ -1422,15 +1582,23 @@ mod tests {
         };
 
         // When
-        let result = compact_session_messages(&transport, &messages, &config, None, None, 0).await.unwrap();
+        let result = compact_session_messages(&transport, &messages, &config, None, None, 0)
+            .await
+            .unwrap();
 
         // Then: should survive without panicking, with sanitized tool pairs
-        assert!(result.stats.summary_generated, "should generate summary for this message count");
+        assert!(
+            result.stats.summary_generated,
+            "should generate summary for this message count"
+        );
         // Check that tool_call still has valid JSON args
         for msg in &result.messages {
             if let Some(tool_calls) = &msg.tool_calls {
                 for tc in tool_calls {
-                    assert!(tc.arguments.is_object(), "tool_call args should still be valid JSON");
+                    assert!(
+                        tc.arguments.is_object(),
+                        "tool_call args should still be valid JSON"
+                    );
                 }
             }
         }

@@ -1,5 +1,4 @@
 /// Skill lifecycle management — active → stale → archived states.
-
 use crate::usage::UsageRecord;
 use crate::usage::{load_usage, save_usage};
 use tracing::{debug, info};
@@ -154,18 +153,16 @@ impl LifecycleManager {
     fn inactivity_days(&self, record: &UsageRecord) -> usize {
         // Find latest activity timestamp
         let latest = crate::usage::latest_activity_at(record);
-        
+
         match latest {
-            Some(ts) => {
-                match chrono::DateTime::parse_from_rfc3339(&ts) {
-                    Ok(datetime) => {
-                        let now = chrono::Utc::now();
-                        let duration = now - datetime.with_timezone(&chrono::Utc);
-                        duration.num_days().max(0) as usize
-                    }
-                    Err(_) => 0,
+            Some(ts) => match chrono::DateTime::parse_from_rfc3339(&ts) {
+                Ok(datetime) => {
+                    let now = chrono::Utc::now();
+                    let duration = now - datetime.with_timezone(&chrono::Utc);
+                    duration.num_days().max(0) as usize
                 }
-            }
+                Err(_) => 0,
+            },
             None => {
                 // No activity recorded
                 if record.created_by.is_some() {
@@ -192,10 +189,22 @@ mod tests {
 
     #[test]
     fn test_lifecycle_state_from_str() {
-        assert_eq!(LifecycleState::from_str("active"), Some(LifecycleState::Active));
-        assert_eq!(LifecycleState::from_str("stale"), Some(LifecycleState::Stale));
-        assert_eq!(LifecycleState::from_str("archived"), Some(LifecycleState::Archived));
-        assert_eq!(LifecycleState::from_str("pinned"), Some(LifecycleState::Pinned));
+        assert_eq!(
+            LifecycleState::from_str("active"),
+            Some(LifecycleState::Active)
+        );
+        assert_eq!(
+            LifecycleState::from_str("stale"),
+            Some(LifecycleState::Stale)
+        );
+        assert_eq!(
+            LifecycleState::from_str("archived"),
+            Some(LifecycleState::Archived)
+        );
+        assert_eq!(
+            LifecycleState::from_str("pinned"),
+            Some(LifecycleState::Pinned)
+        );
         assert_eq!(LifecycleState::from_str("invalid"), None);
     }
 

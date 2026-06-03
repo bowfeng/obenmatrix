@@ -1,5 +1,4 @@
 /// Environment variable helpers.
-
 use std::env;
 
 /// Get an environment variable, with a default.

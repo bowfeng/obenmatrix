@@ -8,12 +8,12 @@
 //! - Run periodic reviews to suggest consolidation/archival
 //! - Maintain .curator_state for scheduler status
 
-pub mod usage;
-pub mod lifecycle;
 pub mod curator;
+pub mod lifecycle;
 pub mod report;
+pub mod usage;
 
-pub use usage::{UsageRecord, load_usage, bump_use, mark_agent_created};
-pub use lifecycle::{LifecycleState, LifecycleManager};
 pub use curator::{Curator, CuratorConfig, CuratorState};
-pub use report::{generate_report, generate_summary, generate_json_report};
+pub use lifecycle::{LifecycleManager, LifecycleState};
+pub use report::{generate_json_report, generate_report, generate_summary};
+pub use usage::{bump_use, load_usage, mark_agent_created, UsageRecord};

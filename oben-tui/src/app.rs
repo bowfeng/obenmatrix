@@ -1,14 +1,14 @@
 //! Application state and core logic.
 
-use anyhow::Result;
-use ratatui::layout::Rect;
-use ratatui_toaster::{ToastBuilder, ToastEngine, ToastEngineBuilder, ToastType};
 use crate::commands;
 use crate::panels::chat::ChatPanel;
 use crate::panels::config::ConfigPanel;
 use crate::panels::sessions::SessionsPanel;
 use crate::panels::setup::SetupPanel;
 use crate::panels::{KeyAction, Panel, PanelId};
+use anyhow::Result;
+use ratatui::layout::Rect;
+use ratatui_toaster::{ToastBuilder, ToastEngine, ToastEngineBuilder, ToastType};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -60,7 +60,6 @@ pub struct App {
     /// Timestamp after which the current toast should expire.
     /// Used because ratatui-toaster has no built-in auto-dismiss.
     pub toast_expires_at: Option<std::time::Instant>,
-
 }
 
 impl App {
@@ -90,24 +89,27 @@ impl App {
         match name {
             "clear" => {
                 if self.turn_handle.is_some() {
-                    self.show_toast("Cannot clear: turn in progress", ratatui_toaster::ToastType::Error);
+                    self.show_toast(
+                        "Cannot clear: turn in progress",
+                        ratatui_toaster::ToastType::Error,
+                    );
                     return;
                 }
                 tracing::info!("[clear] START");
                 if let Some(agent) = &self.agent {
                     let result = {
                         let mut guard = agent.lock().await;
-                        let has_session = guard
-                            .active_session_name()
-                            .await
-                            .is_some();
+                        let has_session = guard.active_session_name().await.is_some();
                         if has_session {
                             tracing::info!("[clear] deleting active session");
                         }
                         guard.reset().await
                     };
                     if let Err(e) = result {
-                        self.show_toast(format!("Clear failed: {e}"), ratatui_toaster::ToastType::Error);
+                        self.show_toast(
+                            format!("Clear failed: {e}"),
+                            ratatui_toaster::ToastType::Error,
+                        );
                         return;
                     }
                     tracing::info!("[clear] session reset complete, agent has no active session");
@@ -116,21 +118,34 @@ impl App {
                 }
                 let chat_panel_present = self.panels.contains_key(&PanelId::Chat);
                 tracing::info!("[clear] panels contain Chat key: {}", chat_panel_present);
-                tracing::info!("[clear] all panel keys: {:?}", self.panels.keys().collect::<Vec<_>>());
+                tracing::info!(
+                    "[clear] all panel keys: {:?}",
+                    self.panels.keys().collect::<Vec<_>>()
+                );
                 if chat_panel_present {
                     let panel_type = self.panels.get(&PanelId::Chat).map(|p| {
-                        if p.downcast_ref::<ChatPanel>().is_some() { "ChatPanel" }
-                        else if p.downcast_ref::<SessionsPanel>().is_some() { "SessionsPanel" }
-                        else if p.downcast_ref::<ConfigPanel>().is_some() { "ConfigPanel" }
-                        else if p.downcast_ref::<SetupPanel>().is_some() { "SetupPanel" }
-                        else { "unknown" }
+                        if p.downcast_ref::<ChatPanel>().is_some() {
+                            "ChatPanel"
+                        } else if p.downcast_ref::<SessionsPanel>().is_some() {
+                            "SessionsPanel"
+                        } else if p.downcast_ref::<ConfigPanel>().is_some() {
+                            "ConfigPanel"
+                        } else if p.downcast_ref::<SetupPanel>().is_some() {
+                            "SetupPanel"
+                        } else {
+                            "unknown"
+                        }
                     });
                     tracing::info!("[clear] Chat panel type: {:?}", panel_type);
                 }
                 if let Some(chat) = self.get_chat_mut() {
                     let streaming_before = chat.streaming;
                     let count_before = chat.message_count;
-                    tracing::info!("[clear] chat: streaming={}, message_count={}", streaming_before, count_before);
+                    tracing::info!(
+                        "[clear] chat: streaming={}, message_count={}",
+                        streaming_before,
+                        count_before
+                    );
                     chat.clear_display();
                     tracing::info!("[clear] chat clear_display done");
                     // Also reset streaming flag — prevents 32ms redraw loop from repopulating
@@ -142,7 +157,9 @@ impl App {
                 tracing::info!("[clear] event_bus state cleared");
                 self.session_id = None;
                 // Refresh SessionsPanel so cleared session list stays in sync.
-                if let Some(sp) = self.panels.get_mut(&PanelId::Sessions)
+                if let Some(sp) = self
+                    .panels
+                    .get_mut(&PanelId::Sessions)
                     .and_then(|p| p.downcast_mut::<crate::panels::sessions::SessionsPanel>())
                 {
                     sp.refresh_list().await;
@@ -158,24 +175,36 @@ impl App {
             }
             "compact" => {
                 if self.agent.is_none() {
-                    self.show_toast("Cannot compact: agent not initialized", ratatui_toaster::ToastType::Error);
+                    self.show_toast(
+                        "Cannot compact: agent not initialized",
+                        ratatui_toaster::ToastType::Error,
+                    );
                     return;
                 }
                 if self.turn_handle.is_some() {
-                    self.show_toast("Cannot compact: turn in progress", ratatui_toaster::ToastType::Warning);
+                    self.show_toast(
+                        "Cannot compact: turn in progress",
+                        ratatui_toaster::ToastType::Warning,
+                    );
                     return;
                 }
                 if let Some(chat) = self.get_chat_mut() {
                     chat.streaming = true;
                 }
-                self.show_toast("Compacting session context...", ratatui_toaster::ToastType::Info);
+                self.show_toast(
+                    "Compacting session context...",
+                    ratatui_toaster::ToastType::Info,
+                );
                 if let Some(tx) = &self.input_tx {
                     let _ = tx.send(crate::TuiEvent::CompactSession);
                 }
             }
             "new" => {
                 if self.turn_handle.is_some() {
-                    self.show_toast("Cannot create new session: turn in progress", ratatui_toaster::ToastType::Error);
+                    self.show_toast(
+                        "Cannot create new session: turn in progress",
+                        ratatui_toaster::ToastType::Error,
+                    );
                     return;
                 }
                 if let Some(agent) = &self.agent {
@@ -193,14 +222,19 @@ impl App {
                                 chat.clear_display();
                             }
                             // Refresh SessionsPanel so the new session appears in the list.
-                            if let Some(sp) = self.panels.get_mut(&PanelId::Sessions)
-                                .and_then(|p| p.downcast_mut::<crate::panels::sessions::SessionsPanel>())
+                            if let Some(sp) =
+                                self.panels.get_mut(&PanelId::Sessions).and_then(|p| {
+                                    p.downcast_mut::<crate::panels::sessions::SessionsPanel>()
+                                })
                             {
                                 sp.refresh_list().await;
                             }
                         }
                         Err(e) => {
-                            self.show_toast(format!("New session failed: {e}"), ratatui_toaster::ToastType::Error);
+                            self.show_toast(
+                                format!("New session failed: {e}"),
+                                ratatui_toaster::ToastType::Error,
+                            );
                             return;
                         }
                     }
@@ -220,10 +254,16 @@ impl App {
                 self.show_toast(msg, ratatui_toaster::ToastType::Info);
             }
             "rename" => {
-                self.show_toast("Usage: /rename [new_name]", ratatui_toaster::ToastType::Error);
+                self.show_toast(
+                    "Usage: /rename [new_name]",
+                    ratatui_toaster::ToastType::Error,
+                );
             }
             "theme" => {
-                self.show_toast("Press Ctrl+T to cycle themes", ratatui_toaster::ToastType::Info);
+                self.show_toast(
+                    "Press Ctrl+T to cycle themes",
+                    ratatui_toaster::ToastType::Info,
+                );
             }
             "help" => {
                 if let Some(chat) = self.get_chat_mut() {
@@ -232,7 +272,10 @@ impl App {
                          Keyboard: Up/Down=history, Ctrl+A/E=home/end, Ctrl+W=delete word, Ctrl+K=kill line",
                     );
                 }
-                self.show_toast("Help displayed in conversation.", ratatui_toaster::ToastType::Info);
+                self.show_toast(
+                    "Help displayed in conversation.",
+                    ratatui_toaster::ToastType::Info,
+                );
             }
             "todo" => {
                 self.show_toast("TODO: No pending tasks.", ratatui_toaster::ToastType::Info);
@@ -263,10 +306,7 @@ impl App {
                     if let Some(agent) = &self.agent {
                         let guard = agent.lock().await;
                         let session_name = guard.active_session_name().await.map(|n| n.clone());
-                        let messages = guard
-                            .loaded_session_messages()
-                            .await
-                            .unwrap_or_default();
+                        let messages = guard.loaded_session_messages().await.unwrap_or_default();
                         s.set_session_data(session_name, messages);
                     }
                 }
@@ -282,12 +322,10 @@ impl App {
         oben_tools::discover_builtin_tools(&mut tools);
         let tool_names: Vec<String> = tools.list_tools().iter().map(|t| t.name.clone()).collect();
         // Placeholder toast engine — area is set dynamically in draw_ui.
-        let toast_engine = ToastEngine::new(
-            ToastEngine::<()>::from_builder(
-                ToastEngineBuilder::<()>::new(Rect::new(0, 0, 0, 0))
-                    .default_duration(Duration::from_secs(3))
-            )
-        );
+        let toast_engine = ToastEngine::new(ToastEngine::<()>::from_builder(
+            ToastEngineBuilder::<()>::new(Rect::new(0, 0, 0, 0))
+                .default_duration(Duration::from_secs(3)),
+        ));
         Ok(Self {
             running: true,
             active_panel: PanelId::Chat,
@@ -399,7 +437,8 @@ impl App {
                 callbacks,
                 concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
                 nudge_config: None,
-            }).await?,
+            })
+            .await?,
         )));
 
         Ok(())
@@ -421,29 +460,44 @@ impl App {
             PanelId::Chat,
             Box::new(ChatPanel::new_with_theme(None, None, &theme)),
         );
-        tracing::info!("[panel] ChatPanel inserted, panels={:?}", self.panels.keys().collect::<Vec<_>>());
-        Ok(()) 
+        tracing::info!(
+            "[panel] ChatPanel inserted, panels={:?}",
+            self.panels.keys().collect::<Vec<_>>()
+        );
+        Ok(())
     }
 
     pub async fn create_sessions_panel(&mut self) -> Result<()> {
         tracing::info!("[panel] Creating SessionsPanel");
         if let Some(agent) = &self.agent {
-            self.panels
-                .insert(PanelId::Sessions, Box::new(SessionsPanel::new_shared(Arc::clone(agent))));
+            self.panels.insert(
+                PanelId::Sessions,
+                Box::new(SessionsPanel::new_shared(Arc::clone(agent))),
+            );
         } else {
             tracing::warn!("[panel] No agent, using fallback");
             self.panels
                 .insert(PanelId::Sessions, Box::new(SessionsPanel::new_empty()));
         }
-        tracing::info!("[panel] SessionsPanel inserted, panels={:?}", self.panels.keys().collect::<Vec<_>>());
+        tracing::info!(
+            "[panel] SessionsPanel inserted, panels={:?}",
+            self.panels.keys().collect::<Vec<_>>()
+        );
         Ok(())
     }
 
     pub async fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
         match key.code {
-            crossterm::event::KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            crossterm::event::KeyCode::Char('c')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 if self.active_panel == PanelId::Chat
-                    && self.get_chat().map(|cp| cp.message_state.selection_start.is_some()).unwrap_or(false)
+                    && self
+                        .get_chat()
+                        .map(|cp| cp.message_state.selection_start.is_some())
+                        .unwrap_or(false)
                 {
                     if let Some(chat) = self.get_chat_mut() {
                         chat.copy_selection_to_clipboard();
@@ -453,19 +507,35 @@ impl App {
                 self.running = false;
                 return;
             }
-            crossterm::event::KeyCode::Char('1') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            crossterm::event::KeyCode::Char('1')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.activate_panel(PanelId::Chat).await;
                 return;
             }
-            crossterm::event::KeyCode::Char('2') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            crossterm::event::KeyCode::Char('2')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.activate_panel(PanelId::Sessions).await;
                 return;
             }
-            crossterm::event::KeyCode::Char('3') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            crossterm::event::KeyCode::Char('3')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.activate_panel(PanelId::Config).await;
                 return;
             }
-            crossterm::event::KeyCode::Char('4') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            crossterm::event::KeyCode::Char('4')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.activate_panel(PanelId::Setup).await;
                 return;
             }
@@ -503,7 +573,11 @@ impl App {
                 self.activate_panel(next).await;
                 return;
             }
-            crossterm::event::KeyCode::Char('t') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            crossterm::event::KeyCode::Char('t')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 if let Some(chat) = self.get_chat_mut() {
                     let new_theme = chat.cycle_theme();
                     self.config.display.theme = new_theme.clone();
@@ -511,10 +585,14 @@ impl App {
                     if let Err(e) = self.config.save() {
                         tracing::warn!("[theme] Failed to save theme to config: {}", e);
                     }
-                    let display_name: String = new_theme.parse::<ratatui_themes::ThemeName>()
+                    let display_name: String = new_theme
+                        .parse::<ratatui_themes::ThemeName>()
                         .map(|t| t.display_name().to_string())
                         .unwrap_or(new_theme);
-                    self.show_toast(format!("Theme: {}", display_name), ratatui_toaster::ToastType::Info);
+                    self.show_toast(
+                        format!("Theme: {}", display_name),
+                        ratatui_toaster::ToastType::Info,
+                    );
                 }
             }
             _ => {}
@@ -547,20 +625,21 @@ impl App {
             KeyAction::Theme => {
                 self.execute_command("theme").await;
             }
-            KeyAction::Command { cmd_name, extra } => {
-                match cmd_name.as_str() {
-                    "rename" => {
-                        if extra.is_empty() {
-                            self.show_toast("Usage: /rename [new_name]", ratatui_toaster::ToastType::Error);
-                        } else {
-                            commands::execute_session_rename(self, &extra).await;
-                        }
-                    }
-                    _ => {
-                        self.execute_command(&cmd_name).await;
+            KeyAction::Command { cmd_name, extra } => match cmd_name.as_str() {
+                "rename" => {
+                    if extra.is_empty() {
+                        self.show_toast(
+                            "Usage: /rename [new_name]",
+                            ratatui_toaster::ToastType::Error,
+                        );
+                    } else {
+                        commands::execute_session_rename(self, &extra).await;
                     }
                 }
-            }
+                _ => {
+                    self.execute_command(&cmd_name).await;
+                }
+            },
             KeyAction::ChatInput(text) => {
                 if let Some(tx) = &self.input_tx {
                     let _ = tx.send(crate::TuiEvent::ChatInput(text));

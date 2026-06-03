@@ -2,7 +2,6 @@
 ///
 /// Mirrors hermes-agent's `GoalState` dataclass: persists goal text,
 /// status, turn budget, and judge verdict across turns.
-
 use crate::judge::JudgeVerdict;
 
 /// Status of an active goal.
@@ -149,10 +148,7 @@ impl GoalState {
         };
         format!(
             "Goal ({}, {}/{}, parse_failures={})",
-            status_str,
-            self.turns_used,
-            self.max_turns,
-            self.consecutive_parse_failures,
+            status_str, self.turns_used, self.max_turns, self.consecutive_parse_failures,
         )
     }
 

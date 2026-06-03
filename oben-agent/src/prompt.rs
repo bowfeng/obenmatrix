@@ -1,5 +1,4 @@
 /// Prompt building — assembles system prompt + conversation history for the API.
-
 use anyhow::Result;
 use oben_models::Message;
 

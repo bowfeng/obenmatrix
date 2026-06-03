@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-
 /// A single message in a conversation.
 
 /// A summary chunk in summary.jsonl — indicates which raw messages it covers.
@@ -70,7 +69,10 @@ impl SessionOrigin {
             _ => format!(
                 "{} ({}), chat_type={}",
                 format_args!("{:?}", self.platform),
-                self.chat_name.as_deref().or(self.chat_id.as_deref()).unwrap_or("unknown"),
+                self.chat_name
+                    .as_deref()
+                    .or(self.chat_id.as_deref())
+                    .unwrap_or("unknown"),
                 self.chat_type
             ),
         }
@@ -91,7 +93,7 @@ pub struct SessionMetadata {
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
     pub end_reason: Option<String>, // "compression", "branched", "cancelled", "reset"
     pub title: Option<String>,
-    pub preview: Option<String>,    // first 60 chars of first user message
+    pub preview: Option<String>, // first 60 chars of first user message
     pub message_count: usize,
     pub tool_call_count: usize,
     pub input_tokens: usize,
@@ -107,9 +109,9 @@ pub struct SessionMetadata {
     /// Token tracking: last API-reported prompt tokens (for accurate compression check).
     pub last_prompt_tokens: usize,
     /// Session lifecycle flags.
-    pub is_fresh_reset: bool,     // user explicitly sent /new or /reset
-    pub suspended: bool,          // next access will auto-reset (stuck loop breaker)
-    pub resume_pending: bool,     // interrupted by restart, recovery expected
+    pub is_fresh_reset: bool, // user explicitly sent /new or /reset
+    pub suspended: bool,      // next access will auto-reset (stuck loop breaker)
+    pub resume_pending: bool, // interrupted by restart, recovery expected
     pub resume_reason: Option<String>,
     pub last_resume_marked_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -233,7 +235,11 @@ pub trait SessionManagerExt: Send + Sync {
 
     /// Save compacted messages: delete all old DB messages, then insert
     /// the compacted set and update `persisted_message_count`.
-    fn save_compacted(&mut self, session_id: &str, messages: &[crate::Message]) -> Result<(), anyhow::Error>;
+    fn save_compacted(
+        &mut self,
+        session_id: &str,
+        messages: &[crate::Message],
+    ) -> Result<(), anyhow::Error>;
 }
 
 /// Entry in the session list view.
@@ -298,14 +304,29 @@ pub fn build_session_recap(
     const ASSISTANT_PREVIEW_CHARS: usize = 200;
     const MAX_FILES_LISTED: usize = 5;
 
-    let user_turns = messages.iter().filter(|m| m.role == crate::MessageRole::User).count();
-    let assistant_turns = messages.iter().filter(|m| m.role == crate::MessageRole::Assistant).count();
-    let tool_messages = messages.iter().filter(|m| m.role == crate::MessageRole::Tool).count();
+    let user_turns = messages
+        .iter()
+        .filter(|m| m.role == crate::MessageRole::User)
+        .count();
+    let assistant_turns = messages
+        .iter()
+        .filter(|m| m.role == crate::MessageRole::Assistant)
+        .count();
+    let tool_messages = messages
+        .iter()
+        .filter(|m| m.role == crate::MessageRole::Tool)
+        .count();
 
     // Recent window: last N user+assistant turns
     let recent_window = recent_turn_window(messages, RECENT_TURN_WINDOW);
-    let rec_user_turns = recent_window.iter().filter(|m| m.role == crate::MessageRole::User).count();
-    let rec_assistant_turns = recent_window.iter().filter(|m| m.role == crate::MessageRole::Assistant).count();
+    let rec_user_turns = recent_window
+        .iter()
+        .filter(|m| m.role == crate::MessageRole::User)
+        .count();
+    let rec_assistant_turns = recent_window
+        .iter()
+        .filter(|m| m.role == crate::MessageRole::Assistant)
+        .count();
 
     // Tool activity from recent window
     let mut tool_counts: std::collections::HashMap<String, usize> =
@@ -368,7 +389,8 @@ pub fn build_session_recap(
         ));
     }
     if !tool_activity.is_empty() {
-        let top = tool_activity.iter()
+        let top = tool_activity
+            .iter()
             .take(5)
             .map(|(name, count)| format!("{}×{}", name, count))
             .collect::<Vec<_>>()
@@ -410,7 +432,9 @@ fn recent_turn_window<'a>(
     let mut count = 0;
     let mut cut = 0;
     for i in (0..messages.len()).rev() {
-        if messages[i].role == crate::MessageRole::User || messages[i].role == crate::MessageRole::Assistant {
+        if messages[i].role == crate::MessageRole::User
+            || messages[i].role == crate::MessageRole::Assistant
+        {
             count += 1;
             if count >= window {
                 cut = i;
@@ -422,21 +446,22 @@ fn recent_turn_window<'a>(
 }
 
 fn latest_text(messages: &[crate::Message], role: crate::MessageRole) -> Option<String> {
-    messages.iter().rev().find(|m| m.role == role).map(|m| {
-        match &m.content {
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.role == role)
+        .map(|m| match &m.content {
             crate::MessageContent::Text(t) => t.clone(),
-            crate::MessageContent::Parts(parts) => {
-                parts.iter()
-                    .filter_map(|p| match p {
-                        crate::MessagePart::Text(t) => Some(t.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+            crate::MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    crate::MessagePart::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
             crate::MessageContent::Image { .. } => String::new(),
-        }
-    })
+        })
 }
 
 fn extract_file_path(arguments: &serde_json::Value, tool_name: &str) -> Option<String> {
@@ -445,7 +470,10 @@ fn extract_file_path(arguments: &serde_json::Value, tool_name: &str) -> Option<S
         "skill_manage" | "skill_view" => "file_path",
         _ => return None,
     };
-    arguments.get(path_key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    arguments
+        .get(path_key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn collapse_whitespace(s: &str) -> String {

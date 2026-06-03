@@ -5,7 +5,6 @@
 /// PROVIDER_META when the remote fetch fails.
 ///
 /// **Reference:** `hermes-agent/hermes_cli/model_catalog.py`
-
 use std::collections::hash_map::Keys;
 use std::io::Read;
 use std::path::PathBuf;
@@ -64,9 +63,11 @@ where
 {
     let s: Option<String> = Option::deserialize(deserializer)?;
     match s {
-        Some(val) => Ok(Some(chrono::DateTime::parse_from_rfc3339(&val)
-            .map_err(serde::de::Error::custom)?
-            .with_timezone(&Utc))),
+        Some(val) => Ok(Some(
+            chrono::DateTime::parse_from_rfc3339(&val)
+                .map_err(serde::de::Error::custom)?
+                .with_timezone(&Utc),
+        )),
         None => Ok(None),
     }
 }
@@ -94,7 +95,10 @@ impl CatalogManifest {
 
     /// Find a model by its ID across all providers.
     pub fn find_model(&self, model_id: &str) -> Option<&RemoteModel> {
-        self.providers.values().flat_map(|p| p.models.iter()).find(|m| m.id == model_id)
+        self.providers
+            .values()
+            .flat_map(|p| p.models.iter())
+            .find(|m| m.id == model_id)
     }
 
     /// Returns all model IDs (one per provider).
@@ -130,7 +134,9 @@ impl CatalogManifest {
 
     /// Validate the manifest schema (version = 1, has providers with models).
     pub fn validate(data: &serde_json::Value) -> bool {
-        let Some(map) = data.as_object() else { return false };
+        let Some(map) = data.as_object() else {
+            return false;
+        };
         // version must be present and == 1
         #[allow(clippy::cast_possible_truncation)]
         let version = if let Some(v) = map.get("version").and_then(|v| v.as_u64()) {
@@ -146,13 +152,16 @@ impl CatalogManifest {
         };
         for (name, block) in providers {
             if !name.is_empty() {
-                let models_block = if let Some(models) = block.get("models").and_then(|v| v.as_array()) {
-                    models
-                } else {
-                    return false;
-                };
+                let models_block =
+                    if let Some(models) = block.get("models").and_then(|v| v.as_array()) {
+                        models
+                    } else {
+                        return false;
+                    };
                 for model in models_block {
-                    let Some(model_obj) = model.as_object() else { continue };
+                    let Some(model_obj) = model.as_object() else {
+                        continue;
+                    };
                     if !model_obj.contains_key("id") {
                         return false;
                     }
@@ -355,7 +364,10 @@ mod tests {
         assert_eq!(manifest.providers.len(), 2);
         let openrouter = manifest.providers.get("openrouter").unwrap();
         assert_eq!(openrouter.models.len(), 2);
-        assert_eq!(openrouter.models[0].description.as_deref(), Some("recommended"));
+        assert_eq!(
+            openrouter.models[0].description.as_deref(),
+            Some("recommended")
+        );
     }
 
     #[test]
@@ -395,11 +407,31 @@ mod tests {
             }
         });
         let manifest = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
-        let models = manifest.curated_openrouter_models().expect("should return some");
+        let models = manifest
+            .curated_openrouter_models()
+            .expect("should return some");
         assert_eq!(models.len(), 3);
-        assert_eq!(models[0], ("openai/gpt-4o".to_string(), "Best overall model".to_string()));
-        assert_eq!(models[1], ("anthropic/claude-sonnet-4-20250514".to_string(), String::new()));
-        assert_eq!(models[2], ("google/gemini-2.5-pro".to_string(), "Best reasoning".to_string()));
+        assert_eq!(
+            models[0],
+            (
+                "openai/gpt-4o".to_string(),
+                "Best overall model".to_string()
+            )
+        );
+        assert_eq!(
+            models[1],
+            (
+                "anthropic/claude-sonnet-4-20250514".to_string(),
+                String::new()
+            )
+        );
+        assert_eq!(
+            models[2],
+            (
+                "google/gemini-2.5-pro".to_string(),
+                "Best reasoning".to_string()
+            )
+        );
     }
 
     #[test]
@@ -436,11 +468,14 @@ mod tests {
         let manifest = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
         let models = manifest.curated_nous_models().expect("should return some");
         assert_eq!(models.len(), 3);
-        assert_eq!(models, vec![
-            "nousresearch/nous-hermes-3-70b",
-            "nousresearch/nous-hermes-3-405b",
-            "nousresearch/hermes-3-llama-3.1-70b",
-        ]);
+        assert_eq!(
+            models,
+            vec![
+                "nousresearch/nous-hermes-3-70b",
+                "nousresearch/nous-hermes-3-405b",
+                "nousresearch/hermes-3-llama-3.1-70b",
+            ]
+        );
     }
 
     #[test]
@@ -456,7 +491,6 @@ mod tests {
         let manifest = CatalogManifest::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
         assert!(manifest.curated_nous_models().is_none());
     }
-
 
     // Convenience function tests: these use parsed catalogs (mocked/hardcoded data)
     // since the convenience functions simply delegate to the catalog methods.

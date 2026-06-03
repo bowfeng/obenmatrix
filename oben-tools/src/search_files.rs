@@ -1,15 +1,14 @@
+use serde_json::Value;
 /// File search tool — content (grep-like) and name (glob-like) search.
 ///
 /// Uses ripgrep (rg) for fast parallel search, falls back to basic grep/find.
-
 use std::sync::Arc;
-use serde_json::Value;
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{SelfRegisteringTool, ToolHandler};
 use oben_utils::path_security::is_path_safe;
 
 // ---------------------------------------------------------------------------
@@ -71,41 +70,37 @@ fn make_search_files_handler() -> ToolHandler {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
 
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or(".");
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
-            let limit = args
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(50);
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
 
             let search_type = args
                 .get("type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("content");
 
-            let glob = args
-                .get("glob")
-                .and_then(|v| v.as_str());
+            let glob = args.get("glob").and_then(|v| v.as_str());
 
             // Safety check: dangerous query patterns
             if is_dangerous_query(query) {
                 return Ok(ToolResult {
-                    call_id: args.get("call_id")
+                    call_id: args
+                        .get("call_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
                     output: String::new(),
-                    error: Some("Invalid query: search terms must be alphanumeric strings".to_string()),
+                    error: Some(
+                        "Invalid query: search terms must be alphanumeric strings".to_string(),
+                    ),
                 });
             }
 
             // Safety check: unsafe path
             if !is_path_safe(std::path::Path::new(path)) {
                 return Ok(ToolResult {
-                    call_id: args.get("call_id")
+                    call_id: args
+                        .get("call_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
@@ -114,7 +109,8 @@ fn make_search_files_handler() -> ToolHandler {
                 });
             }
 
-            let call_id = args.get("call_id")
+            let call_id = args
+                .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -133,9 +129,11 @@ fn is_dangerous_query(query: &str) -> bool {
     let q = query.trim();
     // Allow alphanumeric, dots, dashes, underscores, slashes, asterisks, question marks, braces, and spaces
     // Block any other shell metacharacters
-    !q.is_empty() && !q.chars().all(|c| {
-        c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '/' | '*' | '?' | '{' | '}' | ' ' | ',')
-    })
+    !q.is_empty()
+        && !q.chars().all(|c| {
+            c.is_alphanumeric()
+                || matches!(c, '.' | '-' | '_' | '/' | '*' | '?' | '{' | '}' | ' ' | ',')
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -197,10 +195,7 @@ async fn search_files_rg(
         .arg("--vimgrep")
         .kill_on_drop(true);
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        cmd.output()
-    ).await;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output()).await;
 
     let output = match output {
         Ok(Ok(o)) => o,
@@ -223,7 +218,8 @@ async fn search_files_rg(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let files: Vec<&str> = stdout.lines().collect();
     let total = files.len();
-    let files: Vec<String> = files.into_iter()
+    let files: Vec<String> = files
+        .into_iter()
         .take(limit)
         .map(|s| s.to_string())
         .collect();
@@ -253,11 +249,9 @@ async fn search_files_find(
 
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        Command::new("/bin/sh")
-            .arg("-c")
-            .arg(&cmd_str)
-            .output()
-    ).await;
+        Command::new("/bin/sh").arg("-c").arg(&cmd_str).output(),
+    )
+    .await;
 
     let output = match output {
         Ok(Ok(o)) => o,
@@ -278,7 +272,8 @@ async fn search_files_find(
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let files: Vec<String> = stdout.lines()
+    let files: Vec<String> = stdout
+        .lines()
         .filter(|l| !l.is_empty())
         .take(limit)
         .map(|s| s.to_string())
@@ -301,10 +296,11 @@ async fn search_by_content(
     call_id: &str,
 ) -> anyhow::Result<ToolResult> {
     let mut rg_args = vec![
-        "--heading",      // show file names
-        "-n",             // line numbers
-        "-C", "2",        // 2 lines context
-        "-I",             // ignore binary files
+        "--heading", // show file names
+        "-n",        // line numbers
+        "-C",
+        "2",  // 2 lines context
+        "-I", // ignore binary files
     ];
 
     if let Some(g) = glob {
@@ -324,18 +320,11 @@ async fn search_by_content(
 }
 
 /// Search content using ripgrep.
-async fn search_rg(
-    args: &[&str],
-    limit: usize,
-    call_id: &str,
-) -> anyhow::Result<ToolResult> {
+async fn search_rg(args: &[&str], limit: usize, call_id: &str) -> anyhow::Result<ToolResult> {
     let mut cmd = Command::new("rg");
     cmd.args(args).kill_on_drop(true);
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        cmd.output()
-    ).await;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output()).await;
 
     let output = match output {
         Ok(Ok(o)) => o,
@@ -360,10 +349,7 @@ async fn search_rg(
 
     // Limit output to a reasonable size
     let truncated = matches.len() > limit * 10;
-    let output_lines: Vec<&str> = matches.iter()
-        .take(limit * 5)
-        .cloned()
-        .collect();
+    let output_lines: Vec<&str> = matches.iter().take(limit * 5).cloned().collect();
 
     let output_str = if output_lines.is_empty() {
         "(no matches found)".to_string()
@@ -413,11 +399,9 @@ async fn search_grep(
 
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        Command::new("/bin/sh")
-            .arg("-c")
-            .arg(&cmd_str)
-            .output()
-    ).await;
+        Command::new("/bin/sh").arg("-c").arg(&cmd_str).output(),
+    )
+    .await;
 
     let output = match output {
         Ok(Ok(o)) => o,
@@ -470,7 +454,9 @@ fn format_files_result(files: &[String], total: usize, limit: usize) -> String {
 
 /// Shell-escape an argument.
 fn escape_shell_arg(s: &str) -> String {
-    if s.chars().all(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_')) {
+    if s.chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_'))
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
@@ -482,7 +468,9 @@ fn shell_escape(s: &str) -> String {
 }
 
 fn shell_escape_inner(s: &str) -> String {
-    if s.chars().all(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | ' ' | '*')) {
+    if s.chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | ' ' | '*'))
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
@@ -529,96 +517,154 @@ mod tests {
     #[tokio::test]
     async fn content_search_finds_match() {
         let registry = make_registry();
-        let result = registry.execute("search_files", &json!({
-            "query": "hello",
-            "path": "oben-tools/src",
-            "call_id": "test-1",
-        })).await;
+        let result = registry
+            .execute(
+                "search_files",
+                &json!({
+                    "query": "hello",
+                    "path": "oben-tools/src",
+                    "call_id": "test-1",
+                }),
+            )
+            .await;
 
         // Should not error, may or may not find matches depending on file content
-        assert!(result.error.is_none() || result.error.as_ref().unwrap().contains("rg") || result.error.as_ref().unwrap().contains("no matches"));
+        assert!(
+            result.error.is_none()
+                || result.error.as_ref().unwrap().contains("rg")
+                || result.error.as_ref().unwrap().contains("no matches")
+        );
     }
 
     #[tokio::test]
     async fn name_search_finds_rs_files() {
         let registry = make_registry();
-        let result = registry.execute("search_files", &json!({
-            "query": "terminal",
-            "type": "name",
-            "path": "oben-tools/src",
-            "call_id": "test-2",
-        })).await;
+        let result = registry
+            .execute(
+                "search_files",
+                &json!({
+                    "query": "terminal",
+                    "type": "name",
+                    "path": "oben-tools/src",
+                    "call_id": "test-2",
+                }),
+            )
+            .await;
 
         // Should not error
-        assert!(result.error.is_none() || result.error.as_ref().unwrap().contains("rg") || result.error.as_ref().unwrap().contains("no files"));
+        assert!(
+            result.error.is_none()
+                || result.error.as_ref().unwrap().contains("rg")
+                || result.error.as_ref().unwrap().contains("no files")
+        );
     }
 
     #[tokio::test]
     async fn content_search_with_glob() {
         let registry = make_registry();
-        let result = registry.execute("search_files", &json!({
-            "query": "search_files",
-            "path": "oben-tools/src",
-            "glob": "*.rs",
-            "call_id": "test-3",
-        })).await;
+        let result = registry
+            .execute(
+                "search_files",
+                &json!({
+                    "query": "search_files",
+                    "path": "oben-tools/src",
+                    "glob": "*.rs",
+                    "call_id": "test-3",
+                }),
+            )
+            .await;
 
-        assert!(result.error.is_none() || result.error.as_ref().unwrap().contains("rg") || result.error.as_ref().unwrap().contains("no matches"));
+        assert!(
+            result.error.is_none()
+                || result.error.as_ref().unwrap().contains("rg")
+                || result.error.as_ref().unwrap().contains("no matches")
+        );
     }
 
     #[tokio::test]
     async fn content_search_respects_limit() {
         let registry = make_registry();
-        let result = registry.execute("search_files", &json!({
-            "query": "hello",
-            "path": "oben-tools/src",
-            "limit": 5,
-            "call_id": "test-4",
-        })).await;
+        let result = registry
+            .execute(
+                "search_files",
+                &json!({
+                    "query": "hello",
+                    "path": "oben-tools/src",
+                    "limit": 5,
+                    "call_id": "test-4",
+                }),
+            )
+            .await;
 
-        assert!(result.error.is_none() || result.error.as_ref().unwrap().contains("rg") || result.error.as_ref().unwrap().contains("no matches"));
+        assert!(
+            result.error.is_none()
+                || result.error.as_ref().unwrap().contains("rg")
+                || result.error.as_ref().unwrap().contains("no matches")
+        );
     }
 
     #[tokio::test]
     async fn blocks_dangerous_query() {
         let registry = make_registry();
-        let result = registry.execute("search_files", &json!({
-            "query": "; rm -rf /",
-            "call_id": "test-5",
-        })).await;
+        let result = registry
+            .execute(
+                "search_files",
+                &json!({
+                    "query": "; rm -rf /",
+                    "call_id": "test-5",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Invalid query"));
-        
+
         // Verify safe query passes
-        let result2 = registry.execute("search_files", &json!({
-            "query": "safe_search",
-            "call_id": "test-5b",
-        })).await;
+        let result2 = registry
+            .execute(
+                "search_files",
+                &json!({
+                    "query": "safe_search",
+                    "call_id": "test-5b",
+                }),
+            )
+            .await;
         assert!(result2.error.is_none());
     }
 
     #[tokio::test]
     async fn accepts_alphanumeric_query() {
         let registry = make_registry();
-        let result = registry.execute("search_files", &json!({
-            "query": "hello_world-test.txt",
-            "call_id": "test-6",
-        })).await;
+        let result = registry
+            .execute(
+                "search_files",
+                &json!({
+                    "query": "hello_world-test.txt",
+                    "call_id": "test-6",
+                }),
+            )
+            .await;
 
         // Should pass safety check (may or may not find results)
-        assert!(result.error.is_none() || !result.error.as_ref().unwrap().contains("Invalid query"));
+        assert!(
+            result.error.is_none() || !result.error.as_ref().unwrap().contains("Invalid query")
+        );
     }
 
     #[tokio::test]
     async fn name_search_name_pattern() {
         let registry = make_registry();
-        let result = registry.execute("search_files", &json!({
-            "query": "*.rs",
-            "type": "name",
-            "path": "oben-tools/src",
-            "call_id": "test-7",
-        })).await;
+        let result = registry
+            .execute(
+                "search_files",
+                &json!({
+                    "query": "*.rs",
+                    "type": "name",
+                    "path": "oben-tools/src",
+                    "call_id": "test-7",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("Found") || result.output.contains("no files"));
@@ -627,11 +673,16 @@ mod tests {
     #[tokio::test]
     async fn empty_results() {
         let registry = make_registry();
-        let result = registry.execute("search_files", &json!({
-            "query": "xyznonexistent12345",
-            "path": "oben-tools/src",
-            "call_id": "test-8",
-        })).await;
+        let result = registry
+            .execute(
+                "search_files",
+                &json!({
+                    "query": "xyznonexistent12345",
+                    "path": "oben-tools/src",
+                    "call_id": "test-8",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("no") || result.output.contains("(no matches"));

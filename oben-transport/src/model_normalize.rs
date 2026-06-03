@@ -41,13 +41,30 @@ static VENDOR_PREFIXES: LazyLock<std::collections::HashMap<&'static str, &'stati
     });
 
 // Provider classifications
-const AGGREGATOR_PROVIDERS: &[&str] = &["openrouter", "nous", "ai-gateway", "kilocode", "opencode-zen", "opencode-go"];
+const AGGREGATOR_PROVIDERS: &[&str] = &[
+    "openrouter",
+    "nous",
+    "ai-gateway",
+    "kilocode",
+    "opencode-zen",
+    "opencode-go",
+];
 const DOT_TO_HYPHEN_PROVIDERS: &[&str] = &["anthropic"];
 const STRIP_VENDOR_ONLY_PROVIDERS: &[&str] = &["copilot", "copilot-acp", "openai-codex"];
 const AUTHORITATIVE_NATIVE_PROVIDERS: &[&str] = &["gemini", "huggingface"];
 const MATCHING_PREFIX_STRIP_PROVIDERS: &[&str] = &[
-    "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-oauth", "minimax-cn",
-    "alibaba", "qwen-oauth", "xiaomi", "arcee", "ollama-cloud", "custom",
+    "zai",
+    "kimi-coding",
+    "kimi-coding-cn",
+    "minimax",
+    "minimax-oauth",
+    "minimax-cn",
+    "alibaba",
+    "qwen-oauth",
+    "xiaomi",
+    "arcee",
+    "ollama-cloud",
+    "custom",
 ];
 const LOWERCASE_MODEL_PROVIDERS: &[&str] = &["xiaomi"];
 
@@ -62,13 +79,20 @@ fn normalize_for_deepseek(model_name: &str) -> String {
     let bare = strip_vendor_prefix(model_name).to_lowercase();
 
     // Canonical models
-    if bare == "deepseek-chat" || bare == "deepseek-reasoner" || bare == "deepseek-v4-pro" || bare == "deepseek-v4-flash" {
+    if bare == "deepseek-chat"
+        || bare == "deepseek-reasoner"
+        || bare == "deepseek-v4-pro"
+        || bare == "deepseek-v4-flash"
+    {
         return bare;
     }
 
     // V-series first-class IDs (v4+, not v3+)
     if let Some(m) = DEEPSEEK_V_SERIES_RE.captures(&bare) {
-        let version = m.get(1).and_then(|g| g.as_str().parse::<u32>().ok()).unwrap_or(0);
+        let version = m
+            .get(1)
+            .and_then(|g| g.as_str().parse::<u32>().ok())
+            .unwrap_or(0);
         if version >= 4 {
             return bare;
         }
@@ -256,7 +280,12 @@ pub fn normalize_model_for_provider(model_input: &str, target_provider: &str) ->
     if STRIP_VENDOR_ONLY_PROVIDERS.contains(&provider.as_str()) {
         let stripped = strip_matching_provider_prefix(name, &provider);
         if stripped == name && name.starts_with("openai/") {
-            return name.split_once('/').unwrap_or(("", "")).1.trim().to_string();
+            return name
+                .split_once('/')
+                .unwrap_or(("", ""))
+                .1
+                .trim()
+                .to_string();
         }
         return stripped;
     }
@@ -320,7 +349,10 @@ mod tests {
 
     #[test]
     fn test_detect_vendor_already_prefixed() {
-        assert_eq!(detect_vendor("anthropic/claude-sonnet-4.6"), Some("anthropic"));
+        assert_eq!(
+            detect_vendor("anthropic/claude-sonnet-4.6"),
+            Some("anthropic")
+        );
     }
 
     #[test]
@@ -331,12 +363,18 @@ mod tests {
     // N.1: prepend_vendor
     #[test]
     fn test_prepend_vendor_claude() {
-        assert_eq!(prepend_vendor("claude-sonnet-4.6"), "anthropic/claude-sonnet-4.6");
+        assert_eq!(
+            prepend_vendor("claude-sonnet-4.6"),
+            "anthropic/claude-sonnet-4.6"
+        );
     }
 
     #[test]
     fn test_prepend_vendor_already_prefixed() {
-        assert_eq!(prepend_vendor("anthropic/claude-sonnet-4.6"), "anthropic/claude-sonnet-4.6");
+        assert_eq!(
+            prepend_vendor("anthropic/claude-sonnet-4.6"),
+            "anthropic/claude-sonnet-4.6"
+        );
     }
 
     #[test]

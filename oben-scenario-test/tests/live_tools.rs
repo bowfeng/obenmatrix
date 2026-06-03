@@ -3,7 +3,6 @@
 /// These tests require a configured LLM server at `~/.obenalien/config.yaml`.
 /// They are the end-to-end check that the transport sends tools to the LLM
 /// and the model returns structured `tool_calls` (not arbitrary XML-like tags).
-
 use anyhow::Result;
 use oben_config::AppConfig;
 use oben_models::{CallMode, Message, ProviderConfig, Tool, TransportProvider};
@@ -21,10 +20,7 @@ fn preview(s: &str, n: usize) -> &str {
 
 fn get_provider_config() -> ProviderConfig {
     let config = AppConfig::load().expect("Failed to load config");
-    let mut pc = ProviderConfig::new(
-        config.model.kind.clone(),
-        config.model.model.clone(),
-    );
+    let mut pc = ProviderConfig::new(config.model.kind.clone(), config.model.model.clone());
     pc.api_key = config.model.api_key.clone();
     pc.base_url = config.model.base_url.clone();
     pc.temperature = config.model.temperature;
@@ -39,9 +35,12 @@ fn test_tools() -> Vec<Tool> {
         Tool::builder("shell", "Execute a shell command and return the output.")
             .param("command", "The command to execute", "string", true)
             .build(),
-        Tool::builder("read_file", "Read the contents of a file at the given path.")
-            .param("path", "The file path to read", "string", true)
-            .build(),
+        Tool::builder(
+            "read_file",
+            "Read the contents of a file at the given path.",
+        )
+        .param("path", "The file path to read", "string", true)
+        .build(),
     ]
 }
 
@@ -79,7 +78,10 @@ async fn test_live_tool_calls_response() -> Result<()> {
     eprintln!("  tool_calls.len={}", resp.tool_calls.len());
     if !resp.tool_calls.is_empty() {
         for tc in &resp.tool_calls {
-            eprintln!("    tool_call: name={}, args={}", tc.tool_name, tc.arguments);
+            eprintln!(
+                "    tool_call: name={}, args={}",
+                tc.tool_name, tc.arguments
+            );
         }
     }
 
@@ -113,7 +115,11 @@ async fn test_live_stream_tool_calls_response() -> Result<()> {
         Box::new(move |text: &str| captured_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&messages, &CallMode::Fresh("tool-call-test-2".to_string()), cb)
+        .stream_chat(
+            &messages,
+            &CallMode::Fresh("tool-call-test-2".to_string()),
+            cb,
+        )
         .await?;
 
     let captured_text = captured.lock().unwrap().clone();
@@ -147,7 +153,9 @@ async fn test_live_tool_transport_normal_chat() -> Result<()> {
     let pc = get_provider_config();
     let transport = create_tool_transport(&pc);
 
-    let messages = vec![Message::user("Say hello to the world in one short sentence.")];
+    let messages = vec![Message::user(
+        "Say hello to the world in one short sentence.",
+    )];
     let resp = transport
         .chat(&messages, &CallMode::Fresh("tool-call-test-3".to_string()))
         .await?;
@@ -168,8 +176,11 @@ async fn test_live_tool_transport_normal_chat() -> Result<()> {
         preview(&resp.text, 200)
     );
 
-    eprintln!("✅ Normal chat with tools passed: text_len={}, tool_calls={}",
-        resp.text.len(), resp.tool_calls.len());
+    eprintln!(
+        "✅ Normal chat with tools passed: text_len={}, tool_calls={}",
+        resp.text.len(),
+        resp.tool_calls.len()
+    );
     Ok(())
 }
 
@@ -197,12 +208,16 @@ async fn test_live_transport_tool_vs_no_tool() -> Result<()> {
     );
 
     eprintln!("✅ Transport comparison test passed:");
-    eprintln!("  with_tools: text='{}...', tool_calls={}",
+    eprintln!(
+        "  with_tools: text='{}...', tool_calls={}",
         preview(&resp_with.text, 100),
-        resp_with.tool_calls.len());
-    eprintln!("  no_tools: text='{}...', tool_calls={}",
+        resp_with.tool_calls.len()
+    );
+    eprintln!(
+        "  no_tools: text='{}...', tool_calls={}",
         preview(&resp_without.text, 100),
-        resp_without.tool_calls.len());
+        resp_without.tool_calls.len()
+    );
 
     Ok(())
 }
@@ -246,36 +261,75 @@ async fn test_live_multiturn_chat_with_tools() -> Result<()> {
         Err(anyhow::anyhow!("All retries failed: {}", last_err.unwrap()))
     }
 
-    let resp1 = send_with_retry(&transport, &[Message::user("hello")], &CallMode::Fresh(session_id.clone())).await?;
-    assert!(!resp1.text.trim().is_empty(), "Turn 1 (hello) should have a response");
+    let resp1 = send_with_retry(
+        &transport,
+        &[Message::user("hello")],
+        &CallMode::Fresh(session_id.clone()),
+    )
+    .await?;
+    assert!(
+        !resp1.text.trim().is_empty(),
+        "Turn 1 (hello) should have a response"
+    );
     let text1 = resp1.text.trim().to_string();
 
-    eprintln!("✅ Multi-turn turn 1 (hello): text_len={}, tool_calls={}", text1.len(), resp1.tool_calls.len());
+    eprintln!(
+        "✅ Multi-turn turn 1 (hello): text_len={}, tool_calls={}",
+        text1.len(),
+        resp1.tool_calls.len()
+    );
     eprintln!("   preview='{}'", preview(&text1, 120));
 
-    let resp2 = send_with_retry(&transport, &[Message::user("现实当前目录")], &CallMode::Incremental(session_id.clone())).await?;
+    let resp2 = send_with_retry(
+        &transport,
+        &[Message::user("现实当前目录")],
+        &CallMode::Incremental(session_id.clone()),
+    )
+    .await?;
     assert!(
         !resp2.text.trim().is_empty() || !resp2.tool_calls.is_empty(),
         "Turn 2 (现实当前目录) should have a response"
     );
     let text2 = resp2.text.trim().to_string();
 
-    eprintln!("✅ Multi-turn turn 2 (现实当前目录): text_len={}, tool_calls={}", text2.len(), resp2.tool_calls.len());
+    eprintln!(
+        "✅ Multi-turn turn 2 (现实当前目录): text_len={}, tool_calls={}",
+        text2.len(),
+        resp2.tool_calls.len()
+    );
     eprintln!("   text='{}'", preview(&text2, 120));
 
-    let resp3 = send_with_retry(&transport, &[Message::user("你是谁")], &CallMode::Incremental(session_id.clone())).await?;
+    let resp3 = send_with_retry(
+        &transport,
+        &[Message::user("你是谁")],
+        &CallMode::Incremental(session_id.clone()),
+    )
+    .await?;
     assert!(
         !resp3.text.trim().is_empty() || !resp3.tool_calls.is_empty(),
         "Turn 3 (你是谁) should have a response"
     );
     let text3 = resp3.text.trim().to_string();
 
-    eprintln!("✅ Multi-turn turn 3 (你是谁): text_len={}, tool_calls={}", text3.len(), resp3.tool_calls.len());
+    eprintln!(
+        "✅ Multi-turn turn 3 (你是谁): text_len={}, tool_calls={}",
+        text3.len(),
+        resp3.tool_calls.len()
+    );
     eprintln!("   text='{}'", preview(&text3, 120));
 
-    assert!(!text1.is_empty() || !resp1.tool_calls.is_empty(), "Turn 1 must have response");
-    assert!(!text2.is_empty() || !resp2.tool_calls.is_empty(), "Turn 2 must have response");
-    assert!(!text3.is_empty() || !resp3.tool_calls.is_empty(), "Turn 3 must have response");
+    assert!(
+        !text1.is_empty() || !resp1.tool_calls.is_empty(),
+        "Turn 1 must have response"
+    );
+    assert!(
+        !text2.is_empty() || !resp2.tool_calls.is_empty(),
+        "Turn 2 must have response"
+    );
+    assert!(
+        !text3.is_empty() || !resp3.tool_calls.is_empty(),
+        "Turn 3 must have response"
+    );
 
     for (text, label) in [(&text1, "turn1"), (&text2, "turn2"), (&text3, "turn3")]
         .into_iter()
@@ -283,27 +337,44 @@ async fn test_live_multiturn_chat_with_tools() -> Result<()> {
     {
         let lines: Vec<&str> = text.lines().collect();
         for j in 1..lines.len() {
-            assert!(lines[j] != lines[j - 1],
-                "Duplicate adjacent lines in {}: {}", label, preview(&text, 200));
+            assert!(
+                lines[j] != lines[j - 1],
+                "Duplicate adjacent lines in {}: {}",
+                label,
+                preview(&text, 200)
+            );
         }
     }
 
     if !text1.is_empty() && !text2.is_empty() {
-        assert_ne!(text1, text2, "Turn 1 and Turn 2 text should not be identical");
+        assert_ne!(
+            text1, text2,
+            "Turn 1 and Turn 2 text should not be identical"
+        );
     }
     if !text2.is_empty() && !text3.is_empty() {
-        assert_ne!(text2, text3, "Turn 2 and Turn 3 text should not be identical");
+        assert_ne!(
+            text2, text3,
+            "Turn 2 and Turn 3 text should not be identical"
+        );
     }
     if !text1.is_empty() && !text3.is_empty() {
-        assert_ne!(text1, text3, "Turn 1 and Turn 3 text should not be identical");
+        assert_ne!(
+            text1, text3,
+            "Turn 1 and Turn 3 text should not be identical"
+        );
     }
 
     let has_tool_call = resp2.tool_calls.iter().any(|tc| {
         tc.tool_name == "shell"
-            || serde_json::to_string(&tc.arguments).map(|s| s.contains("command")).unwrap_or(false)
+            || serde_json::to_string(&tc.arguments)
+                .map(|s| s.contains("command"))
+                .unwrap_or(false)
     });
-    let has_path_chars = text2.contains("/Users/") || text2.contains("/home/")
-        || text2.contains(".git") || text2.contains(".rs");
+    let has_path_chars = text2.contains("/Users/")
+        || text2.contains("/home/")
+        || text2.contains(".git")
+        || text2.contains(".rs");
 
     if has_tool_call {
         eprintln!("  ↳ Turn 2 invoked shell tool call (expected)");
@@ -317,7 +388,9 @@ async fn test_live_multiturn_chat_with_tools() -> Result<()> {
 
     let text3_lower = text3.to_lowercase();
     let identity_keywords = ["助手", "agent", "assistant", "chat", "help", "模型", "回答"];
-    let has_identity = identity_keywords.iter().any(|k| text3_lower.contains(k) || text3.contains(k));
+    let has_identity = identity_keywords
+        .iter()
+        .any(|k| text3_lower.contains(k) || text3.contains(k));
     if !has_identity {
         eprintln!("  ↳ Turn 3 doesn't contain obvious identity keywords");
         eprintln!("     text='{}'", preview(&text3, 200));

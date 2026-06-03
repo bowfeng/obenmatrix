@@ -11,17 +11,16 @@
 /// ├── CachedRequest (per-session, Arc-based, zero-copy extend)
 /// └── conversion helpers: message_to_anthropic(), response_to_transport()
 /// ```
-
 use anyhow::{anyhow, Result};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
+use oben_models::{
+    CallMode, Message, MessageContent, MessagePart, MessageRole, TransportProvider,
+    TransportResponse, TransportToolCall,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::debug;
-use oben_models::{
-    CallMode, Message, MessageContent, MessagePart, MessageRole,
-    TransportProvider, TransportResponse, TransportToolCall,
-};
 
 use super::base::BaseTransport;
 
@@ -60,7 +59,11 @@ impl AnthropicContentBlock {
     }
 
     /// Create a tool use content block.
-    pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: serde_json::Value) -> Self {
+    pub fn tool_use(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: serde_json::Value,
+    ) -> Self {
         AnthropicContentBlock::ToolUse {
             id: id.into(),
             name: name.into(),
@@ -309,9 +312,11 @@ impl AnthropicMessagesTransport {
         let model: String = model.into();
         let base = BaseTransport::new(base_url, api_key, model.clone());
         let system_prompt = system_prompt.into();
-        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, model.clone());
+        let config =
+            oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, model.clone());
         let template = build_anthropic_request_template(&config, system_prompt.clone(), Vec::new());
-        let stream_template = build_anthropic_stream_request_template(&config, system_prompt, Vec::new());
+        let stream_template =
+            build_anthropic_stream_request_template(&config, system_prompt, Vec::new());
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -331,10 +336,13 @@ impl AnthropicMessagesTransport {
         let model: String = model.into();
         let base = BaseTransport::new(base_url, api_key, model.clone());
         let system_prompt = system_prompt.into();
-        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, model.clone());
+        let config =
+            oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, model.clone());
         let tool_defs: Vec<AnthropicTool> = tools.iter().map(tool_to_anthropic).collect();
-        let template = build_anthropic_request_template(&config, system_prompt.clone(), tool_defs.clone());
-        let stream_template = build_anthropic_stream_request_template(&config, system_prompt, tool_defs);
+        let template =
+            build_anthropic_request_template(&config, system_prompt.clone(), tool_defs.clone());
+        let stream_template =
+            build_anthropic_stream_request_template(&config, system_prompt, tool_defs);
         Self {
             base,
             cached: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -386,8 +394,10 @@ impl AnthropicMessagesTransport {
         let api_key = config.api_key.clone().unwrap_or_default();
         let tool_defs: Vec<AnthropicTool> = tools.iter().map(tool_to_anthropic).collect();
         let system_prompt = system_prompt.into();
-        let template = build_anthropic_request_template(config, system_prompt.clone(), tool_defs.clone());
-        let stream_template = build_anthropic_stream_request_template(config, system_prompt, tool_defs);
+        let template =
+            build_anthropic_request_template(config, system_prompt.clone(), tool_defs.clone());
+        let stream_template =
+            build_anthropic_stream_request_template(config, system_prompt, tool_defs);
         let base = BaseTransport::new(base_url, api_key, config.model.clone());
         Self {
             base,
@@ -406,7 +416,8 @@ impl AnthropicMessagesTransport {
         let api_key = config.api_key.clone().unwrap_or_default();
         let system_prompt = system_prompt.into();
         let template = build_anthropic_request_template(config, system_prompt.clone(), Vec::new());
-        let stream_template = build_anthropic_stream_request_template(config, system_prompt, Vec::new());
+        let stream_template =
+            build_anthropic_stream_request_template(config, system_prompt, Vec::new());
         let base = BaseTransport::new(base_url, api_key, config.model.clone());
         Self {
             base,
@@ -521,7 +532,11 @@ fn build_anthropic_request_template(
         req["top_p"] = json!(p);
     }
     if let Some(ss) = &config.stop_sequences {
-        req["stop_sequences"] = serde_json::Value::Array(ss.iter().map(|s| serde_json::Value::String(s.clone())).collect());
+        req["stop_sequences"] = serde_json::Value::Array(
+            ss.iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        );
     }
     // Anthropic tool_choice (different from OpenAI's)
     if let Some(tc) = &config.tool_choice {
@@ -558,13 +573,17 @@ fn build_anthropic_request_template(
     // Cache control marker for Anthropic
     if let Some(cc) = &config.cache_control {
         if !cc.strategy.is_empty() {
-            req["prompt_cache_key"] = serde_json::json!(cc.model.as_ref().unwrap_or(&String::from("default")));
+            req["prompt_cache_key"] =
+                serde_json::json!(cc.model.as_ref().unwrap_or(&String::from("default")));
         }
     }
 
     if !tools.is_empty() {
         req["tools"] = serde_json::Value::Array(
-            tools.iter().map(|t| serde_json::to_value(t).unwrap_or_default()).collect(),
+            tools
+                .iter()
+                .map(|t| serde_json::to_value(t).unwrap_or_default())
+                .collect(),
         );
     }
 
@@ -921,7 +940,10 @@ impl TransportProvider for AnthropicMessagesTransport {
                     // End of stream
                 }
                 _ => {
-                    debug!("Unknown Anthropic SSE event type: {}", stream_event.event_type);
+                    debug!(
+                        "Unknown Anthropic SSE event type: {}",
+                        stream_event.event_type
+                    );
                 }
             }
         }
@@ -974,7 +996,11 @@ fn tool_to_anthropic(tool: &oben_models::Tool) -> AnthropicTool {
                 })
                 .collect();
 
-            let required: Vec<String> = params.iter().filter(|p| p.required).map(|p| p.name.clone()).collect();
+            let required: Vec<String> = params
+                .iter()
+                .filter(|p| p.required)
+                .map(|p| p.name.clone())
+                .collect();
 
             let mut schema = serde_json::Map::new();
             schema.insert("type".into(), json!("object"));
@@ -1020,7 +1046,11 @@ mod tests {
         /// given: a tool_use content block
         /// when: serialized via serde_json
         /// then: produces {"type": "tool_use", "id": "...", "name": "...", "input": {}}
-        let block = AnthropicContentBlock::tool_use("call-1", "shell", serde_json::json!({"command": "ls"}));
+        let block = AnthropicContentBlock::tool_use(
+            "call-1",
+            "shell",
+            serde_json::json!({"command": "ls"}),
+        );
         let json = serde_json::to_string(&block).unwrap();
         let parsed: AnthropicContentBlock = serde_json::from_str(&json).unwrap();
         if let AnthropicContentBlock::ToolUse { id, name, input } = parsed {
@@ -1102,14 +1132,12 @@ mod tests {
         let tool = oben_models::Tool {
             name: "test_tool".to_string(),
             description: "A test tool".to_string(),
-            parameters: oben_models::ToolParameters::Flat(vec![
-                oben_models::ToolParameter {
-                    name: "x".to_string(),
-                    parameter_type: "string".to_string(),
-                    description: "X param".to_string(),
-                    required: true,
-                },
-            ]),
+            parameters: oben_models::ToolParameters::Flat(vec![oben_models::ToolParameter {
+                name: "x".to_string(),
+                parameter_type: "string".to_string(),
+                description: "X param".to_string(),
+                required: true,
+            }]),
         };
         let at = tool_to_anthropic(&tool);
         assert_eq!(at.name, "test_tool");
@@ -1259,7 +1287,10 @@ mod tests {
         assert_eq!(tr.tool_calls.len(), 1);
         assert_eq!(tr.tool_calls[0].id, "call-1");
         assert_eq!(tr.tool_calls[0].tool_name, "shell");
-        assert_eq!(tr.tool_calls[0].arguments["command"].as_str().unwrap(), "ls -la");
+        assert_eq!(
+            tr.tool_calls[0].arguments["command"].as_str().unwrap(),
+            "ls -la"
+        );
     }
 
     // ── Streaming event parsing tests ─────────────────────────────────────
@@ -1324,7 +1355,10 @@ mod tests {
         /// given: a ProviderConfig with system prompt and tools
         /// when: build_anthropic_request_template is called
         /// then: returns valid request with system, model, max_tokens, tools
-        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
+        let config = oben_models::ProviderConfig::new(
+            oben_models::ProviderKind::Anthropic,
+            "claude-sonnet-4-20250514",
+        );
         let tool = AnthropicTool {
             name: "shell".to_string(),
             description: Some("Execute command".to_string()),
@@ -1352,10 +1386,7 @@ mod tests {
             "messages": serde_json::Value::Array(vec![]),
         }));
         let mut cached = std::collections::HashMap::new();
-        let messages = vec![
-            Message::system("sys"),
-            Message::user("hello"),
-        ];
+        let messages = vec![Message::system("sys"), Message::user("hello")];
         let (msg_count, has_messages) = resolve_anthropic_request(
             &mut cached,
             &messages,
@@ -1408,68 +1439,83 @@ mod tests {
         );
     }
 }
-    // ── Cache control marker tests ─────────────────────────────────────
+// ── Cache control marker tests ─────────────────────────────────────
 
-    #[test]
-    fn test_system_prompt_with_cache_control() {
-        // given: a ProviderConfig with cache_control enabled
-        // when: build_anthropic_request_template is called
-        // then: system is a content blocks array with cache_control marker
-        let mut config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
-        config.cache_control = Some(oben_models::CacheControl {
-            provider: None,
-            model: None,
-            strategy: "ephemeral".to_string(),
-        });
-        let template = build_anthropic_request_template(&config, "You are helpful", Vec::new());
-        assert_eq!(template["model"], "claude-sonnet-4-20250514");
-        assert!(template["system"].is_array());
-        assert_eq!(template["system"][0]["type"], "text");
-        assert_eq!(template["system"][0]["text"], "You are helpful");
-        assert_eq!(template["system"][0]["cache_control"]["type"], "ephemeral");
-    }
+#[test]
+fn test_system_prompt_with_cache_control() {
+    // given: a ProviderConfig with cache_control enabled
+    // when: build_anthropic_request_template is called
+    // then: system is a content blocks array with cache_control marker
+    let mut config = oben_models::ProviderConfig::new(
+        oben_models::ProviderKind::Anthropic,
+        "claude-sonnet-4-20250514",
+    );
+    config.cache_control = Some(oben_models::CacheControl {
+        provider: None,
+        model: None,
+        strategy: "ephemeral".to_string(),
+    });
+    let template = build_anthropic_request_template(&config, "You are helpful", Vec::new());
+    assert_eq!(template["model"], "claude-sonnet-4-20250514");
+    assert!(template["system"].is_array());
+    assert_eq!(template["system"][0]["type"], "text");
+    assert_eq!(template["system"][0]["text"], "You are helpful");
+    assert_eq!(template["system"][0]["cache_control"]["type"], "ephemeral");
+}
 
-    #[test]
-    fn test_system_prompt_without_cache_control() {
-        // given: a ProviderConfig without cache_control
-        // when: build_anthropic_request_template is called
-        // then: system is a plain string (legacy format preserved)
-        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
-        let template = build_anthropic_request_template(&config, "You are helpful", Vec::new());
-        assert!(template["system"].is_string());
-        assert_eq!(template["system"], "You are helpful");
-    }
+#[test]
+fn test_system_prompt_without_cache_control() {
+    // given: a ProviderConfig without cache_control
+    // when: build_anthropic_request_template is called
+    // then: system is a plain string (legacy format preserved)
+    let config = oben_models::ProviderConfig::new(
+        oben_models::ProviderKind::Anthropic,
+        "claude-sonnet-4-20250514",
+    );
+    let template = build_anthropic_request_template(&config, "You are helpful", Vec::new());
+    assert!(template["system"].is_string());
+    assert_eq!(template["system"], "You are helpful");
+}
 
-    #[test]
-    fn test_system_prompt_cache_control_empty_strategy() {
-        // given: a ProviderConfig with cache_control but empty strategy
-        // when: build_anthropic_request_template is called
-        // then: system defaults to "ephemeral" strategy
-        let mut config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
-        config.cache_control = Some(oben_models::CacheControl {
-            provider: None,
-            model: None,
-            strategy: "".to_string(),
-        });
-        let template = build_anthropic_request_template(&config, "You are helpful", Vec::new());
-        assert!(template["system"].is_array());
-        assert_eq!(template["system"][0]["cache_control"]["type"], "ephemeral");
-    }
+#[test]
+fn test_system_prompt_cache_control_empty_strategy() {
+    // given: a ProviderConfig with cache_control but empty strategy
+    // when: build_anthropic_request_template is called
+    // then: system defaults to "ephemeral" strategy
+    let mut config = oben_models::ProviderConfig::new(
+        oben_models::ProviderKind::Anthropic,
+        "claude-sonnet-4-20250514",
+    );
+    config.cache_control = Some(oben_models::CacheControl {
+        provider: None,
+        model: None,
+        strategy: "".to_string(),
+    });
+    let template = build_anthropic_request_template(&config, "You are helpful", Vec::new());
+    assert!(template["system"].is_array());
+    assert_eq!(template["system"][0]["cache_control"]["type"], "ephemeral");
+}
 
-    #[test]
-    fn test_stream_template_inherits_cache_control() {
-        // given: a ProviderConfig with cache_control enabled
-        // when: build_anthropic_stream_request_template is called
-        // then: system is a content blocks array with cache_control marker, and stream=true
-        let mut config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Anthropic, "claude-sonnet-4-20250514");
-        config.cache_control = Some(oben_models::CacheControl {
-            provider: None,
-            model: None,
-            strategy: "ephemeral".to_string(),
-        });
-        let stream_template = build_anthropic_stream_request_template(&config, "You are helpful", Vec::new());
-        assert!(stream_template["system"].is_array());
-        assert_eq!(stream_template["system"][0]["cache_control"]["type"], "ephemeral");
-        assert_eq!(stream_template["stream"], true);
-    }
-
+#[test]
+fn test_stream_template_inherits_cache_control() {
+    // given: a ProviderConfig with cache_control enabled
+    // when: build_anthropic_stream_request_template is called
+    // then: system is a content blocks array with cache_control marker, and stream=true
+    let mut config = oben_models::ProviderConfig::new(
+        oben_models::ProviderKind::Anthropic,
+        "claude-sonnet-4-20250514",
+    );
+    config.cache_control = Some(oben_models::CacheControl {
+        provider: None,
+        model: None,
+        strategy: "ephemeral".to_string(),
+    });
+    let stream_template =
+        build_anthropic_stream_request_template(&config, "You are helpful", Vec::new());
+    assert!(stream_template["system"].is_array());
+    assert_eq!(
+        stream_template["system"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert_eq!(stream_template["stream"], true);
+}

@@ -20,7 +20,11 @@ pub const DEFAULT_SUMMARY_NOTICE_TEXT: &str =
     "\n\nSome of your previous tool responses may be summarized to preserve context.";
 
 pub fn token_count_heuristic(text: &str) -> usize {
-    if text.is_empty() { 0 } else { text.len() / 4 }
+    if text.is_empty() {
+        0
+    } else {
+        text.len() / 4
+    }
 }
 
 pub fn count_turn_tokens(trajectory: &Value) -> Vec<usize> {
@@ -41,13 +45,23 @@ pub fn count_trajectory_tokens(trajectory: &Value) -> usize {
 
 /// Trait for generating summaries of compressed turn content.
 pub trait SummaryGenerator {
-    fn generate(&self, summary_input: &str, config: &CompressionConfig, turns_summary_input: &str) -> String;
+    fn generate(
+        &self,
+        summary_input: &str,
+        config: &CompressionConfig,
+        turns_summary_input: &str,
+    ) -> String;
 }
 
 pub struct NoopSummarizer;
 
 impl SummaryGenerator for NoopSummarizer {
-    fn generate(&self, _summary_input: &str, _config: &CompressionConfig, _turns_summary_input: &str) -> String {
+    fn generate(
+        &self,
+        _summary_input: &str,
+        _config: &CompressionConfig,
+        _turns_summary_input: &str,
+    ) -> String {
         "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
             .to_string()
     }
@@ -55,9 +69,13 @@ impl SummaryGenerator for NoopSummarizer {
 
 fn ensure_summary_prefix(summary: &str) -> String {
     let text = summary.trim();
-    if text.starts_with("[CONTEXT SUMMARY]:") { text.to_string() }
-    else if text.is_empty() { "[CONTEXT SUMMARY]: ".to_string() }
-    else { format!("[CONTEXT SUMMARY]: {}", text) }
+    if text.starts_with("[CONTEXT SUMMARY]:") {
+        text.to_string()
+    } else if text.is_empty() {
+        "[CONTEXT SUMMARY]: ".to_string()
+    } else {
+        format!("[CONTEXT SUMMARY]: {}", text)
+    }
 }
 
 fn round(value: f64, decimals: u32) -> f64 {
@@ -65,45 +83,83 @@ fn round(value: f64, decimals: u32) -> f64 {
     (value * factor).round() / factor
 }
 
-fn usize_max(a: usize, b: usize) -> usize { if a > b { a } else { b } }
+fn usize_max(a: usize, b: usize) -> usize {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressionConfig {
     pub tokenizer_name: String,
     pub trust_remote_code: bool,
-    #[serde(default = "default_target_max_tokens")] pub target_max_tokens: usize,
-    #[serde(default = "default_summary_target_tokens")] pub summary_target_tokens: usize,
-    #[serde(default = "default_b")] pub protect_first_system: bool,
-    #[serde(default = "default_b")] pub protect_first_human: bool,
-    #[serde(default = "default_b")] pub protect_first_gpt: bool,
-    #[serde(default = "default_b")] pub protect_first_tool: bool,
-    #[serde(default = "default_4")] pub protect_last_n_turns: usize,
+    #[serde(default = "default_target_max_tokens")]
+    pub target_max_tokens: usize,
+    #[serde(default = "default_summary_target_tokens")]
+    pub summary_target_tokens: usize,
+    #[serde(default = "default_b")]
+    pub protect_first_system: bool,
+    #[serde(default = "default_b")]
+    pub protect_first_human: bool,
+    #[serde(default = "default_b")]
+    pub protect_first_gpt: bool,
+    #[serde(default = "default_b")]
+    pub protect_first_tool: bool,
+    #[serde(default = "default_4")]
+    pub protect_last_n_turns: usize,
     pub summarization_model: String,
     pub base_url: String,
     pub api_key_env: String,
     pub temperature: f64,
-    #[serde(default = "default_max_retries")] pub max_retries: usize,
-    #[serde(default = "default_retry_delay")] pub retry_delay: usize,
-    #[serde(default = "default_b")] pub add_summary_notice: bool,
-    #[serde(default = "default_notice_text")] pub summary_notice_text: String,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: usize,
+    #[serde(default = "default_retry_delay")]
+    pub retry_delay: usize,
+    #[serde(default = "default_b")]
+    pub add_summary_notice: bool,
+    #[serde(default = "default_notice_text")]
+    pub summary_notice_text: String,
     pub output_suffix: String,
     pub max_concurrent_requests: usize,
-    #[serde(default = "default_b")] pub skip_under_target: bool,
-    #[serde(default = "default_b")] pub save_over_limit: bool,
-    #[serde(default = "default_timeout")] pub per_trajectory_timeout: usize,
-    #[serde(default = "default_b")] pub metrics_enabled: bool,
-    #[serde(default = "default_b")] pub metrics_per_trajectory: bool,
+    #[serde(default = "default_b")]
+    pub skip_under_target: bool,
+    #[serde(default = "default_b")]
+    pub save_over_limit: bool,
+    #[serde(default = "default_timeout")]
+    pub per_trajectory_timeout: usize,
+    #[serde(default = "default_b")]
+    pub metrics_enabled: bool,
+    #[serde(default = "default_b")]
+    pub metrics_per_trajectory: bool,
     pub metrics_output_file: String,
 }
 
-fn default_target_max_tokens() -> usize { DEFAULT_TARGET_MAX_TOKENS }
-fn default_summary_target_tokens() -> usize { DEFAULT_SUMMARY_TARGET_TOKENS }
-fn default_b() -> bool { true }
-fn default_4() -> usize { DEFAULT_PROTECT_LAST_N_TURNS }
-fn default_max_retries() -> usize { DEFAULT_MAX_RETRIES }
-fn default_retry_delay() -> usize { 2 }
-fn default_timeout() -> usize { 300 }
-fn default_notice_text() -> String { DEFAULT_SUMMARY_NOTICE_TEXT.to_string() }
+fn default_target_max_tokens() -> usize {
+    DEFAULT_TARGET_MAX_TOKENS
+}
+fn default_summary_target_tokens() -> usize {
+    DEFAULT_SUMMARY_TARGET_TOKENS
+}
+fn default_b() -> bool {
+    true
+}
+fn default_4() -> usize {
+    DEFAULT_PROTECT_LAST_N_TURNS
+}
+fn default_max_retries() -> usize {
+    DEFAULT_MAX_RETRIES
+}
+fn default_retry_delay() -> usize {
+    2
+}
+fn default_timeout() -> usize {
+    300
+}
+fn default_notice_text() -> String {
+    DEFAULT_SUMMARY_NOTICE_TEXT.to_string()
+}
 
 impl Default for CompressionConfig {
     fn default() -> Self {
@@ -112,21 +168,26 @@ impl Default for CompressionConfig {
             trust_remote_code: true,
             target_max_tokens: DEFAULT_TARGET_MAX_TOKENS,
             summary_target_tokens: DEFAULT_SUMMARY_TARGET_TOKENS,
-            protect_first_system: true, protect_first_human: true,
-            protect_first_gpt: true, protect_first_tool: true,
+            protect_first_system: true,
+            protect_first_human: true,
+            protect_first_gpt: true,
+            protect_first_tool: true,
             protect_last_n_turns: DEFAULT_PROTECT_LAST_N_TURNS,
             summarization_model: "google/gemini-3-flash-preview".to_string(),
             base_url: "https://openrouter.ai/api/v1".to_string(),
             api_key_env: "OPENROUTER_API_KEY".to_string(),
             temperature: 0.3,
-            max_retries: DEFAULT_MAX_RETRIES, retry_delay: 2,
+            max_retries: DEFAULT_MAX_RETRIES,
+            retry_delay: 2,
             add_summary_notice: true,
             summary_notice_text: DEFAULT_SUMMARY_NOTICE_TEXT.to_string(),
             output_suffix: "_compressed".to_string(),
             max_concurrent_requests: 50,
-            skip_under_target: true, save_over_limit: true,
+            skip_under_target: true,
+            save_over_limit: true,
             per_trajectory_timeout: 300,
-            metrics_enabled: true, metrics_per_trajectory: true,
+            metrics_enabled: true,
+            metrics_per_trajectory: true,
             metrics_output_file: "compression_metrics.json".to_string(),
         }
     }
@@ -196,7 +257,9 @@ pub struct AggregateMetrics {
 }
 
 impl AggregateMetrics {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn add_trajectory_metrics(&mut self, metrics: &TrajectoryMetrics) {
         self.total_trajectories += 1;
@@ -214,17 +277,32 @@ impl AggregateMetrics {
             self.tokens_saved_list.push(metrics.tokens_saved);
             self.turns_removed_list.push(metrics.turns_removed);
         }
-        if metrics.skipped_under_target { self.trajectories_skipped_under_target += 1; }
-        if metrics.still_over_limit { self.trajectories_still_over_limit += 1; }
+        if metrics.skipped_under_target {
+            self.trajectories_skipped_under_target += 1;
+        }
+        if metrics.still_over_limit {
+            self.trajectories_still_over_limit += 1;
+        }
     }
 
     pub fn to_dict(&self) -> Value {
-        let avg_cr = if self.compression_ratios.is_empty() { 1.0 }
-            else { self.compression_ratios.iter().sum::<f64>() / self.compression_ratios.len() as f64 };
-        let avg_ts = if self.tokens_saved_list.is_empty() { 0.0 }
-            else { self.tokens_saved_list.iter().sum::<usize>() as f64 / self.tokens_saved_list.len() as f64 };
-        let avg_tr = if self.turns_removed_list.is_empty() { 0.0 }
-            else { self.turns_removed_list.iter().sum::<usize>() as f64 / self.turns_removed_list.len() as f64 };
+        let avg_cr = if self.compression_ratios.is_empty() {
+            1.0
+        } else {
+            self.compression_ratios.iter().sum::<f64>() / self.compression_ratios.len() as f64
+        };
+        let avg_ts = if self.tokens_saved_list.is_empty() {
+            0.0
+        } else {
+            self.tokens_saved_list.iter().sum::<usize>() as f64
+                / self.tokens_saved_list.len() as f64
+        };
+        let avg_tr = if self.turns_removed_list.is_empty() {
+            0.0
+        } else {
+            self.turns_removed_list.iter().sum::<usize>() as f64
+                / self.turns_removed_list.len() as f64
+        };
         let td = usize_max(self.total_tokens_before, 1);
         let ts = usize_max(self.total_summarization_calls, 1);
         serde_json::json!({
@@ -263,28 +341,40 @@ impl AggregateMetrics {
 
 fn extract_turn_content(trajectory: &Value, start: usize, end: usize) -> String {
     if let Some(ta) = trajectory.as_array() {
-        (start..end.min(ta.len())).filter_map(|i| {
-            let turn = &ta[i];
-            let role = turn.get("from").and_then(|r| r.as_str()).unwrap_or("unknown").to_uppercase();
-            let val = turn.get("value").and_then(|v| v.as_str()).unwrap_or("");
-            let mut s = val.to_string();
-            if s.len() > 3000 {
-                let e = s.len().saturating_sub(500);
-                s = format!("{}\n...[truncated]...\n{}", &s[..1500], &s[e..]);
-            }
-            Some(format!("[Turn {} - {}]:\n{}", i, role, s))
-        }).collect::<Vec<_>>().join("\n\n")
+        (start..end.min(ta.len()))
+            .filter_map(|i| {
+                let turn = &ta[i];
+                let role = turn
+                    .get("from")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("unknown")
+                    .to_uppercase();
+                let val = turn.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                let mut s = val.to_string();
+                if s.len() > 3000 {
+                    let e = s.len().saturating_sub(500);
+                    s = format!("{}\n...[truncated]...\n{}", &s[..1500], &s[e..]);
+                }
+                Some(format!("[Turn {} - {}]:\n{}", i, role, s))
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
     } else {
         String::new()
     }
 }
 
-fn find_protected_indices(trajectory: &Value, config: &CompressionConfig) -> (HashSet<usize>, usize, usize) {
+fn find_protected_indices(
+    trajectory: &Value,
+    config: &CompressionConfig,
+) -> (HashSet<usize>, usize, usize) {
     let n = match trajectory.as_array() {
         Some(arr) => arr.len(),
         None => return (HashSet::new(), 0, 0),
     };
-    if n == 0 { return (HashSet::new(), 0, 0); }
+    if n == 0 {
+        return (HashSet::new(), 0, 0);
+    }
 
     let mut protected = HashSet::new();
     let mut first_system: Option<usize> = None;
@@ -304,17 +394,31 @@ fn find_protected_indices(trajectory: &Value, config: &CompressionConfig) -> (Ha
         }
     }
 
-    if let Some(i) = first_system { protected.insert(i); }
-    if let Some(i) = first_human { protected.insert(i); }
-    if let Some(i) = first_gpt { protected.insert(i); }
-    if let Some(i) = first_tool { protected.insert(i); }
+    if let Some(i) = first_system {
+        protected.insert(i);
+    }
+    if let Some(i) = first_human {
+        protected.insert(i);
+    }
+    if let Some(i) = first_gpt {
+        protected.insert(i);
+    }
+    if let Some(i) = first_tool {
+        protected.insert(i);
+    }
 
     let tail_start = n.saturating_sub(config.protect_last_n_turns);
-    for i in tail_start..n { protected.insert(i); }
+    for i in tail_start..n {
+        protected.insert(i);
+    }
 
     let head_protected: Vec<usize> = protected.iter().copied().filter(|&i| i < n / 2).collect();
     let tail_protected: Vec<usize> = protected.iter().copied().filter(|&i| i >= n / 2).collect();
-    let cs = head_protected.into_iter().max().unwrap_or(0).saturating_add(1);
+    let cs = head_protected
+        .into_iter()
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
     let ce = tail_protected.into_iter().min().unwrap_or(n);
     (protected, cs, ce)
 }
@@ -359,7 +463,9 @@ pub fn compress_trajectory(
     for i in cs..ce {
         acc = acc.saturating_add(tt[i]);
         until = i.saturating_add(1);
-        if acc >= target { break; }
+        if acc >= target {
+            break;
+        }
     }
 
     if acc < target && until < ce {
@@ -400,9 +506,14 @@ pub fn compress_trajectory(
     let cv = serde_json::Value::Array(compressed.clone());
     metrics.compressed_turns = compressed.len();
     metrics.compressed_tokens = count_trajectory_tokens(&cv);
-    metrics.turns_removed = metrics.original_turns.saturating_sub(metrics.compressed_turns);
-    metrics.tokens_saved = metrics.original_tokens.saturating_sub(metrics.compressed_tokens);
-    metrics.compression_ratio = metrics.compressed_tokens as f64 / usize_max(metrics.original_tokens, 1) as f64;
+    metrics.turns_removed = metrics
+        .original_turns
+        .saturating_sub(metrics.compressed_turns);
+    metrics.tokens_saved = metrics
+        .original_tokens
+        .saturating_sub(metrics.compressed_tokens);
+    metrics.compression_ratio =
+        metrics.compressed_tokens as f64 / usize_max(metrics.original_tokens, 1) as f64;
     metrics.was_compressed = true;
     metrics.still_over_limit = metrics.compressed_tokens > config.target_max_tokens;
 
@@ -415,7 +526,10 @@ pub fn process_entry(
     summarizer: &dyn SummaryGenerator,
 ) -> (Value, TrajectoryMetrics) {
     let mut metrics = TrajectoryMetrics::default();
-    let conv = match entry.get("conversations") { Some(c) => c, None => return (entry.clone(), metrics) };
+    let conv = match entry.get("conversations") {
+        Some(c) => c,
+        None => return (entry.clone(), metrics),
+    };
     let (compressed, m) = compress_trajectory(conv, config, summarizer);
     metrics = m;
     let mut result = entry.clone();
@@ -454,11 +568,15 @@ mod tests {
         let cfg = CompressionConfig::default();
         let (protected, start, end) = find_protected_indices(&traj, &cfg);
 
-        assert!(protected.contains(&0)); assert!(protected.contains(&1));
-        assert!(protected.contains(&2)); assert!(protected.contains(&3));
+        assert!(protected.contains(&0));
+        assert!(protected.contains(&1));
+        assert!(protected.contains(&2));
+        assert!(protected.contains(&3));
         // Last 4 of 8 are also protected: 4,5,6,7
-        assert!(protected.contains(&4)); assert!(protected.contains(&5));
-        assert!(protected.contains(&6)); assert!(protected.contains(&7));
+        assert!(protected.contains(&4));
+        assert!(protected.contains(&5));
+        assert!(protected.contains(&6));
+        assert!(protected.contains(&7));
         assert!(start >= end);
     }
 
@@ -492,7 +610,9 @@ mod tests {
     fn test_find_protected_indices_empty() {
         let cfg = CompressionConfig::default();
         let (p, s, e) = find_protected_indices(&serde_json::json!([]), &cfg);
-        assert!(p.is_empty()); assert_eq!(s, 0); assert_eq!(e, 0);
+        assert!(p.is_empty());
+        assert_eq!(s, 0);
+        assert_eq!(e, 0);
     }
 
     /// Given few turns fewer than protect_last_n_turns, When find_protected_indices runs,
@@ -530,7 +650,12 @@ mod tests {
 
         let traj: Value = serde_json::json!(turns);
         let total = count_trajectory_tokens(&traj);
-        assert!(total > DEFAULT_TARGET_MAX_TOKENS, "Test setup: needed >{} tokens but got {}", DEFAULT_TARGET_MAX_TOKENS, total);
+        assert!(
+            total > DEFAULT_TARGET_MAX_TOKENS,
+            "Test setup: needed >{} tokens but got {}",
+            DEFAULT_TARGET_MAX_TOKENS,
+            total
+        );
 
         let ns = NoopSummarizer;
         let (compressed, m) = compress_trajectory(&traj, &cfg, &ns);
@@ -542,7 +667,10 @@ mod tests {
         assert!(compressed.as_array().unwrap().len() <= traj.as_array().unwrap().len());
 
         let summary_found = compressed.as_array().unwrap().iter().any(|t| {
-            t.get("value").and_then(|v| v.as_str()).unwrap_or("").starts_with("[CONTEXT SUMMARY]:")
+            t.get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .starts_with("[CONTEXT SUMMARY]:")
         });
         assert!(summary_found);
     }
@@ -617,13 +745,22 @@ mod tests {
     fn test_aggregate_metrics_accumulation() {
         let mut agg = AggregateMetrics::new();
         agg.add_trajectory_metrics(&TrajectoryMetrics {
-            original_tokens: 1000, compressed_tokens: 500, tokens_saved: 500,
-            compression_ratio: 0.5, original_turns: 10, compressed_turns: 5,
-            turns_removed: 5, was_compressed: true, summarization_api_calls: 1, ..Default::default()
+            original_tokens: 1000,
+            compressed_tokens: 500,
+            tokens_saved: 500,
+            compression_ratio: 0.5,
+            original_turns: 10,
+            compressed_turns: 5,
+            turns_removed: 5,
+            was_compressed: true,
+            summarization_api_calls: 1,
+            ..Default::default()
         });
         agg.add_trajectory_metrics(&TrajectoryMetrics {
-            original_tokens: 200, compressed_tokens: 200,
-            skipped_under_target: true, ..Default::default()
+            original_tokens: 200,
+            compressed_tokens: 200,
+            skipped_under_target: true,
+            ..Default::default()
         });
 
         assert_eq!(agg.total_trajectories, 2);
@@ -645,9 +782,15 @@ mod tests {
         let mut agg = AggregateMetrics::new();
         for _ in 0..2 {
             agg.add_trajectory_metrics(&TrajectoryMetrics {
-                original_tokens: 1000, compressed_tokens: 500, tokens_saved: 500,
-                compression_ratio: 0.5, original_turns: 10, compressed_turns: 5,
-                turns_removed: 5, was_compressed: true, ..Default::default()
+                original_tokens: 1000,
+                compressed_tokens: 500,
+                tokens_saved: 500,
+                compression_ratio: 0.5,
+                original_turns: 10,
+                compressed_turns: 5,
+                turns_removed: 5,
+                was_compressed: true,
+                ..Default::default()
             });
         }
 
@@ -708,7 +851,10 @@ mod tests {
         let ns = NoopSummarizer;
         let (compressed, _m) = compress_trajectory(&traj, &cfg, &ns);
 
-        let sys = compressed.as_array().unwrap().iter()
+        let sys = compressed
+            .as_array()
+            .unwrap()
+            .iter()
             .find(|t| t.get("from").and_then(|r| r.as_str()) == Some("system"))
             .expect("System turn should exist");
 

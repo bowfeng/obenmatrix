@@ -1,10 +1,9 @@
 /// Curator — orchestrator for background skill maintenance.
-
-use crate::lifecycle::{LifecycleManager, LifecycleConfig, LifecycleState};
+use crate::lifecycle::{LifecycleConfig, LifecycleManager, LifecycleState};
 use crate::usage::mark_agent_created;
-use tracing::{info, debug};
-use std::path::PathBuf;
 use chrono::{DateTime, Utc};
+use std::path::PathBuf;
+use tracing::{debug, info};
 
 /// Configuration for the curator.
 #[derive(Debug, Clone)]
@@ -128,8 +127,14 @@ impl Curator {
 
         // 1. Check lifecycle states
         let changes = self.lifecycle_manager.check_all_skills();
-        let stale_count = changes.iter().filter(|(_, s)| *s == LifecycleState::Stale).count();
-        let archived_count = changes.iter().filter(|(_, s)| *s == LifecycleState::Archived).count();
+        let stale_count = changes
+            .iter()
+            .filter(|(_, s)| *s == LifecycleState::Stale)
+            .count();
+        let archived_count = changes
+            .iter()
+            .filter(|(_, s)| *s == LifecycleState::Archived)
+            .count();
 
         if stale_count > 0 || archived_count > 0 {
             summary_parts.push(format!(
@@ -223,7 +228,7 @@ mod tests {
     fn test_curator_state_record_run() {
         let mut state = CuratorState::new();
         state.record_run("test summary".to_string(), 5.5);
-        
+
         assert!(state.last_run_at.is_some());
         assert_eq!(state.last_run_summary, Some("test summary".to_string()));
         assert_eq!(state.last_run_duration_seconds, Some(5.5));
@@ -241,10 +246,10 @@ mod tests {
     fn test_curator_pause_resume() {
         let config = CuratorConfig::default();
         let mut curator = Curator::new(config);
-        
+
         curator.pause();
         assert!(curator.state().paused);
-        
+
         curator.resume();
         assert!(!curator.state().paused);
     }

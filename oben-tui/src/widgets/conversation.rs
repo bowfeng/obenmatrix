@@ -7,20 +7,19 @@
 
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, Paragraph, ScrollbarState,
 };
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use textwrap::wrap as textwrap_wrap;
-use unicode_width::UnicodeWidthStr;
 
 use crate::turn::turn_state::TurnState;
+use crate::widgets::layout;
 use crate::widgets::message_renderer::{MessageRenderEntry, MessageRenderer};
 use crate::widgets::role_style::role_info_for_role;
 use oben_models::{Message, MessageRole};
 
 /// Block rendering strategy for a message entry.
-enum BlockType<'a> {
+pub enum BlockType<'a> {
     /// Regular message: full border + role title + role-specific color.
     Message(&'a MessageRole),
     /// Tool result: indented muted rounded box (no role title).
@@ -55,7 +54,7 @@ impl ConversationState {
             user_scroll_offset: Arc::new(AtomicI32::new(0)),
             selection_start: None,
             selection_end: None,
-            message_entries: Arc::new(StdMutex::new(Vec::new()))
+            message_entries: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -80,7 +79,11 @@ impl ConversationWidget {
         Style::default().fg(info.border_color)
     }
 
-    fn role_title(&self, role: &MessageRole, palette: &ratatui_themes::ThemePalette) -> Line<'static> {
+    fn role_title(
+        &self,
+        role: &MessageRole,
+        palette: &ratatui_themes::ThemePalette,
+    ) -> Line<'static> {
         let role_info = role_info_for_role(role, palette);
         Line::from(vec![
             Span::styled(
@@ -96,71 +99,6 @@ impl ConversationWidget {
                     .add_modifier(Modifier::BOLD),
             ),
         ])
-    }
-
-    /// Wrap styled lines into wrapped lines for a given inner width.
-    fn wrap_styled_lines_to_lines(
-        &self,
-        lines: &[Line<'static>],
-        inner_width: usize,
-    ) -> Vec<Line<'static>> {
-        let mut result = Vec::new();
-        for line in lines {
-            let total_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
-            if total_width <= inner_width {
-                result.push(line.clone());
-            } else if line.spans.len() == 1 {
-                let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-                result.extend(
-                    textwrap_wrap(&text, inner_width)
-                        .into_iter()
-                        .map(|wrapped| {
-                            Line::from(Span::styled(wrapped.into_owned(), line.spans[0].style))
-                        }),
-                );
-            } else {
-                // For lines with multiple styled spans, we wrap the plain text
-                // and apply the first span's style to each wrapped line.
-                let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-                let first_style = line.spans.first().map(|s| s.style).unwrap_or_default();
-                result.extend(
-                    textwrap_wrap(&text, inner_width)
-                        .into_iter()
-                        .map(|wrapped| Line::from(Span::styled(wrapped.into_owned(), first_style))),
-                );
-            }
-        }
-        result
-    }
-
-    /// Build visual lines from styled lines for selection and legacy rendering.
-    fn build_visual_lines(&self, lines: &[Line<'static>], inner_width: usize) -> Vec<Line<'static>> {
-        lines
-            .iter()
-            .flat_map(|line| {
-                let total_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
-                if total_width <= inner_width {
-                    vec![line.clone()]
-                } else if line.spans.len() == 1 {
-                    let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-                    textwrap_wrap(&text, inner_width)
-                        .into_iter()
-                        .map(|wrapped| {
-                            Line::from(Span::styled(wrapped.into_owned(), line.spans[0].style))
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-                    let first_style = line.spans.first().map(|s| s.style).unwrap_or_default();
-                    textwrap_wrap(&text, inner_width)
-                        .into_iter()
-                        .map(|wrapped| {
-                            Line::from(Span::styled(wrapped.into_owned(), first_style))
-                        })
-                        .collect()
-                }
-            })
-            .collect()
     }
 
     /// Get the selected text from the current state, if any.
@@ -229,6 +167,11 @@ impl ConversationWidget {
     }
 
     /// Render message blocks with bordered styling.
+    ///
+    /// Three-phase architecture:
+    ///   Phase 1: Layout — compute heights, scroll offset, visible areas (pure data)
+    ///   Phase 2: Render   — draw blocks using the pre-calculated areas
+    ///   Phase 3: Scroll   — update scroll position from mouse delta
     fn render_bordered_blocks(
         &self,
         frame: &mut Frame,
@@ -238,7 +181,7 @@ impl ConversationWidget {
         is_streaming: bool,
         entries: &[MessageRenderEntry],
     ) {
-        // Outer border block (like "Messages" area)
+        // ─── Outer frame ───────────────────────────────────────────────
         let outer_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette.muted))
@@ -255,71 +198,55 @@ impl ConversationWidget {
         let msg_area = outer_block.inner(area);
         outer_block.render(area, frame.buffer_mut());
 
-        // Calculate available space for messages (leave room for scrollbar)
         let inner_width = (msg_area.width as usize).saturating_sub(2);
         let inner_height = (msg_area.height as usize).saturating_sub(1);
 
-        // Compute layout info for each entry: regular blocks need full border + title,
-        // tool results get an indented muted box (like hermes-agent reference).
-        let mut msg_wrapped_lines: Vec<Vec<Line<'static>>> = Vec::new();
-        let mut msg_block_heights: Vec<u16> = Vec::new();
-        let mut msg_block_type: Vec<BlockType<'_>> = Vec::new();
+        // ─── Phase 1: Layout calculation ───────────────────────────────
+        // Wrap lines and compute heights — pure data, no rendering.
 
+        // Accumulate (entry_index, block_type, wrapped_lines) for later rendering
+        let mut layout_entries: Vec<(usize, BlockType<'_>, Vec<Line<'static>>)> = Vec::new();
         for entry in entries {
-            // Extract plain Line content from StyledLine entries for wrapping
-            let plain_lines: Vec<Line<'static>> =
-                entry.body_lines.iter().map(|sl| sl.content.clone()).collect();
+            let plain_lines: Vec<Line<'static>> = entry
+                .body_lines
+                .iter()
+                .map(|sl| sl.content.clone())
+                .collect();
 
-            let wrapped = self.wrap_styled_lines_to_lines(
-                &plain_lines,
-                inner_width.saturating_sub(2), // -2 for block borders
-            );
-
-            if entry.is_tool_result {
-                // Tool results: indented muted box (2 cols indent + 2 for border)
-                let inner_width_tool = inner_width.saturating_sub(4); // 2 indent + 2 border
-                let wrapped_tool = self.wrap_styled_lines_to_lines(
-                    &plain_lines,
-                    inner_width_tool.saturating_sub(2), // -2 for inner border
-                );
-                let block_height = wrapped_tool.len() as u16 + 2; // +2 for top+bottom border
-                msg_wrapped_lines.push(wrapped_tool);
-                msg_block_heights.push(block_height);
-                msg_block_type.push(BlockType::ToolResult);
+            let block_type = if entry.is_tool_result {
+                BlockType::ToolResult
             } else {
-                let block_height = wrapped.len() as u16 + 2; // +2 for top+bottom border
-                msg_wrapped_lines.push(wrapped);
-                msg_block_heights.push(block_height);
-                msg_block_type.push(BlockType::Message(&entry.role));
-            }
+                BlockType::Message(&entry.role)
+            };
+
+            // Wrap using the layout module's function (consistent height estimation)
+            let wrapped =
+                layout::wrap_styled_lines_to_lines(&plain_lines, inner_width.saturating_sub(2));
+
+            layout_entries.push((layout_entries.len(), block_type, wrapped));
         }
 
-        let total_height: u16 = msg_block_heights.iter().sum::<u16>()
-            + entries.len().saturating_sub(1) as u16; // 1-row margin between messages
+        // Compute block heights using the layout module's estimator
+        let block_heights: Vec<u16> = layout_entries
+            .iter()
+            .map(|(_, _block_type, wrapped)| {
+                // Estimate height from wrapped line count + border
+                // Match exactly what the render loop produces
+                let body_height = wrapped.len().max(1) as u16;
+                body_height + layout::BODY_HEIGHT_ADJUSTER
+            })
+            .collect();
 
-        // Calculate scrollable range in PIXEL HEIGHT (standard scroll: total - viewport)
-        let scrollable_range: usize =
-            (total_height as i64 - inner_height as i64).max(0) as usize;
-        let is_scrollable = total_height > inner_height as u16;
+        let total_height = layout::calc_total_height(&block_heights);
 
-        // Determine scroll offset (height-based, not block-count-based)
-        let scroll_offset: usize = if state.scroll_to_bottom {
-            // At bottom: offset = total_height - inner_height (show last N rows)
-            // Clamp to total_height - min_block_height to prevent the skip loop
-            // from skipping ALL blocks (which happens when scroll_offset >= total_height).
-            let max_offset: usize = total_height
-                .saturating_sub(msg_block_heights.iter().min().copied().unwrap_or(1)) as usize;
-            scrollable_range.min(max_offset)
-        } else {
-            // Manual scroll: read current position
-            state.scroll_pos.load(Ordering::SeqCst)
-        };
-
-        tracing::info!(
-            "[render_bordered_blocks] entries={} inner_height={} total_height={} \
-             scrollable_range={} scroll_offset={} scroll_to_bottom={} is_scrollable={}",
-            entries.len(), inner_height, total_height,
-            scrollable_range, scroll_offset, state.scroll_to_bottom, is_scrollable
+        // Compute scroll offset using the layout module
+        let scroll_offset = layout::compute_scroll_offset(
+            total_height,
+            inner_height as u16,
+            (total_height as i64 - inner_height as i64).max(0) as usize,
+            state.scroll_to_bottom,
+            &block_heights,
+            state.scroll_pos.load(Ordering::SeqCst),
         );
 
         // Update scrollbar state
@@ -330,141 +257,94 @@ impl ConversationWidget {
                 .position(scroll_offset);
         }
 
-        // Render each message block, skipping those above the scroll offset
-        let mut y = msg_area.top();
-        let mut accumulated_height: u16 = 0;
+        // Calculate visible areas using the layout module
+        let visible_areas = layout::calc_visible_areas(
+            msg_area.top(),
+            msg_area.bottom(),
+            msg_area.left(),
+            msg_area.width,
+            scroll_offset,
+            &block_heights,
+        );
 
-        for (idx, &block_height) in msg_block_heights.iter().enumerate() {
-            let block_total_height = block_height + 1; // +1 for margin
+        // ─── Phase 2: Render visible blocks ────────────────────────────
+        for (idx, block_rect) in visible_areas {
+            let (_entry_idx, block_type, wrapped) = &layout_entries[idx];
 
-            // Skip blocks whose accumulated height is below the scroll offset
-            if accumulated_height + block_total_height <= scroll_offset as u16 {
-                accumulated_height += block_total_height;
-                continue;
-            }
+            // body_area = block.inner(block_area) — calculated at render time
+            // using the actual Block struct (handles title, borders correctly)
+            let is_tool_result = matches!(block_type, BlockType::ToolResult);
 
-            // Skip if block is below viewport
-            if y >= msg_area.bottom() {
-                break;
-            }
+            // Build the block (borders + title)
+            let block = if is_tool_result {
+                let indent = layout::TOOL_INDENT;
+                let _box_width = (msg_area.width as usize).saturating_sub((indent * 2) as usize) as u16;
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(palette.muted))
+                    .border_type(BorderType::Rounded)
+            } else {
+                let role = match block_type {
+                    BlockType::Message(r) => r,
+                    BlockType::ToolResult => unreachable!(),
+                };
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(self.role_border_style(role, palette))
+                    .title(self.role_title(role, palette))
+            };
 
-            // Clamp block height to viewport
-            let available_height = (msg_area.bottom() - y).min(block_height);
-            let actual_height = available_height.max(1);
-            let wrapped = &msg_wrapped_lines[idx];
-            let block_type = &msg_block_type[idx];
-
-            match block_type {
-                BlockType::Message(role) => {
-                    // Regular message: full border + role title + role-specific color
-                    let block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(self.role_border_style(role, palette))
-                        .title(self.role_title(role, palette));
-
-                    let block_area =
-                        Rect::new(msg_area.left(), y, msg_area.width, actual_height);
-
-                    // Calculate body area BEFORE rendering (block is moved)
-                    let body_area = block.inner(block_area);
-
-                    // Render body lines inside the block first (background)
-                    if actual_height > 2 && !wrapped.is_empty() {
-                        let body_lines: Vec<Line> = wrapped
-                            .iter()
-                            .take(body_area.height as usize)
-                            .cloned()
-                            .collect();
-                        if !body_lines.is_empty() {
-                            let para = Paragraph::new(body_lines);
-                            frame.render_widget(para, body_area);
+            // Render body (Paragraph) before block (borders on top)
+            let body_area = block.inner(block_rect);
+            if block_rect.height > layout::BODY_HEIGHT_ADJUSTER && !wrapped.is_empty() {
+                let body_lines: Vec<Line> = wrapped
+                    .iter()
+                    .take(body_area.height as usize)
+                    .cloned()
+                    .map(|line| {
+                        if is_tool_result {
+                            // Tool result: muted style
+                            let muted_spans: Vec<Span> = line
+                                .spans
+                                .iter()
+                                .filter_map(|span| {
+                                    span.style
+                                        .fg(palette.muted)
+                                        .add_modifier(Modifier::DIM)
+                                        .fg
+                                        .map(|fg| {
+                                            Span::styled(
+                                                span.content.clone(),
+                                                Style::default().fg(fg).add_modifier(Modifier::DIM),
+                                            )
+                                        })
+                                        .or_else(|| {
+                                            Some(Span::styled(
+                                                span.content.clone(),
+                                                Style::default()
+                                                    .fg(palette.muted)
+                                                    .add_modifier(Modifier::DIM),
+                                            ))
+                                        })
+                                })
+                                .collect();
+                            Line::from(muted_spans)
+                        } else {
+                            line
                         }
-                    }
+                    })
+                    .collect();
 
-                    // Render block borders/title on top
-                    frame.render_widget(block, block_area);
-                }
-                BlockType::ToolResult => {
-                    // Tool result: indented muted box (no role title, muted border)
-                    let indent = 2; // 2 cols indent from left edge
-                    let box_width =
-                        (msg_area.width as usize).saturating_sub(indent * 2) as u16;
-                    let block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(palette.muted))
-                        .border_type(BorderType::Rounded);
-
-                    let block_area = Rect::new(
-                        msg_area.left() + indent as u16,
-                        y,
-                        box_width.min(
-                            msg_area.width.saturating_sub((indent * 2) as u16),
-                        ),
-                        actual_height,
-                    );
-
-                    // Calculate body area BEFORE rendering (block is moved)
-                    let body_area = block.inner(block_area);
-
-                    // Render body lines with muted style inside the block
-                    if actual_height > 2 && !wrapped.is_empty() {
-                        let body_lines: Vec<Line> = wrapped
-                            .iter()
-                            .take(body_area.height as usize)
-                            .cloned()
-                            .map(|line| {
-                                let muted_spans: Vec<Span> = line
-                                    .spans
-                                    .iter()
-                                    .filter_map(|span| {
-                                        // Preserve foreground color but apply muted dim modifier
-                                        span.style
-                                            .fg(palette.muted)
-                                            .add_modifier(Modifier::DIM)
-                                            .fg
-                                            .map(|fg| {
-                                                Span::styled(
-                                                    span.content.clone(),
-                                                    Style::default()
-                                                        .fg(fg)
-                                                        .add_modifier(Modifier::DIM),
-                                                )
-                                            })
-                                            .or_else(|| {
-                                                // If span had no explicit fg, use muted
-                                                Some(Span::styled(
-                                                    span.content.clone(),
-                                                    Style::default()
-                                                        .fg(palette.muted)
-                                                        .add_modifier(Modifier::DIM),
-                                                ))
-                                            })
-                                    })
-                                    .collect();
-                                Line::from(muted_spans)
-                            })
-                            .collect();
-                        if !body_lines.is_empty() {
-                            let para = Paragraph::new(body_lines);
-                            frame.render_widget(para, body_area);
-                        }
-                    }
-
-                    // Render block borders on top
-                    frame.render_widget(block, block_area);
+                if !body_lines.is_empty() {
+                    frame.render_widget(Paragraph::new(body_lines), body_area);
                 }
             }
 
-            // Advance to next message (add 1-row margin)
-            y += actual_height + 1;
+            frame.render_widget(block, block_rect);
         }
 
-        // If streaming, render streaming text as an assistant block at the end
-        let mut total_height = if msg_block_heights.is_empty() {
-            0u16
-        } else {
-            msg_block_heights.iter().sum::<u16>() + entries.len().saturating_sub(1) as u16
-        };
+        // ─── Phase 2.5: Streaming block (rendered after regular entries) ─
+        let mut total_height = total_height;
         let mut streaming_rendered = false;
         if is_streaming {
             if let Some(ref ts) = state.turn_state_ref {
@@ -476,53 +356,67 @@ impl ConversationWidget {
                             .map(|l| {
                                 Line::from(Span::styled(
                                     l.to_string(),
-                                    Style::default().fg(palette.info).add_modifier(Modifier::DIM),
+                                    Style::default()
+                                        .fg(palette.info)
+                                        .add_modifier(Modifier::DIM),
                                 ))
                             })
                             .collect();
 
-                        let wrapped = self.wrap_styled_lines_to_lines(
+                        let wrapped = layout::wrap_styled_lines_to_lines(
                             &stream_lines,
                             inner_width.saturating_sub(2),
                         );
-                        let block_height = if wrapped.is_empty() { 1 } else { wrapped.len() as u16 };
+                        let block_height = if wrapped.is_empty() {
+                            1
+                        } else {
+                            wrapped.len() as u16
+                        };
                         total_height += block_height + 1;
 
-                        // Render streaming block
-                        let role_info =
-                            role_info_for_role(&MessageRole::Assistant, palette);
+                        // Render streaming block after regular entries
+                        let role_info = role_info_for_role(&MessageRole::Assistant, palette);
                         let role_color = role_info.border_color;
 
+                        // Calculate y position: below all regular entries
+                        let streaming_y: u16 = {
+                            let mut y = msg_area.top();
+                            let mut i = 0;
+                            while i < entries.len() {
+                                y += layout::estimate_block_height(
+                                    &entries[i].body_lines,
+                                    &layout_entries[i].1,
+                                    inner_width.saturating_sub(2),
+                                ) + layout::INTER_BLOCK_MARGIN;
+                                i += 1;
+                            }
+                            y
+                        };
+
+                        let block_area = Rect::new(
+                            msg_area.left(),
+                            streaming_y,
+                            msg_area.width,
+                            (block_height + 1).max(1),
+                        );
                         let block = Block::default()
                             .borders(Borders::ALL)
                             .border_style(
-                                Style::default()
-                                    .fg(role_color)
-                                    .add_modifier(Modifier::BOLD),
+                                Style::default().fg(role_color).add_modifier(Modifier::BOLD),
                             )
                             .title(Line::from(vec![
                                 Span::raw(role_info.icon),
                                 Span::styled(
                                     role_info.label,
-                                    Style::default()
-                                        .fg(role_color)
-                                        .add_modifier(Modifier::BOLD),
+                                    Style::default().fg(role_color).add_modifier(Modifier::BOLD),
                                 ),
                             ]));
-
-                        let block_area = Rect::new(
-                            msg_area.left(),
-                            y,
-                            msg_area.width,
-                            (block_height + 1).max(1),
-                        );
                         let body_area = block.inner(block_area);
 
                         if !wrapped.is_empty() {
                             frame.render_widget(Paragraph::new(wrapped), body_area);
                         }
                         frame.render_widget(block, block_area);
-                        y += block_height + 1;
                         streaming_rendered = true;
                     }
                 }
@@ -533,31 +427,33 @@ impl ConversationWidget {
             total_height += 1; // placeholder for streaming
         }
 
-        // Update scrollbar position based on mouse scroll events
+        // ─── Phase 3: Scroll position update (mouse wheel) ─────────────
         let offset = state.user_scroll_offset.swap(0, Ordering::SeqCst);
         let mut new_pos = state.scroll_pos.load(Ordering::SeqCst);
-        
+
         tracing::info!(
             "[scroll_update] BEFORE: scroll_pos={} offset={} scrollable_range={} scroll_to_bottom={}",
-            state.scroll_pos.load(Ordering::SeqCst), offset, scrollable_range, state.scroll_to_bottom
+            state.scroll_pos.load(Ordering::SeqCst), offset, (total_height as i64 - inner_height as i64).max(0), state.scroll_to_bottom
         );
-        
+
         if offset != 0 {
             new_pos = ((new_pos as i64 + offset as i64).max(0) as usize)
-                .min(scrollable_range);
+                .min((total_height as i64 - inner_height as i64).max(0) as usize);
         }
-        
+
         // Only force to bottom when user hasn't scrolled away yet
+        let scrollable_range = (total_height as i64 - inner_height as i64).max(0) as usize;
         if state.scroll_to_bottom && new_pos >= scrollable_range {
             new_pos = scrollable_range;
         }
-        
+
         let final_pos = new_pos;
         state.scroll_pos.store(new_pos, Ordering::SeqCst);
-        
+
         tracing::info!(
             "[scroll_update] AFTER: new_pos={} (was {})",
-            final_pos, state.scroll_pos.load(Ordering::SeqCst)
+            final_pos,
+            state.scroll_pos.load(Ordering::SeqCst)
         );
         {
             let mut scroll_state = state.scroll_state.lock().unwrap();
@@ -565,25 +461,6 @@ impl ConversationWidget {
                 .viewport_content_length(inner_height as usize)
                 .position(new_pos);
         }
-    }
-
-    fn render_messages(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        state: &ConversationState,
-        palette: &ratatui_themes::ThemePalette,
-        is_streaming: bool,
-    ) {
-        let entries = state.message_entries.lock().unwrap();
-        self.render_bordered_blocks(
-            frame,
-            area,
-            state,
-            palette,
-            is_streaming,
-            &entries,
-        );
     }
 
     fn render_turn_status(
@@ -628,7 +505,8 @@ impl ConversationWidget {
         palette: &ratatui_themes::ThemePalette,
         is_streaming: bool,
     ) {
-        self.render_messages(frame, area, state, palette, is_streaming);
+        let entries = state.message_entries.lock().unwrap();
+        self.render_bordered_blocks(frame, area, state, palette, is_streaming, &entries);
         self.render_turn_status(frame, area, state, palette);
 
         // Draw streaming indicator in messages panel area
@@ -763,8 +641,7 @@ mod tests {
             started_at: Instant::now(),
             context: "/Users/test/config.yaml".into(),
         });
-        turn.streaming_text =
-            "This is streaming text that should NOT appear in stream_info".into();
+        turn.streaming_text = "This is streaming text that should NOT appear in stream_info".into();
 
         ConversationWidget.update_stream_info(&mut state, &turn);
 

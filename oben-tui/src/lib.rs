@@ -16,8 +16,8 @@ pub use app::App;
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
-    MouseEventKind,
+    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -28,19 +28,15 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Paragraph, Tabs};
-use ratatui_toaster::ToastType;
 use ratatui::{Frame, Terminal};
+use ratatui_toaster::ToastType;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
-use tracing_subscriber::{
-    fmt::layer,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-};
+use tracing_subscriber::{fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::app::TurnCompletion;
 
@@ -78,7 +74,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let mut app = App::new()?;
     app.init_agent().await?;
     app.init_active_panel(session_name).await?;
-    
+
     // Set up logging
     #[allow(unexpected_cfgs)]
     #[cfg(not(feature = "cli-wired"))]
@@ -399,7 +395,9 @@ async fn handle_chat_input(
                 let result = guard.turn(&input_clone, false, Some(delta_callback)).await;
                 let sid = guard.active_session_name().await.map(|s| s.clone());
                 let msgs = guard
-                    .session_manager().lock().await
+                    .session_manager()
+                    .lock()
+                    .await
                     .active_session()
                     .map(|s| s.messages.clone())
                     .unwrap_or_default();
@@ -415,13 +413,21 @@ async fn handle_chat_input(
             match &result {
                 Ok(_) => {
                     eb_for_finalize.on_turn_completed("completed");
-                    let _ = done_tx_clone.send(TurnCompletion { success: true, session_name: sid, messages });
+                    let _ = done_tx_clone.send(TurnCompletion {
+                        success: true,
+                        session_name: sid,
+                        messages,
+                    });
                     tracing::info!("spawned_turn_task: sent done_tx success");
                 }
                 Err(e) => {
                     eb_for_finalize.on_turn_error(&format!("{}", e));
                     tracing::info!("spawned_turn_task: finalized turn_state error: {}", e);
-                    let _ = done_tx_clone.send(TurnCompletion { success: false, session_name: None, messages: Vec::new() });
+                    let _ = done_tx_clone.send(TurnCompletion {
+                        success: false,
+                        session_name: None,
+                        messages: Vec::new(),
+                    });
                     tracing::info!("spawned_turn_task: sent done_tx error");
                 }
             }
@@ -515,25 +521,26 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
 
     // Derive session info from stored ChatPanel fields — no Agent locking.
     let (session_name, msg_count) = match app.active_panel {
-        PanelId::Sessions => {
-            match app.get_sessions() {
-                Some(sessions) => (sessions.get_session_name().unwrap_or_default(),
-                                   sessions.get_message_count().unwrap_or(0)),
-                None => (String::new(), 0),
-            }
-        }
-        _ => {
-            match app.get_chat() {
-                Some(chat) => {
-                    if let Some(ref sid) = chat.session_name {
-                        (sid.clone(), chat.message_count)
-                    } else {
-                        (app.session_id.clone().unwrap_or_default(), chat.message_count)
-                    }
+        PanelId::Sessions => match app.get_sessions() {
+            Some(sessions) => (
+                sessions.get_session_name().unwrap_or_default(),
+                sessions.get_message_count().unwrap_or(0),
+            ),
+            None => (String::new(), 0),
+        },
+        _ => match app.get_chat() {
+            Some(chat) => {
+                if let Some(ref sid) = chat.session_name {
+                    (sid.clone(), chat.message_count)
+                } else {
+                    (
+                        app.session_id.clone().unwrap_or_default(),
+                        chat.message_count,
+                    )
                 }
-                None => (String::new(), 0),
             }
-        }
+            None => (String::new(), 0),
+        },
     };
 
     let session_text = match &session_name {
@@ -546,9 +553,7 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         (_, s) if !s.is_empty() && s != " No session" => "Info",
         _ => "Ready",
     };
-    let status_lines: Vec<Line> = vec![
-        Line::from(format!(" [{}]  {}", mode_text, session_text)),
-    ];
+    let status_lines: Vec<Line> = vec![Line::from(format!(" [{}]  {}", mode_text, session_text))];
     let status_para = Paragraph::new(status_lines);
     let status_area = Rect::new(
         layout.statusbar.x,

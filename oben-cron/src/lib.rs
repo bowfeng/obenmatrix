@@ -5,8 +5,8 @@
 //!
 //! Example: `oben cron list` to see all jobs, `oben cron create --help` for creating.
 
-pub mod schedule;
 pub mod jobs;
+pub mod schedule;
 
 /// Resolve the `obenalien` binary for cron execution.
 ///
@@ -42,5 +42,5 @@ pub fn cron_exec_binary() -> String {
     "obenalien".to_string()
 }
 
-pub use schedule::*;
 pub use jobs::*;
+pub use schedule::*;

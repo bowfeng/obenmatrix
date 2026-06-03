@@ -203,17 +203,16 @@ pub struct MessageRenderEntry {
 impl MessageRenderEntry {
     /// Add a blank trailing line after the message.
     pub fn with_trailing_blank(mut self) -> Self {
-        self.body_lines
-            .push(StyledLine { content: Line::raw(""), role_color: None });
+        self.body_lines.push(StyledLine {
+            content: Line::raw(""),
+            role_color: None,
+        });
         self
     }
 }
 
 /// Render message body text into styled lines.
-fn render_body_lines(
-    text: &str,
-    palette: &ratatui_themes::ThemePalette,
-) -> Vec<StyledLine> {
+fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> Vec<StyledLine> {
     let body_style = Style::default().fg(palette.info);
     let mut result = Vec::new();
 
@@ -243,10 +242,7 @@ fn render_body_lines(
         // Heading
         else if let Some(heading_content) = trimmed.strip_prefix('#').map(|s| s.trim_start()) {
             let heading_tokens = tokenize(heading_content);
-            let mut line_spans = vec![Span::styled(
-                "▸ ",
-                Style::default().fg(palette.accent),
-            )];
+            let mut line_spans = vec![Span::styled("▸ ", Style::default().fg(palette.accent))];
             line_spans.extend(tokens_to_spans(
                 &heading_tokens,
                 body_style.add_modifier(Modifier::BOLD).fg(palette.accent),
@@ -301,7 +297,11 @@ pub fn render_message_entry(
                 format!(
                     "{}({})",
                     tc.tool_name,
-                    tc.arguments.to_string().chars().take(30).collect::<String>()
+                    tc.arguments
+                        .to_string()
+                        .chars()
+                        .take(30)
+                        .collect::<String>()
                 )
             };
             tool_calls.push(info.clone());
@@ -315,9 +315,7 @@ pub fn render_message_entry(
             tool_lines.push(StyledLine {
                 content: Line::from(Span::styled(
                     format!("   {} {}", icon, tc),
-                    Style::default()
-                        .fg(color)
-                        .add_modifier(Modifier::DIM),
+                    Style::default().fg(color).add_modifier(Modifier::DIM),
                 )),
                 role_color: None,
             });
@@ -378,11 +376,7 @@ impl MessageRenderer {
     /// Legacy API: render a message into flat `Line` slices (for backward compat).
     pub fn render(&self, msg: &Message) -> Vec<Line<'static>> {
         let entry = self.render_entry(msg);
-        entry
-            .body_lines
-            .into_iter()
-            .map(|sl| sl.content)
-            .collect()
+        entry.body_lines.into_iter().map(|sl| sl.content).collect()
     }
 
     /// Render a message into a structured `MessageRenderEntry`.

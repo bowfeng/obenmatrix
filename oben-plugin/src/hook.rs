@@ -4,7 +4,6 @@
 /// 17 hook types that fire at specific lifecycle points.
 /// Each callback wrapped in try/except so one misbehaving plugin
 /// cannot break the core agent loop.
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -121,7 +120,10 @@ impl HookType {
 
     /// Return true if this hook can return a transformation value.
     pub fn is_transform(&self) -> bool {
-        matches!(self, Self::TransformTerminalOutput | Self::TransformToolResult | Self::TransformLlmOutput)
+        matches!(
+            self,
+            Self::TransformTerminalOutput | Self::TransformToolResult | Self::TransformLlmOutput
+        )
     }
 
     /// Return true if this hook can block/prevent action.
@@ -202,17 +204,12 @@ pub type HookCallback = Arc<dyn Fn(&Value) -> Result<Option<Value>> + Send + Syn
 ///
 /// For pre_llm_call, return values are injected as context into the
 /// user message (preserves prompt cache prefix).
-pub fn invoke_hook(
-    callbacks: &[HookCallback],
-    args: &Value,
-) -> Vec<Value> {
+pub fn invoke_hook(callbacks: &[HookCallback], args: &Value) -> Vec<Value> {
     let mut results = Vec::new();
 
     for cb in callbacks {
         // Wrap in catch_unwind to prevent panics from killing the agent
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            cb(args)
-        }));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb(args)));
 
         let value = match result {
             Ok(Ok(ret)) => ret,
@@ -221,7 +218,8 @@ pub fn invoke_hook(
                 None
             }
             Err(panic) => {
-                let msg = panic.downcast_ref::<&str>()
+                let msg = panic
+                    .downcast_ref::<&str>()
                     .map(|s| *s)
                     .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
                     .unwrap_or("unknown panic");
@@ -264,20 +262,25 @@ pub fn check_pre_tool_call_block(results: &[Value]) -> Option<BlockAction> {
         if let Some(action) = result.get("action") {
             if let Some("block") = action.as_str() {
                 return Some(BlockAction {
-                    message: result.get("message")
+                    message: result
+                        .get("message")
                         .and_then(|v| v.as_str())
                         .unwrap_or("Tool call blocked")
                         .to_string(),
-                    tool: result.get("tool")
+                    tool: result
+                        .get("tool")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown")
                         .to_string(),
-                    allowed: result.get("allowed_tools")
+                    allowed: result
+                        .get("allowed_tools")
                         .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter()
-                            .filter_map(|v| v.as_str())
-                            .map(String::from)
-                            .collect())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(String::from)
+                                .collect()
+                        })
                         .unwrap_or_default(),
                 });
             }
@@ -323,11 +326,19 @@ pub fn get_pre_llm_call_context(results: &[Value]) -> Option<String> {
         .filter_map(|v| {
             // Context can be a string or a dict with "context" key
             if let Some(s) = v.as_str() {
-                if s.is_empty() { None } else { Some(s.to_string()) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
             } else if let Some(obj) = v.as_object() {
-                obj.get("context")
-                    .and_then(|c| c.as_str())
-                    .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) })
+                obj.get("context").and_then(|c| c.as_str()).and_then(|s| {
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
+                })
             } else {
                 None
             }
@@ -352,7 +363,11 @@ pub fn get_pre_llm_call_context(results: &[Value]) -> Option<String> {
 pub fn get_transform_llm_output(results: &[Value]) -> Option<String> {
     results.iter().find_map(|v| {
         v.as_str().and_then(|s| {
-            if s.is_empty() { None } else { Some(s.to_string()) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
         })
     })
 }
@@ -367,9 +382,18 @@ mod tests {
         /// given: hook type strings
         /// when: parse_hook_type() is called
         /// then: returns correct HookType variants
-        assert_eq!(parse_hook_type("pre_tool_call").unwrap(), HookType::PreToolCall);
-        assert_eq!(parse_hook_type("post_tool_call").unwrap(), HookType::PostToolCall);
-        assert_eq!(parse_hook_type("transform_llm_output").unwrap(), HookType::TransformLlmOutput);
+        assert_eq!(
+            parse_hook_type("pre_tool_call").unwrap(),
+            HookType::PreToolCall
+        );
+        assert_eq!(
+            parse_hook_type("post_tool_call").unwrap(),
+            HookType::PostToolCall
+        );
+        assert_eq!(
+            parse_hook_type("transform_llm_output").unwrap(),
+            HookType::TransformLlmOutput
+        );
         assert!(parse_hook_type("invalid_hook").is_err());
     }
 
@@ -379,7 +403,10 @@ mod tests {
         /// when: Display::fmt is called
         /// then: returns snake_case string
         assert_eq!(HookType::PreToolCall.to_string(), "pre_tool_call");
-        assert_eq!(HookType::TransformLlmOutput.to_string(), "transform_llm_output");
+        assert_eq!(
+            HookType::TransformLlmOutput.to_string(),
+            "transform_llm_output"
+        );
     }
 
     #[test]
@@ -397,12 +424,8 @@ mod tests {
         /// given: two callbacks that return Some values
         /// when: invoke_hook() is called
         /// then: collects both results
-        let callback1 = Arc::new(|_args: &Value| {
-            Ok(Some(json!("result1")))
-        });
-        let callback2 = Arc::new(|_args: &Value| {
-            Ok(Some(json!("result2")))
-        });
+        let callback1 = Arc::new(|_args: &Value| Ok(Some(json!("result1"))));
+        let callback2 = Arc::new(|_args: &Value| Ok(Some(json!("result2"))));
 
         let args = json!({});
         let results = invoke_hook(&[callback1, callback2], &args);
@@ -416,9 +439,7 @@ mod tests {
         /// given: callbacks that return None
         /// when: invoke_hook() is called
         /// then: None returns are skipped
-        let callback = Arc::new(|_args: &Value| {
-            Ok(None)
-        });
+        let callback = Arc::new(|_args: &Value| Ok(None));
 
         let args = json!({});
         let results = invoke_hook(&[callback], &args);
@@ -444,9 +465,7 @@ mod tests {
         /// given: a callback that returns Err
         /// when: invoke_hook() is called
         /// then: error is caught and result is skipped
-        let callback = Arc::new(|_args: &Value| {
-            Err(anyhow::anyhow!("test error"))
-        });
+        let callback = Arc::new(|_args: &Value| Err(anyhow::anyhow!("test error")));
 
         let args = json!({});
         let results = invoke_hook(&[callback], &args);

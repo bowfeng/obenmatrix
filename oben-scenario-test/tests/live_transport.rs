@@ -1,21 +1,17 @@
 /// Live transport tests — verifies the Transport dispatcher works with
 /// a real LLM server. These tests require a configured LLM server at
 /// `~/.obenalien/config.yaml`.
-
 use anyhow::Result;
 use oben_config::AppConfig;
-use oben_models::{CallMode, Message, ProviderConfig, TransportProvider, StreamDeltaCallback};
+use oben_models::{CallMode, Message, ProviderConfig, StreamDeltaCallback, TransportProvider};
 use oben_transport::Transport;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// Get a ProviderConfig from the config file.
 fn get_provider_config() -> (ProviderConfig, String) {
     let config = AppConfig::load().expect("Failed to load config");
-    let mut pc = ProviderConfig::new(
-        config.model.kind.clone(),
-        config.model.model.clone(),
-    );
+    let mut pc = ProviderConfig::new(config.model.kind.clone(), config.model.model.clone());
     pc.api_key = config.model.api_key.clone();
     pc.base_url = config.model.base_url.clone();
     pc.temperature = config.model.temperature;
@@ -95,10 +91,7 @@ fn test_scrub_thinking_blocks() {
     );
 
     // ✅ Normal text — unchanged
-    assert_eq!(
-        scrub_thinking_blocks("just plain text"),
-        "just plain text"
-    );
+    assert_eq!(scrub_thinking_blocks("just plain text"), "just plain text");
 }
 
 #[test]
@@ -124,10 +117,7 @@ fn test_scrub_memory_context() {
     );
 
     // ✅ Normal text — unchanged
-    assert_eq!(
-        scrub_memory_context("no blocks here"),
-        "no blocks here"
-    );
+    assert_eq!(scrub_memory_context("no blocks here"), "no blocks here");
 }
 
 /// Test that scrub functions don't destroy a real LLM greeting response.
@@ -169,11 +159,17 @@ async fn test_live_chat_simple() -> Result<()> {
 
     let trimmed = resp.text.trim();
     assert!(!trimmed.is_empty(), "LLM returned empty response!");
-    assert!(resp.text.len() > 10, "Response too short ({} chars)", resp.text.len());
+    assert!(
+        resp.text.len() > 10,
+        "Response too short ({} chars)",
+        resp.text.len()
+    );
 
-    eprintln!("✅ Live chat test passed: text_len={}, text_preview='{}...'",
+    eprintln!(
+        "✅ Live chat test passed: text_len={}, text_preview='{}...'",
         resp.text.len(),
-        &resp.text[..resp.text.len().min(80)]);
+        &resp.text[..resp.text.len().min(80)]
+    );
 
     Ok(())
 }
@@ -208,12 +204,21 @@ async fn test_live_chat_with_large_system_prompt() -> Result<()> {
         .await?;
 
     let trimmed = resp.text.trim();
-    assert!(!trimmed.is_empty(), "LLM returned empty response with large system prompt!");
-    assert!(resp.text.len() > 10, "Response too short with large system prompt ({} chars)", resp.text.len());
+    assert!(
+        !trimmed.is_empty(),
+        "LLM returned empty response with large system prompt!"
+    );
+    assert!(
+        resp.text.len() > 10,
+        "Response too short with large system prompt ({} chars)",
+        resp.text.len()
+    );
 
-    eprintln!("✅ Large system prompt test passed: text_len={}, text_preview='{}...'",
+    eprintln!(
+        "✅ Large system prompt test passed: text_len={}, text_preview='{}...'",
         resp.text.len(),
-        &resp.text[..resp.text.len().min(80)]);
+        &resp.text[..resp.text.len().min(80)]
+    );
 
     Ok(())
 }
@@ -233,21 +238,41 @@ async fn test_live_stream_chat() -> Result<()> {
         Box::new(move |text: &str| captured_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&messages, &CallMode::Fresh("test-session-3".to_string()), cb)
+        .stream_chat(
+            &messages,
+            &CallMode::Fresh("test-session-3".to_string()),
+            cb,
+        )
         .await?;
 
     let captured_text = captured.lock().unwrap().clone();
     eprintln!("✅ Live stream test passed:");
     eprintln!("  response.text len={}", resp.text.len());
     eprintln!("  callback captured len={}", captured_text.len());
-    eprintln!("  response.text preview='{}'", &resp.text[..resp.text.len().min(80)]);
-    eprintln!("  callback preview='{}'", &captured_text[..captured_text.len().min(80)]);
+    eprintln!(
+        "  response.text preview='{}'",
+        &resp.text[..resp.text.len().min(80)]
+    );
+    eprintln!(
+        "  callback preview='{}'",
+        &captured_text[..captured_text.len().min(80)]
+    );
 
-    assert!(!resp.text.trim().is_empty(), "Stream response text is empty!");
-    assert!(resp.text.len() > 10, "Stream response too short ({} chars)", resp.text.len());
+    assert!(
+        !resp.text.trim().is_empty(),
+        "Stream response text is empty!"
+    );
+    assert!(
+        resp.text.len() > 10,
+        "Stream response too short ({} chars)",
+        resp.text.len()
+    );
 
     // Verify callback captured the same text
-    assert_eq!(resp.text, captured_text, "Stream response text doesn't match callback capture!");
+    assert_eq!(
+        resp.text, captured_text,
+        "Stream response text doesn't match callback capture!"
+    );
 
     Ok(())
 }
@@ -264,17 +289,25 @@ async fn test_live_chat_with_tool_calls_response() -> Result<()> {
         .await?;
 
     eprintln!("✅ Tool call test passed:");
-    eprintln!("  response.text='{}'", &resp.text[..resp.text.len().min(200)]);
+    eprintln!(
+        "  response.text='{}'",
+        &resp.text[..resp.text.len().min(200)]
+    );
     eprintln!("  tool_calls.len={}", resp.tool_calls.len());
     if !resp.tool_calls.is_empty() {
         for tc in &resp.tool_calls {
-            eprintln!("    tool_call: name={}, args={}", tc.tool_name, tc.arguments);
+            eprintln!(
+                "    tool_call: name={}, args={}",
+                tc.tool_name, tc.arguments
+            );
         }
     }
 
     // The model might return a text response or a tool call - both are valid
-    assert!(!resp.text.is_empty() || !resp.tool_calls.is_empty(),
-        "LLM returned neither text nor tool calls!");
+    assert!(
+        !resp.text.is_empty() || !resp.tool_calls.is_empty(),
+        "LLM returned neither text nor tool calls!"
+    );
 
     Ok(())
 }
@@ -321,12 +354,22 @@ async fn test_live_concurrent_requests() -> Result<()> {
         for e in &errors {
             eprintln!("  {}", e);
         }
-        eprintln!("  {}/{} succeeded (connection pool or rate limiting may affect others)", successes, num_threads);
+        eprintln!(
+            "  {}/{} succeeded (connection pool or rate limiting may affect others)",
+            successes, num_threads
+        );
     } else {
-        assert_eq!(successes, num_threads, "All {} threads should succeed", num_threads);
+        assert_eq!(
+            successes, num_threads,
+            "All {} threads should succeed",
+            num_threads
+        );
     }
 
-    eprintln!("✅ Live concurrent requests: {}/{} succeeded", successes, num_threads);
+    eprintln!(
+        "✅ Live concurrent requests: {}/{} succeeded",
+        successes, num_threads
+    );
     Ok(())
 }
 
@@ -344,7 +387,11 @@ async fn test_live_stream_chat_with_tool_calls() -> Result<()> {
         Box::new(move |text: &str| captured_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&messages, &CallMode::Fresh("test-session-5".to_string()), cb)
+        .stream_chat(
+            &messages,
+            &CallMode::Fresh("test-session-5".to_string()),
+            cb,
+        )
         .await?;
 
     let captured_text = captured.lock().unwrap().clone();
@@ -353,10 +400,15 @@ async fn test_live_stream_chat_with_tool_calls() -> Result<()> {
     eprintln!("  response.text len={}", resp.text.len());
     eprintln!("  callback captured len={}", captured_text.len());
     eprintln!("  tool_calls.len={}", resp.tool_calls.len());
-    eprintln!("  response preview='{}'", &resp.text[..resp.text.len().min(100)]);
+    eprintln!(
+        "  response preview='{}'",
+        &resp.text[..resp.text.len().min(100)]
+    );
 
-    assert!(!resp.text.is_empty() || !resp.tool_calls.is_empty(),
-        "Should have either text or tool calls");
+    assert!(
+        !resp.text.is_empty() || !resp.tool_calls.is_empty(),
+        "Should have either text or tool calls"
+    );
 
     Ok(())
 }
@@ -367,7 +419,9 @@ async fn test_live_long_stream_response() -> Result<()> {
     let (config, system_prompt) = get_provider_config();
     let transport = Transport::from_config(&config, system_prompt);
 
-    let messages = vec![Message::user("write a detailed explanation of HTTP/2 multiplexing, about 200 words")];
+    let messages = vec![Message::user(
+        "write a detailed explanation of HTTP/2 multiplexing, about 200 words",
+    )];
     let captured = Arc::new(std::sync::Mutex::new(String::new()));
     let captured_clone = captured.clone();
 
@@ -375,15 +429,29 @@ async fn test_live_long_stream_response() -> Result<()> {
         Box::new(move |text: &str| captured_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&messages, &CallMode::Fresh("test-session-6".to_string()), cb)
+        .stream_chat(
+            &messages,
+            &CallMode::Fresh("test-session-6".to_string()),
+            cb,
+        )
         .await?;
 
     let captured_text = captured.lock().unwrap().clone();
 
-    assert!(resp.text.len() > 500, "Expected a long response, got {} chars", resp.text.len());
-    assert_eq!(resp.text, captured_text, "Stream text should match callback capture");
+    assert!(
+        resp.text.len() > 500,
+        "Expected a long response, got {} chars",
+        resp.text.len()
+    );
+    assert_eq!(
+        resp.text, captured_text,
+        "Stream text should match callback capture"
+    );
 
-    eprintln!("✅ Long stream response test passed: {} chars", resp.text.len());
+    eprintln!(
+        "✅ Long stream response test passed: {} chars",
+        resp.text.len()
+    );
     Ok(())
 }
 
@@ -401,7 +469,11 @@ async fn test_live_stream_with_usage() -> Result<()> {
         Box::new(move |text: &str| captured_clone.lock().unwrap().push_str(text));
 
     let resp = transport
-        .stream_chat(&messages, &CallMode::Fresh("test-session-7".to_string()), cb)
+        .stream_chat(
+            &messages,
+            &CallMode::Fresh("test-session-7".to_string()),
+            cb,
+        )
         .await?;
 
     let captured_text = captured.lock().unwrap().clone();

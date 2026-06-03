@@ -3,7 +3,6 @@
 /// Wraps a single API call in a retry loop, backing off exponentially with
 /// random jitter between retries. Only retries on configured HTTP status codes
 /// (429, 500, 502, 503, 504).
-
 use std::time::Duration;
 
 use anyhow::Result;
@@ -56,10 +55,7 @@ impl RetryConfig {
 ///
 /// Retries only when the error is a "retryable error" (created via
 /// `RetryableError`). Non-retryable errors are returned immediately.
-pub async fn retry_with_backoff<F, Fut, T>(
-    config: &RetryConfig,
-    operation: F,
-) -> Result<T>
+pub async fn retry_with_backoff<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
@@ -69,7 +65,10 @@ where
     for attempt in 0..=config.max_retries {
         if attempt > 0 {
             let delay = config.delay_for_attempt(attempt - 1);
-            debug!("Retry attempt {}/{} after {:?} delay", attempt, config.max_retries, delay);
+            debug!(
+                "Retry attempt {}/{} after {:?} delay",
+                attempt, config.max_retries, delay
+            );
             tokio::time::sleep(delay).await;
         }
 
@@ -80,7 +79,13 @@ where
                 if let Some(retryable) = extract_retryable_code(&e) {
                     if attempt < config.max_retries && config.retryable_codes.contains(&retryable) {
                         last_err = Some(e);
-                        warn!("Retryable error (HTTP {}), attempt {} of {}: {}", retryable, attempt + 1, config.max_retries, msg);
+                        warn!(
+                            "Retryable error (HTTP {}), attempt {} of {}: {}",
+                            retryable,
+                            attempt + 1,
+                            config.max_retries,
+                            msg
+                        );
                         continue;
                     }
                 }
@@ -91,7 +96,9 @@ where
     }
 
     // Should not reach here unless max_retries is 0 and first call fails
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Operation failed after {} attempts", config.max_retries + 1)))
+    Err(last_err.unwrap_or_else(|| {
+        anyhow::anyhow!("Operation failed after {} attempts", config.max_retries + 1)
+    }))
 }
 
 /// HTTP status code extracted from an error, if present.
@@ -134,7 +141,10 @@ fn extract_code_from_message(msg: &str) -> Option<u16> {
     }
     // Fallback: split by whitespace and try to parse each token
     for word in msg.split_whitespace() {
-        let cleaned = word.trim_end_matches(':').trim_end_matches(']').trim_start_matches('[');
+        let cleaned = word
+            .trim_end_matches(':')
+            .trim_end_matches(']')
+            .trim_start_matches('[');
         if let Ok(code) = cleaned.parse::<u16>() {
             if (400..=599).contains(&code) {
                 return Some(code);
@@ -156,9 +166,7 @@ pub fn retryable_transient(msg: impl Into<String>) -> anyhow::Error {
 
 /// Check if an error is retryable based on its HTTP status code.
 pub fn is_retryable(err: &anyhow::Error) -> bool {
-    extract_retryable_code(err).map_or(false, |code| {
-        (400..=599).contains(&code)
-    })
+    extract_retryable_code(err).map_or(false, |code| (400..=599).contains(&code))
 }
 
 #[cfg(test)]
@@ -201,7 +209,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_succeeds_on_first_try() {
-        let config = RetryConfig { max_retries: 3, ..Default::default() };
+        let config = RetryConfig {
+            max_retries: 3,
+            ..Default::default()
+        };
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let cc = call_count.clone();
 
@@ -211,7 +222,8 @@ mod tests {
                 cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok::<_, anyhow::Error>("ok")
             }
-        }).await;
+        })
+        .await;
 
         assert_eq!(result.unwrap(), "ok");
         assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -219,7 +231,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_retries_on_failure_then_succeeds() {
-        let config = RetryConfig { max_retries: 3, ..Default::default() };
+        let config = RetryConfig {
+            max_retries: 3,
+            ..Default::default()
+        };
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let cc = call_count.clone();
 
@@ -233,7 +248,8 @@ mod tests {
                     Ok::<_, anyhow::Error>("recovered")
                 }
             }
-        }).await;
+        })
+        .await;
 
         assert_eq!(result.unwrap(), "recovered");
         assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 3);
@@ -241,22 +257,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_exhausted_returns_error() {
-        let config = RetryConfig { max_retries: 2, ..Default::default() };
+        let config = RetryConfig {
+            max_retries: 2,
+            ..Default::default()
+        };
 
-        let result: std::result::Result<(), anyhow::Error> = retry_with_backoff(&config, move || {
-            async move { Err(retryable_transient("still failing")) }
-        }).await;
+        let result: std::result::Result<(), anyhow::Error> =
+            retry_with_backoff(&config, move || async move {
+                Err(retryable_transient("still failing"))
+            })
+            .await;
 
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_non_retryable_error_returns_immediately() {
-        let config = RetryConfig { max_retries: 5, ..Default::default() };
+        let config = RetryConfig {
+            max_retries: 5,
+            ..Default::default()
+        };
 
-        let result: Result<(), anyhow::Error> = retry_with_backoff(&config, move || {
-            async move { Err(anyhow::anyhow!("400 Bad Request: invalid model")) }
-        }).await;
+        let result: Result<(), anyhow::Error> = retry_with_backoff(&config, move || async move {
+            Err(anyhow::anyhow!("400 Bad Request: invalid model"))
+        })
+        .await;
 
         assert!(result.is_err());
         // Should NOT have retried (only 1 call for non-retryable)
@@ -264,11 +289,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_non_4xx5xx_code_not_retried() {
-        let config = RetryConfig { max_retries: 5, ..Default::default() };
+        let config = RetryConfig {
+            max_retries: 5,
+            ..Default::default()
+        };
 
-        let result: Result<(), anyhow::Error> = retry_with_backoff(&config, move || {
-            async move { Err(anyhow::anyhow!("HTTP 400 Bad Request")) }
-        }).await;
+        let result: Result<(), anyhow::Error> = retry_with_backoff(&config, move || async move {
+            Err(anyhow::anyhow!("HTTP 400 Bad Request"))
+        })
+        .await;
 
         assert!(result.is_err());
         // 400 is in 4xx range but our retryable_codes only has 429, 500, 502, 503, 504

@@ -33,7 +33,10 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
         4 => ("gemini".to_string(), None),
         5 => {
             config.model.base_url = Some("http://localhost:1234/v1".to_string());
-            ("custom".to_string(), Some("http://localhost:1234/v1".to_string()))
+            (
+                "custom".to_string(),
+                Some("http://localhost:1234/v1".to_string()),
+            )
         }
         6 => {
             let url: String = Input::new()
@@ -47,8 +50,9 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
     };
 
     // Resolve through the provider registry so aliases map to canonical kind + transport
-    let provider_info = oben_models::provider_registry::resolve_provider_info(&selected_provider)
-        .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", selected_provider))?;
+    let provider_info =
+        oben_models::provider_registry::resolve_provider_info(&selected_provider)
+            .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", selected_provider))?;
 
     if base_url.is_none() && !provider_info.base_url.is_empty() {
         config.model.base_url = Some(provider_info.base_url.to_string());

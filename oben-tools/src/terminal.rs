@@ -5,7 +5,6 @@
 /// - Background task management (start, status, stop, output, list)
 /// - Dangerous command blocking
 /// - Output truncation
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -17,7 +16,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool, ToolRegistry};
+use super::registry::{SelfRegisteringTool, ToolHandler, ToolRegistry};
 use oben_utils::path_security::is_path_safe;
 
 // ---------------------------------------------------------------------------
@@ -75,8 +74,12 @@ fn pattern_starts_at(segment: &str, pattern: &str) -> bool {
 
 /// List of dangerous command patterns that should be blocked.
 const DANGEROUS_COMMANDS: &[&str] = &[
-    "sudo ", "sudo$", "sudo -",
-    "su ", "su -", "su root",
+    "sudo ",
+    "sudo$",
+    "sudo -",
+    "su ",
+    "su -",
+    "su root",
     "mkfs",
     "fdisk",
     "dd if=/dev/",
@@ -170,7 +173,8 @@ fn make_terminal_tool() -> Tool {
 fn make_terminal_tool_handler() -> ToolHandler {
     Arc::new(|args: Value| {
         Box::pin(async move {
-            let call_id = args.get("call_id")
+            let call_id = args
+                .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -181,49 +185,33 @@ fn make_terminal_tool_handler() -> ToolHandler {
                 .unwrap_or("execute");
 
             match action {
-                "execute" | "run" => {
-                    handle_run(&args, call_id).await
-                }
-                "status" => {
-                    handle_task_status(&args, call_id).await
-                }
-                "stop" => {
-                    handle_task_stop(&args, call_id).await
-                }
-                "output" => {
-                    handle_task_output(&args, call_id).await
-                }
-                "list" => {
-                    handle_task_list(&call_id).await
-                }
+                "execute" | "run" => handle_run(&args, call_id).await,
+                "status" => handle_task_status(&args, call_id).await,
+                "stop" => handle_task_stop(&args, call_id).await,
+                "output" => handle_task_output(&args, call_id).await,
+                "list" => handle_task_list(&call_id).await,
                 _ => Ok(ToolResult {
                     call_id,
                     output: String::new(),
-                    error: Some(format!("Unknown action: {}. Use: execute, run, status, stop, output, list", action)),
+                    error: Some(format!(
+                        "Unknown action: {}. Use: execute, run, status, stop, output, list",
+                        action
+                    )),
                 }),
             }
         })
     })
 }
 
-async fn handle_run(
-    args: &Value,
-    call_id: String,
-) -> anyhow::Result<ToolResult> {
+async fn handle_run(args: &Value, call_id: String) -> anyhow::Result<ToolResult> {
     let cmd = args
         .get("command")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
 
-    let cwd = args
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .unwrap_or(".");
+    let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
 
-    let timeout_secs = args
-        .get("timeout")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(60);
+    let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60);
 
     let background = args
         .get("background")
@@ -276,8 +264,9 @@ async fn handle_foreground(
     // Wait with timeout
     let output = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        process.wait_with_output()
-    ).await;
+        process.wait_with_output(),
+    )
+    .await;
 
     match output {
         Ok(Ok(result)) => {
@@ -288,7 +277,10 @@ async fn handle_foreground(
             let error = if result.status.success() {
                 None
             } else {
-                Some(format!("Command exited with code: {}", result.status.code().unwrap_or(-1)))
+                Some(format!(
+                    "Command exited with code: {}",
+                    result.status.code().unwrap_or(-1)
+                ))
             };
 
             Ok(ToolResult {
@@ -297,13 +289,11 @@ async fn handle_foreground(
                 error,
             })
         }
-        Ok(Err(e)) => {
-            Ok(ToolResult {
-                call_id: call_id.to_string(),
-                output: String::new(),
-                error: Some(format!("Execution failed: {}", e)),
-            })
-        }
+        Ok(Err(e)) => Ok(ToolResult {
+            call_id: call_id.to_string(),
+            output: String::new(),
+            error: Some(format!("Execution failed: {}", e)),
+        }),
         Err(_) => {
             // Timeout: kill the process
             if let Some(p) = pid {
@@ -322,11 +312,7 @@ async fn handle_foreground(
 }
 
 /// Handle background task execution.
-async fn handle_background_task(
-    cmd: &str,
-    cwd: &str,
-    call_id: &str,
-) -> anyhow::Result<ToolResult> {
+async fn handle_background_task(cmd: &str, cwd: &str, call_id: &str) -> anyhow::Result<ToolResult> {
     let task_id = next_task_id();
 
     let process = Command::new("/bin/sh")
@@ -343,12 +329,15 @@ async fn handle_background_task(
 
     // Store the task
     let mut tasks = BACKGROUND_TASKS.lock().await;
-    tasks.insert(task_id.clone(), BackgroundTask {
-        command: cmd.to_string(),
-        _process: process,
-        pid,
-        status: TaskStatus::Running,
-    });
+    tasks.insert(
+        task_id.clone(),
+        BackgroundTask {
+            command: cmd.to_string(),
+            _process: process,
+            pid,
+            status: TaskStatus::Running,
+        },
+    );
 
     Ok(ToolResult {
         call_id: call_id.to_string(),
@@ -396,24 +385,21 @@ fn format_output(stdout: &str, stderr: &str) -> String {
 // Background task management operations
 // ---------------------------------------------------------------------------
 
-async fn handle_task_status(
-    args: &Value,
-    call_id: String,
-) -> anyhow::Result<ToolResult> {
+async fn handle_task_status(args: &Value, call_id: String) -> anyhow::Result<ToolResult> {
     let task_id = args
         .get("task_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'task_id' argument"))?;
 
     let tasks = BACKGROUND_TASKS.lock().await;
-    
+
     if let Some(task) = tasks.get(task_id) {
         let status_str = match task.status {
             TaskStatus::Running => "running",
             TaskStatus::Finished => "finished",
             TaskStatus::Stopped => "stopped",
         };
-        
+
         Ok(ToolResult {
             call_id,
             output: format!("Task {}: {} (pid: {:?})", task_id, status_str, task.pid),
@@ -428,22 +414,19 @@ async fn handle_task_status(
     }
 }
 
-async fn handle_task_stop(
-    args: &Value,
-    call_id: String,
-) -> anyhow::Result<ToolResult> {
+async fn handle_task_stop(args: &Value, call_id: String) -> anyhow::Result<ToolResult> {
     let task_id = args
         .get("task_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'task_id' argument"))?;
 
     let mut tasks = BACKGROUND_TASKS.lock().await;
-    
+
     if let Some(task) = tasks.get_mut(task_id) {
         if task.status == TaskStatus::Running {
             task.status = TaskStatus::Stopped;
         }
-        
+
         // Try to kill the process
         if let Some(p) = task.pid {
             let _ = tokio::process::Command::new("/bin/sh")
@@ -451,9 +434,9 @@ async fn handle_task_stop(
                 .arg(&format!("kill -9 {}", p))
                 .spawn();
         }
-        
+
         tasks.remove(task_id);
-        
+
         Ok(ToolResult {
             call_id,
             output: format!("Task {} stopped", task_id),
@@ -468,10 +451,7 @@ async fn handle_task_stop(
     }
 }
 
-async fn handle_task_output(
-    args: &Value,
-    call_id: String,
-) -> anyhow::Result<ToolResult> {
+async fn handle_task_output(args: &Value, call_id: String) -> anyhow::Result<ToolResult> {
     let task_id = args
         .get("task_id")
         .and_then(|v| v.as_str())
@@ -483,14 +463,21 @@ async fn handle_task_output(
         .unwrap_or(false);
 
     let tasks = BACKGROUND_TASKS.lock().await;
-    
+
     if let Some(task) = tasks.get(task_id) {
         let output = match task.status {
-            TaskStatus::Running => format!("(task {} is still running, command: {})", task_id, task.command),
-            TaskStatus::Finished => format!("(task {} has finished, command: {})", task_id, task.command),
-            TaskStatus::Stopped => format!("(task {} was stopped, command: {})", task_id, task.command),
+            TaskStatus::Running => format!(
+                "(task {} is still running, command: {})",
+                task_id, task.command
+            ),
+            TaskStatus::Finished => {
+                format!("(task {} has finished, command: {})", task_id, task.command)
+            }
+            TaskStatus::Stopped => {
+                format!("(task {} was stopped, command: {})", task_id, task.command)
+            }
         };
-        
+
         Ok(ToolResult {
             call_id,
             output,
@@ -507,7 +494,7 @@ async fn handle_task_output(
 
 async fn handle_task_list(call_id: &str) -> anyhow::Result<ToolResult> {
     let tasks = BACKGROUND_TASKS.lock().await;
-    
+
     if tasks.is_empty() {
         return Ok(ToolResult {
             call_id: call_id.to_string(),
@@ -523,9 +510,12 @@ async fn handle_task_list(call_id: &str) -> anyhow::Result<ToolResult> {
             TaskStatus::Finished => "finished",
             TaskStatus::Stopped => "stopped",
         };
-        task_entries.push(format!("{}: {} (command: {})", task_id, status_str, task.command));
+        task_entries.push(format!(
+            "{}: {} (command: {})",
+            task_id, status_str, task.command
+        ));
     }
-    
+
     Ok(ToolResult {
         call_id: call_id.to_string(),
         output: task_entries.join("\n"),
@@ -576,10 +566,15 @@ mod tests {
     #[tokio::test]
     async fn foreground_executes_command_successfully() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "echo hello",
-            "call_id": "test-1",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "echo hello",
+                    "call_id": "test-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("hello"));
@@ -588,10 +583,15 @@ mod tests {
     #[tokio::test]
     async fn foreground_returns_combined_output() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "echo out; echo err >&2",
-            "call_id": "test-2",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "echo out; echo err >&2",
+                    "call_id": "test-2",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("out"));
@@ -601,10 +601,15 @@ mod tests {
     #[tokio::test]
     async fn foreground_returns_error_on_failure() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "false",
-            "call_id": "test-3",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "false",
+                    "call_id": "test-3",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("exited with code"));
@@ -613,11 +618,16 @@ mod tests {
     #[tokio::test]
     async fn foreground_respects_cwd() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "pwd",
-            "cwd": "/tmp",
-            "call_id": "test-4",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "pwd",
+                    "cwd": "/tmp",
+                    "call_id": "test-4",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("/tmp"));
@@ -626,35 +636,58 @@ mod tests {
     #[tokio::test]
     async fn foreground_blocks_dangerous_command() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "sudo rm -rf /",
-            "call_id": "test-5",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "sudo rm -rf /",
+                    "call_id": "test-5",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Dangerous command blocked"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Dangerous command blocked"));
     }
 
     #[tokio::test]
     async fn foreground_blocks_dangerous_pattern_rm_rf_star() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "rm -rf /*",
-            "call_id": "test-6",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "rm -rf /*",
+                    "call_id": "test-6",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Dangerous command blocked"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Dangerous command blocked"));
     }
 
     #[tokio::test]
     async fn foreground_rejects_unsafe_cwd() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "ls",
-            "cwd": "; rm -rf /",
-            "call_id": "test-7",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "ls",
+                    "cwd": "; rm -rf /",
+                    "call_id": "test-7",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Unsafe"));
@@ -663,11 +696,16 @@ mod tests {
     #[tokio::test]
     async fn foreground_times_out_long_running_command() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "sleep 30",
-            "timeout": 1,
-            "call_id": "test-8",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "sleep 30",
+                    "timeout": 1,
+                    "call_id": "test-8",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("timed out"));
@@ -676,10 +714,15 @@ mod tests {
     #[tokio::test]
     async fn foreground_empty_output() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "true",
-            "call_id": "test-11",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "true",
+                    "call_id": "test-11",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.is_empty());
@@ -688,10 +731,15 @@ mod tests {
     #[tokio::test]
     async fn foreground_output_truncation_for_large_output() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "python3 -c \"print('x' * 200000)\"",
-            "call_id": "test-12",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "python3 -c \"print('x' * 200000)\"",
+                    "call_id": "test-12",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.len() < 200000);
@@ -702,28 +750,45 @@ mod tests {
     #[tokio::test]
     async fn background_starts_task_returns_task_id() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "sleep 60",
-            "background": true,
-            "call_id": "test-9",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "sleep 60",
+                    "background": true,
+                    "call_id": "test-9",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("Started background task"));
-        assert!(result.output.contains("task-0") || result.output.contains("Started background task: task-"));
+        assert!(
+            result.output.contains("task-0")
+                || result.output.contains("Started background task: task-")
+        );
     }
 
     #[tokio::test]
     async fn background_blocks_dangerous_command() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "command": "sudo rm -rf /",
-            "background": true,
-            "call_id": "test-10",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "command": "sudo rm -rf /",
+                    "background": true,
+                    "call_id": "test-10",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Dangerous command blocked"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Dangerous command blocked"));
     }
 
     // --- Background task management ---
@@ -731,11 +796,16 @@ mod tests {
     #[tokio::test]
     async fn task_status_unknown_task() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "action": "status",
-            "task_id": "nonexistent",
-            "call_id": "test-status-1",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "action": "status",
+                    "task_id": "nonexistent",
+                    "call_id": "test-status-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("not found"));
@@ -744,10 +814,15 @@ mod tests {
     #[tokio::test]
     async fn task_list() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "action": "list",
-            "call_id": "test-list-1",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "action": "list",
+                    "call_id": "test-list-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         // List should not error (may show leftover tasks from other tests)
@@ -757,11 +832,16 @@ mod tests {
     #[tokio::test]
     async fn task_stop_unknown_task() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "action": "stop",
-            "task_id": "nonexistent",
-            "call_id": "test-stop-1",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "action": "stop",
+                    "task_id": "nonexistent",
+                    "call_id": "test-stop-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("not found"));
@@ -770,11 +850,16 @@ mod tests {
     #[tokio::test]
     async fn task_output_unknown_task() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "action": "output",
-            "task_id": "nonexistent",
-            "call_id": "test-output-1",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "action": "output",
+                    "task_id": "nonexistent",
+                    "call_id": "test-output-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("not found"));
@@ -783,10 +868,15 @@ mod tests {
     #[tokio::test]
     async fn unknown_action_returns_error() {
         let registry = make_registry_with_terminal();
-        let result = registry.execute("terminal", &json!({
-            "action": "unknown_action",
-            "call_id": "test-unknown-1",
-        })).await;
+        let result = registry
+            .execute(
+                "terminal",
+                &json!({
+                    "action": "unknown_action",
+                    "call_id": "test-unknown-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Unknown action"));

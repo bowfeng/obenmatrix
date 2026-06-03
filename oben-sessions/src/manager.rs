@@ -1,8 +1,10 @@
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection, types::Value, OptionalExtension};
+use rusqlite::{params, types::Value, Connection, OptionalExtension};
 use tracing::info;
 
-use oben_models::{Message, MessageRole, Session, SessionMetadata, SessionSource, SessionStore, SessionManagerExt};
+use oben_models::{
+    Message, MessageRole, Session, SessionManagerExt, SessionMetadata, SessionSource, SessionStore,
+};
 
 fn now_ts() -> f64 {
     chrono::Utc::now().timestamp_millis() as f64 / 1000.0
@@ -142,22 +144,20 @@ fn is_retryable_error(error: &anyhow::Error) -> bool {
     msg.contains("locked") || msg.contains("busy") || msg.contains("database is locked")
 }
 
-
-
 /// Schema version for data migrations (not column additions).
 const SCHEMA_VERSION: u32 = 3;
 
 fn reconcile_schema(conn: &Connection) -> Result<()> {
     // Ensure schema_version table exists
     conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")?;
-    
+
     // Check current version
-    let current_version: u32 = conn.query_row(
-        "SELECT version FROM schema_version LIMIT 1",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(0);
-    
+    let current_version: u32 = conn
+        .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
     // Declarative column reconciliation: compare SCHEMA_SQL against live tables
     // and ADD any missing columns. This makes adding a column as simple as
     // editing SCHEMA_SQL — no version-gated migrations needed.
@@ -167,26 +167,25 @@ fn reconcile_schema(conn: &Connection) -> Result<()> {
         for (col_name, col_type) in expected_cols {
             if !live_cols.contains(col_name) {
                 let _ = conn.execute(
-                    &format!("ALTER TABLE \"{}\" ADD COLUMN \"{}\" {}",
-                        table_name, col_name, col_type),
+                    &format!(
+                        "ALTER TABLE \"{}\" ADD COLUMN \"{}\" {}",
+                        table_name, col_name, col_type
+                    ),
                     [],
                 );
             }
         }
     }
-    
+
     // Data migrations (version-gated)
     if current_version < 3 {
         migrate_v2_to_v3(conn)?;
     }
-    
+
     if current_version < SCHEMA_VERSION {
-        conn.execute(
-            "UPDATE schema_version SET version = ?",
-            [SCHEMA_VERSION],
-        )?;
+        conn.execute("UPDATE schema_version SET version = ?", [SCHEMA_VERSION])?;
     }
-    
+
     Ok(())
 }
 
@@ -196,14 +195,16 @@ fn reconcile_schema(conn: &Connection) -> Result<()> {
 fn parse_expected_columns(schema_sql: &str) -> Result<Vec<(String, Vec<(String, String)>)>> {
     let ref_conn = Connection::open_in_memory()?;
     ref_conn.execute_batch(schema_sql)?;
-    
+
     let mut result = Vec::new();
     let mut stmt = ref_conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
     )?;
-    let tables: Vec<String> = stmt.query_map([], |row| row.get(0))?
-        .filter_map(|r| r.ok()).collect();
-    
+    let tables: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
     for table_name in tables {
         let mut stmt2 = ref_conn.prepare(&format!("PRAGMA table_info(\"{}\")", table_name))?;
         let mut cols = Vec::new();
@@ -216,7 +217,7 @@ fn parse_expected_columns(schema_sql: &str) -> Result<Vec<(String, Vec<(String, 
         }
         result.push((table_name, cols));
     }
-    
+
     Ok(result)
 }
 
@@ -356,7 +357,7 @@ impl SessionDB {
         let db_dir = db_path.parent().unwrap_or(db_path.as_ref());
         std::fs::create_dir_all(db_dir)?;
         let conn = Connection::open(&db_path)?;
-        
+
         // WAL mode with short timeout — application-level retry handles
         // contention instead of sitting in SQLite's busy handler (deterministic
         // schedule causes convoy effects under load). Timeout of 1s means SQLite
@@ -367,24 +368,30 @@ impl SessionDB {
         // byte-range locks that don't reliably work on network filesystems
         // (NFS, SMB/CIFS, some FUSE mounts). Fall back to DELETE mode.
         let journal_mode = Self::try_set_journal_mode(&conn);
-        
-        conn.execute_batch(
-            &format!(
-                "PRAGMA foreign_keys=ON; \
+
+        conn.execute_batch(&format!(
+            "PRAGMA foreign_keys=ON; \
                  PRAGMA journal_mode={}; \
                  PRAGMA journal_size_limit=1000000; \
                  PRAGMA synchronous=NORMAL; \
                  PRAGMA busy_timeout=1000;",
-                journal_mode
-            ),
-        )?;
+            journal_mode
+        ))?;
         conn.execute_batch(SCHEMA_SQL)?;
         conn.execute_batch(FTS_SQL)?;
         reconcile_schema(&conn)?;
-        
-        let mode_label = if journal_mode == "wal" { "WAL (fast)" } else { "DELETE (NFS-safe)" };
-        info!("Opened session DB at {} [journal_mode={}]", db_path.display(), mode_label);
-        
+
+        let mode_label = if journal_mode == "wal" {
+            "WAL (fast)"
+        } else {
+            "DELETE (NFS-safe)"
+        };
+        info!(
+            "Opened session DB at {} [journal_mode={}]",
+            db_path.display(),
+            mode_label
+        );
+
         Ok(Self {
             db_path,
             conn: std::sync::Mutex::new(Some(conn)),
@@ -392,7 +399,7 @@ impl SessionDB {
             write_count: std::sync::atomic::AtomicUsize::new(0),
         })
     }
-    
+
     /// Try WAL mode first; fall back to DELETE on network filesystems.
     ///
     /// Returns the journal mode actually set ("wal" or "delete").
@@ -414,16 +421,19 @@ impl SessionDB {
             "wal"
         } else {
             // WAL setup failed — fall back to DELETE mode
-            info!("WAL not supported on this filesystem, falling back to DELETE. \
+            info!(
+                "WAL not supported on this filesystem, falling back to DELETE. \
                    Note: journal_mode=DELETE works on NFS/SMB/FUSE but reduces \
-                   concurrency — concurrent readers are blocked during writes.");
+                   concurrency — concurrent readers are blocked during writes."
+            );
             let _ = conn.execute_batch("PRAGMA journal_mode=DELETE");
             "delete"
         }
     }
 
     fn with_conn<F, T>(&self, f: F) -> Result<T>
-    where F: FnOnce(&Connection) -> Result<T>,
+    where
+        F: FnOnce(&Connection) -> Result<T>,
     {
         let lock = self.conn.lock().unwrap();
         match lock.as_ref() {
@@ -440,7 +450,8 @@ impl SessionDB {
     /// and retry — breaking the convoy pattern that SQLite's built-in
     /// deterministic backoff schedule creates under high concurrency.
     fn with_conn_mut<F, T>(&self, mut f: F) -> Result<T>
-    where F: FnMut(&mut Connection) -> Result<T>,
+    where
+        F: FnMut(&mut Connection) -> Result<T>,
     {
         let mut last_err: Option<String> = None;
 
@@ -453,8 +464,10 @@ impl SessionDB {
 
             {
                 let mut lock = self.conn.lock().unwrap();
-                let conn = lock.as_mut().ok_or_else(|| anyhow::anyhow!("database connection is closed"))?;
-                
+                let conn = lock
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("database connection is closed"))?;
+
                 // BEGIN IMMEDIATE acquires the WAL write lock at transaction start.
                 // On contention this fails immediately (not wait 1s for busy_timeout),
                 // so we can retry with jitter right away.
@@ -462,7 +475,7 @@ impl SessionDB {
                     last_err = Some("BEGIN IMMEDIATE failed".to_string());
                     continue;
                 }
-                
+
                 match f(conn) {
                     Ok(result) => {
                         // Success — commit
@@ -489,19 +502,26 @@ impl SessionDB {
             // On retryable error, sleep with jitter and try again
             if let Some(ref _err_msg) = last_err {
                 if attempt < WRITE_MAX_RETRIES - 1 {
-                    let jitter = rand::random::<f64>() * (WRITE_RETRY_MAX_S - WRITE_RETRY_MIN_S) + WRITE_RETRY_MIN_S;
+                    let jitter = rand::random::<f64>() * (WRITE_RETRY_MAX_S - WRITE_RETRY_MIN_S)
+                        + WRITE_RETRY_MIN_S;
                     std::thread::sleep(std::time::Duration::from_secs_f64(jitter));
                     continue;
                 }
             }
         }
 
-        Err(anyhow::anyhow!("database is locked after max retries: {:?}", last_err))
+        Err(anyhow::anyhow!(
+            "database is locked after max retries: {:?}",
+            last_err
+        ))
     }
 
     /// Record a successful write and checkpoint if needed.
     fn record_write(&self) {
-        let count = self.write_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let count = self
+            .write_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         if count % CHECKPOINT_EVERY_N_WRITES == 0 {
             self.try_wal_checkpoint();
         }
@@ -527,11 +547,38 @@ impl SessionDB {
             .chars()
             .filter(|c| {
                 // Allow printable ASCII and common Unicode (strip control chars)
-                !matches!(c,
-                    '\x00'|'\x01'|'\x02'|'\x03'|'\x04'|'\x05'|'\x06'|'\x07'
-                    |'\x08'|'\x0b'|'\x0c'|'\x0e'|'\x0f'|'\x10'|'\x11'|'\x12'|'\x13'
-                    |'\x14'|'\x15'|'\x16'|'\x17'|'\x18'|'\x19'|'\x1a'|'\x1b'|'\x1c'
-                    |'\x1d'|'\x1e'|'\x1f'|'\x7f'
+                !matches!(
+                    c,
+                    '\x00'
+                        | '\x01'
+                        | '\x02'
+                        | '\x03'
+                        | '\x04'
+                        | '\x05'
+                        | '\x06'
+                        | '\x07'
+                        | '\x08'
+                        | '\x0b'
+                        | '\x0c'
+                        | '\x0e'
+                        | '\x0f'
+                        | '\x10'
+                        | '\x11'
+                        | '\x12'
+                        | '\x13'
+                        | '\x14'
+                        | '\x15'
+                        | '\x16'
+                        | '\x17'
+                        | '\x18'
+                        | '\x19'
+                        | '\x1a'
+                        | '\x1b'
+                        | '\x1c'
+                        | '\x1d'
+                        | '\x1e'
+                        | '\x1f'
+                        | '\x7f'
                 )
             })
             .collect();
@@ -539,12 +586,24 @@ impl SessionDB {
             .chars()
             .filter(|c| {
                 // Strip zero-width spaces, line/paragraph separators, BOM, etc.
-                !matches!(c,
-                    '\u{200b}'|'\u{200c}'|'\u{200d}'|'\u{200e}'|'\u{200f}'
-                    |'\u{2028}'|'\u{2029}'
-                    |'\u{2060}'|'\u{2061}'|'\u{2062}'|'\u{2063}'|'\u{2064}'
-                    |'\u{feff}'
-                    |'\u{fffc}'|'\u{fffd}'|'\u{fffe}'
+                !matches!(
+                    c,
+                    '\u{200b}'
+                        | '\u{200c}'
+                        | '\u{200d}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{2060}'
+                        | '\u{2061}'
+                        | '\u{2062}'
+                        | '\u{2063}'
+                        | '\u{2064}'
+                        | '\u{feff}'
+                        | '\u{fffc}'
+                        | '\u{fffd}'
+                        | '\u{fffe}'
                 )
             })
             .collect();
@@ -617,22 +676,24 @@ impl SessionDB {
             } else {
                 base_title.to_string()
             };
-            
+
             let escaped = base
                 .replace('\\', "\\\\")
                 .replace('%', "\\%")
                 .replace('_', "\\_");
-            
-            let max_num: Option<i32> = conn.query_row(
-                "SELECT MAX(CAST(SUBSTR(title, INSTR(title, '# ') + 2) AS INTEGER)) \
+
+            let max_num: Option<i32> = conn
+                .query_row(
+                    "SELECT MAX(CAST(SUBSTR(title, INSTR(title, '# ') + 2) AS INTEGER)) \
                  FROM sessions WHERE title LIKE ? ESCAPE '\\\\'",
-                params![format!("{} #%%", escaped)],
-                |row| row.get::<_, Option<i32>>(0),
-            ).map_err(|e| anyhow::anyhow!(e))?;
-            
+                    params![format!("{} #%%", escaped)],
+                    |row| row.get::<_, Option<i32>>(0),
+                )
+                .map_err(|e| anyhow::anyhow!(e))?;
+
             let next = max_num.map(|n| n + 1).unwrap_or(1);
             if next <= 1 {
-                Ok(base)  // First instance — no suffix needed
+                Ok(base) // First instance — no suffix needed
             } else {
                 Ok(format!("{} #{}", base, next))
             }
@@ -642,14 +703,16 @@ impl SessionDB {
     pub fn get_or_create_session(&self, name: &str) -> Result<Session> {
         let sanitized = Self::sanitize_title(name);
         let title = sanitized.clone().unwrap_or_else(|| name.to_string());
-        
+
         let session = self.with_conn(|conn| {
             // Try exact title match first
-            let id: Option<String> = conn.query_row(
-                "SELECT id FROM sessions WHERE COALESCE(title, '') = ? LIMIT 1",
-                params![&title],
-                |row| row.get(0),
-            ).ok();
+            let id: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM sessions WHERE COALESCE(title, '') = ? LIMIT 1",
+                    params![&title],
+                    |row| row.get(0),
+                )
+                .ok();
             match id {
                 Some(id) => self.session_from_id(conn, &id),
                 None => self.create_session_record(conn, &title),
@@ -667,14 +730,24 @@ impl SessionDB {
             params![id.clone(), name, ts],
         )?;
         let metadata = SessionMetadata {
-            id: id.clone(), name: name.to_string(), source: SessionSource::Cli,
-            title: Some(name.to_string()), started_at: now, message_count: 0,
+            id: id.clone(),
+            name: name.to_string(),
+            source: SessionSource::Cli,
+            title: Some(name.to_string()),
+            started_at: now,
+            message_count: 0,
             ..Default::default()
         };
         Ok(Session {
-            id: id.clone(), name: name.to_string(), created_at: now, updated_at: now,
-            messages: Vec::new(), memory_context: None, summary_chunks: Vec::new(),
-            persisted_message_count: 0, metadata,
+            id: id.clone(),
+            name: name.to_string(),
+            created_at: now,
+            updated_at: now,
+            messages: Vec::new(),
+            memory_context: None,
+            summary_chunks: Vec::new(),
+            persisted_message_count: 0,
+            metadata,
         })
     }
 
@@ -735,19 +808,50 @@ impl SessionDB {
              FROM sessions WHERE id = ?"
         )?;
         let row: (
-            String, String, String, Option<String>, Option<String>, Option<String>,
-            f64, Option<f64>, Option<String>, Option<String>, Option<String>,
-            Option<String>, usize, usize, usize, usize, Option<String>, Option<String>,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            f64,
+            Option<f64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            usize,
+            usize,
+            usize,
+            usize,
+            Option<String>,
+            Option<String>,
         ) = match stmt.query_row([session_id], |row| {
             Ok((
-                row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
-                row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?,
-                row.get(11)?, row.get(12)?, row.get(13)?, row.get(14)?,
-                row.get(15)?, row.get(16)?, row.get(17)?,
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
+                row.get(11)?,
+                row.get(12)?,
+                row.get(13)?,
+                row.get(14)?,
+                row.get(15)?,
+                row.get(16)?,
+                row.get(17)?,
             ))
         }) {
             Ok(r) => r,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Err(anyhow!("session not found: {}", session_id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(anyhow!("session not found: {}", session_id))
+            }
             Err(e) => return Err(anyhow!(e)),
         };
 
@@ -757,12 +861,24 @@ impl SessionDB {
         let ended_at = row.7.map(ts_to_datetime);
 
         let metadata = SessionMetadata {
-            id: row.0, name: title_str.clone(), source, model: row.3, system_prompt: row.4,
-            parent_session_id: row.5, started_at, ended_at,
-            end_reason: row.8, title: Some(title_str.clone()), preview: row.10,
-            handoff_state: row.11, handoff_platform: row.16, handoff_error: row.17,
-            message_count: row.12, tool_call_count: row.13,
-            input_tokens: row.14, output_tokens: row.15,
+            id: row.0,
+            name: title_str.clone(),
+            source,
+            model: row.3,
+            system_prompt: row.4,
+            parent_session_id: row.5,
+            started_at,
+            ended_at,
+            end_reason: row.8,
+            title: Some(title_str.clone()),
+            preview: row.10,
+            handoff_state: row.11,
+            handoff_platform: row.16,
+            handoff_error: row.17,
+            message_count: row.12,
+            tool_call_count: row.13,
+            input_tokens: row.14,
+            output_tokens: row.15,
             total_tokens: row.14.saturating_add(row.15),
             estimated_cost_usd: 0.0,
             cost_status: "unknown".to_string(),
@@ -776,10 +892,14 @@ impl SessionDB {
         };
 
         Ok(Session {
-            id: metadata.id.clone(), name: metadata.name.clone(),
-            created_at: started_at, updated_at: started_at,
-            messages: Vec::new(), memory_context: None,
-            summary_chunks: Vec::new(), persisted_message_count: 0,
+            id: metadata.id.clone(),
+            name: metadata.name.clone(),
+            created_at: started_at,
+            updated_at: started_at,
+            messages: Vec::new(),
+            memory_context: None,
+            summary_chunks: Vec::new(),
+            persisted_message_count: 0,
             metadata,
         })
     }
@@ -798,9 +918,14 @@ impl SessionDB {
     /// Unlike `save_messages`, this does NOT delete the session itself.
     pub fn clear_messages(&self, session_id: &str) -> Result<()> {
         self.with_conn_mut(|conn| {
-            conn.execute("DELETE FROM messages WHERE session_id = ?", params![session_id])?;
-            conn.execute("UPDATE sessions SET message_count = 0, ended_at = ? WHERE id = ?",
-                params![now_ts(), session_id])?;
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ?",
+                params![session_id],
+            )?;
+            conn.execute(
+                "UPDATE sessions SET message_count = 0, ended_at = ? WHERE id = ?",
+                params![now_ts(), session_id],
+            )?;
             Ok(())
         })
     }
@@ -891,7 +1016,8 @@ impl SessionDB {
 
     pub fn load_messages(&self, session_id: &str) -> Result<Vec<Message>> {
         self.with_conn(|conn| {
-            let mut stmt = conn.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id")?;
+            let mut stmt =
+                conn.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id")?;
             let mut rows = stmt.query_map(params![session_id], row_to_message)?;
             let mut messages = Vec::new();
             while let Some(row_result) = rows.next() {
@@ -901,40 +1027,72 @@ impl SessionDB {
         })
     }
 
-    pub fn get_messages_around(&self, session_id: &str, around_message_id: i64, window: usize) -> Result<MessagesAround> {
+    pub fn get_messages_around(
+        &self,
+        session_id: &str,
+        around_message_id: i64,
+        window: usize,
+    ) -> Result<MessagesAround> {
         if window == 0 {
-            return Ok(MessagesAround { window: Vec::new(), messages_before: 0, messages_after: 0 });
+            return Ok(MessagesAround {
+                window: Vec::new(),
+                messages_before: 0,
+                messages_after: 0,
+            });
         }
         self.with_conn(|conn| {
-            let anchor_exists = conn.query_row(
-                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
-                params![around_message_id, session_id],
-                |row| row.get::<_, i32>(0),
-            ).optional()?.map(|v| v == 1).unwrap_or(false);
+            let anchor_exists = conn
+                .query_row(
+                    "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+                    params![around_message_id, session_id],
+                    |row| row.get::<_, i32>(0),
+                )
+                .optional()?
+                .map(|v| v == 1)
+                .unwrap_or(false);
 
             if !anchor_exists {
-                return Ok(MessagesAround { window: Vec::new(), messages_before: 0, messages_after: 0 });
+                return Ok(MessagesAround {
+                    window: Vec::new(),
+                    messages_before: 0,
+                    messages_after: 0,
+                });
             }
 
             let mut stmt = conn.prepare(
-                "SELECT * FROM messages WHERE session_id = ? AND id <= ? ORDER BY id DESC LIMIT ?"
+                "SELECT * FROM messages WHERE session_id = ? AND id <= ? ORDER BY id DESC LIMIT ?",
             )?;
-            let before: Vec<Message> = stmt.query_map(params![session_id, around_message_id, window + 1], row_to_message)?
-                .filter_map(|r| r.ok()).collect::<Vec<_>>();
+            let before: Vec<Message> = stmt
+                .query_map(
+                    params![session_id, around_message_id, window + 1],
+                    row_to_message,
+                )?
+                .filter_map(|r| r.ok())
+                .collect::<Vec<_>>();
 
             let mut stmt = conn.prepare(
-                "SELECT * FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?"
+                "SELECT * FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
             )?;
-            let after: Vec<Message> = stmt.query_map(params![session_id, around_message_id, window], row_to_message)?
-                .filter_map(|r| r.ok()).collect::<Vec<_>>();
+            let after: Vec<Message> = stmt
+                .query_map(
+                    params![session_id, around_message_id, window],
+                    row_to_message,
+                )?
+                .filter_map(|r| r.ok())
+                .collect::<Vec<_>>();
 
             let after_len = after.len();
-            let mut all = before.into_iter().rev().chain(after.into_iter()).collect::<Vec<_>>();
+            let mut all = before
+                .into_iter()
+                .rev()
+                .chain(after.into_iter())
+                .collect::<Vec<_>>();
             if !all.iter().any(|m| m.id == Some(around_message_id)) {
                 if let Ok(msg) = conn.query_row(
                     "SELECT * FROM messages WHERE id = ? AND session_id = ?",
-                    params![around_message_id, session_id], row_to_message)
-                {
+                    params![around_message_id, session_id],
+                    row_to_message,
+                ) {
                     all.push(msg);
                     all.sort_by(|a, b| {
                         let aid = a.id.unwrap_or(0);
@@ -952,13 +1110,30 @@ impl SessionDB {
         })
     }
 
-    pub fn get_anchored_view(&self, session_id: &str, around_message_id: i64, window: usize, bookend: usize) -> Result<AnchoredView> {
+    pub fn get_anchored_view(
+        &self,
+        session_id: &str,
+        around_message_id: i64,
+        window: usize,
+        bookend: usize,
+    ) -> Result<AnchoredView> {
         let primitive = self.get_messages_around(session_id, around_message_id, window)?;
         if primitive.window.is_empty() {
-            return Ok(AnchoredView { window: Vec::new(), messages_before: 0, messages_after: 0, bookend_start: Vec::new(), bookend_end: Vec::new() });
+            return Ok(AnchoredView {
+                window: Vec::new(),
+                messages_before: 0,
+                messages_after: 0,
+                bookend_start: Vec::new(),
+                bookend_end: Vec::new(),
+            });
         }
-        let filtered: Vec<Message> = primitive.window.into_iter()
-            .filter(|m| m.id == Some(around_message_id) || matches!(m.role, MessageRole::User | MessageRole::Assistant))
+        let filtered: Vec<Message> = primitive
+            .window
+            .into_iter()
+            .filter(|m| {
+                m.id == Some(around_message_id)
+                    || matches!(m.role, MessageRole::User | MessageRole::Assistant)
+            })
             .collect();
         let first_id = filtered.first().and_then(|m| m.id).unwrap_or(-1);
         let last_id = filtered.last().and_then(|m| m.id).unwrap_or(-1);
@@ -978,14 +1153,27 @@ impl SessionDB {
             window: filtered,
             messages_before: primitive.messages_before,
             messages_after: primitive.messages_after,
-            bookend_start, bookend_end,
+            bookend_start,
+            bookend_end,
         })
     }
 
-    fn _load_bookend(&self, session_id: &str, id: i64, bookend: usize, forward: bool) -> Result<Vec<Message>> {
-        if bookend == 0 { return Ok(Vec::new()); }
+    fn _load_bookend(
+        &self,
+        session_id: &str,
+        id: i64,
+        bookend: usize,
+        forward: bool,
+    ) -> Result<Vec<Message>> {
+        if bookend == 0 {
+            return Ok(Vec::new());
+        }
         let clause = if forward { "id < ?" } else { "id > ?" };
-        let order = if forward { "ORDER BY id ASC" } else { "ORDER BY id DESC" };
+        let order = if forward {
+            "ORDER BY id ASC"
+        } else {
+            "ORDER BY id DESC"
+        };
         let sql = format!("SELECT * FROM messages WHERE session_id = ? AND {} AND role IN ('user', 'assistant') AND length(content) > 0 {} LIMIT ?", clause, order);
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(&sql)?;
@@ -994,12 +1182,21 @@ impl SessionDB {
             while let Some(row_result) = rows.next() {
                 result.push(row_result?);
             }
-            if !forward { result.reverse(); }
+            if !forward {
+                result.reverse();
+            }
             Ok(result)
         })
     }
 
-    pub fn list_sessions(&self, source: Option<&str>, exclude_sources: &[&str], limit: usize, offset: usize, include_children: bool) -> Result<Vec<SessionMetadata>> {
+    pub fn list_sessions(
+        &self,
+        source: Option<&str>,
+        exclude_sources: &[&str],
+        limit: usize,
+        offset: usize,
+        include_children: bool,
+    ) -> Result<Vec<SessionMetadata>> {
         self.with_conn(|conn| {
             let mut conditions = Vec::new();
             let mut bind: Vec<Value> = Vec::new();
@@ -1057,7 +1254,12 @@ impl SessionDB {
         })
     }
 
-    pub fn search_messages(&self, query: &str, limit: usize, _role_filter: Option<&[&str]>) -> Result<Vec<SearchHit>> {
+    pub fn search_messages(
+        &self,
+        query: &str,
+        limit: usize,
+        _role_filter: Option<&[&str]>,
+    ) -> Result<Vec<SearchHit>> {
         self.with_conn(|conn| {
             let sanitized = query.replace('%', "\\%").replace('_', "\\_");
             let like_query = format!("%{}%", sanitized);
@@ -1104,25 +1306,26 @@ impl SessionDB {
                     params![&current],
                     |row| row.get::<_, Option<String>>(0),
                 )?;
-                
+
                 let parent_id = match parent_id {
                     Some(pid) => pid,
-                    None => return Ok(current),  // No parent — this is the tip
+                    None => return Ok(current), // No parent — this is the tip
                 };
-                
+
                 // Check if parent ended with compression and child started after
                 let parent_info: (Option<String>, Option<f64>) = conn.query_row(
                     "SELECT end_reason, ended_at FROM sessions WHERE id = ?",
                     params![&parent_id],
-                    |row| Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, Option<f64>>(1)?,
-                    )),
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<f64>>(1)?,
+                        ))
+                    },
                 )?;
-                
+
                 match parent_info {
-                    (Some(end_reason), Some(ended_at)) 
-                        if end_reason == "compression" => {
+                    (Some(end_reason), Some(ended_at)) if end_reason == "compression" => {
                         // Parent ended with compression — walk to children
                         // Started_at >= ended_at means child was created as continuation
                         match conn.query_row(
@@ -1134,10 +1337,10 @@ impl SessionDB {
                             |row| row.get::<_, String>(0),
                         ) {
                             Ok(child_id) => current = child_id,
-                            Err(_) => return Ok(current),  // No more children
+                            Err(_) => return Ok(current), // No more children
                         }
                     }
-                    _ => return Ok(current),  // Parent not compression or data issue
+                    _ => return Ok(current), // Parent not compression or data issue
                 }
             }
             Ok(current)
@@ -1185,7 +1388,7 @@ impl SessionDB {
     pub fn prune_empty_ghost_sessions(&self) -> Result<usize> {
         self.with_conn_mut(|conn| {
             let cutoff = now_ts() - 24.0 * 3600.0; // 24 hours ago
-            // Find ghost sessions
+                                                   // Find ghost sessions
             let mut stmt = conn.prepare(
                 "SELECT id FROM sessions \
                  WHERE source = 'tui' \
@@ -1194,22 +1397,23 @@ impl SessionDB {
                    AND started_at < ? \
                    AND NOT EXISTS (
                        SELECT 1 FROM messages WHERE messages.session_id = sessions.id
-                   )"
+                   )",
             )?;
-            let ghosts: Vec<String> = stmt.query_map(
-                params![cutoff],
-                |row| row.get::<_, String>(0),
-            )?.filter_map(|r| r.ok()).collect();
-            
-            if ghosts.is_empty() { return Ok(0); }
-            
-            let placeholders: String = ghosts.iter()
-                .map(|_| "?").collect::<Vec<_>>().join(",");
+            let ghosts: Vec<String> = stmt
+                .query_map(params![cutoff], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if ghosts.is_empty() {
+                return Ok(0);
+            }
+
+            let placeholders: String = ghosts.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let count = conn.execute(
                 &format!("DELETE FROM sessions WHERE id IN ({})", placeholders),
                 rusqlite::params_from_iter(ghosts.iter()),
             )?;
-            
+
             Ok(count)
         })
     }
@@ -1239,7 +1443,10 @@ impl SessionDB {
 
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         self.with_conn_mut(|conn| {
-            conn.execute("DELETE FROM messages WHERE session_id = ?", params![session_id])?;
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ?",
+                params![session_id],
+            )?;
             conn.execute("DELETE FROM sessions WHERE id = ?", params![session_id])?;
             Ok(())
         })
@@ -1276,7 +1483,9 @@ impl SessionDB {
                 |row| row.get(0),
             )?;
             if count > 0 {
-                return Err(anyhow::anyhow!("Session title must be unique, '{new_title}' is already in use"));
+                return Err(anyhow::anyhow!(
+                    "Session title must be unique, '{new_title}' is already in use"
+                ));
             }
             conn.execute(
                 "UPDATE sessions SET title = ? WHERE id = ?",
@@ -1360,7 +1569,10 @@ pub struct BrowseEntry {
 }
 
 pub fn sanitize_fts5_query(query: &str) -> String {
-    query.replace('"', "\\\"").replace('(', "\\(").replace(')', "\\)")
+    query
+        .replace('"', "\\\"")
+        .replace('(', "\\(")
+        .replace(')', "\\)")
 }
 
 // ── SessionManager (SQLite-backed, wraps SessionDB) ────────────────────────
@@ -1429,12 +1641,17 @@ impl SessionManager {
     }
 
     fn find_session_key_by_name(&self, name: &str) -> Option<String> {
-        self.sessions.iter().find(|(_, s)| s.name == name).map(|(k, _)| k.clone())
+        self.sessions
+            .iter()
+            .find(|(_, s)| s.name == name)
+            .map(|(k, _)| k.clone())
     }
 
     fn load_session_into_cache(&mut self, session_id: &str) -> Result<()> {
         // Get metadata from DB
-        let meta = self.db.get_session(session_id)?
+        let meta = self
+            .db
+            .get_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
         // Load messages from DB
         let messages = self.db.load_messages(session_id)?;
@@ -1533,7 +1750,9 @@ impl SessionManager {
         self.sessions.insert(id.clone(), session);
         self.active_session_id = Some(id);
         self.state = SessionState::Loaded(self.active_session_id.clone());
-        self.sessions.get_mut(self.active_session_id.as_ref().unwrap()).unwrap()
+        self.sessions
+            .get_mut(self.active_session_id.as_ref().unwrap())
+            .unwrap()
     }
 
     /// Alias for `create_session`.
@@ -1559,12 +1778,14 @@ impl SessionManager {
         }
         self.load(Some(session_id))?;
         self.active_session_id = Some(session_id.to_string());
-        self.sessions.get_mut(session_id)
+        self.sessions
+            .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))
     }
 
     pub fn switch(&mut self, session_id: &str) -> Result<SwitchResult> {
-        let session_id = self.find_key(session_id)
+        let session_id = self
+            .find_key(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
         let session = self.switch_session(&session_id)?;
         Ok(SwitchResult {
@@ -1589,11 +1810,15 @@ impl SessionManager {
     }
 
     pub fn active_session(&self) -> Option<&Session> {
-        self.active_session_id.as_ref().and_then(|id| self.sessions.get(id))
+        self.active_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.get(id))
     }
 
     pub fn active_session_mut(&mut self) -> Option<&mut Session> {
-        self.active_session_id.as_ref().and_then(|id| self.sessions.get_mut(id))
+        self.active_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.get_mut(id))
     }
 
     /// Return all sessions as a `Vec<&Session>`.
@@ -1611,15 +1836,23 @@ impl SessionManager {
             Some(id) => id.to_string(),
             None => match &self.active_session_id {
                 Some(id) => id.clone(),
-                None => { info!("No active session to save"); return Ok(()); }
+                None => {
+                    info!("No active session to save");
+                    return Ok(());
+                }
             },
         };
-        let session = self.sessions.get(&sid)
+        let session = self
+            .sessions
+            .get(&sid)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", sid))?;
         self.db.ensure_session_in_db(&sid, &session.metadata)?;
         // Clamp: after compression, messages.len() can be < persisted_message_count.
         // Treat this as "nothing new to persist" — the DB state is already ahead of memory.
-        let new_count = session.messages.len().saturating_sub(session.persisted_message_count);
+        let new_count = session
+            .messages
+            .len()
+            .saturating_sub(session.persisted_message_count);
 
         // No new messages to persist
         if new_count == 0 {
@@ -1669,7 +1902,9 @@ impl SessionManager {
     /// If `None`, the active session's messages are loaded.
     pub fn load(&mut self, session_id: Option<&str>) -> Result<()> {
         match self.state {
-            SessionState::Off => { self.init()?; }
+            SessionState::Off => {
+                self.init()?;
+            }
             SessionState::Init => {}
             SessionState::Loaded(_) => return Ok(()), // already loaded
         }
@@ -1698,7 +1933,7 @@ impl SessionManager {
             };
             self.sessions.insert(session.id.clone(), session);
         }
-        
+
         // Don't change active_session_id — preserve the current one.
         self.state = SessionState::Loaded(self.active_session_id.clone());
         info!(
@@ -1724,7 +1959,8 @@ impl SessionManager {
 
     pub fn delete_session(&mut self, key: &str) -> Result<()> {
         // Resolve name → UUID (like switch() does)
-        let resolved = self.find_key(key)
+        let resolved = self
+            .find_key(key)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", key))?;
 
         self.db.delete_session(&resolved)?;
@@ -1749,7 +1985,6 @@ impl SessionManager {
         self.sessions.len()
     }
 
-
     #[inline]
     pub fn active(&self) -> Option<&Session> {
         self.active_session()
@@ -1772,17 +2007,19 @@ impl SessionManager {
 
     /// Update the title of the current session in both the in-memory cache and the database.
     pub fn set_title(&mut self, new_title: &str) -> Result<()> {
-        let sid = self.active_session_id.clone()
+        let sid = self
+            .active_session_id
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("No active session to rename"))?;
-        
+
         // Update in-memory session
         if let Some(session) = self.sessions.get_mut(&sid) {
             session.metadata.title = Some(new_title.to_string());
         }
-        
+
         // Persist to database
         self.db.set_title(&sid, new_title)?;
-        
+
         Ok(())
     }
 
@@ -1805,7 +2042,9 @@ impl SessionManager {
 
         // 3. Save parent's messages to DB before creating child
         {
-            let parent = self.sessions.get_mut(parent_id)
+            let parent = self
+                .sessions
+                .get_mut(parent_id)
                 .ok_or_else(|| anyhow::anyhow!("Session not found: {}", parent_id))?;
             let mut parent_messages = parent.messages.clone();
             self.db.save_messages(parent_id, &mut parent_messages)?;
@@ -1865,9 +2104,13 @@ impl SessionManager {
                 if let Some(title) = &s.metadata.title {
                     // Parse "base (N)" suffix
                     if let Some(suffix) = title.strip_prefix(base) {
-                        if let Some(num) = suffix.strip_prefix(" (").and_then(|s| s.strip_suffix(')')) {
+                        if let Some(num) =
+                            suffix.strip_prefix(" (").and_then(|s| s.strip_suffix(')'))
+                        {
                             if let Ok(n) = num.parse::<usize>() {
-                                if n > max_num { max_num = n; }
+                                if n > max_num {
+                                    max_num = n;
+                                }
                             }
                         }
                     }
@@ -1906,14 +2149,17 @@ impl SessionManager {
 
     /// Reset the current session — clear messages, keep metadata.
     pub fn reset_current_session(&mut self) -> Result<()> {
-        let sid = self.active_session_id.clone()
+        let sid = self
+            .active_session_id
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("No active session to reset"))?;
         self.reset_session(&sid)
     }
 
     /// Reset a specific session — clear messages, keep metadata.
     pub fn reset_session(&mut self, key: &str) -> Result<()> {
-        let sid = self.find_key(key)
+        let sid = self
+            .find_key(key)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", key))?;
         let _now_ts = now_ts();
         // End the current session in DB
@@ -2037,10 +2283,9 @@ impl SessionManager {
     pub fn list_sessions(&self, active_minutes: Option<u64>) -> Vec<oben_models::SessionListEntry> {
         let now = chrono::Utc::now();
         let cutoff = active_minutes.map(|m| now - chrono::Duration::minutes(m as i64));
-        self.sessions.values()
-            .filter(|s| {
-                cutoff.map(|c| s.updated_at >= c).unwrap_or(true)
-            })
+        self.sessions
+            .values()
+            .filter(|s| cutoff.map(|c| s.updated_at >= c).unwrap_or(true))
             .map(|s| oben_models::SessionListEntry {
                 id: s.id.clone(),
                 name: s.name.clone(),
@@ -2082,7 +2327,9 @@ impl SessionManager {
         }
         let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days);
         let active_sid = self.active_session_id.clone();
-        let to_remove: Vec<String> = self.sessions.iter()
+        let to_remove: Vec<String> = self
+            .sessions
+            .iter()
             .filter(|(_, s)| {
                 !s.metadata.suspended
                     && s.updated_at < cutoff
@@ -2180,7 +2427,14 @@ impl SessionManagerExt for SessionManager {
         total_tokens: usize,
         estimated_cost_usd: f64,
     ) {
-        SessionManager::update_token_tracking(self, session_id, input_tokens, output_tokens, total_tokens, estimated_cost_usd)
+        SessionManager::update_token_tracking(
+            self,
+            session_id,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            estimated_cost_usd,
+        )
     }
     fn split_after_compression(&mut self, parent_id: &str) -> Result<Session, anyhow::Error> {
         SessionManager::split_after_compression(self, parent_id)
@@ -2229,7 +2483,8 @@ mod tests {
         tempfile::tempdir().unwrap().path().join("sessions")
     }
 
-    #[test] fn test_manager_creates_session() {
+    #[test]
+    fn test_manager_creates_session() {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path).unwrap();
         let session = mgr.new_session("test-session");
@@ -2238,14 +2493,17 @@ mod tests {
         assert_eq!(mgr.session_count(), 1);
     }
 
-    #[test] fn test_manager_list_sessions() {
+    #[test]
+    fn test_manager_list_sessions() {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path).unwrap();
-        mgr.new_session("s1"); mgr.new_session("s2");
+        mgr.new_session("s1");
+        mgr.new_session("s2");
         assert_eq!(mgr.list_sessions_ref().len(), 2);
     }
 
-    #[test] fn test_manager_get_or_create_reuses_existing() {
+    #[test]
+    fn test_manager_get_or_create_reuses_existing() {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path).unwrap();
         let s1 = mgr.get_or_create_session("my-session");
@@ -2255,7 +2513,8 @@ mod tests {
         assert_eq!(s2.message_count(), 1);
     }
 
-    #[test] fn test_save_and_load_roundtrip() {
+    #[test]
+    fn test_save_and_load_roundtrip() {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path.clone()).unwrap();
         let session = mgr.new_session("persist-test");
@@ -2270,10 +2529,16 @@ mod tests {
         assert_eq!(mgr3.session_count(), count);
         let meta_loaded = mgr3.active_session().unwrap();
         assert_eq!(meta_loaded.name, "persist-test");
-        assert_eq!(meta_loaded.metadata.message_count, 2, "metadata message_count should be 2");
+        assert_eq!(
+            meta_loaded.metadata.message_count, 2,
+            "metadata message_count should be 2"
+        );
         // Test metadata-only load — message_count from metadata is correct,
         // but message_count() (from memory) is 0 since messages aren't loaded
-        assert_eq!(meta_loaded.metadata.message_count, 2, "metadata message_count should be 2");
+        assert_eq!(
+            meta_loaded.metadata.message_count, 2,
+            "metadata message_count should be 2"
+        );
         // Test full roundtrip with messages
         let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
         mgr2.load(Some(&sid)).unwrap();
@@ -2283,27 +2548,32 @@ mod tests {
         assert_eq!(loaded.message_count(), 2);
     }
 
-    #[test] fn test_switch_session() {
+    #[test]
+    fn test_switch_session() {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path).unwrap();
-        let s1 = mgr.new_session("s1"); s1.add_message(Message::user("msg in s1"));
+        let s1 = mgr.new_session("s1");
+        s1.add_message(Message::user("msg in s1"));
         let s1_id = s1.id.clone();
         mgr.incremental_save(None).unwrap(); // persist s1 to DB
-        let s2 = mgr.new_session("s2"); s2.add_message(Message::user("msg in s2"));
+        let s2 = mgr.new_session("s2");
+        s2.add_message(Message::user("msg in s2"));
         assert!(mgr.active_session().unwrap().name == "s2");
         let switched = mgr.switch_session(&s1_id).unwrap();
         assert_eq!(switched.name, "s1");
         assert_eq!(switched.message_count(), 1);
     }
 
-    #[test] fn test_switch_to_nonexistent_session_fails() {
+    #[test]
+    fn test_switch_to_nonexistent_session_fails() {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path).unwrap();
         let err = mgr.switch_session("nonexistent-id").unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
 
-    #[test] fn test_load_empty_directory() {
+    #[test]
+    fn test_load_empty_directory() {
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path.clone()).unwrap();
         mgr.incremental_save(None).unwrap();
@@ -2312,7 +2582,8 @@ mod tests {
         assert_eq!(mgr2.session_count(), 0);
     }
 
-    #[test] fn test_save_load_messages_persisted() {
+    #[test]
+    fn test_save_load_messages_persisted() {
         // SQLite persists all messages to DB — verified by round-trip load
         let path = make_test_dir();
         let mut mgr = SessionManager::new_with_path(path.clone()).unwrap();
@@ -2330,7 +2601,8 @@ mod tests {
         assert_eq!(loaded.message_count(), 4);
     }
 
-    #[test] fn test_manager_delete() {
+    #[test]
+    fn test_manager_delete() {
         let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.new_session("to-delete");
         assert_eq!(mgr.list().len(), 1);
@@ -2339,7 +2611,8 @@ mod tests {
         assert_eq!(mgr.list().len(), 0);
     }
 
-    #[test] fn test_manager_delete_by_name() {
+    #[test]
+    fn test_manager_delete_by_name() {
         // Regression: deletion was broken when called with session name
         // (not UUID), because remove_session passed the name directly
         // to db.delete_session() and HashMap::remove() which both
@@ -2355,7 +2628,8 @@ mod tests {
         tempfile::tempdir().unwrap().path().join("db")
     }
 
-    #[test] fn test_db_create_and_get_session() {
+    #[test]
+    fn test_db_create_and_get_session() {
         let path = make_db_dir().join("state.db");
         let db = SessionDB::new(&path).unwrap();
         let session = db.get_or_create_session("test-session").unwrap();
@@ -2365,13 +2639,16 @@ mod tests {
         assert_eq!(session.id, session2.id);
     }
 
-    #[test] fn test_db_save_and_load_messages() {
+    #[test]
+    fn test_db_save_and_load_messages() {
         let path = make_db_dir().join("state2.db");
         let db = SessionDB::new(&path).unwrap();
         let session = db.get_or_create_session("msg-test").unwrap();
         let session_id = session.id.clone();
         let mut msgs = vec![
-            Message::user("hello"), Message::assistant("hi there"), Message::user("how are you"),
+            Message::user("hello"),
+            Message::assistant("hi there"),
+            Message::user("how are you"),
         ];
         db.save_messages(&session_id, &mut msgs).unwrap();
         let loaded = db.load_messages(&session_id).unwrap();
@@ -2380,12 +2657,15 @@ mod tests {
         assert_eq!(loaded[1].content.to_text(), "hi there");
     }
 
-    #[test] fn test_db_messages_around() {
+    #[test]
+    fn test_db_messages_around() {
         let path = make_db_dir().join("around.db");
         let db = SessionDB::new(&path).unwrap();
         let session = db.get_or_create_session("around-test").unwrap();
         let sid = session.id.clone();
-        let mut msgs: Vec<Message> = (0..10).map(|i| Message::user(format!("message {}", i))).collect();
+        let mut msgs: Vec<Message> = (0..10)
+            .map(|i| Message::user(format!("message {}", i)))
+            .collect();
         db.save_messages(&sid, &mut msgs).unwrap();
         let loaded = db.load_messages(&sid).unwrap();
         let anchor_id: i64 = loaded[5].id.unwrap();
@@ -2393,7 +2673,8 @@ mod tests {
         assert!(result.window.len() >= 3);
     }
 
-    #[test] fn test_db_delete_session() {
+    #[test]
+    fn test_db_delete_session() {
         let path = make_db_dir().join("delete.db");
         let db = SessionDB::new(&path).unwrap();
         let sid = db.get_or_create_session("del-me").unwrap().id;
@@ -2404,7 +2685,8 @@ mod tests {
         assert_ne!(sid, sid3, "should create new session after delete");
     }
 
-    #[test] fn test_db_list_sessions() {
+    #[test]
+    fn test_db_list_sessions() {
         let path = make_db_dir().join("list.db");
         let db = SessionDB::new(&path).unwrap();
         db.get_or_create_session("session-a").unwrap();
@@ -2439,8 +2721,15 @@ mod tests {
 
         // Parent is marked ended
         let parent_db = mgr.db.get_session(&parent_id).unwrap().unwrap();
-        assert_eq!(parent_db.metadata.end_reason, Some("compression".to_string()), "parent end_reason should be 'compression'");
-        assert!(parent_db.metadata.ended_at.is_some(), "parent ended_at should be set");
+        assert_eq!(
+            parent_db.metadata.end_reason,
+            Some("compression".to_string()),
+            "parent end_reason should be 'compression'"
+        );
+        assert!(
+            parent_db.metadata.ended_at.is_some(),
+            "parent ended_at should be set"
+        );
     }
 
     /// Tests that `split_after_compression` sets parent_session_id on the child.
@@ -2462,7 +2751,11 @@ mod tests {
 
         // Child references parent
         let child_db = mgr.db.get_session(&child.id).unwrap().unwrap();
-        assert_eq!(child_db.metadata.parent_session_id, Some(parent_id), "child parent_session_id should match parent");
+        assert_eq!(
+            child_db.metadata.parent_session_id,
+            Some(parent_id),
+            "child parent_session_id should match parent"
+        );
     }
 
     /// Tests that `split_after_compression` auto-numbers the child title.
@@ -2483,7 +2776,11 @@ mod tests {
 
         // Title should be "chat-12345 (2)"
         let child_db = mgr.db.get_session(&child.id).unwrap().unwrap();
-        assert_eq!(child_db.metadata.title.as_deref(), Some("chat-12345 (2)"), "title should be auto-numbered");
+        assert_eq!(
+            child_db.metadata.title.as_deref(),
+            Some("chat-12345 (2)"),
+            "title should be auto-numbered"
+        );
     }
 
     /// Tests that `split_after_compression` returns the child session.
@@ -2506,7 +2803,11 @@ mod tests {
 
         // Returned session is the child with auto-numbered title, stable name
         assert_eq!(child.id, child.id);
-        assert_eq!(child.name, "split-test".to_string(), "name should be stable");
+        assert_eq!(
+            child.name,
+            "split-test".to_string(),
+            "name should be stable"
+        );
         assert_eq!(
             child.metadata.title.as_deref(),
             Some("split-test (2)"),
@@ -2524,34 +2825,40 @@ mod tests {
     /// because multiple threads compete for the WAL write lock.
     #[test]
     fn test_concurrent_writes_no_lock_errors() {
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
-        
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
         let dir = make_db_dir();
         let db = Arc::new(SessionDB::new(dir.join("concurrent.db")).unwrap());
-        
+
         // Create a session shared by all threads
         let session = db.get_or_create_session("concurrent-test").unwrap();
         let sid = session.id;
-        
+
         let num_threads = 10;
         let msgs_per_thread = 20;
         let mut handles = Vec::with_capacity(num_threads);
-        
+
         let success_count = Arc::new(AtomicUsize::new(0));
         let error_count = Arc::new(AtomicUsize::new(0));
-        
+
         for i in 0..num_threads {
             let db_clone = Arc::clone(&db);
             let sid_clone = sid.clone();
             let success = Arc::clone(&success_count);
             let errors = Arc::clone(&error_count);
-            
+
             let handle = std::thread::spawn(move || {
                 let msgs: Vec<Message> = (0..msgs_per_thread)
                     .map(|j| Message::user(format!("t{}-m{}", i, j)))
                     .collect();
-                
-                if db_clone.save_new_messages(&sid_clone, &mut msgs.clone().into_boxed_slice()).is_ok() {
+
+                if db_clone
+                    .save_new_messages(&sid_clone, &mut msgs.clone().into_boxed_slice())
+                    .is_ok()
+                {
                     success.fetch_add(1, Ordering::Relaxed);
                 } else {
                     errors.fetch_add(1, Ordering::Relaxed);
@@ -2559,18 +2866,21 @@ mod tests {
             });
             handles.push(handle);
         }
-        
+
         for handle in handles {
             handle.join().expect("thread panicked");
         }
-        
+
         let successes = success_count.load(Ordering::Relaxed);
         let errors = error_count.load(Ordering::Relaxed);
-        
-        assert_eq!(errors, 0, "Expected 0 lock errors but got {} (successes={}/{})",
-            errors, successes, num_threads);
+
+        assert_eq!(
+            errors, 0,
+            "Expected 0 lock errors but got {} (successes={}/{})",
+            errors, successes, num_threads
+        );
         assert_eq!(successes, num_threads);
-        
+
         // Verify all messages were persisted
         let loaded = db.load_messages(&sid).unwrap();
         assert_eq!(loaded.len(), num_threads * msgs_per_thread);
@@ -2702,16 +3012,14 @@ mod tests {
             "in-memory messages should be 5"
         );
         assert_eq!(
-            mem_session.persisted_message_count,
-            5,
+            mem_session.persisted_message_count, 5,
             "persisted_message_count should match"
         );
 
         // Verify: message_count in session metadata updated
         let db_session = mgr.db.get_session(&sid).unwrap().unwrap();
         assert_eq!(
-            db_session.metadata.message_count,
-            5,
+            db_session.metadata.message_count, 5,
             "session metadata message_count should be 5"
         );
     }

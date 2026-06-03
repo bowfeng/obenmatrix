@@ -1,12 +1,13 @@
 /// Chat Completions transport — OpenAI-compatible API (OpenRouter, OpenAI, NovitaAI, etc.)
 /// Maps to `agent/transports/chat_completions.py`.
-
 use anyhow::{anyhow, Result};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
+use oben_models::{
+    Message, MessageRole, ReasoningEffort, Tool, TransportResponse, TransportToolCall,
+};
 use serde_json::json;
 use tracing::debug;
-use oben_models::{Message, MessageRole, ReasoningEffort, Tool, TransportResponse, TransportToolCall};
 
 use super::base::{BaseTransport, ChatResponse};
 
@@ -34,7 +35,11 @@ fn tool_to_openai(tool: &Tool) -> serde_json::Value {
                 })
                 .collect();
 
-            let required: Vec<String> = params.iter().filter(|p| p.required).map(|p| p.name.clone()).collect();
+            let required: Vec<String> = params
+                .iter()
+                .filter(|p| p.required)
+                .map(|p| p.name.clone())
+                .collect();
 
             let mut schema = serde_json::Map::new();
             schema.insert("type".into(), json!("object"));
@@ -104,7 +109,8 @@ fn message_to_json(m: &Message) -> serde_json::Value {
             }
             // Tool message: include tool_call_id
             if m.role == MessageRole::Tool {
-                let call_id = m.tool_call_ids
+                let call_id = m
+                    .tool_call_ids
                     .first()
                     .map(|s| s.as_str())
                     .unwrap_or("unknown");
@@ -191,14 +197,20 @@ where
             // static config) is shared, so we clone only the messages part.
             let mut req = (**template).clone();
             let mut json_messages = build_all_messages_json(messages);
-            
+
             let arr = req["messages"].as_array_mut().unwrap();
             // Pre-allocate capacity to avoid reallocations.
-            arr.reserve(json_messages.len() + 1);// pre-allocate to avoid reallocations including system prompt
-            // Move JSON values into the array (avoids per-element clone).
+            arr.reserve(json_messages.len() + 1); // pre-allocate to avoid reallocations including system prompt
+                                                  // Move JSON values into the array (avoids per-element clone).
             arr.append(&mut json_messages);
             let sid = session_id.clone();
-            cached.insert(sid, CachedRequest { request: req, msg_count: messages.len() });
+            cached.insert(
+                sid,
+                CachedRequest {
+                    request: req,
+                    msg_count: messages.len(),
+                },
+            );
             f(&cached[&session_id].request)
         }
         oben_models::CallMode::Incremental(_) => {
@@ -307,7 +319,11 @@ fn build_request_template(
     system_prompt: impl Into<String>,
     tools: Vec<serde_json::Value>,
 ) -> serde_json::Value {
-    let system_role = if swap_system_to_developer(&config.model) { "developer" } else { "system" };
+    let system_role = if swap_system_to_developer(&config.model) {
+        "developer"
+    } else {
+        "system"
+    };
     let mut req = json!({
         "model": config.model,
         "messages": serde_json::Value::Array(vec![json!({
@@ -335,13 +351,19 @@ fn build_request_template(
         req["presence_penalty"] = json!(pp);
     }
     if let Some(ss) = &config.stop_sequences {
-        req["stop"] = serde_json::Value::Array(ss.iter().map(|s| serde_json::Value::String(s.clone())).collect());
+        req["stop"] = serde_json::Value::Array(
+            ss.iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        );
     }
     if let Some(rf) = &config.response_format {
         req["response_format"] = match rf {
             oben_models::ResponseFormat::Text => json!({"type": "text"}),
             oben_models::ResponseFormat::Json => json!({"type": "json_object"}),
-            oben_models::ResponseFormat::JsonSchema { schema } => json!({"type": "json_schema", "json_schema": schema}),
+            oben_models::ResponseFormat::JsonSchema { schema } => {
+                json!({"type": "json_schema", "json_schema": schema})
+            }
         };
     }
     if let Some(tc) = &config.tool_choice {
@@ -349,7 +371,9 @@ fn build_request_template(
             oben_models::ToolChoice::None => json!({"type": "none"}),
             oben_models::ToolChoice::Auto => json!({"type": "auto"}),
             oben_models::ToolChoice::Any => json!({"type": "any"}),
-            oben_models::ToolChoice::Tool { name } => json!({"type": "function", "function": {"name": name}}),
+            oben_models::ToolChoice::Tool { name } => {
+                json!({"type": "function", "function": {"name": name}})
+            }
         };
     }
     if let Some(re) = &config.reasoning_effort {
@@ -453,11 +477,19 @@ pub struct ChatCompletionsTransport {
 }
 
 impl ChatCompletionsTransport {
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>, system_prompt: impl Into<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        system_prompt: impl Into<String>,
+    ) -> Self {
         let base = BaseTransport::new(base_url, api_key, model.into());
         let system_prompt = system_prompt.into();
         let tools: Vec<serde_json::Value> = Vec::new();
-        let config = oben_models::ProviderConfig::new(oben_models::ProviderKind::Custom, "model-placeholder");
+        let config = oben_models::ProviderConfig::new(
+            oben_models::ProviderKind::Custom,
+            "model-placeholder",
+        );
         let template = build_request_template(&config, system_prompt.clone(), tools.clone());
         let stream_template = build_stream_request_template(&config, system_prompt, tools);
         Self {
@@ -548,7 +580,8 @@ impl ChatCompletionsTransport {
     ) -> Self {
         let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();
-        let base = BaseTransport::with_timeout(base_url, api_key, config.model.clone(), config.timeout);
+        let base =
+            BaseTransport::with_timeout(base_url, api_key, config.model.clone(), config.timeout);
         let system_prompt = system_prompt.into();
         let template = build_request_template(config, system_prompt.clone(), Vec::new());
         let stream_template = build_stream_request_template(config, system_prompt, Vec::new());
@@ -577,18 +610,32 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         "chat-completions"
     }
 
-    async fn chat(&self, messages: &[Message], mode: &oben_models::CallMode) -> Result<TransportResponse> {
+    async fn chat(
+        &self,
+        messages: &[Message],
+        mode: &oben_models::CallMode,
+    ) -> Result<TransportResponse> {
         let request = {
             let mut cached = self.cached.lock().unwrap();
             // system_prompt is already in messages[0] from build_and_prepend —
             // the parameter is kept for API compatibility but not re-embedded.
-            resolve_request(&mut *cached, messages, mode, &self.template, |req| req.clone())
+            resolve_request(&mut *cached, messages, mode, &self.template, |req| {
+                req.clone()
+            })
         };
 
         let url = format!("{}/chat/completions", self.base.base_url);
 
-        debug!("Requesting {}: model={}, messages={}", url, self.base.model, messages.len());
-        debug!("Prompt: {}", serde_json::to_string(&request).unwrap_or_default());
+        debug!(
+            "Requesting {}: model={}, messages={}",
+            url,
+            self.base.model,
+            messages.len()
+        );
+        debug!(
+            "Prompt: {}",
+            serde_json::to_string(&request).unwrap_or_default()
+        );
 
         let mut req = self.base.client.post(&url).json(&request);
         if !self.base.api_key.is_empty() {
@@ -606,22 +653,35 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
 
         debug!(
             "LLM response: choices={:?}, usage={:?}",
-            resp.choices.iter().map(|c| {
-                format!(
-                    "role={:?} content_len={:?} tool_calls={:?} finish={:?}",
-                    c.message.role,
-                    c.message.content.as_ref().map(|s| s.len()),
-                    c.message.tool_calls.as_ref().map(|tcs| tcs.len()),
-                    c.finish_reason,
-                )
-            }).collect::<Vec<_>>(),
-            resp.usage.as_ref().map(|u| format!("prompt={:?} comp={:?} total={:?}", u.prompt_tokens, u.completion_tokens, u.total_tokens)),
+            resp.choices
+                .iter()
+                .map(|c| {
+                    format!(
+                        "role={:?} content_len={:?} tool_calls={:?} finish={:?}",
+                        c.message.role,
+                        c.message.content.as_ref().map(|s| s.len()),
+                        c.message.tool_calls.as_ref().map(|tcs| tcs.len()),
+                        c.finish_reason,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            resp.usage.as_ref().map(|u| format!(
+                "prompt={:?} comp={:?} total={:?}",
+                u.prompt_tokens, u.completion_tokens, u.total_tokens
+            )),
         );
 
-        let choice = resp.choices.first().ok_or_else(|| anyhow::anyhow!("No response choices"))?;
+        let choice = resp
+            .choices
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No response choices"))?;
         let text = choice.message.content.clone().unwrap_or_default();
         let preview: String = text.chars().take(100).collect();
-        debug!("Extracted text: len={}, first_100={:?}", text.len(), preview);
+        debug!(
+            "Extracted text: len={}, first_100={:?}",
+            text.len(),
+            preview
+        );
         let tool_calls: Vec<TransportToolCall> = choice
             .message
             .tool_calls
@@ -641,15 +701,25 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         })
     }
 
-    async fn stream_chat(&self, messages: &[Message], mode: &oben_models::CallMode, mut delta_callback: oben_models::StreamDeltaCallback) -> Result<TransportResponse> {
+    async fn stream_chat(
+        &self,
+        messages: &[Message],
+        mode: &oben_models::CallMode,
+        mut delta_callback: oben_models::StreamDeltaCallback,
+    ) -> Result<TransportResponse> {
         let request = {
             let mut cached = self.cached.lock().unwrap();
-            resolve_request(&mut *cached, messages, mode, &self.stream_template, |req| req.clone())
+            resolve_request(&mut *cached, messages, mode, &self.stream_template, |req| {
+                req.clone()
+            })
         };
 
         let url = format!("{}/chat/completions", self.base.base_url);
         debug!("Streaming request to {}", url);
-        debug!("Prompt: {}", serde_json::to_string(&request).unwrap_or_default());
+        debug!(
+            "Prompt: {}",
+            serde_json::to_string(&request).unwrap_or_default()
+        );
 
         let mut req = self.base.client.post(&url).json(&request);
         if !self.base.api_key.is_empty() {
@@ -746,7 +816,11 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
 
         // Build final tool_calls from accumulated deltas
         let mut tool_calls: Vec<TransportToolCall> = Vec::new();
-        for (idx, (name, args)) in tool_call_names.iter().zip(tool_call_args.iter()).enumerate() {
+        for (idx, (name, args)) in tool_call_names
+            .iter()
+            .zip(tool_call_args.iter())
+            .enumerate()
+        {
             let args_json = if args.is_empty() {
                 serde_json::Value::Object(serde_json::Map::new())
             } else {
@@ -804,10 +878,7 @@ mod tests {
     #[test]
     fn test_resolve_request_fresh() {
         let session_id = String::from("test-session");
-        let messages = vec![
-            Message::system("be helpful"),
-            Message::user("hello"),
-        ];
+        let messages = vec![Message::system("be helpful"), Message::user("hello")];
         let template = std::sync::Arc::new(json!({
             "model": "test-model",
             "messages": serde_json::Value::Array(vec![]),
@@ -816,12 +887,18 @@ mod tests {
         }));
         let mut cached = std::collections::HashMap::new();
 
-        let (json_len, model) = resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |req| {
-            assert_eq!(req["messages"].as_array().unwrap().len(), 2);
-            assert_eq!(req["messages"][0]["role"], "system");
-            assert_eq!(req["model"], "test-model");
-            (2, req["model"].clone())
-        });
+        let (json_len, model) = resolve_request(
+            &mut cached,
+            &messages,
+            &oben_models::CallMode::Fresh(session_id.clone()),
+            &template,
+            |req| {
+                assert_eq!(req["messages"].as_array().unwrap().len(), 2);
+                assert_eq!(req["messages"][0]["role"], "system");
+                assert_eq!(req["model"], "test-model");
+                (2, req["model"].clone())
+            },
+        );
         assert_eq!(json_len, 2);
         assert_eq!(model, "test-model");
         assert_eq!(cached[&session_id].msg_count, 2);
@@ -839,19 +916,28 @@ mod tests {
         let mut cached = std::collections::HashMap::new();
 
         // Fresh: 2 messages
-        let messages = vec![
-            Message::system("be helpful"),
-            Message::user("hello"),
-        ];
-        resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+        let messages = vec![Message::system("be helpful"), Message::user("hello")];
+        resolve_request(
+            &mut cached,
+            &messages,
+            &oben_models::CallMode::Fresh(session_id.clone()),
+            &template,
+            |_| (),
+        );
 
         // Incremental: add 1 more
         let mut messages = messages.clone();
         messages.push(Message::assistant("hi there"));
-        resolve_request(&mut cached, &messages, &oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
-            assert_eq!(req["messages"].as_array().unwrap().len(), 3);
-            assert_eq!(req["messages"][2]["role"], "assistant");
-        });
+        resolve_request(
+            &mut cached,
+            &messages,
+            &oben_models::CallMode::Incremental(session_id.clone()),
+            &template,
+            |req| {
+                assert_eq!(req["messages"].as_array().unwrap().len(), 3);
+                assert_eq!(req["messages"][2]["role"], "assistant");
+            },
+        );
         assert_eq!(cached[&session_id].msg_count, 3);
     }
 
@@ -872,14 +958,26 @@ mod tests {
             Message::user("hello"),
             Message::assistant("hi"),
         ];
-        resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+        resolve_request(
+            &mut cached,
+            &messages,
+            &oben_models::CallMode::Fresh(session_id.clone()),
+            &template,
+            |_| (),
+        );
 
         // Incremental: removed one — should reset
         let mut messages = messages;
         messages.pop();
-        resolve_request(&mut cached, &messages, &oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
-            assert_eq!(req["messages"].as_array().unwrap().len(), 2);
-        });
+        resolve_request(
+            &mut cached,
+            &messages,
+            &oben_models::CallMode::Incremental(session_id.clone()),
+            &template,
+            |req| {
+                assert_eq!(req["messages"].as_array().unwrap().len(), 2);
+            },
+        );
         assert_eq!(cached[&session_id].msg_count, 2);
     }
 
@@ -895,19 +993,28 @@ mod tests {
         let mut cached = std::collections::HashMap::new();
 
         // Fresh: 2 messages
-        let messages = vec![
-            Message::system("sys"),
-            Message::user("hello"),
-        ];
-        resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+        let messages = vec![Message::system("sys"), Message::user("hello")];
+        resolve_request(
+            &mut cached,
+            &messages,
+            &oben_models::CallMode::Fresh(session_id.clone()),
+            &template,
+            |_| (),
+        );
 
         // Incremental: same count but content changed — should reset
         let mut messages = messages.clone();
         messages[1] = Message::user("changed");
-        resolve_request(&mut cached, &messages, &oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
-            assert_eq!(req["messages"].as_array().unwrap().len(), 2);
-            assert_eq!(req["messages"][1]["content"], "changed");
-        });
+        resolve_request(
+            &mut cached,
+            &messages,
+            &oben_models::CallMode::Incremental(session_id.clone()),
+            &template,
+            |req| {
+                assert_eq!(req["messages"].as_array().unwrap().len(), 2);
+                assert_eq!(req["messages"][1]["content"], "changed");
+            },
+        );
         assert_eq!(cached[&session_id].msg_count, 2);
     }
 
@@ -922,15 +1029,33 @@ mod tests {
         let mut cached = std::collections::HashMap::new();
 
         let messages_a = vec![Message::system("sys-a"), Message::user("hello-a")];
-        resolve_request(&mut cached, &messages_a, &oben_models::CallMode::Fresh("session-a".into()), &template, |_| ());
+        resolve_request(
+            &mut cached,
+            &messages_a,
+            &oben_models::CallMode::Fresh("session-a".into()),
+            &template,
+            |_| (),
+        );
 
         let messages_b = vec![Message::system("sys-b"), Message::user("hello-b")];
-        resolve_request(&mut cached, &messages_b, &oben_models::CallMode::Fresh("session-b".into()), &template, |_| ());
+        resolve_request(
+            &mut cached,
+            &messages_b,
+            &oben_models::CallMode::Fresh("session-b".into()),
+            &template,
+            |_| (),
+        );
 
         assert_eq!(cached["session-a"].msg_count, 2);
         assert_eq!(cached["session-b"].msg_count, 2);
-        assert_eq!(cached["session-a"].request["messages"][0]["content"], "sys-a");
-        assert_eq!(cached["session-b"].request["messages"][0]["content"], "sys-b");
+        assert_eq!(
+            cached["session-a"].request["messages"][0]["content"],
+            "sys-a"
+        );
+        assert_eq!(
+            cached["session-b"].request["messages"][0]["content"],
+            "sys-b"
+        );
     }
 
     #[test]
@@ -945,11 +1070,14 @@ mod tests {
         let mut cached = std::collections::HashMap::new();
 
         // Fresh: 2 messages
-        let messages = vec![
-            Message::system("sys"),
-            Message::user("hello"),
-        ];
-        resolve_request(&mut cached, &messages, &oben_models::CallMode::Fresh(session_id.clone()), &template, |_| ());
+        let messages = vec![Message::system("sys"), Message::user("hello")];
+        resolve_request(
+            &mut cached,
+            &messages,
+            &oben_models::CallMode::Fresh(session_id.clone()),
+            &template,
+            |_| (),
+        );
 
         // Incremental: extend in-place by 1
         let messages2 = vec![
@@ -957,14 +1085,20 @@ mod tests {
             Message::user("hello"),
             Message::assistant("hi"),
         ];
-        resolve_request(&mut cached, &messages2, &oben_models::CallMode::Incremental(session_id.clone()), &template, |req| {
-            let arr = req["messages"].as_array().unwrap();
-            assert_eq!(arr.len(), 3);
-            // The first 2 messages should be the exact same Value objects
-            // (in-place extend, not a rebuild)
-            assert_eq!(arr[0]["role"], "system");
-            assert_eq!(arr[1]["role"], "user");
-            assert_eq!(arr[2]["role"], "assistant");
-        });
+        resolve_request(
+            &mut cached,
+            &messages2,
+            &oben_models::CallMode::Incremental(session_id.clone()),
+            &template,
+            |req| {
+                let arr = req["messages"].as_array().unwrap();
+                assert_eq!(arr.len(), 3);
+                // The first 2 messages should be the exact same Value objects
+                // (in-place extend, not a rebuild)
+                assert_eq!(arr[0]["role"], "system");
+                assert_eq!(arr[1]["role"], "user");
+                assert_eq!(arr[2]["role"], "assistant");
+            },
+        );
     }
 }

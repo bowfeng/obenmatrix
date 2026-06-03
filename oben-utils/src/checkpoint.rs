@@ -7,8 +7,8 @@
 //!
 //! [`tools/checkpoint_manager.py`]: https://github.com/bowfeng/oben-alien/blob/main/hermes-agent/tools/checkpoint_manager.py
 
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::hash::{Hash, Hasher};
 use std::io::Write as IoWrite;
@@ -99,10 +99,7 @@ impl Default for CheckpointConfig {
 // ---------------------------------------------------------------------------
 
 /// String-based path validation. Does NOT require working_dir to exist.
-pub fn validate_file_path(
-    file_path: &str,
-    _working_dir: &str,
-) -> Option<String> {
+pub fn validate_file_path(file_path: &str, _working_dir: &str) -> Option<String> {
     let file_path = file_path.trim();
     if file_path.is_empty() {
         return Some("Empty file path".to_string());
@@ -179,7 +176,11 @@ fn epoch_to_iso(epoch: f64) -> String {
 
     let mut buf = String::new();
     let _ = write!(buf, "{:04}-{:02}-{:02}", y, m, d);
-    let _ = write!(buf, "T{:02}:{:02}:{:02}.{:09}", hours, mins, secs_left, nanos);
+    let _ = write!(
+        buf,
+        "T{:02}:{:02}:{:02}.{:09}",
+        hours, mins, secs_left, nanos
+    );
     buf
 }
 
@@ -235,7 +236,11 @@ impl CheckpointStore {
             Vec::new()
         };
 
-        entries.sort_by(|a, b| b.timestamp.partial_cmp(&a.timestamp).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_by(|a, b| {
+            b.timestamp
+                .partial_cmp(&a.timestamp)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(entries)
     }
 
@@ -276,11 +281,7 @@ impl CheckpointStore {
         Ok(Some(id))
     }
 
-    pub fn restore_snapshot(
-        &mut self,
-        id: &str,
-        file_name: Option<&str>,
-    ) -> anyhow::Result<()> {
+    pub fn restore_snapshot(&mut self, id: &str, file_name: Option<&str>) -> anyhow::Result<()> {
         let snapshot_dir = self.snapshot_dir().join(id);
         if !snapshot_dir.is_dir() {
             return Err(anyhow::anyhow!("Snapshot '{}' not found", id));
@@ -297,10 +298,7 @@ impl CheckpointStore {
             let dest_file = self.working_dir.join(fname);
 
             if !src_file.exists() {
-                return Err(anyhow::anyhow!(
-                    "File '{}' not found in snapshot",
-                    fname
-                ));
+                return Err(anyhow::anyhow!("File '{}' not found in snapshot", fname));
             }
 
             if let Some(parent) = dest_file.parent() {
@@ -447,7 +445,10 @@ fn update_meta_snapshot(
 
     let mut entries: Vec<serde_json::Value> = if meta_file.is_file() {
         let content = std::fs::read_to_string(&meta_file)?;
-        content.lines().filter_map(|line| serde_json::from_str(line).ok()).collect()
+        content
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
     } else {
         Vec::new()
     };
@@ -477,11 +478,7 @@ fn update_meta_snapshot(
     Ok(())
 }
 
-fn cleanup_meta_snapshot(
-    checkpoint_base: &Path,
-    dir_hash: &str,
-    id: &str,
-) -> anyhow::Result<()> {
+fn cleanup_meta_snapshot(checkpoint_base: &Path, dir_hash: &str, id: &str) -> anyhow::Result<()> {
     let meta_dir = checkpoint_base.join("meta");
     if !meta_dir.is_dir() {
         return Ok(());
@@ -492,16 +489,18 @@ fn cleanup_meta_snapshot(
     }
 
     let content = std::fs::read_to_string(&meta_file)?;
-    let filtered: Vec<String> = content.lines().filter(|line| {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(id_val) = v.get("id").and_then(|v| v.as_str()) {
-                return id_val != id;
+    let filtered: Vec<String> = content
+        .lines()
+        .filter(|line| {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(id_val) = v.get("id").and_then(|v| v.as_str()) {
+                    return id_val != id;
+                }
             }
-        }
-        true
-    })
-    .map(|s| s.to_string())
-    .collect();
+            true
+        })
+        .map(|s| s.to_string())
+        .collect();
 
     let mut f = std::fs::File::create(meta_file)?;
     for entry in filtered {
@@ -537,7 +536,11 @@ pub fn format_snapshot_list(snapshots: &[SnapshotEntry]) -> String {
 
     let mut lines = Vec::new();
     for (i, snap) in snapshots.iter().enumerate() {
-        let date = snap.created_at.split('T').next().unwrap_or(&snap.created_at);
+        let date = snap
+            .created_at
+            .split('T')
+            .next()
+            .unwrap_or(&snap.created_at);
         let time = if snap.created_at.contains('T') {
             snap.created_at
                 .split('T')
@@ -573,9 +576,7 @@ pub fn format_snapshot_list(snapshots: &[SnapshotEntry]) -> String {
 
     lines.push("\n  /restore <N>             restore to checkpoint N".to_string());
     lines.push("\n  /restore diff <N>        preview changes since checkpoint N".to_string());
-    lines.push(
-        "\n  /restore <N> <file>      restore a single file from checkpoint N".to_string(),
-    );
+    lines.push("\n  /restore <N> <file>      restore a single file from checkpoint N".to_string());
     lines.join("\n")
 }
 
@@ -713,12 +714,9 @@ mod tests {
         std::fs::create_dir_all(&cp_base).unwrap();
 
         {
-            let mut store = CheckpointStore::new(
-                cp_base.to_str().unwrap(),
-                work_dir.to_str().unwrap(),
-                3,
-            )
-            .unwrap();
+            let mut store =
+                CheckpointStore::new(cp_base.to_str().unwrap(), work_dir.to_str().unwrap(), 3)
+                    .unwrap();
 
             for i in 0..5 {
                 let test_file = work_dir.join(format!("data_{}.txt", i));
@@ -731,12 +729,8 @@ mod tests {
         }
 
         // Read metadata again
-        let store = CheckpointStore::new(
-            cp_base.to_str().unwrap(),
-            work_dir.to_str().unwrap(),
-            3,
-        )
-        .unwrap();
+        let store =
+            CheckpointStore::new(cp_base.to_str().unwrap(), work_dir.to_str().unwrap(), 3).unwrap();
 
         let snaps = store.list_snapshots().unwrap();
         assert_eq!(snaps.len(), 3);
@@ -752,12 +746,9 @@ mod tests {
         std::fs::create_dir_all(&work_dir).unwrap();
         std::fs::create_dir_all(&cp_base).unwrap();
 
-        let mut store = CheckpointStore::new(
-            cp_base.to_str().unwrap(),
-            work_dir.to_str().unwrap(),
-            10,
-        )
-        .unwrap();
+        let mut store =
+            CheckpointStore::new(cp_base.to_str().unwrap(), work_dir.to_str().unwrap(), 10)
+                .unwrap();
 
         let test_file = work_dir.join("test.txt");
         std::fs::write(&test_file, "original").unwrap();
@@ -765,12 +756,9 @@ mod tests {
         assert!(snapshot_id.is_some());
 
         // Read meta again to verify snapshot listed
-        let store2 = CheckpointStore::new(
-            cp_base.to_str().unwrap(),
-            work_dir.to_str().unwrap(),
-            10,
-        )
-        .unwrap();
+        let store2 =
+            CheckpointStore::new(cp_base.to_str().unwrap(), work_dir.to_str().unwrap(), 10)
+                .unwrap();
         let snaps = store2.list_snapshots().unwrap();
         assert_eq!(snaps.len(), 1);
 
@@ -792,12 +780,9 @@ mod tests {
         std::fs::create_dir_all(&work_dir).unwrap();
         std::fs::create_dir_all(&cp_base).unwrap();
 
-        let mut store = CheckpointStore::new(
-            cp_base.to_str().unwrap(),
-            work_dir.to_str().unwrap(),
-            10,
-        )
-        .unwrap();
+        let mut store =
+            CheckpointStore::new(cp_base.to_str().unwrap(), work_dir.to_str().unwrap(), 10)
+                .unwrap();
 
         let result = store.save_snapshot("empty");
         assert!(result.is_ok());

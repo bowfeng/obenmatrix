@@ -5,7 +5,6 @@
 //!
 /// A thread-local whitelist that restricts which tools a plugin context
 /// (e.g., sub-agent) is allowed to call.
-
 use std::cell::RefCell;
 use std::collections::HashSet;
 

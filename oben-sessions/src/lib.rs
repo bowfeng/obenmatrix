@@ -18,6 +18,6 @@ pub mod search;
 pub mod skill_curation;
 
 pub use manager::*;
+pub use oben_models::SessionStore;
 pub use search::*;
 pub use skill_curation::*;
-pub use oben_models::SessionStore;

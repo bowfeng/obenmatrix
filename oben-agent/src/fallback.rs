@@ -2,7 +2,6 @@
 ///
 /// Mirrors Hermes' `_fallback_chain` and `_fallback_index` for provider
 /// fallback on rate limit exhaustion, overload, or connection failure.
-
 use serde::{Deserialize, Serialize};
 
 /// Single fallback model configuration.
@@ -107,7 +106,7 @@ fn mask_api_key(key: Option<&str>) -> String {
         None => "none".to_string(),
         Some(k) if k.is_empty() => "empty".to_string(),
         Some(k) if k.len() <= 12 => "***".to_string(),
-        Some(k) => format!("{}...{}", &k[..8], &k[k.len()-4..]),
+        Some(k) => format!("{}...{}", &k[..8], &k[k.len() - 4..]),
     }
 }
 
@@ -203,10 +202,7 @@ mod tests {
 
     #[test]
     fn test_active_fallback_returns_correct() {
-        let fallbacks = vec![
-            make_fallback("fb1", "m1"),
-            make_fallback("fb2", "m2"),
-        ];
+        let fallbacks = vec![make_fallback("fb1", "m1"), make_fallback("fb2", "m2")];
         let chain = FallbackChain::new(fallbacks);
 
         // On primary — no active fallback

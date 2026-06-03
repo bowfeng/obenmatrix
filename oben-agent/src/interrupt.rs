@@ -2,7 +2,6 @@
 ///
 /// Mirrors Hermes' `_interrupt_requested` / `_pending_steer` mechanism for
 /// gracefully stopping a running turn from another thread.
-
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -108,7 +107,10 @@ impl std::fmt::Debug for InterruptState {
         f.debug_struct("InterruptState")
             .field("interrupted", &self.is_interrupted())
             .field("has_message", &self.message.lock().unwrap().is_some())
-            .field("has_pending_steer", &self.pending_steer.lock().unwrap().is_some())
+            .field(
+                "has_pending_steer",
+                &self.pending_steer.lock().unwrap().is_some(),
+            )
             .finish()
     }
 }
@@ -169,7 +171,10 @@ mod tests {
     fn test_interrupt_message_stored_and_drained() {
         let state = InterruptState::new();
         state.request_interrupt(Some("user interrupted".to_string()));
-        assert_eq!(state.drain_interrupt_message(), Some("user interrupted".to_string()));
+        assert_eq!(
+            state.drain_interrupt_message(),
+            Some("user interrupted".to_string())
+        );
         assert!(state.drain_interrupt_message().is_none());
     }
 

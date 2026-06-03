@@ -11,16 +11,13 @@
 /// ├── unregister_transport(name) -> bool
 /// └── list_transport_names() -> Vec<String>
 /// ```
-
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use oben_models::providers::{ProviderConfig, TransportProvider};
 
-
 use super::{
-    anthropic_messages::AnthropicMessagesTransport,
-    chat_completions::ChatCompletionsTransport,
+    anthropic_messages::AnthropicMessagesTransport, chat_completions::ChatCompletionsTransport,
     gemini::GeminiMessagesTransport,
 };
 
@@ -53,11 +50,19 @@ struct RegistryEntry {
 
 impl TransportRegistry {
     fn new() -> Self {
-        Self { transports: HashMap::new() }
+        Self {
+            transports: HashMap::new(),
+        }
     }
 
-    fn register(&mut self, name: impl Into<String>, factory: TransportFactory, source: TransportSource) {
-        self.transports.insert(name.into(), RegistryEntry { factory, source });
+    fn register(
+        &mut self,
+        name: impl Into<String>,
+        factory: TransportFactory,
+        source: TransportSource,
+    ) {
+        self.transports
+            .insert(name.into(), RegistryEntry { factory, source });
     }
 
     fn unregister(&mut self, name: &str) -> bool {
@@ -86,7 +91,9 @@ fn discover_builtin_transports(reg: &mut TransportRegistry) {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
             Arc::new(ChatCompletionsTransport::from_config_with_tools(
-                config, system_prompt, tools,
+                config,
+                system_prompt,
+                tools,
             )) as Arc<dyn TransportProvider + Send + Sync>
         }),
         TransportSource::Builtin,
@@ -100,7 +107,9 @@ fn discover_builtin_transports(reg: &mut TransportRegistry) {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
             Arc::new(AnthropicMessagesTransport::from_config_with_tools(
-                config, system_prompt, tools,
+                config,
+                system_prompt,
+                tools,
             )) as Arc<dyn TransportProvider + Send + Sync>
         }),
         TransportSource::Builtin,
@@ -123,8 +132,8 @@ fn discover_builtin_transports(reg: &mut TransportRegistry) {
             let api_key = oben_models::resolve_api_key_from_env("google-gemini")
                 .or_else(|| oben_models::resolve_api_key_from_env("google-gemini-cli"))
                 .unwrap_or(String::new());
-            Arc::new(GeminiMessagesTransport::new(api_key, base_url, model)
-                .with_tools(tools)) as Arc<dyn TransportProvider + Send + Sync>
+            Arc::new(GeminiMessagesTransport::new(api_key, base_url, model).with_tools(tools))
+                as Arc<dyn TransportProvider + Send + Sync>
         }),
         TransportSource::Builtin,
     );
@@ -163,7 +172,9 @@ pub fn get_transport(
     if reg.transports.is_empty() {
         discover_builtin_transports(&mut reg);
     }
-    reg.transports.get(name).map(|entry| (entry.factory)(config, system_prompt))
+    reg.transports
+        .get(name)
+        .map(|entry| (entry.factory)(config, system_prompt))
 }
 
 /// Unregister a transport by name.
@@ -189,10 +200,10 @@ pub fn list_transport_names() -> Vec<String> {
 mod tests {
     use std::sync::Arc;
 
-    use oben_models::providers::{ProviderConfig, TransportProvider, TransportResponse};
-    use oben_models::{CallMode, Message, MessageContent, MessageRole, StreamDeltaCallback};
     use super::*;
+    use oben_models::providers::{ProviderConfig, TransportProvider, TransportResponse};
     use oben_models::ProviderKind;
+    use oben_models::{CallMode, Message, MessageContent, MessageRole, StreamDeltaCallback};
 
     // ── Simple test transport ──────────────────────────────────────────────────
 
@@ -216,7 +227,11 @@ mod tests {
             &self.name
         }
 
-        async fn chat(&self, _messages: &[Message], _mode: &CallMode) -> Result<TransportResponse, anyhow::Error> {
+        async fn chat(
+            &self,
+            _messages: &[Message],
+            _mode: &CallMode,
+        ) -> Result<TransportResponse, anyhow::Error> {
             Ok(TransportResponse {
                 text: self.response_text.clone(),
                 tool_calls: vec![],
@@ -250,9 +265,13 @@ mod tests {
     fn register_and_lookup() {
         let mut reg = TransportRegistry::new();
         let text = "hello".to_string();
-        reg.register("foo", Box::new(move |_config, _sys| {
-            Arc::new(TestTransport::new(&text)) as Arc<dyn TransportProvider + Send + Sync>
-        }), TransportSource::Plugin);
+        reg.register(
+            "foo",
+            Box::new(move |_config, _sys| {
+                Arc::new(TestTransport::new(&text)) as Arc<dyn TransportProvider + Send + Sync>
+            }),
+            TransportSource::Plugin,
+        );
         assert!(reg.transports.get("foo").is_some());
     }
 
@@ -266,9 +285,13 @@ mod tests {
     fn unregister_removes_entry() {
         let mut reg = TransportRegistry::new();
         let text = "x".to_string();
-        reg.register("remove_me", Box::new(move |_config, _sys| {
-            Arc::new(TestTransport::new(&text)) as Arc<dyn TransportProvider + Send + Sync>
-        }), TransportSource::Plugin);
+        reg.register(
+            "remove_me",
+            Box::new(move |_config, _sys| {
+                Arc::new(TestTransport::new(&text)) as Arc<dyn TransportProvider + Send + Sync>
+            }),
+            TransportSource::Plugin,
+        );
         assert!(reg.unregister("remove_me"));
         assert!(reg.transports.get("remove_me").is_none());
     }
@@ -285,15 +308,27 @@ mod tests {
         let z = "z".to_string();
         let a = "a".to_string();
         let m = "m".to_string();
-        reg.register("zebra", Box::new(move |_config, _sys| {
-            Arc::new(TestTransport::new(&z)) as Arc<dyn TransportProvider + Send + Sync>
-        }), TransportSource::Plugin);
-        reg.register("alpha", Box::new(move |_config, _sys| {
-            Arc::new(TestTransport::new(&a)) as Arc<dyn TransportProvider + Send + Sync>
-        }), TransportSource::Plugin);
-        reg.register("mango", Box::new(move |_config, _sys| {
-            Arc::new(TestTransport::new(&m)) as Arc<dyn TransportProvider + Send + Sync>
-        }), TransportSource::Plugin);
+        reg.register(
+            "zebra",
+            Box::new(move |_config, _sys| {
+                Arc::new(TestTransport::new(&z)) as Arc<dyn TransportProvider + Send + Sync>
+            }),
+            TransportSource::Plugin,
+        );
+        reg.register(
+            "alpha",
+            Box::new(move |_config, _sys| {
+                Arc::new(TestTransport::new(&a)) as Arc<dyn TransportProvider + Send + Sync>
+            }),
+            TransportSource::Plugin,
+        );
+        reg.register(
+            "mango",
+            Box::new(move |_config, _sys| {
+                Arc::new(TestTransport::new(&m)) as Arc<dyn TransportProvider + Send + Sync>
+            }),
+            TransportSource::Plugin,
+        );
         let names = reg.names();
         assert_eq!(names, vec!["alpha", "mango", "zebra"]);
     }
@@ -302,15 +337,23 @@ mod tests {
     fn duplicate_registration_overwrites_factory() {
         let mut reg = TransportRegistry::new();
         let f1 = "first".to_string();
-        reg.register("dup", Box::new(move |_config, _sys| {
-            Arc::new(TestTransport::new(&f1)) as Arc<dyn TransportProvider + Send + Sync>
-        }), TransportSource::Plugin);
+        reg.register(
+            "dup",
+            Box::new(move |_config, _sys| {
+                Arc::new(TestTransport::new(&f1)) as Arc<dyn TransportProvider + Send + Sync>
+            }),
+            TransportSource::Plugin,
+        );
         assert_eq!(reg.transports.len(), 1);
 
         let f2 = "second".to_string();
-        reg.register("dup", Box::new(move |_config, _sys| {
-            Arc::new(TestTransport::new(&f2)) as Arc<dyn TransportProvider + Send + Sync>
-        }), TransportSource::Plugin);
+        reg.register(
+            "dup",
+            Box::new(move |_config, _sys| {
+                Arc::new(TestTransport::new(&f2)) as Arc<dyn TransportProvider + Send + Sync>
+            }),
+            TransportSource::Plugin,
+        );
         assert_eq!(reg.transports.len(), 1);
         assert!(reg.transports.get("dup").is_some());
     }
@@ -339,17 +382,18 @@ mod tests {
         // then: returns an Arc<dyn TransportProvider> with the expected text
         let text = "hello from test".to_string();
         let mut guard = lock_registry();
-        guard.register("live_test_transport", Box::new(move |_config, _sys| {
-            Arc::new(TestTransport::new(&text)) as Arc<dyn TransportProvider + Send + Sync>
-        }), TransportSource::Plugin);
+        guard.register(
+            "live_test_transport",
+            Box::new(move |_config, _sys| {
+                Arc::new(TestTransport::new(&text)) as Arc<dyn TransportProvider + Send + Sync>
+            }),
+            TransportSource::Plugin,
+        );
         drop(guard);
 
         let config = ProviderConfig::new(ProviderKind::Custom, "test");
-        let transport = get_transport(
-            "live_test_transport",
-            &config,
-            "system prompt",
-        ).expect("test transport should be registered");
+        let transport = get_transport("live_test_transport", &config, "system prompt")
+            .expect("test transport should be registered");
 
         assert_eq!(transport.name(), "test");
 

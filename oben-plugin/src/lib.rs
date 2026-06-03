@@ -23,37 +23,40 @@
 //! - Plugin toolset grouping — map toolset → [tool names with plugin attribution]
 //! - PluginContext::llm() — host-owned LLM facade for trusted plugins
 
-pub mod plugin_kind;
-pub mod manifest;
+pub mod cli_command;
+pub mod config;
+pub mod discovery;
 pub mod hook;
 pub mod manager;
-pub mod discovery;
-pub mod config;
-pub mod provider;
-pub mod whitelist;
-pub mod slash_command;
-pub mod cli_command;
+pub mod manifest;
 pub mod message_injector;
 pub mod mock_provider;
+pub mod plugin_kind;
+pub mod provider;
+pub mod slash_command;
+pub mod whitelist;
 
-pub use plugin_kind::PluginKind;
-pub use manifest::{PluginManifest, PluginSource, parse_manifest};
-pub use hook::{HookType, HookCallback, invoke_hook, check_pre_tool_call_block, get_pre_llm_call_context, get_transform_llm_output, BlockAction};
-pub use manager::{PluginManager, PluginContext, LoadedPlugin, PluginInfo};
-pub use discovery::{DiscoveryConfig, discover_plugins};
+pub use cli_command::{CliCommand, CliCommandHandler, CliCommandRegistry, CliCommandSetup};
 pub use config::PluginConfig;
-pub use provider::{
-    ProviderKind, ProviderProfile, ImageGenProvider, WebSearchProvider, BrowserProvider, ContextEngine,
-    ModelProvider, ChatCompletionOutput, ChatToolCall, ToolCallFunction, CompletionUsage,
-    ImageGenRegistry, VideoGenRegistry, WebSearchRegistry, BrowserRegistry,
-    ContextEngineRegistry, ModelProviderRegistry,
-    ImageGenMarker, VideoGenMarker, WebSearchMarker, BrowserMarker, ContextEngineMarker, ModelProviderMarker,
+pub use discovery::{discover_plugins, DiscoveryConfig};
+pub use hook::{
+    check_pre_tool_call_block, get_pre_llm_call_context, get_transform_llm_output, invoke_hook,
+    BlockAction, HookCallback, HookType,
 };
-pub use whitelist::{set_thread_tool_whitelist, clear_thread_tool_whitelist, check_tool_allowed};
-pub use slash_command::{SlashCommand, SlashCommandRegistry, SlashCommandHandler};
-pub use cli_command::{CliCommand, CliCommandRegistry, CliCommandHandler, CliCommandSetup};
-pub use message_injector::{MessageInjector, MessageAction, InjectedMessage};
+pub use manager::{LoadedPlugin, PluginContext, PluginInfo, PluginManager};
+pub use manifest::{parse_manifest, PluginManifest, PluginSource};
+pub use message_injector::{InjectedMessage, MessageAction, MessageInjector};
 pub use mock_provider::{
-    MockImageGenProvider, MockWebSearchProvider, MockBrowserProvider, MockContextEngine, MockModelProvider,
-    MockVideoGenProvider,
+    MockBrowserProvider, MockContextEngine, MockImageGenProvider, MockModelProvider,
+    MockVideoGenProvider, MockWebSearchProvider,
 };
+pub use plugin_kind::PluginKind;
+pub use provider::{
+    BrowserMarker, BrowserProvider, BrowserRegistry, ChatCompletionOutput, ChatToolCall,
+    CompletionUsage, ContextEngine, ContextEngineMarker, ContextEngineRegistry, ImageGenMarker,
+    ImageGenProvider, ImageGenRegistry, ModelProvider, ModelProviderMarker, ModelProviderRegistry,
+    ProviderKind, ProviderProfile, ToolCallFunction, VideoGenMarker, VideoGenRegistry,
+    WebSearchMarker, WebSearchProvider, WebSearchRegistry,
+};
+pub use slash_command::{SlashCommand, SlashCommandHandler, SlashCommandRegistry};
+pub use whitelist::{check_tool_allowed, clear_thread_tool_whitelist, set_thread_tool_whitelist};

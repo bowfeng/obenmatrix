@@ -146,7 +146,11 @@ impl Default for StreamingContextScrubber {
 /// (we don't want to silently drop user-visible content).
 pub fn scrub_thinking_blocks(text: &str) -> String {
     let preview: String = text.chars().take(80).collect();
-    tracing::debug!("scrub_thinking_blocks: input len={}, first_80={:?}", text.len(), preview);
+    tracing::debug!(
+        "scrub_thinking_blocks: input len={}, first_80={:?}",
+        text.len(),
+        preview
+    );
     let mut result = String::new();
     let mut remaining = text.to_string();
 

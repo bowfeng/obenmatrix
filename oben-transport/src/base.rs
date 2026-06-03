@@ -1,5 +1,4 @@
 /// Base types for transport implementations.
-
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -16,8 +15,7 @@ pub struct ChatRequest {
 }
 
 /// A message in a chat request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChatMessage {
     pub role: String,
     pub content: MessageContent,
@@ -165,7 +163,11 @@ impl BaseTransport {
 }
 
 impl BaseTransport {
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         BaseTransport::with_timeout(base_url, api_key, model, None)
     }
 
@@ -199,7 +201,12 @@ impl BaseTransport {
     pub async fn send_request(&self, request: ChatRequest) -> Result<ChatResponse> {
         let url = format!("{}/chat/completions", self.base_url);
 
-        debug!("Requesting {}: model={}, messages={}", url, request.model, request.messages.len());
+        debug!(
+            "Requesting {}: model={}, messages={}",
+            url,
+            request.model,
+            request.messages.len()
+        );
 
         let mut req = self.client.post(&url).json(&request);
         if !self.api_key.is_empty() {
@@ -380,14 +387,16 @@ mod tests {
             ProviderKind::OpenAI => "https://api.openai.com/v1".to_string(),
             ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
             ProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
-            ProviderKind::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
+            ProviderKind::Bedrock => {
+                "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string()
+            }
             ProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1".to_string(),
             ProviderKind::LMStudio => "http://localhost:1234/v1".to_string(),
             // MiniMax variants use AnthropicMessagesTransport (dispatched in dispatch.rs)
             // Included here for enum exhaustiveness.
-            ProviderKind::MiniMax
-            | ProviderKind::MiniMaxOAuth
-            | ProviderKind::MiniMaxCN => base_url.clone().unwrap_or_default(),
+            ProviderKind::MiniMax | ProviderKind::MiniMaxOAuth | ProviderKind::MiniMaxCN => {
+                base_url.clone().unwrap_or_default()
+            }
             // All other new providers: use base_url parameter
             ProviderKind::DeepSeek
             | ProviderKind::Alibaba
@@ -415,7 +424,6 @@ mod tests {
             | ProviderKind::Custom => base_url.unwrap_or_default(),
         }
     }
-
 
     #[test]
     fn test_from_config_url_resolution() {
@@ -447,7 +455,10 @@ mod tests {
 
     #[test]
     fn test_from_config_custom_provider() {
-        let url = resolve_provider_url(&ProviderKind::Custom, Some("http://my.local:8080/v1".into()));
+        let url = resolve_provider_url(
+            &ProviderKind::Custom,
+            Some("http://my.local:8080/v1".into()),
+        );
         assert_eq!(url, "http://my.local:8080/v1");
     }
 

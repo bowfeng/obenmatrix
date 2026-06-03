@@ -1,6 +1,5 @@
 /// Load skills from YAML/TXT files.
 /// Maps to how Hermes loads skill files from the `skills/` directory.
-
 use anyhow::Result;
 use serde_yaml::Value;
 use std::collections::BTreeMap;
@@ -176,7 +175,9 @@ pub fn extract_tags(frontmatter: &BTreeMap<String, Value>) -> Vec<String> {
 /// Extract condition information from frontmatter.
 ///
 /// Maps to `extract_skill_conditions()` in hermes-agent.
-pub fn extract_skill_conditions(frontmatter: &BTreeMap<String, Value>) -> BTreeMap<String, Vec<String>> {
+pub fn extract_skill_conditions(
+    frontmatter: &BTreeMap<String, Value>,
+) -> BTreeMap<String, Vec<String>> {
     let mut conditions = BTreeMap::new();
     if let Some(Value::Mapping(meta)) = frontmatter.get("metadata") {
         if let Some(Value::Mapping(hermes)) = meta.get("hermes") {
@@ -230,17 +231,11 @@ pub fn extract_skill_config_vars(frontmatter: &BTreeMap<String, Value>) -> Vec<C
             if let Some(Value::Sequence(configs)) = hermes.get("config") {
                 for item in configs {
                     if let Value::Mapping(c) = item {
-                        let key = c
-                            .get("key")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let key = c.get("key").and_then(|v| v.as_str()).unwrap_or("");
                         if key.is_empty() {
                             continue;
                         }
-                        let desc = c
-                            .get("description")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let desc = c.get("description").and_then(|v| v.as_str()).unwrap_or("");
                         if desc.is_empty() {
                             continue;
                         }
@@ -403,7 +398,7 @@ pub fn get_external_skills_dirs() -> Vec<PathBuf> {
     }) {
         (Some(new_mtime), Some(old_mtime)) => new_mtime != old_mtime,
         (None, _) => return Vec::new(), // config doesn't exist
-        (Some(_), None) => true, // first call, or mtime changed
+        (Some(_), None) => true,        // first call, or mtime changed
     };
 
     if !should_freshen {
@@ -511,9 +506,7 @@ pub struct SkillLoader {
 
 impl SkillLoader {
     pub fn new() -> Self {
-        Self {
-            skill_dirs: vec![],
-        }
+        Self { skill_dirs: vec![] }
     }
 
     /// Add a directory to search for skills.
@@ -623,7 +616,13 @@ impl SkillLoader {
             .get("name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("unknown").to_string());
+            .unwrap_or_else(|| {
+                path.parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
 
         let description = extract_skill_description(&frontmatter);
 
@@ -640,12 +639,14 @@ impl SkillLoader {
             Some(to_value_map(frontmatter))
         };
 
-        Some(oben_models::Skill::builder(name)
-            .description(description)
-            .category(category)
-            .instructions(content)
-            .metadata(metadata)
-            .build())
+        Some(
+            oben_models::Skill::builder(name)
+                .description(description)
+                .category(category)
+                .instructions(content)
+                .metadata(metadata)
+                .build(),
+        )
     }
 
     fn load_from_dir(&self, dir: &Path) -> Option<oben_models::Skill> {
@@ -666,12 +667,14 @@ impl SkillLoader {
                 Some(to_value_map(frontmatter))
             };
 
-            Some(oben_models::Skill::builder(name)
-                .description(description)
-                .category(dir.parent()?.file_name()?.to_str()?.to_string())
-                .instructions(content)
-                .metadata(metadata)
-                .build())
+            Some(
+                oben_models::Skill::builder(name)
+                    .description(description)
+                    .category(dir.parent()?.file_name()?.to_str()?.to_string())
+                    .instructions(content)
+                    .metadata(metadata)
+                    .build(),
+            )
         } else if yaml_file.exists() {
             let content = fs::read_to_string(&yaml_file).ok()?;
             serde_yaml::from_str(&content).ok()
@@ -680,17 +683,21 @@ impl SkillLoader {
             let readme = skill_dir.join("README.md");
             if readme.exists() {
                 let content = fs::read_to_string(&readme).ok()?;
-                Some(oben_models::Skill::builder(name)
-                    .description(format!("Skill: {}", name))
-                    .category(dir.parent()?.file_name()?.to_str()?.to_string())
-                    .instructions(content)
-                    .build())
+                Some(
+                    oben_models::Skill::builder(name)
+                        .description(format!("Skill: {}", name))
+                        .category(dir.parent()?.file_name()?.to_str()?.to_string())
+                        .instructions(content)
+                        .build(),
+                )
             } else {
-                Some(oben_models::Skill::builder(name)
-                    .description(format!("Skill: {}", name))
-                    .category(dir.parent()?.file_name()?.to_str()?.to_string())
-                    .instructions("(no instructions found)")
-                    .build())
+                Some(
+                    oben_models::Skill::builder(name)
+                        .description(format!("Skill: {}", name))
+                        .category(dir.parent()?.file_name()?.to_str()?.to_string())
+                        .instructions("(no instructions found)")
+                        .build(),
+                )
             }
         }
     }
@@ -700,20 +707,28 @@ impl SkillLoader {
         let name = path.file_stem()?.to_str()?;
 
         // Check if it's YAML
-        if path.extension().map(|e| e == "yaml" || e == "yml").unwrap_or(false) {
+        if path
+            .extension()
+            .map(|e| e == "yaml" || e == "yml")
+            .unwrap_or(false)
+        {
             serde_yaml::from_str(&content).ok()
         } else {
-            Some(oben_models::Skill::builder(name)
-                .description(content.lines().next().unwrap_or("").to_string())
-                .instructions(content)
-                .build())
+            Some(
+                oben_models::Skill::builder(name)
+                    .description(content.lines().next().unwrap_or("").to_string())
+                    .instructions(content)
+                    .build(),
+            )
         }
     }
 }
 
 /// Helper: convert a `BTreeMap<String, Value>` into a `Value::Mapping`.
 fn to_value_map(map: BTreeMap<String, Value>) -> Value {
-    Value::Mapping(serde_yaml::Mapping::from_iter(map.into_iter().map(|(k, v)| (Value::String(k), v))))
+    Value::Mapping(serde_yaml::Mapping::from_iter(
+        map.into_iter().map(|(k, v)| (Value::String(k), v)),
+    ))
 }
 
 /// Default skills that come with the system.
@@ -814,7 +829,9 @@ mod tests {
         let mut fm = BTreeMap::new();
         fm.insert(
             "platforms".to_string(),
-            Value::Sequence(serde_yaml::Sequence::from_iter([Value::String("windows".into()),])),
+            Value::Sequence(serde_yaml::Sequence::from_iter([Value::String(
+                "windows".into(),
+            )])),
         );
         // On macOS/Linux this should be false
         let current = std::env::consts::OS;
@@ -955,7 +972,11 @@ Body"#;
     fn test_iter_skill_index_files_recursive() {
         let dir = temp_dir("iter_recursive");
         fs::create_dir_all(dir.join("category/sub-skill")).ok();
-        write_skill_md(&dir.join("category/SKILL.md"), "name: cat-skill\n", "Cat skill");
+        write_skill_md(
+            &dir.join("category/SKILL.md"),
+            "name: cat-skill\n",
+            "Cat skill",
+        );
         write_skill_md(
             &dir.join("category/sub-skill/SKILL.md"),
             "name: nested-skill\n",
@@ -989,7 +1010,11 @@ Body"#;
         let dir = temp_dir("iter_excl");
         let git_dir = dir.join(".git");
         fs::create_dir_all(git_dir.join("hooks")).ok();
-        write_skill_md(&git_dir.join("hooks/SKILL.md"), "name: hidden\n", "Should not be found");
+        write_skill_md(
+            &git_dir.join("hooks/SKILL.md"),
+            "name: hidden\n",
+            "Should not be found",
+        );
 
         let files = iter_skill_index_files(&dir, "SKILL.md");
         let names: Vec<_> = files.iter().map(|p| p.file_name().unwrap()).collect();
@@ -1081,4 +1106,3 @@ Body content"#;
         assert!(body.contains("Body content"));
     }
 }
-

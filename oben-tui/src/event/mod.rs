@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::turn::turn_state::{ActivityKind, ActiveTool, CompletedTool, TurnPhase, TurnState};
+use crate::turn::turn_state::{ActiveTool, ActivityKind, CompletedTool, TurnPhase, TurnState};
 
 /// Events emitted by the agent during a turn.
 #[derive(Debug, Clone)]
@@ -202,10 +202,7 @@ impl EventBus {
                         started_at: std::time::Instant::now(),
                         context: context.clone(),
                     });
-                    state.add_activity(
-                        ActivityKind::ToolStart,
-                        format!("Running: {name}"),
-                    );
+                    state.add_activity(ActivityKind::ToolStart, format!("Running: {name}"));
                 }
                 AgentEvent::ToolComplete(id, name, result) => {
                     self.finish_tool(&mut state, id, name, result);
@@ -227,10 +224,7 @@ impl EventBus {
                 AgentEvent::TurnError(error) => {
                     state.phase = TurnPhase::Error(error.clone());
                     state.active_tools.clear();
-                    state.add_activity(
-                        ActivityKind::Error,
-                        format!("Error: {error}"),
-                    );
+                    state.add_activity(ActivityKind::Error, format!("Error: {error}"));
                 }
                 AgentEvent::Status(_level, _message) => {
                     // Status messages are informational only.
@@ -238,10 +232,7 @@ impl EventBus {
                 }
                 AgentEvent::VPrint(_message) => {
                     // Always-visible message — stored in activity.
-                    state.add_activity(
-                        ActivityKind::Info,
-                        format!("📝 {}", _message),
-                    );
+                    state.add_activity(ActivityKind::Info, format!("📝 {}", _message));
                 }
                 AgentEvent::Thinking(_text) => {
                     // Thinking is separate from reasoning — could add a new field.
@@ -256,10 +247,8 @@ impl EventBus {
     }
 
     fn finish_tool(&self, state: &mut TurnState, id: &str, name: &str, result: &str) {
-        let has_error = result
-            .to_lowercase()
-            .contains("error")
-            || result.to_lowercase().contains("failed");
+        let has_error =
+            result.to_lowercase().contains("error") || result.to_lowercase().contains("failed");
         let preview = if result.len() > 60 {
             format!("{}...", &result[..60])
         } else {

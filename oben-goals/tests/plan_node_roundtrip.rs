@@ -1,4 +1,4 @@
-use oben_goals::plan::{PlanNode, NodeStatus};
+use oben_goals::plan::{NodeStatus, PlanNode};
 
 /// A plan node serializes and deserializes cleanly to/from JSON.
 #[test]
@@ -10,7 +10,10 @@ fn test_plan_node_roundtrip_json() {
     let json = serde_json::to_string(&node).unwrap();
     let back: PlanNode = serde_json::from_str(&json).unwrap();
     assert_eq!(back.title, "implement fetcher");
-    assert_eq!(back.description, Some("Write the HTTP fetcher module".to_string()));
+    assert_eq!(
+        back.description,
+        Some("Write the HTTP fetcher module".to_string())
+    );
     assert!(matches!(back.status, NodeStatus::InProgress));
 }
 
@@ -77,7 +80,13 @@ fn test_plan_node_artifacts() {
 
     let json = serde_json::to_string(&node).unwrap();
     let back: PlanNode = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.artifacts, vec!["src/main.rs".to_string(), "tests/integration.rs".to_string()]);
+    assert_eq!(
+        back.artifacts,
+        vec![
+            "src/main.rs".to_string(),
+            "tests/integration.rs".to_string()
+        ]
+    );
 }
 
 /// A plan node creates an empty sub-nodes list.
@@ -106,7 +115,10 @@ fn test_plan_node_full_roundtrip() {
     let json = serde_json::to_string(&node).unwrap();
     let back: PlanNode = serde_json::from_str(&json).unwrap();
     assert_eq!(back.title, "full test node");
-    assert_eq!(back.description, Some("A node with everything set".to_string()));
+    assert_eq!(
+        back.description,
+        Some("A node with everything set".to_string())
+    );
     assert!(matches!(back.status, NodeStatus::Done));
     assert_eq!(back.completion_message, Some("all done".to_string()));
     assert_eq!(back.artifacts.len(), 1);

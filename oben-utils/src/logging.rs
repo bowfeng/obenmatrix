@@ -1,6 +1,6 @@
 //! Initialize tracing subscriber — all logs go to file, none to stdout.
 
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Initialize the tracing subscriber. Logs are written to `~/.obenalien/logs/oa-{datetime}.log`.
 pub fn init(level: tracing::Level) {

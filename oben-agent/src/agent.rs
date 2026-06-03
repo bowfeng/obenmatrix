@@ -28,8 +28,8 @@ use crate::callbacks::AgentCallbacks;
 use crate::conversation::{ChatCallbacks, ConversationLoop};
 use crate::fallback::FallbackChain;
 use crate::interrupt::InterruptState;
-use crate::system_prompt_cache::SystemPromptCache;
 use crate::nudge::NudgeConfig;
+use crate::system_prompt_cache::SystemPromptCache;
 
 /// Configuration for building an `Agent`.
 pub struct AgentConfig {
@@ -92,7 +92,9 @@ impl Agent {
         let mut agent = Self {
             transport: config.transport,
             tools: config.tools,
-            context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(config.context_config)),
+            context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(
+                config.context_config,
+            )),
             call_mode: None,
             session_manager,
             interrupt_state: Arc::new(InterruptState::new()),
@@ -110,16 +112,14 @@ impl Agent {
     }
 
     async fn eager_load_active_session(&mut self) {
-        let sid = self.session_manager
+        let sid = self
+            .session_manager
             .lock()
             .await
             .active_session()
             .map(|s| s.id.clone());
         if let Some(sid) = sid {
-            let _ = self.session_manager
-                .lock()
-                .await
-                .switch_session(&sid);
+            let _ = self.session_manager.lock().await.switch_session(&sid);
         }
     }
 
@@ -264,7 +264,8 @@ impl Agent {
                 )),
                 fallback: None,
             },
-        ).await?;
+        )
+        .await?;
 
         sm.lock().await.incremental_save(None)?;
 
@@ -279,17 +280,27 @@ impl Agent {
             let active_id = guard.active_session().map(|s| s.id.clone());
             drop(guard);
             match active_id {
-                Some(sid) => {
-                    match sm.lock().await.switch_session(&sid) {
-                        Ok(s) => s.id.clone(),
-                        Err(_) => sm.lock().await.new_session(&format!(
-                            "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                        )).id.clone(),
-                    }
-                }
-                None => sm.lock().await.new_session(&format!(
-                    "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                )).id.clone(),
+                Some(sid) => match sm.lock().await.switch_session(&sid) {
+                    Ok(s) => s.id.clone(),
+                    Err(_) => sm
+                        .lock()
+                        .await
+                        .new_session(&format!(
+                            "chat-{}",
+                            chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                        ))
+                        .id
+                        .clone(),
+                },
+                None => sm
+                    .lock()
+                    .await
+                    .new_session(&format!(
+                        "chat-{}",
+                        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                    ))
+                    .id
+                    .clone(),
             }
         };
         sid
@@ -300,13 +311,20 @@ impl Agent {
         let sm = Arc::clone(&self.session_manager);
         sm.lock().await.init()?;
         let sid = {
-            sm.lock().await.find_key(key)
-                .ok_or_else(|| anyhow::anyhow!("Session not found: {}. Run `oben sessions list` to see available sessions.", key))?
+            sm.lock().await.find_key(key).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Session not found: {}. Run `oben sessions list` to see available sessions.",
+                    key
+                )
+            })?
         };
         sm.lock().await.switch_session(&sid)?;
         let name = {
-            sm.lock().await.active_session()
-                .map(|s| s.name.clone()).unwrap_or(key.to_string())
+            sm.lock()
+                .await
+                .active_session()
+                .map(|s| s.name.clone())
+                .unwrap_or(key.to_string())
         };
         Ok(name)
     }
@@ -316,9 +334,7 @@ impl Agent {
     /// via [resolve_session].
     pub async fn reset(&mut self) -> Result<()> {
         let sm = Arc::clone(&self.session_manager);
-        let sid = {
-            sm.lock().await.active_session().map(|s| s.id.clone())
-        };
+        let sid = { sm.lock().await.active_session().map(|s| s.id.clone()) };
         if let Some(sid) = sid {
             // Delete from DB and in-memory cache; sets active_session_id = None
             sm.lock().await.delete_session(&sid)?;
@@ -366,7 +382,8 @@ impl Agent {
         }
 
         // Perform compaction
-        let status = match self.context_engine
+        let status = match self
+            .context_engine
             .compact(&mut messages, Some(self.transport.as_ref()), None)
             .await
         {
@@ -398,7 +415,10 @@ impl Agent {
             }
             crate::context::CompactStatus::Unchanged => {
                 // Compression was ineffective — messages unchanged, nothing to persist.
-                tracing::warn!("Manual compaction ineffective (session {}), skipping DB update", sid);
+                tracing::warn!(
+                    "Manual compaction ineffective (session {}), skipping DB update",
+                    sid
+                );
                 crate::compact::CompactOutcome::Ineffective {
                     original_tokens: 0,
                     compacted_tokens: 0,
@@ -412,9 +432,15 @@ impl Agent {
     /// and can be restored later via [continue_session].
     pub async fn new_session(&mut self) -> Result<String> {
         let sm = Arc::clone(&self.session_manager);
-        let new_id = sm.lock().await.new_session(&format!(
-            "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
-        )).id.clone();
+        let new_id = sm
+            .lock()
+            .await
+            .new_session(&format!(
+                "chat-{}",
+                chrono::Utc::now().format("%Y%m%d-%H%M%S")
+            ))
+            .id
+            .clone();
         // Reset call mode so next turn starts Fresh
         self.call_mode = None;
         Ok(new_id)
@@ -424,13 +450,9 @@ impl Agent {
     pub async fn loaded_session_name(&self) -> Option<String> {
         let sm = Arc::clone(&self.session_manager);
         let guard = sm.lock().await;
-        guard.active_session().map(|s| {
-            s.metadata
-                .title
-                .as_deref()
-                .unwrap_or(&s.name)
-                .to_string()
-        })
+        guard
+            .active_session()
+            .map(|s| s.metadata.title.as_deref().unwrap_or(&s.name).to_string())
     }
 
     /// Get the active session name.
@@ -442,7 +464,8 @@ impl Agent {
     pub async fn loaded_session_messages(&self) -> Result<Vec<oben_models::Message>> {
         let sm = Arc::clone(&self.session_manager);
         let guard = sm.lock().await;
-        let msgs = guard.active_session()
+        let msgs = guard
+            .active_session()
             .map(|s| s.messages.clone())
             .unwrap_or_default();
         Ok(msgs)
@@ -476,8 +499,15 @@ impl Agent {
     }
 
     /// Get session messages (wrapper for SessionsPanel preview).
-    pub async fn get_session_messages(&self, session_id: &str) -> Result<Vec<oben_models::Message>> {
-        let msgs = self.session_manager.lock().await.get_session_messages(session_id)?;
+    pub async fn get_session_messages(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<oben_models::Message>> {
+        let msgs = self
+            .session_manager
+            .lock()
+            .await
+            .get_session_messages(session_id)?;
         Ok(msgs)
     }
 
@@ -489,7 +519,11 @@ impl Agent {
 
     /// Switch to a session (wrapper for SessionsPanel compact/switch).
     pub async fn switch_session(&mut self, session_id: &str) -> Result<()> {
-        let _session = self.session_manager.lock().await.switch_session(session_id)?;
+        let _session = self
+            .session_manager
+            .lock()
+            .await
+            .switch_session(session_id)?;
         Ok(())
     }
 
@@ -509,21 +543,31 @@ impl Agent {
         let sm = Arc::clone(&self.session_manager);
         if let Some(key) = continue_with {
             let resolved = if key == "latest" {
-                sm.lock().await.active_session()
-                    .map(|s| s.name.clone()).unwrap_or_else(|| key.to_string())
+                sm.lock()
+                    .await
+                    .active_session()
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| key.to_string())
             } else {
                 key.to_string()
             };
             let name = self.continue_session(&resolved).await?;
             if let Some(s) = sm.lock().await.active_session() {
                 let count = s.messages.len();
-                (callbacks.print_info)(&format!("Continuing session: {} ({} messages)\n", name, count));
+                (callbacks.print_info)(&format!(
+                    "Continuing session: {} ({} messages)\n",
+                    name, count
+                ));
                 print_session_messages(&s.messages, 10);
                 (callbacks.print_info)("");
             }
         } else if let Some(name) = self.loaded_session_name().await {
             if let Some(s) = sm.lock().await.active_session() {
-                (callbacks.print_info)(&format!("Session: {} ({} messages)\n", name, s.messages.len()));
+                (callbacks.print_info)(&format!(
+                    "Session: {} ({} messages)\n",
+                    name,
+                    s.messages.len()
+                ));
             }
         }
         (callbacks.print_info)("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
@@ -539,7 +583,9 @@ impl Agent {
             stream,
             callbacks,
             &self.nudge_config,
-        ).await; _result
+        )
+        .await;
+        _result
     }
 
     /// Run a background memory/skill review turn (nudge).
@@ -566,13 +612,17 @@ impl Agent {
         let sm = Arc::clone(&self.session_manager);
         let has_memory_tool = {
             let guard = sm.lock().await;
-            !guard.active_session()
+            !guard
+                .active_session()
                 .map(|s| s.messages.iter().any(|m| !m.tool_calls.is_none()))
                 .unwrap_or(true)
         };
 
         if !has_memory_tool {
-            on_complete(false, "Nudge skipped: no memory tools available.".to_string());
+            on_complete(
+                false,
+                "Nudge skipped: no memory tools available.".to_string(),
+            );
             return;
         }
 
@@ -595,18 +645,32 @@ impl Agent {
             drop(guard);
             let sid = match active_id {
                 Some(sid) => sid,
-                None => sm.lock().await.new_session(&format!(
-                    "chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                )).id.clone(),
+                None => sm
+                    .lock()
+                    .await
+                    .new_session(&format!(
+                        "chat-{}",
+                        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                    ))
+                    .id
+                    .clone(),
             };
-            sm.lock().await.switch_session(&sid)
+            sm.lock()
+                .await
+                .switch_session(&sid)
                 .map(|s| s.id.clone())
                 .unwrap_or_else(|_| {
                     // Already ensured we have a valid session above; fall back to a fresh one
-                    format!("chat-{}-fallback", chrono::Utc::now().format("%Y%m%d-%H%M%S"))
+                    format!(
+                        "chat-{}-fallback",
+                        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                    )
                 })
         };
-        let call_mode = self.call_mode.clone().unwrap_or(CallMode::Fresh(sid.clone()));
+        let call_mode = self
+            .call_mode
+            .clone()
+            .unwrap_or(CallMode::Fresh(sid.clone()));
 
         let review_msg = Message::user(&prompt);
         let sm = Arc::clone(&self.session_manager);
@@ -620,7 +684,8 @@ impl Agent {
             &call_mode,
             None,
             turn_options,
-        ).await;
+        )
+        .await;
 
         let _result = match response_text {
             Ok(text) => {
@@ -704,8 +769,14 @@ fn print_session_messages(messages: &[Message], max_show: usize) {
             oben_models::MessageRole::Tool => "⚙️ tool",
         };
         let text = msg.content.to_text_ref().unwrap_or("<non-text>");
-        let text_display = if text.len() > 120 { format!("{}...", &text[..117]) } else { text.to_string() };
+        let text_display = if text.len() > 120 {
+            format!("{}...", &text[..117])
+        } else {
+            text.to_string()
+        };
         tracing::info!(role, display = %text_display, "message preview");
     }
-    if overflow > 0 { tracing::info!(overflow, more_messages = true, "... more messages"); }
+    if overflow > 0 {
+        tracing::info!(overflow, more_messages = true, "... more messages");
+    }
 }

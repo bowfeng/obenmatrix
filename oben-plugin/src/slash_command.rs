@@ -34,7 +34,10 @@ pub struct SlashCommand {
 /// Async handler trait for slash commands.
 pub trait SlashCommandHandler: Send + Sync {
     /// Handle the command with raw args string.
-    fn handle(&self, args: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>>;
+    fn handle(
+        &self,
+        args: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>>;
 }
 
 impl<F, Fut> SlashCommandHandler for F
@@ -42,7 +45,10 @@ where
     F: Fn(&str) -> Fut + Send + Sync,
     Fut: std::future::Future<Output = Result<String>> + Send + 'static,
 {
-    fn handle(&self, args: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> {
+    fn handle(
+        &self,
+        args: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> {
         Box::pin(self(args))
     }
 }
@@ -119,7 +125,9 @@ impl SlashCommandRegistry {
 
         let name = name.trim_start_matches('/').to_lowercase();
         let commands = self.commands.read().unwrap();
-        commands.get(&name).map(|cmd| (cmd.clone(), args.to_string()))
+        commands
+            .get(&name)
+            .map(|cmd| (cmd.clone(), args.to_string()))
     }
 
     /// Execute a resolved slash command with a 30s timeout.
@@ -174,9 +182,7 @@ mod tests {
     use std::future::ready;
 
     fn make_handler(output: String) -> Arc<dyn SlashCommandHandler> {
-        Arc::new(move |_args: &str| {
-            Box::pin(ready(Ok(output.clone())))
-        })
+        Arc::new(move |_args: &str| Box::pin(ready(Ok(output.clone()))))
     }
 
     fn make_cmd(name: &str, plugin: &str, output: String) -> SlashCommand {
@@ -221,7 +227,9 @@ mod tests {
         /// when: resolve() is called with "/test args"
         /// then: returns the command and args
         let registry = SlashCommandRegistry::new();
-        registry.register(make_cmd("test", "plugin", "result".into())).unwrap();
+        registry
+            .register(make_cmd("test", "plugin", "result".into()))
+            .unwrap();
 
         let result = registry.resolve("/test hello world");
         assert!(result.is_some());
@@ -242,7 +250,9 @@ mod tests {
         /// when: resolve() is called for unknown command
         /// then: returns None
         let registry = SlashCommandRegistry::new();
-        registry.register(make_cmd("test", "plugin", "result".into())).unwrap();
+        registry
+            .register(make_cmd("test", "plugin", "result".into()))
+            .unwrap();
 
         assert!(registry.resolve("/unknown").is_none());
         assert!(registry.resolve("/nonexistent args").is_none());
@@ -258,7 +268,10 @@ mod tests {
 
         let result = registry.register(make_cmd("help", "plugin", "output".into()));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("conflicts with built-in"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("conflicts with built-in"));
     }
 
     #[test]
@@ -267,7 +280,9 @@ mod tests {
         /// when: resolve() is called with different case
         /// then: command is found
         let registry = SlashCommandRegistry::new();
-        registry.register(make_cmd("Test", "plugin", "result".into())).unwrap();
+        registry
+            .register(make_cmd("Test", "plugin", "result".into()))
+            .unwrap();
 
         assert!(registry.resolve("/test").is_some());
         assert!(registry.resolve("/TEST").is_some());
@@ -281,7 +296,9 @@ mod tests {
         /// then: handler is invoked and result returned
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = SlashCommandRegistry::new();
-        registry.register(make_cmd("ping", "plugin", "pong".into())).unwrap();
+        registry
+            .register(make_cmd("ping", "plugin", "pong".into()))
+            .unwrap();
 
         rt.block_on(async {
             let result = registry.execute("/ping").await;
@@ -300,7 +317,10 @@ mod tests {
         rt.block_on(async {
             let result = registry.execute("/unknown").await;
             assert!(result.is_err());
-            assert!(result.unwrap_err().to_string().contains("Unknown slash command"));
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown slash command"));
         });
     }
 
@@ -310,7 +330,9 @@ mod tests {
         /// when: execute() is called with args
         /// then: args are passed to handler
         let registry = SlashCommandRegistry::new();
-        registry.register(make_cmd("greet", "plugin", "Hello, World!".into())).unwrap();
+        registry
+            .register(make_cmd("greet", "plugin", "Hello, World!".into()))
+            .unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -325,8 +347,12 @@ mod tests {
         /// when: list() is called
         /// then: all commands are returned
         let registry = SlashCommandRegistry::new();
-        registry.register(make_cmd("cmd1", "p1", "a".into())).unwrap();
-        registry.register(make_cmd("cmd2", "p2", "b".into())).unwrap();
+        registry
+            .register(make_cmd("cmd1", "p1", "a".into()))
+            .unwrap();
+        registry
+            .register(make_cmd("cmd2", "p2", "b".into()))
+            .unwrap();
 
         let list = registry.list();
         assert_eq!(list.len(), 2);

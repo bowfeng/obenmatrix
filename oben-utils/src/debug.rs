@@ -44,7 +44,12 @@ pub fn dump_system_info() -> String {
   Rust: {}
   Date: {}
 ",
-        hostname, os_name, os_version, std::env::consts::OS, rust_version, date
+        hostname,
+        os_name,
+        os_version,
+        std::env::consts::OS,
+        rust_version,
+        date
     )
 }
 
@@ -67,9 +72,7 @@ fn platform_info() -> String {
         if let Ok(content) = fs::read_to_string("/etc/os-release") {
             for line in content.lines() {
                 if line.starts_with("PRETTY_NAME=") {
-                    return line["PRETTY_NAME=".len()..]
-                        .trim_matches('"')
-                        .to_string();
+                    return line["PRETTY_NAME=".len()..].trim_matches('"').to_string();
                 }
             }
         }

@@ -25,13 +25,15 @@
 /// Returns a window of ±window messages centered on an anchor. No FTS5,
 /// no bookends. To scroll forward/pass the last window message's id as the
 /// new anchor; to scroll backward, pass the first.
-
 use anyhow::Result;
 use std::path::PathBuf;
 
 use oben_models::Message;
 
-use super::manager::{BrowseEntry, BrowseResult, DiscoveryEntry, DiscoveryResult, SearchHit, SessionDB, sanitize_fts5_query};
+use super::manager::{
+    sanitize_fts5_query, BrowseEntry, BrowseResult, DiscoveryEntry, DiscoveryResult, SearchHit,
+    SessionDB,
+};
 use oben_models::SessionSource;
 
 // Hidden session sources by default.
@@ -122,7 +124,9 @@ impl Search {
 
         let mut results = Vec::new();
         for (lineage_root, hit) in seen {
-            let view = self.db.get_anchored_view(&hit.session_id, hit.id.parse().unwrap_or(0), 5, 3);
+            let view =
+                self.db
+                    .get_anchored_view(&hit.session_id, hit.id.parse().unwrap_or(0), 5, 3);
             let view = match view {
                 Ok(v) => v,
                 Err(e) => {
@@ -168,10 +172,17 @@ impl Search {
     // ── Scroll ──────────────────────────────────────────────────────────
 
     /// Scroll shape: return a window of messages centered on an anchor.
-    fn _scroll(&self, session_id: &str, around_message_id: i64, window: usize) -> Result<ScrollOutput> {
+    fn _scroll(
+        &self,
+        session_id: &str,
+        around_message_id: i64,
+        window: usize,
+    ) -> Result<ScrollOutput> {
         let window = window.clamp(1, 20);
 
-        let view = self.db.get_messages_around(session_id, around_message_id, window)?;
+        let view = self
+            .db
+            .get_messages_around(session_id, around_message_id, window)?;
 
         if view.window.is_empty() {
             return Err(anyhow::anyhow!(
@@ -186,7 +197,9 @@ impl Search {
         if view.window.is_empty() {
             let owning = self._find_owning_session(session_id, around_message_id)?;
             if let Some(owning) = owning {
-                let rebind_view = self.db.get_messages_around(&owning, around_message_id, window)?;
+                let rebind_view =
+                    self.db
+                        .get_messages_around(&owning, around_message_id, window)?;
                 if !rebind_view.window.is_empty() {
                     return Ok(ScrollOutput {
                         session_id: owning.clone(),
@@ -229,7 +242,9 @@ impl Search {
     fn _browse(&self, limit: usize) -> Result<BrowseResult> {
         let limit = limit.clamp(1, 10);
 
-        let sessions = self.db.list_sessions(None, HIDDEN_SESSION_SOURCES, limit + 5, 0, false)?;
+        let sessions = self
+            .db
+            .list_sessions(None, HIDDEN_SESSION_SOURCES, limit + 5, 0, false)?;
 
         let results: Vec<BrowseEntry> = sessions
             .into_iter()
@@ -318,7 +333,11 @@ fn format_timestamp(ts: f64) -> String {
 
 /// Fast in-memory search over a slice of sessions.
 /// Use for lightweight queries or when `Search` (FTS5) is not available.
-pub fn search_sessions(sessions: &[&oben_models::Session], query: &str, limit: usize) -> Vec<SearchResult> {
+pub fn search_sessions(
+    sessions: &[&oben_models::Session],
+    query: &str,
+    limit: usize,
+) -> Vec<SearchResult> {
     let query_lower = query.to_lowercase();
     let query_words: Vec<&str> = query_lower.split_whitespace().collect();
 
@@ -331,7 +350,10 @@ pub fn search_sessions(sessions: &[&oben_models::Session], query: &str, limit: u
                     _ => return None,
                 };
                 let text_lower = text.to_lowercase();
-                let score = query_words.iter().filter(|w| text_lower.contains(**w)).count();
+                let score = query_words
+                    .iter()
+                    .filter(|w| text_lower.contains(**w))
+                    .count();
                 if score > 0 {
                     Some(SearchResult {
                         session_name: s.name.clone(),
@@ -346,7 +368,11 @@ pub fn search_sessions(sessions: &[&oben_models::Session], query: &str, limit: u
         })
         .collect();
 
-    results.sort_by(|a, b| b.relevance_score.partial_cmp(&a.relevance_score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.relevance_score
+            .partial_cmp(&a.relevance_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results.truncate(limit);
     results
 }
@@ -408,11 +434,17 @@ mod tests {
         // Create a session with messages
         let session = search.db.get_or_create_session("discover-test").unwrap();
         let sid = session.id.clone();
-        search.db.save_messages(&sid, &mut vec![
-            Message::user("hello world"),
-            Message::assistant("how can I help you today"),
-            Message::user("search for rust code"),
-        ]).unwrap();
+        search
+            .db
+            .save_messages(
+                &sid,
+                &mut vec![
+                    Message::user("hello world"),
+                    Message::assistant("how can I help you today"),
+                    Message::user("search for rust code"),
+                ],
+            )
+            .unwrap();
 
         let result = search._discover("rust", 5).unwrap();
         // May or may not match depending on FTS5 setup
@@ -467,7 +499,9 @@ mod tests {
         let loaded = search.db.load_messages(&sid).unwrap();
         let mid: i64 = loaded[0].id.unwrap();
 
-        let result = search.search("", 5, Some(&sid), Some(mid), Some(3)).unwrap();
+        let result = search
+            .search("", 5, Some(&sid), Some(mid), Some(3))
+            .unwrap();
         assert!(matches!(result, SearchOutput::Scroll(_)));
     }
 

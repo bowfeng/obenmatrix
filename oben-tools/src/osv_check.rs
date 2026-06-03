@@ -1,14 +1,13 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 /// OSV check tool — scans Python dependencies for security vulnerabilities.
 ///
 /// Uses the OSV.dev API to check packages against known vulnerability databases.
-
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{SelfRegisteringTool, ToolHandler};
 
 // ---------------------------------------------------------------------------
 // OSV API types
@@ -101,12 +100,10 @@ fn make_osv_check_handler() -> ToolHandler {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Missing 'package_name' argument"))?;
 
-            let version = args
-                .get("version")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let version = args.get("version").and_then(|v| v.as_str()).unwrap_or("");
 
-            let call_id = args.get("call_id")
+            let call_id = args
+                .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -178,7 +175,10 @@ fn make_osv_check_handler() -> ToolHandler {
                 });
             }
 
-            output.push_str(&format!("⚠️  Found {} known vulnerability(ies):\n\n", vulns.len()));
+            output.push_str(&format!(
+                "⚠️  Found {} known vulnerability(ies):\n\n",
+                vulns.len()
+            ));
 
             for (i, vuln) in vulns.iter().enumerate() {
                 output.push_str(&format!("#{}: {}\n", i + 1, vuln.id));
@@ -245,22 +245,36 @@ mod tests {
     #[tokio::test]
     async fn handles_missing_package() {
         let registry = make_registry();
-        let result = registry.execute("osv_check", &json!({
-            "call_id": "test-1",
-        })).await;
+        let result = registry
+            .execute(
+                "osv_check",
+                &json!({
+                    "call_id": "test-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Missing 'package_name'"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Missing 'package_name'"));
     }
 
     #[tokio::test]
     async fn checks_pyPI_package() {
         let registry = make_registry();
-        let result = registry.execute("osv_check", &json!({
-            "package_name": "requests",
-            "version": "2.28.0",
-            "call_id": "test-2",
-        })).await;
+        let result = registry
+            .execute(
+                "osv_check",
+                &json!({
+                    "package_name": "requests",
+                    "version": "2.28.0",
+                    "call_id": "test-2",
+                }),
+            )
+            .await;
 
         // Should not error on input validation
         // May return "no vulns" or actual results from OSV API
@@ -271,11 +285,16 @@ mod tests {
     #[tokio::test]
     async fn checks_npm_package() {
         let registry = make_registry();
-        let result = registry.execute("osv_check", &json!({
-            "package_name": "lodash",
-            "version": "4.17.20",
-            "call_id": "test-3",
-        })).await;
+        let result = registry
+            .execute(
+                "osv_check",
+                &json!({
+                    "package_name": "lodash",
+                    "version": "4.17.20",
+                    "call_id": "test-3",
+                }),
+            )
+            .await;
 
         assert!(result.output.contains("lodash"));
     }
@@ -283,13 +302,24 @@ mod tests {
     #[tokio::test]
     async fn handles_invalid_package() {
         let registry = make_registry();
-        let result = registry.execute("osv_check", &json!({
-            "package_name": "nonexistent-package-xyz-12345",
-            "call_id": "test-4",
-        })).await;
+        let result = registry
+            .execute(
+                "osv_check",
+                &json!({
+                    "package_name": "nonexistent-package-xyz-12345",
+                    "call_id": "test-4",
+                }),
+            )
+            .await;
 
         // OSV may return 404 or empty results
-        assert!(result.output.contains("nonexistent-package-xyz-12345")
-            || result.error.as_ref().map(|e| e.contains("404")).unwrap_or(false));
+        assert!(
+            result.output.contains("nonexistent-package-xyz-12345")
+                || result
+                    .error
+                    .as_ref()
+                    .map(|e| e.contains("404"))
+                    .unwrap_or(false)
+        );
     }
 }

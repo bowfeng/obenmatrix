@@ -15,10 +15,7 @@ use std::str::FromStr;
 #[serde(tag = "kind")]
 pub enum Schedule {
     /// Run once at a specific time.
-    Once {
-        run_at: String,
-        display: String,
-    },
+    Once { run_at: String, display: String },
     /// Repeat every N minutes.
     Interval {
         #[serde(rename = "minutes")]
@@ -26,17 +23,16 @@ pub enum Schedule {
         display: String,
     },
     /// Standard 5-field crontab expression.
-    Cron {
-        expr: String,
-        display: String,
-    },
+    Cron { expr: String, display: String },
 }
 
 impl Schedule {
     /// Returns the interval in minutes if this is an Interval schedule.
     pub fn interval_minutes(&self) -> u64 {
         match self {
-            Self::Interval { interval_minutes, .. } => *interval_minutes,
+            Self::Interval {
+                interval_minutes, ..
+            } => *interval_minutes,
             _ => 0,
         }
     }
@@ -58,7 +54,9 @@ impl Schedule {
                 }
                 Ok(t)
             }
-            Self::Interval { interval_minutes, .. } => {
+            Self::Interval {
+                interval_minutes, ..
+            } => {
                 let mins = *interval_minutes as i64;
                 let midnight = after.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
                 let elapsed = after.signed_duration_since(midnight).num_minutes();
@@ -73,7 +71,9 @@ impl Schedule {
                 };
                 let sched = cron::Schedule::from_str(&cron_expr)
                     .with_context(|| format!("Invalid cron expression: {}", expr))?;
-                sched.upcoming(Utc).next()
+                sched
+                    .upcoming(Utc)
+                    .next()
                     .context("No future trigger for cron expression")
                     .map(|t| t.naive_utc().and_utc())
             }
@@ -91,7 +91,10 @@ impl Schedule {
 
 impl Default for Schedule {
     fn default() -> Self {
-        Self::Interval { interval_minutes: 60, display: "every 60m".to_string() }
+        Self::Interval {
+            interval_minutes: 60,
+            display: "every 60m".to_string(),
+        }
     }
 }
 
@@ -99,7 +102,9 @@ impl std::fmt::Display for Schedule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Once { run_at, .. } => write!(f, "once at {}", run_at),
-            Self::Interval { interval_minutes, .. } => write!(f, "every {}m", interval_minutes),
+            Self::Interval {
+                interval_minutes, ..
+            } => write!(f, "every {}m", interval_minutes),
             Self::Cron { expr, .. } => write!(f, "cron: {}", expr),
         }
     }
@@ -129,22 +134,34 @@ pub fn parse_schedule(input: &str) -> Result<Schedule> {
     }
 
     // Duration: "30m", "2h", "1d"
-    if trimmed.ends_with('m') && trimmed[..trimmed.len()-1].chars().all(|c| c.is_ascii_digit()) {
-        let mins = trimmed[..trimmed.len()-1].parse::<u64>()?;
+    if trimmed.ends_with('m')
+        && trimmed[..trimmed.len() - 1]
+            .chars()
+            .all(|c| c.is_ascii_digit())
+    {
+        let mins = trimmed[..trimmed.len() - 1].parse::<u64>()?;
         return Ok(Schedule::Once {
             run_at: (Utc::now() + chrono::Duration::minutes(mins as i64)).to_rfc3339(),
             display: format!("{}m from now", mins),
         });
     }
-    if trimmed.ends_with('h') && trimmed[..trimmed.len()-1].chars().all(|c| c.is_ascii_digit()) {
-        let hours = trimmed[..trimmed.len()-1].parse::<u64>()?;
+    if trimmed.ends_with('h')
+        && trimmed[..trimmed.len() - 1]
+            .chars()
+            .all(|c| c.is_ascii_digit())
+    {
+        let hours = trimmed[..trimmed.len() - 1].parse::<u64>()?;
         return Ok(Schedule::Once {
             run_at: (Utc::now() + chrono::Duration::hours(hours as i64)).to_rfc3339(),
             display: format!("{}h from now", hours),
         });
     }
-    if trimmed.ends_with('d') && trimmed[..trimmed.len()-1].chars().all(|c| c.is_ascii_digit()) {
-        let days = trimmed[..trimmed.len()-1].parse::<u64>()?;
+    if trimmed.ends_with('d')
+        && trimmed[..trimmed.len() - 1]
+            .chars()
+            .all(|c| c.is_ascii_digit())
+    {
+        let days = trimmed[..trimmed.len() - 1].parse::<u64>()?;
         return Ok(Schedule::Once {
             run_at: (Utc::now() + chrono::Duration::days(days as i64)).to_rfc3339(),
             display: format!("{}d from now", days),
@@ -160,7 +177,7 @@ pub fn parse_schedule(input: &str) -> Result<Schedule> {
     };
     if cron::Schedule::from_str(&cron_input).is_ok() {
         return Ok(Schedule::Cron {
-            expr: trimmed.to_string(),  // Store user's 5-field expression as-is
+            expr: trimmed.to_string(), // Store user's 5-field expression as-is
             display: trimmed.to_string(),
         });
     }
@@ -174,7 +191,8 @@ pub fn parse_schedule(input: &str) -> Result<Schedule> {
 fn parse_interval(input: &str) -> Result<Schedule> {
     let s = input.trim();
     if s.ends_with('m') {
-        let mins = s[..s.len()-1].parse::<u64>()
+        let mins = s[..s.len() - 1]
+            .parse::<u64>()
             .with_context(|| format!("Invalid interval minutes: {}", s))?;
         return Ok(Schedule::Interval {
             interval_minutes: mins,
@@ -182,7 +200,8 @@ fn parse_interval(input: &str) -> Result<Schedule> {
         });
     }
     if s.ends_with('h') {
-        let hours = s[..s.len()-1].parse::<u64>()
+        let hours = s[..s.len() - 1]
+            .parse::<u64>()
             .with_context(|| format!("Invalid interval hours: {}", s))?;
         return Ok(Schedule::Interval {
             interval_minutes: hours * 60,

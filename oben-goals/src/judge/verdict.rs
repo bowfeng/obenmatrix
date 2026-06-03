@@ -77,7 +77,10 @@ pub fn parse_judge_response(raw: &str) -> JudgeVerdict {
                     v
                 } else {
                     let preview = &text[..text.len().min(200)];
-                    return JudgeVerdict::Continue(format!("judge reply was not JSON: {:?}", preview));
+                    return JudgeVerdict::Continue(format!(
+                        "judge reply was not JSON: {:?}",
+                        preview
+                    ));
                 }
             } else {
                 let preview = &text[..text.len().min(200)];
@@ -128,7 +131,9 @@ mod tests {
     fn test_parse_judge_continue() {
         let response = r#"{"done": false, "reason": "Still need to write tests."}"#;
         let verdict = parse_judge_response(response);
-        assert!(matches!(verdict, JudgeVerdict::Continue(ref r) if r == "Still need to write tests."));
+        assert!(
+            matches!(verdict, JudgeVerdict::Continue(ref r) if r == "Still need to write tests.")
+        );
     }
 
     #[test]

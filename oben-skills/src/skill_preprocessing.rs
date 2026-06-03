@@ -8,7 +8,6 @@
 ///    and `${HERMES_SESSION_ID}` with concrete values.
 /// 2. **Inline shell expansion** — executes `!`command`` snippets and
 ///    replaces them with their stdout (e.g. `"Today is `date +%Y-%m-%d`").
-
 use regex::Regex;
 use std::path::Path;
 use std::process::Command;
@@ -54,8 +53,8 @@ pub struct PreprocessingConfig {
 impl Default for PreprocessingConfig {
     fn default() -> Self {
         Self {
-            template_vars: true,   // enabled by default
-            inline_shell: false,   // disabled by default (security)
+            template_vars: true, // enabled by default
+            inline_shell: false, // disabled by default (security)
             inline_shell_timeout: DEFAULT_SHELL_TIMEOUT,
         }
     }
@@ -80,12 +79,10 @@ pub fn substitute_template_vars(
         .replace_all(content, |caps: &regex::Captures| {
             let token = caps.get(1).unwrap().as_str();
             match token {
-                "HERMES_SKILL_DIR" => {
-                    skill_dir_str.as_deref().unwrap_or(caps.get(0).unwrap().as_str())
-                }
-                "HERMES_SESSION_ID" => {
-                    session_id.unwrap_or(caps.get(0).unwrap().as_str())
-                }
+                "HERMES_SKILL_DIR" => skill_dir_str
+                    .as_deref()
+                    .unwrap_or(caps.get(0).unwrap().as_str()),
+                "HERMES_SESSION_ID" => session_id.unwrap_or(caps.get(0).unwrap().as_str()),
                 _ => caps.get(0).unwrap().as_str(),
             }
             .to_string()
@@ -123,10 +120,7 @@ fn run_inline_shell(command: &str, cwd: Option<&Path>, timeout: u64) -> String {
 
     // Cap output to prevent runaway commands from blowing out the context
     if output.len() > INLINE_SHELL_MAX_OUTPUT {
-        format!(
-            "{}...[truncated]",
-            &output[..INLINE_SHELL_MAX_OUTPUT]
-        )
+        format!("{}...[truncated]", &output[..INLINE_SHELL_MAX_OUTPUT])
     } else {
         output
     }
@@ -136,11 +130,7 @@ fn run_inline_shell(command: &str, cwd: Option<&Path>, timeout: u64) -> String {
 ///
 /// Replaces every `!`cmd`` with its stdout.  Runs each snippet with the
 /// skill directory as CWD so relative paths in the snippet work as expected.
-pub fn expand_inline_shell(
-    content: &str,
-    skill_dir: Option<&Path>,
-    timeout: u64,
-) -> String {
+pub fn expand_inline_shell(content: &str, skill_dir: Option<&Path>, timeout: u64) -> String {
     if !content.contains("!`") {
         return content.to_string();
     }
@@ -242,11 +232,7 @@ mod tests {
     fn test_substitute_multiple_tokens() {
         let dir = temp_dir("multi");
         let content = "${HERMES_SKILL_DIR} - ${HERMES_SESSION_ID}";
-        let result = substitute_template_vars(
-            content,
-            Some(&dir),
-            Some("test-sess"),
-        );
+        let result = substitute_template_vars(content, Some(&dir), Some("test-sess"));
         assert!(result.contains(dir.to_string_lossy().as_ref()));
         assert!(result.contains("test-sess"));
     }

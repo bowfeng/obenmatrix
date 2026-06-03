@@ -66,12 +66,16 @@ static BLOCKED_DEVICE_PATHS: Lazy<Vec<&'static str>> = Lazy::new(|| {
     ]
 });
 
-static SENSITIVE_PATH_PREFIXES: &[&str] =
-    &["/etc/", "/boot/", "/usr/lib/systemd/", "/private/etc/", "/private/var/"];
+static SENSITIVE_PATH_PREFIXES: &[&str] = &[
+    "/etc/",
+    "/boot/",
+    "/usr/lib/systemd/",
+    "/private/etc/",
+    "/private/var/",
+];
 
-static SENSITIVE_EXACT_PATHS: Lazy<Vec<&str>> = Lazy::new(|| {
-    vec!["/var/run/docker.sock", "/run/docker.sock"]
-});
+static SENSITIVE_EXACT_PATHS: Lazy<Vec<&str>> =
+    Lazy::new(|| vec!["/var/run/docker.sock", "/run/docker.sock"]);
 
 fn expand_home(path_str: &str) -> PathBuf {
     if let Some(home) = dirs::home_dir() {
@@ -141,7 +145,8 @@ pub fn is_blocked_device(path: &Path) -> bool {
     if BLOCKED_DEVICE_PATHS.contains(&s.as_ref()) {
         return true;
     }
-    if s.starts_with("/proc/") && (s.ends_with("/fd/0") || s.ends_with("/fd/1") || s.ends_with("/fd/2"))
+    if s.starts_with("/proc/")
+        && (s.ends_with("/fd/0") || s.ends_with("/fd/1") || s.ends_with("/fd/2"))
     {
         return true;
     }

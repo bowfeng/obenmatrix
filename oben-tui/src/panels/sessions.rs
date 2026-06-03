@@ -4,16 +4,16 @@
 //! Session CRUD operations are performed on this local manager.
 
 use super::{KeyAction, Panel};
-use crate::widgets::message_renderer::MessageRenderer;
 use crate::widgets::conversation::ConversationState;
+use crate::widgets::message_renderer::MessageRenderer;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use oben_agent::Agent;
+use oben_models::Session;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
-use tui_widget_list::{ListBuilder, ListState, ListView, ScrollDirection};
 use std::sync::{Arc, Mutex, RwLock};
-use oben_agent::Agent;
-use oben_models::Session;
+use tui_widget_list::{ListBuilder, ListState, ListView, ScrollDirection};
 
 pub struct SessionsPanel {
     agent: Arc<tokio::sync::Mutex<Agent>>,
@@ -67,7 +67,10 @@ impl SessionsPanel {
 
     /// Construct a SessionsPanel with a pre-configured SessionManager (test-only).
     #[allow(unused)]
-    pub fn with_session_manager(_sm: oben_sessions::SessionManager, _sessions: Vec<Session>) -> Self {
+    pub fn with_session_manager(
+        _sm: oben_sessions::SessionManager,
+        _sessions: Vec<Session>,
+    ) -> Self {
         panic!("with_session_manager should not be used in production");
     }
 
@@ -95,11 +98,7 @@ impl SessionsPanel {
     /// Match by old_title and replace with new_title.
     pub fn refresh_display_name(&mut self, old_title: &str, new_title: &str) {
         for session in self.sessions.iter_mut() {
-            let current = session
-                .metadata
-                .title
-                .as_deref()
-                .unwrap_or(&session.name);
+            let current = session.metadata.title.as_deref().unwrap_or(&session.name);
             if current == old_title {
                 session.metadata.title = Some(new_title.to_string());
                 self.apply_filter();
@@ -136,11 +135,15 @@ impl SessionsPanel {
     }
 
     fn get_session(&self) -> Option<&Session> {
-        self.filtered.get(self.selected).and_then(|&idx| self.sessions.get(idx))
+        self.filtered
+            .get(self.selected)
+            .and_then(|&idx| self.sessions.get(idx))
     }
 
     fn get_session_id(&self) -> Option<String> {
-        self.filtered.get(self.selected).and_then(|&idx| self.sessions.get(idx).map(|s| s.id.clone()))
+        self.filtered
+            .get(self.selected)
+            .and_then(|&idx| self.sessions.get(idx).map(|s| s.id.clone()))
     }
 
     pub async fn refresh_list(&mut self) {
@@ -159,18 +162,17 @@ impl SessionsPanel {
             Some(s) => s.clone(),
             None => return,
         };
-        let title = session
-            .metadata
-            .title
-            .as_deref()
-            .unwrap_or(&session.name);
+        let title = session.metadata.title.as_deref().unwrap_or(&session.name);
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(Span::styled(
             format!(" {}\u{1f4dd} {}", " ", title),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
-            format!("     Updated: {} \u{00b7} {} messages",
+            format!(
+                "     Updated: {} \u{00b7} {} messages",
                 session.updated_at.format("%m-%d %H:%M"),
                 session.metadata.message_count,
             ),
@@ -181,8 +183,12 @@ impl SessionsPanel {
             Style::default().fg(Color::DarkGray),
         )));
         if session.messages.is_empty() {
-            let msgs = self.agent.lock().await
-                .get_session_messages(&session.id).await
+            let msgs = self
+                .agent
+                .lock()
+                .await
+                .get_session_messages(&session.id)
+                .await
                 .unwrap_or_default();
             if !msgs.is_empty() {
                 lines.extend(self.format_messages(&msgs));
@@ -190,7 +196,9 @@ impl SessionsPanel {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "[ No messages ]",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
                 )));
             }
         } else {
@@ -200,7 +208,9 @@ impl SessionsPanel {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "[ Select a session to preview ]",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
             )));
         }
         // Populate entries for bordered-block rendering
@@ -224,7 +234,11 @@ impl SessionsPanel {
             entries.push(renderer.render_entry(msg));
         }
         self.message_state.message_entries.lock().unwrap().clear();
-        self.message_state.message_entries.lock().unwrap().extend(entries);
+        self.message_state
+            .message_entries
+            .lock()
+            .unwrap()
+            .extend(entries);
         self.message_state.scroll_to_bottom = true;
         // right_lines is read by the tui-widget-list builder closure in render_message_view
         if let Ok(mut rl) = self.right_lines.lock() {
@@ -256,8 +270,7 @@ impl SessionsPanel {
             Action::Delete => {
                 // Cannot delete the active session
                 if let Some(session) = self.get_session() {
-                    let current_name = session.metadata.title.as_deref()
-                        .unwrap_or(&session.name);
+                    let current_name = session.metadata.title.as_deref().unwrap_or(&session.name);
                     if self.active_session_name.as_deref() == Some(current_name)
                         || self.active_session_name.as_deref() == Some(&session.name)
                     {
@@ -346,9 +359,9 @@ impl SessionsPanel {
 
     pub fn get_session_name(&self) -> Option<String> {
         let s = *self.filtered.first()?;
-        self.sessions.get(s).map(|s| {
-            s.metadata.title.as_deref().unwrap_or(&s.name).to_string()
-        })
+        self.sessions
+            .get(s)
+            .map(|s| s.metadata.title.as_deref().unwrap_or(&s.name).to_string())
     }
 
     pub fn get_message_count(&self) -> Option<usize> {
@@ -389,11 +402,7 @@ impl Panel for SessionsPanel {
     }
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::horizontal([
-            Constraint::Length(40),
-            Constraint::Min(0),
-        ])
-        .split(area);
+        let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
 
         self.render_session_list(frame, chunks[0]);
         self.render_message_view(frame, chunks[1]);
@@ -581,30 +590,35 @@ impl SessionsPanel {
                 } else {
                     display_title.to_string()
                 };
-                let cells = vec![
-                    Cell::new(display_name).style(style),
-                ];
+                let cells = vec![Cell::new(display_name).style(style)];
                 Some(Row::new(cells))
             })
             .collect();
 
-        let table = Table::new(rows, &[
-            Constraint::Length(40),
-        ])
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).title(" Sessions "));
+        let table = Table::new(rows, &[Constraint::Length(40)])
+            .header(header)
+            .block(Block::default().borders(Borders::ALL).title(" Sessions "));
 
         frame.render_widget(table, area);
     }
 
     fn render_message_view(&self, frame: &mut Frame, area: Rect) {
-        if self.filtered.is_empty() || self.message_state.message_entries.lock().unwrap().is_empty() {
+        if self.filtered.is_empty()
+            || self
+                .message_state
+                .message_entries
+                .lock()
+                .unwrap()
+                .is_empty()
+        {
             let block = Block::default().borders(Borders::ALL).title(" Info ");
             frame.render_widget(&block, area);
             let inner = block.inner(area);
             let para = Paragraph::new(Span::styled(
                 "Select a session to view details",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
             ));
             frame.render_widget(para, inner);
             return;
@@ -612,7 +626,9 @@ impl SessionsPanel {
 
         let s = &self.sessions[self.filtered[self.selected]];
         let name = s.metadata.title.as_deref().unwrap_or(&s.name);
-        let block = Block::default().borders(Borders::ALL).title(format!(" {} ", name));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} ", name));
 
         let count = {
             let rl = self.right_lines.lock().unwrap();
@@ -664,10 +680,10 @@ mod tests {
         let _ = sm.new_session("from-sm");
         let session = sm.list_sessions_full().remove(0);
         let mut panel = SessionsPanel::with_session_manager(sm, vec![session]);
-        
+
         // when: refresh via SM
         panel.refresh_list();
-        
+
         // then: panel reflects SM state (the "from-sm" session was persisted)
         assert!(panel.sessions.iter().any(|s| s.name == "from-sm"));
     }
@@ -687,10 +703,10 @@ mod tests {
                 Session::new("gamma"),
             ],
         );
-        
+
         // when: apply_filter with empty query
         panel.apply_filter();
-        
+
         // then: all sessions returned
         assert_eq!(panel.filtered.len(), 3);
     }
@@ -708,11 +724,11 @@ mod tests {
                 Session::new("gamma"),
             ],
         );
-        
+
         // when: filter by "beta"
         panel.search_query = "beta".to_string();
         panel.apply_filter();
-        
+
         // then: one match
         assert_eq!(panel.filtered.len(), 1);
         assert_eq!(panel.sessions[panel.filtered[0]].name, "beta");
@@ -725,11 +741,11 @@ mod tests {
         let sm = SessionManager::new_with_path(dir).unwrap();
         let session = Session::new("test");
         let mut panel = SessionsPanel::with_session_manager(sm, vec![session]);
-        
+
         // when: filter by session ID
         panel.search_query = panel.sessions[0].id.clone();
         panel.apply_filter();
-        
+
         // then: matches
         assert_eq!(panel.filtered.len(), 1);
     }
@@ -741,13 +757,13 @@ mod tests {
         let sm = SessionManager::new_with_path(dir).unwrap();
         let mut session = Session::new("session-name");
         session.metadata.title = Some("My Test Title".to_string());
-        
+
         let mut panel = SessionsPanel::with_session_manager(sm, vec![session]);
-        
+
         // when: filter by title text
         panel.search_query = "My Test".to_string();
         panel.apply_filter();
-        
+
         // then: matches
         assert_eq!(panel.filtered.len(), 1);
     }
@@ -759,16 +775,13 @@ mod tests {
         let sm = SessionManager::new_with_path(dir).unwrap();
         let mut panel = SessionsPanel::with_session_manager(
             sm,
-            vec![
-                Session::new("ALPHA"),
-                Session::new("beta"),
-            ],
+            vec![Session::new("ALPHA"), Session::new("beta")],
         );
-        
+
         // when: search uppercase
         panel.search_query = "Alpha".to_string();
         panel.apply_filter();
-        
+
         // then: still finds lowercase match
         assert_eq!(panel.filtered.len(), 1);
     }
@@ -778,15 +791,12 @@ mod tests {
         // given: sessions
         let dir = make_test_dir();
         let sm = SessionManager::new_with_path(dir).unwrap();
-        let mut panel = SessionsPanel::with_session_manager(
-            sm,
-            vec![Session::new("alpha")],
-        );
-        
+        let mut panel = SessionsPanel::with_session_manager(sm, vec![Session::new("alpha")]);
+
         // when: search for nothing
         panel.search_query = "nonexistent".to_string();
         panel.apply_filter();
-        
+
         // then: empty
         assert!(panel.filtered.is_empty());
     }
@@ -802,13 +812,13 @@ mod tests {
             Session::new("three"),
         ];
         let mut panel = SessionsPanel::with_session_manager(sm, sessions);
-        
+
         // when: clear all matches — filtered becomes empty
         panel.search_query = "zzz".to_string();
         panel.apply_filter();
         // selected should be clamped to 0 (saturating_sub)
         assert_eq!(panel.selected, 0);
-        
+
         // when: clear matches again with non-empty filtered
         panel.search_query = "one".to_string();
         panel.apply_filter();
@@ -822,15 +832,12 @@ mod tests {
         // given: sessions
         let dir = make_test_dir();
         let sm = SessionManager::new_with_path(dir).unwrap();
-        let sessions = vec![
-            Session::new("target"),
-            Session::new("other"),
-        ];
+        let sessions = vec![Session::new("target"), Session::new("other")];
         let panel = SessionsPanel::with_session_manager(sm, sessions);
-        
+
         // when: get first
         let session = panel.get_session();
-        
+
         // then: correct session
         assert_eq!(session.unwrap().name, "target");
     }
@@ -841,7 +848,7 @@ mod tests {
         let dir = make_test_dir();
         let sm = SessionManager::new_with_path(dir).unwrap();
         let panel = SessionsPanel::with_session_manager(sm, Vec::new());
-        
+
         // when: get from empty
         assert!(panel.get_session().is_none());
         assert!(panel.get_session_id().is_none());
@@ -854,10 +861,10 @@ mod tests {
         let sm = SessionManager::new_with_path(dir).unwrap();
         let session = Session::new("id-test");
         let panel = SessionsPanel::with_session_manager(sm, vec![session]);
-        
+
         // when: get session_id
         let id = panel.get_session_id();
-        
+
         // then: returns the session's ID (not name)
         assert!(id.is_some());
         assert_ne!(id.unwrap(), "id-test"); // UUID, not name
@@ -871,10 +878,10 @@ mod tests {
         let dir = make_test_dir();
         let sm = SessionManager::new_with_path(dir).unwrap();
         let mut panel = SessionsPanel::with_session_manager(sm, Vec::new());
-        
+
         // when: set search input
         panel.search_input = "filter text".to_string();
-        
+
         // then: stored
         assert_eq!(panel.search_input, "filter text");
     }
@@ -886,12 +893,12 @@ mod tests {
         // given: empty SM
         let dir = make_test_dir();
         let mut sm = SessionManager::new_with_path(dir).unwrap();
-        
+
         // when: create two sessions
         let _s1 = sm.new_session("session-a");
         let _s2 = sm.new_session("session-b");
         let sessions = sm.list_sessions_full();
-        
+
         // then: both present in SM
         assert_eq!(sessions.len(), 2);
         let names: Vec<_> = sessions.iter().map(|s| &s.name).collect();
@@ -907,10 +914,10 @@ mod tests {
         let _s1 = sm.new_session("target-session");
         let session_id = sm.list_sessions_full()[0].id.clone();
         let _s2 = sm.new_session("other-session");
-        
+
         // when: switch to first session
         let result = sm.switch_session(&session_id);
-        
+
         // then: succeeded
         assert!(result.is_ok());
         assert_eq!(result.unwrap().name, "target-session");
@@ -924,12 +931,12 @@ mod tests {
         let _s1 = sm.new_session("delete-me");
         let session_id = sm.list_sessions_full()[0].id.clone();
         let _s2 = sm.new_session("keep-me");
-        
+
         // when: delete one
         let before = sm.list_sessions_full().len();
         let _ = sm.delete(&session_id);
         let after = sm.list_sessions_full().len();
-        
+
         // then: one fewer
         assert_eq!(before, 2);
         assert_eq!(after, 1);
@@ -940,14 +947,14 @@ mod tests {
         // given: empty SM
         let dir = make_test_dir();
         let mut sm = SessionManager::new_with_path(dir).unwrap();
-        
+
         // when: create → list → filter → switch → delete
         let _ = sm.new_session("lifecycle");
         let sessions = sm.list_sessions_full();
-        
+
         // then: created
         assert_eq!(sessions.len(), 1);
-        
+
         // when: filter finds it
         let panel = SessionsPanel::with_session_manager(sm, sessions.clone());
         let id = panel.get_session_id();

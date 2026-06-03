@@ -4,7 +4,6 @@
 /// 1. Creates or loads a plan from the goal
 /// 2. Iteratively: pick next pending node → run turn → parse result → update plan → judge
 /// 3. Auto-pauses when the judge fails N times in a row or budget is exhausted
-
 pub mod goal_state;
 
 pub use goal_state::{GoalState, GoalStatus};
@@ -17,9 +16,8 @@ use tracing::{info, warn};
 
 use crate::{
     judge::JudgeVerdict,
-    
-    plan_state::PlanState,
     plan_parser::{parse_node_complete, parse_plan_from_markdown},
+    plan_state::PlanState,
 };
 
 /// Configuration for the goal loop.
@@ -106,7 +104,9 @@ where
                     || n.status == crate::plan::NodeStatus::Failed
             });
             if all_done {
-                info!("All nodes completed or failed. Calling judge to check if goal is satisfied.");
+                info!(
+                    "All nodes completed or failed. Calling judge to check if goal is satisfied."
+                );
                 // Call judge to verify
                 let verdict = call_judge(&goal_state.goal, &plan).await?;
                 goal_state.record_verdict(&verdict);
@@ -245,7 +245,10 @@ fn parse_node_completion(plan: &mut PlanState, node_title: &str, response: &str)
             }
             return true;
         } else {
-            warn!("Parsed node completion for '{}' but current node is '{}'", title, node_title);
+            warn!(
+                "Parsed node completion for '{}' but current node is '{}'",
+                title, node_title
+            );
         }
     }
     false
@@ -255,31 +258,42 @@ fn parse_node_completion(plan: &mut PlanState, node_title: &str, response: &str)
 async fn call_judge(_goal: &str, plan: &PlanState) -> Result<JudgeVerdict> {
     // In the future, this will call an auxiliary LLM.
     // For now, use a simple heuristic: if all nodes are done, the goal is done.
-    let all_done = plan.nodes.iter().all(|n| {
-        n.status == crate::plan::NodeStatus::Done
-    });
-    let any_failed = plan.nodes.iter().any(|n| {
-        n.status == crate::plan::NodeStatus::Failed
-    });
+    let all_done = plan
+        .nodes
+        .iter()
+        .all(|n| n.status == crate::plan::NodeStatus::Done);
+    let any_failed = plan
+        .nodes
+        .iter()
+        .any(|n| n.status == crate::plan::NodeStatus::Failed);
 
     if all_done {
         info!("All plan nodes completed — judge auto-verdict: done");
-        return Ok(JudgeVerdict::Done(
-            format!("All {} nodes in the plan have been completed", plan.nodes.len())
-        ));
+        return Ok(JudgeVerdict::Done(format!(
+            "All {} nodes in the plan have been completed",
+            plan.nodes.len()
+        )));
     }
 
     if any_failed {
-        let failed_count = plan.nodes.iter().filter(|n| n.status == crate::plan::NodeStatus::Failed).count();
-        warn!("{} nodes failed — judge auto-verdict: continue", failed_count);
-        return Ok(JudgeVerdict::Continue(
-            format!("{} node(s) failed, need to retry or adapt", failed_count)
-        ));
+        let failed_count = plan
+            .nodes
+            .iter()
+            .filter(|n| n.status == crate::plan::NodeStatus::Failed)
+            .count();
+        warn!(
+            "{} nodes failed — judge auto-verdict: continue",
+            failed_count
+        );
+        return Ok(JudgeVerdict::Continue(format!(
+            "{} node(s) failed, need to retry or adapt",
+            failed_count
+        )));
     }
 
     // Default: continue
     Ok(JudgeVerdict::Continue(
-        "Plan still has pending nodes".to_string()
+        "Plan still has pending nodes".to_string(),
     ))
 }
 
@@ -325,7 +339,7 @@ impl<T: serde::Serialize> SaveToDisk for T {
 }
 
 #[cfg(test)]
-    use crate::PlanNode;
+use crate::PlanNode;
 mod tests {
     use super::*;
 
@@ -468,26 +482,32 @@ mod tests {
     // Synchronous helper for tests (simulates the judge logic)
     #[allow(dead_code)]
     fn call_judge_sync(_goal: &str, plan: &PlanState) -> JudgeVerdict {
-        let all_done = plan.nodes.iter().all(|n| {
-            n.status == crate::plan::NodeStatus::Done
-        });
-        let any_failed = plan.nodes.iter().any(|n| {
-            n.status == crate::plan::NodeStatus::Failed
-        });
+        let all_done = plan
+            .nodes
+            .iter()
+            .all(|n| n.status == crate::plan::NodeStatus::Done);
+        let any_failed = plan
+            .nodes
+            .iter()
+            .any(|n| n.status == crate::plan::NodeStatus::Failed);
 
         if all_done {
-            JudgeVerdict::Done(
-                format!("All {} nodes in the plan have been completed", plan.nodes.len())
-            )
+            JudgeVerdict::Done(format!(
+                "All {} nodes in the plan have been completed",
+                plan.nodes.len()
+            ))
         } else if any_failed {
-            let failed_count = plan.nodes.iter().filter(|n| n.status == crate::plan::NodeStatus::Failed).count();
-            JudgeVerdict::Continue(
-                format!("{} node(s) failed, need to retry or adapt", failed_count)
-            )
+            let failed_count = plan
+                .nodes
+                .iter()
+                .filter(|n| n.status == crate::plan::NodeStatus::Failed)
+                .count();
+            JudgeVerdict::Continue(format!(
+                "{} node(s) failed, need to retry or adapt",
+                failed_count
+            ))
         } else {
-            JudgeVerdict::Continue(
-                "Plan still has pending nodes".to_string()
-            )
+            JudgeVerdict::Continue("Plan still has pending nodes".to_string())
         }
     }
 
@@ -524,9 +544,8 @@ mod tests {
         goal.record_verdict(&JudgeVerdict::Continue("working".to_string()));
         goal.save_to_file(&path).unwrap();
 
-        let loaded: GoalState = serde_json::from_str(
-            &std::fs::read_to_string(&path).unwrap()
-        ).unwrap();
+        let loaded: GoalState =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(loaded.goal, "test goal");
         assert_eq!(loaded.turns_used, 1);
     }

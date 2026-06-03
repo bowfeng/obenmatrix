@@ -6,7 +6,6 @@
 /// It borrows messages from the Session (the single source of truth), tracks
 /// real token usage from API responses, decides when compaction should fire,
 /// and mutates the message buffer in-place via `compact()`.
-
 use anyhow::Result;
 use oben_models::{Message, TransportProvider};
 
@@ -41,7 +40,12 @@ pub trait ContextEngine: Send + Sync {
     // -- Token tracking (from API responses) --------------------------------
 
     /// Update tracked token usage from an LLM API response.
-    fn update_from_response(&mut self, prompt_tokens: usize, completion_tokens: usize, total_tokens: usize);
+    fn update_from_response(
+        &mut self,
+        prompt_tokens: usize,
+        completion_tokens: usize,
+        total_tokens: usize,
+    );
 
     /// Get the real token count from the last API response.
     fn last_total_tokens(&self) -> usize;
@@ -71,7 +75,12 @@ pub trait ContextEngine: Send + Sync {
     // -- Lifecycle hooks ----------------------------------------------------
 
     /// Lifecycle hook: session start.
-    fn on_session_start(&mut self, session_id: &str, model_name: &str, context_length: Option<usize>);
+    fn on_session_start(
+        &mut self,
+        session_id: &str,
+        model_name: &str,
+        context_length: Option<usize>,
+    );
 
     /// Lifecycle hook: session reset.
     fn on_session_reset(&mut self);
@@ -99,7 +108,12 @@ pub trait ContextEngine: Send + Sync {
 
 #[async_trait::async_trait]
 impl ContextEngine for Box<dyn ContextEngine> {
-    fn update_from_response(&mut self, prompt_tokens: usize, completion_tokens: usize, total_tokens: usize) {
+    fn update_from_response(
+        &mut self,
+        prompt_tokens: usize,
+        completion_tokens: usize,
+        total_tokens: usize,
+    ) {
         (**self).update_from_response(prompt_tokens, completion_tokens, total_tokens)
     }
     fn last_total_tokens(&self) -> usize {
@@ -111,10 +125,20 @@ impl ContextEngine for Box<dyn ContextEngine> {
     fn should_compact(&self, messages: &[Message]) -> bool {
         (**self).should_compact(messages)
     }
-    async fn compact(&mut self, messages: &mut Vec<Message>, transport: Option<&dyn TransportProvider>, focus_topic: Option<&str>) -> Result<CompactStatus> {
+    async fn compact(
+        &mut self,
+        messages: &mut Vec<Message>,
+        transport: Option<&dyn TransportProvider>,
+        focus_topic: Option<&str>,
+    ) -> Result<CompactStatus> {
         (**self).compact(messages, transport, focus_topic).await
     }
-    fn on_session_start(&mut self, session_id: &str, model_name: &str, context_length: Option<usize>) {
+    fn on_session_start(
+        &mut self,
+        session_id: &str,
+        model_name: &str,
+        context_length: Option<usize>,
+    ) {
         (**self).on_session_start(session_id, model_name, context_length)
     }
     fn on_session_reset(&mut self) {
@@ -123,8 +147,15 @@ impl ContextEngine for Box<dyn ContextEngine> {
     fn on_session_end(&mut self, session_id: &str) {
         (**self).on_session_end(session_id)
     }
-    async fn preflight_check(&mut self, messages: &mut Vec<Message>, transport: Option<&dyn TransportProvider>, focus_topic: Option<&str>) -> Result<usize> {
-        (**self).preflight_check(messages, transport, focus_topic).await
+    async fn preflight_check(
+        &mut self,
+        messages: &mut Vec<Message>,
+        transport: Option<&dyn TransportProvider>,
+        focus_topic: Option<&str>,
+    ) -> Result<usize> {
+        (**self)
+            .preflight_check(messages, transport, focus_topic)
+            .await
     }
     fn reset(&mut self) {
         (**self).reset()

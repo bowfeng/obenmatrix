@@ -225,13 +225,37 @@ fn all_non_empty_providers_have_transport() {
     /// when: we check each one has valid transport
     /// then: no panic, valid transport for each
     let canonicals = [
-        "anthropic", "openai", "openrouter", "google-gemini-cli",
-        "zai", "kimi-for-coding", "deepseek", "alibaba",
-        "alibaba-coding-plan", "stepfun", "minimax", "minimax-oauth",
-        "minimax-cn", "tencent-tokenhub", "xai", "xai-oauth",
-        "nvidia", "bedrock", "lmstudio", "nous", "vercel",
-        "opencode", "opencode-go", "kilo", "huggingface", "novita",
-        "xiaomi", "arcee", "gmi", "ollama-custom", "local",
+        "anthropic",
+        "openai",
+        "openrouter",
+        "google-gemini-cli",
+        "zai",
+        "kimi-for-coding",
+        "deepseek",
+        "alibaba",
+        "alibaba-coding-plan",
+        "stepfun",
+        "minimax",
+        "minimax-oauth",
+        "minimax-cn",
+        "tencent-tokenhub",
+        "xai",
+        "xai-oauth",
+        "nvidia",
+        "bedrock",
+        "lmstudio",
+        "nous",
+        "vercel",
+        "opencode",
+        "opencode-go",
+        "kilo",
+        "huggingface",
+        "novita",
+        "xiaomi",
+        "arcee",
+        "gmi",
+        "ollama-custom",
+        "local",
     ];
     for id in canonicals {
         let info = oben_models::provider_registry::resolve_provider_info(id);
@@ -279,7 +303,10 @@ fn nous_resolve() {
     let info = resolve_provider_info("nous");
     assert!(info.is_some());
     assert_eq!(info.as_ref().unwrap().canonical, "nous");
-    assert_eq!(info.as_ref().unwrap().base_url, "https://inference-api.nousresearch.com/v1");
+    assert_eq!(
+        info.as_ref().unwrap().base_url,
+        "https://inference-api.nousresearch.com/v1"
+    );
 }
 
 #[test]
@@ -289,7 +316,10 @@ fn minimax_oauth_resolve() {
     /// then: transport is AnthropicMessages
     let info = resolve_provider_info("minimax-oauth");
     assert!(info.is_some());
-    assert_eq!(info.unwrap().transport_type, oben_models::provider_registry::TransportType::AnthropicMessages);
+    assert_eq!(
+        info.unwrap().transport_type,
+        oben_models::provider_registry::TransportType::AnthropicMessages
+    );
 }
 
 #[test]
@@ -299,7 +329,10 @@ fn bedrock_resolve() {
     /// then: resolves to bedrock with BedrockConverse transport
     let info = resolve_provider_info("aws-bedrock");
     assert!(info.is_some());
-    assert_eq!(info.unwrap().transport_type, oben_models::provider_registry::TransportType::BedrockConverse);
+    assert_eq!(
+        info.unwrap().transport_type,
+        oben_models::provider_registry::TransportType::BedrockConverse
+    );
 }
 
 #[test]

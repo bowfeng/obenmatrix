@@ -4,7 +4,7 @@
 //! through `oben_sessions::memory_provider::*` and `oben_sessions::skill_curation::*`.
 
 use oben_sessions::memory_provider::*;
-use oben_sessions::skill_curation::{MemoryResult, MemoryStore, scan_memory_content};
+use oben_sessions::skill_curation::{scan_memory_content, MemoryResult, MemoryStore};
 
 // ── FakeProvider — a test double ─────────────────────────────────────────────
 
@@ -91,11 +91,7 @@ impl MemoryProvider for FakeProvider {
         self.tools.clone()
     }
 
-    fn handle_tool_call(
-        &mut self,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> serde_json::Value {
+    fn handle_tool_call(&mut self, tool_name: &str, args: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({
             "handled": tool_name,
             "args": args,
@@ -114,9 +110,11 @@ impl MemoryProvider for FakeProvider {
     }
 
     fn on_memory_write(&self, action: &str, target: &str, content: &str) {
-        self.memory_writes
-            .borrow_mut()
-            .push((action.to_string(), target.to_string(), content.to_string()));
+        self.memory_writes.borrow_mut().push((
+            action.to_string(),
+            target.to_string(),
+            content.to_string(),
+        ));
     }
 }
 
@@ -262,8 +260,7 @@ fn test_manager_prefetch_all_calls_all_providers() {
     let dir1 = make_test_dir();
     let store1 = MemoryStore::default();
     let builtin = BuiltinProvider::new(store1, dir1.path().to_path_buf());
-    let mut fake = FakeProvider::new("ext")
-        .with_prefetch_result("External memory");
+    let mut fake = FakeProvider::new("ext").with_prefetch_result("External memory");
     let mut mgr = MemoryManager::new();
     mgr.add_provider(Box::new(builtin));
     mgr.add_provider(Box::new(fake));
@@ -395,10 +392,13 @@ fn test_manager_handle_tool_call_routes() {
     let mut mgr = MemoryManager::new();
     mgr.add_provider(Box::new(builtin));
     mgr.add_provider(Box::new(fake));
-    let result = mgr.handle_tool_call("memory.add", &serde_json::json!({
-        "target": "memory",
-        "content": "test"
-    }));
+    let result = mgr.handle_tool_call(
+        "memory.add",
+        &serde_json::json!({
+            "target": "memory",
+            "content": "test"
+        }),
+    );
     assert!(result["success"].as_bool().unwrap_or(false));
     let result = mgr.handle_tool_call("ext_recall", &serde_json::json!({}));
     assert_eq!(result["from"], "ext");

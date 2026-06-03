@@ -2,7 +2,6 @@
 ///
 /// Categorizes LLM API errors into types that determine recovery strategy:
 /// retry, fail-fast, or user message.
-
 use std::fmt;
 
 /// Category of an API error, determining recovery strategy.
@@ -29,7 +28,10 @@ pub enum ErrorKind {
 impl ErrorKind {
     /// Whether this error should trigger a retry.
     pub fn is_retryable(&self) -> bool {
-        matches!(self, ErrorKind::RateLimit | ErrorKind::Network | ErrorKind::ServerError)
+        matches!(
+            self,
+            ErrorKind::RateLimit | ErrorKind::Network | ErrorKind::ServerError
+        )
     }
 
     /// Whether this error should fail immediately (no retry).
@@ -53,16 +55,25 @@ impl ErrorKind {
                 format!("Authentication failed. {}", detail)
             }
             ErrorKind::ModelNotFound => {
-                format!("Model not found: {}. Check the model name and provider.", detail)
+                format!(
+                    "Model not found: {}. Check the model name and provider.",
+                    detail
+                )
             }
             ErrorKind::BadRequest => {
-                format!("Bad request: {}. Check your input or configuration.", detail)
+                format!(
+                    "Bad request: {}. Check your input or configuration.",
+                    detail
+                )
             }
             ErrorKind::Network => {
                 format!("Network error: {}. Check your connection.", detail)
             }
             ErrorKind::ServerError => {
-                format!("Server error: {}. The provider is experiencing issues.", detail)
+                format!(
+                    "Server error: {}. The provider is experiencing issues.",
+                    detail
+                )
             }
             ErrorKind::CompletionLength => {
                 format!("Response was truncated. {}", detail)
@@ -99,7 +110,12 @@ pub struct ClassifiedError {
 }
 
 impl ClassifiedError {
-    pub fn new(kind: ErrorKind, detail: String, http_code: Option<u16>, source_msg: String) -> Self {
+    pub fn new(
+        kind: ErrorKind,
+        detail: String,
+        http_code: Option<u16>,
+        source_msg: String,
+    ) -> Self {
         Self {
             kind,
             detail,

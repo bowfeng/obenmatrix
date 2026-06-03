@@ -3,7 +3,6 @@
 /// Mirrors Hermes' message sanitization pipeline:
 /// 1. Drop "thinking-only" assistant messages
 /// 2. Merge consecutive user/system messages
-
 use oben_models::{Message, MessageContent, MessagePart, MessageRole};
 
 /// Run the full sanitization pipeline on a message list.
@@ -69,18 +68,17 @@ pub fn merge_consecutive_user_messages(messages: &mut Vec<Message>) {
             MessageRole::User => {
                 let text = match &msg.content {
                     MessageContent::Text(t) => t.clone(),
-                    MessageContent::Parts(parts) => {
-                        parts.iter()
-                            .filter_map(|p| {
-                                if let MessagePart::Text(t) = p {
-                                    Some(t.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    }
+                    MessageContent::Parts(parts) => parts
+                        .iter()
+                        .filter_map(|p| {
+                            if let MessagePart::Text(t) = p {
+                                Some(t.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     MessageContent::Image { .. } => "[image]".to_string(),
                 };
 
@@ -129,9 +127,7 @@ pub fn strip_surrogates(text: &str) -> String {
 
 /// Strip non-ASCII characters from a string.
 pub fn strip_non_ascii(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_ascii())
-        .collect()
+    text.chars().filter(|c| c.is_ascii()).collect()
 }
 
 #[cfg(test)]
@@ -194,7 +190,7 @@ mod tests {
     fn test_drop_thinking_only_messages() {
         let mut messages = vec![
             make_user("Hello"),
-            make_assistant(""),        // thinking-only, drop
+            make_assistant(""),         // thinking-only, drop
             make_assistant("Response"), // keep
             make_user("Follow up"),
         ];
@@ -284,7 +280,7 @@ mod tests {
     fn test_sanitize_messages_runs_full_pipeline() {
         let mut messages = vec![
             make_user("Hello"),
-            make_assistant(""),        // thinking-only
+            make_assistant(""), // thinking-only
             make_assistant("Response"),
             make_user("Follow up"),
         ];

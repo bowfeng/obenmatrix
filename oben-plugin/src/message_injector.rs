@@ -204,7 +204,12 @@ mod tests {
         /// when: inject() is called
         /// then: message is stored with correct properties
         let injector = MessageInjector::new();
-        let id = injector.inject("user".to_string(), "Hello".to_string(), MessageAction::Append, "test-plugin");
+        let id = injector.inject(
+            "user".to_string(),
+            "Hello".to_string(),
+            MessageAction::Append,
+            "test-plugin",
+        );
 
         let msgs = injector.list();
         assert_eq!(msgs.len(), 1);
@@ -223,8 +228,18 @@ mod tests {
         /// when: get_unconsumed() is called
         /// then: only unconsumed messages returned
         let injector = MessageInjector::new();
-        injector.inject("user".to_string(), "msg1".to_string(), MessageAction::Append, "p1");
-        injector.inject("user".to_string(), "msg2".to_string(), MessageAction::Queue, "p2");
+        injector.inject(
+            "user".to_string(),
+            "msg1".to_string(),
+            MessageAction::Append,
+            "p1",
+        );
+        injector.inject(
+            "user".to_string(),
+            "msg2".to_string(),
+            MessageAction::Queue,
+            "p2",
+        );
 
         let unconsumed = injector.get_append_messages();
         assert_eq!(unconsumed.len(), 1);
@@ -237,9 +252,24 @@ mod tests {
         /// when: consume(Append) is called
         /// then: all append messages are marked consumed
         let injector = MessageInjector::new();
-        injector.inject("user".to_string(), "msg1".to_string(), MessageAction::Append, "p1");
-        injector.inject("user".to_string(), "msg2".to_string(), MessageAction::Append, "p1");
-        injector.inject("user".to_string(), "msg3".to_string(), MessageAction::Queue, "p1");
+        injector.inject(
+            "user".to_string(),
+            "msg1".to_string(),
+            MessageAction::Append,
+            "p1",
+        );
+        injector.inject(
+            "user".to_string(),
+            "msg2".to_string(),
+            MessageAction::Append,
+            "p1",
+        );
+        injector.inject(
+            "user".to_string(),
+            "msg3".to_string(),
+            MessageAction::Queue,
+            "p1",
+        );
 
         let consumed = injector.consume(MessageAction::Append);
         assert_eq!(consumed.len(), 2);
@@ -255,9 +285,24 @@ mod tests {
         /// when: consume_all() is called
         /// then: all messages are consumed
         let injector = MessageInjector::new();
-        injector.inject("user".to_string(), "msg1".to_string(), MessageAction::Append, "p1");
-        injector.inject("user".to_string(), "msg2".to_string(), MessageAction::Interrupt, "p2");
-        injector.inject("user".to_string(), "msg3".to_string(), MessageAction::Queue, "p3");
+        injector.inject(
+            "user".to_string(),
+            "msg1".to_string(),
+            MessageAction::Append,
+            "p1",
+        );
+        injector.inject(
+            "user".to_string(),
+            "msg2".to_string(),
+            MessageAction::Interrupt,
+            "p2",
+        );
+        injector.inject(
+            "user".to_string(),
+            "msg3".to_string(),
+            MessageAction::Queue,
+            "p3",
+        );
 
         let count = injector.consume_all();
         assert_eq!(count, 3);
@@ -299,7 +344,12 @@ mod tests {
         }
 
         // Interrupt should be added even at capacity
-        let _id = injector.inject("user".to_string(), "urgent".to_string(), MessageAction::Interrupt, "plugin");
+        let _id = injector.inject(
+            "user".to_string(),
+            "urgent".to_string(),
+            MessageAction::Interrupt,
+            "plugin",
+        );
         assert_eq!(injector.get_interrupt_messages().len(), 1);
         assert!(!injector.get_interrupt_messages().is_empty());
     }
@@ -310,8 +360,18 @@ mod tests {
         /// when: clear() is called
         /// then: all messages are removed
         let injector = MessageInjector::new();
-        injector.inject("user".to_string(), "msg1".to_string(), MessageAction::Append, "p1");
-        injector.inject("user".to_string(), "msg2".to_string(), MessageAction::Queue, "p2");
+        injector.inject(
+            "user".to_string(),
+            "msg1".to_string(),
+            MessageAction::Append,
+            "p1",
+        );
+        injector.inject(
+            "user".to_string(),
+            "msg2".to_string(),
+            MessageAction::Queue,
+            "p2",
+        );
 
         injector.clear();
         assert!(injector.list().is_empty());

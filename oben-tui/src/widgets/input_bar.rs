@@ -12,8 +12,6 @@ use textwrap::wrap;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-
-
 /// Text area state tracked by the input bar widget.
 pub struct InputState {
     /// Current text content.
@@ -134,7 +132,13 @@ impl InputBarWidget {
     /// Render the input bar widget.
     ///
     /// Returns the height of the rendered block in rows (including border).
-    pub fn render(&self, frame: &mut Frame, area: Rect, state: &InputState, palette: &ratatui_themes::ThemePalette) -> u16 {
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &InputState,
+        palette: &ratatui_themes::ThemePalette,
+    ) -> u16 {
         let text_cols = (area.width as usize).saturating_sub(2).max(1);
 
         // Compute wrapped lines for cursor pos + height calc.
@@ -191,9 +195,7 @@ impl InputBarWidget {
 
     /// Predict the height in rows needed to render the input bar including border
     /// for a given screen width.
-    pub fn calculate_input_height(
-        &self, state: &InputState, screen_width: u16,
-    ) -> u16 {
+    pub fn calculate_input_height(&self, state: &InputState, screen_width: u16) -> u16 {
         let text_cols = (screen_width as usize).saturating_sub(2).max(1);
         let lines = if state.text.is_empty() {
             1u16
@@ -211,11 +213,7 @@ impl InputBarWidget {
     /// Process a key event for the input bar.
     ///
     /// Returns an `InputBarResult` indicating how the event was handled.
-    pub fn handle_key(
-        &mut self,
-        state: &mut InputState,
-        key: KeyEvent,
-    ) -> InputBarResult {
+    pub fn handle_key(&mut self, state: &mut InputState, key: KeyEvent) -> InputBarResult {
         // Streaming: only Ctrl+C kills it.
         if state.streaming {
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -419,7 +417,10 @@ impl InputBarWidget {
             let extra = if parts.len() > 1 { parts[1].trim() } else { "" };
             state.text.clear();
             state.cursor = 0;
-            return InputBarResult::SlashCommand { cmd_name, extra: extra.to_string() };
+            return InputBarResult::SlashCommand {
+                cmd_name,
+                extra: extra.to_string(),
+            };
         }
 
         // Default: submit as chat input
@@ -474,7 +475,12 @@ impl InputBarWidget {
         }
     }
 
-    fn build_text_lines(&self, text: &str, text_cols: usize, _palette: &ratatui_themes::ThemePalette) -> Vec<Line<'static>> {
+    fn build_text_lines(
+        &self,
+        text: &str,
+        text_cols: usize,
+        _palette: &ratatui_themes::ThemePalette,
+    ) -> Vec<Line<'static>> {
         if text.is_empty() {
             return vec![Line::from(Span::styled(
                 "Type '/' for commands. Type your message and press Enter.",
@@ -496,13 +502,20 @@ impl InputBarWidget {
             .collect()
     }
 
-    fn render_streaming_indicator(&self, frame: &mut Frame, area: Rect, palette: &ratatui_themes::ThemePalette) {
+    fn render_streaming_indicator(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        palette: &ratatui_themes::ThemePalette,
+    ) {
         let text = " \u{23F3} Streaming... ";
         let w = text.len() as u16 + 2;
         let indicator_area = Rect::new(area.right().saturating_sub(w + 2), area.y + 1, w, 1);
         let para = Paragraph::new(Line::from(Span::styled(
             text,
-            Style::default().fg(palette.info).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(palette.info)
+                .add_modifier(Modifier::BOLD),
         )));
         frame.render_widget(para, indicator_area);
     }
@@ -639,9 +652,18 @@ mod tests {
         let ib = InputBarWidget;
         let mut state = make_state("");
         state.completion_items = vec![
-            CompletionItem { cmd: "/foo".into(), desc: "a".into() },
-            CompletionItem { cmd: "/bar".into(), desc: "b".into() },
-            CompletionItem { cmd: "/baz".into(), desc: "c".into() },
+            CompletionItem {
+                cmd: "/foo".into(),
+                desc: "a".into(),
+            },
+            CompletionItem {
+                cmd: "/bar".into(),
+                desc: "b".into(),
+            },
+            CompletionItem {
+                cmd: "/baz".into(),
+                desc: "c".into(),
+            },
         ];
         // border(2) + text(1) + completion(3) = 6
         assert_eq!(ib.calculate_input_height(&state, 40), 6);
@@ -758,10 +780,7 @@ mod tests {
         let mut ib = InputBarWidget;
         let mut state = make_state("hello world");
         state.cursor = 11; // end of "world"
-        let key = KeyEvent::new(
-            KeyCode::Char('w'),
-            KeyModifiers::CONTROL,
-        );
+        let key = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
         ib.handle_key(&mut state, key);
         assert_eq!(state.text, "hello ");
     }
@@ -773,10 +792,7 @@ mod tests {
     fn test_ctrl_u_clears_all() {
         let mut ib = InputBarWidget;
         let mut state = make_state("some text here");
-        let key = KeyEvent::new(
-            KeyCode::Char('u'),
-            KeyModifiers::CONTROL,
-        );
+        let key = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
         ib.handle_key(&mut state, key);
         assert_eq!(state.text, "");
         assert_eq!(state.cursor, 0);
@@ -804,10 +820,7 @@ mod tests {
         let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.streaming = true;
-        let key = KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::CONTROL,
-        );
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         let result = ib.handle_key(&mut state, key);
         assert!(matches!(result, InputBarResult::Consumed));
         assert!(!state.streaming, "ctrl+c should stop streaming");
@@ -824,14 +837,8 @@ mod tests {
         InputBarWidget.update_completions(&mut state);
         assert!(!state.completion_items.is_empty());
         // Should match /compact
-        let found_compact = state
-            .completion_items
-            .iter()
-            .any(|c| c.cmd == "/compact");
-        assert!(
-            found_compact,
-            "should find /compact for /co"
-        );
+        let found_compact = state.completion_items.iter().any(|c| c.cmd == "/compact");
+        assert!(found_compact, "should find /compact for /co");
     }
 
     /// Given: an InputState with "/unknown"

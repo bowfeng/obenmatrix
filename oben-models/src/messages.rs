@@ -25,7 +25,10 @@ pub enum MessageRole {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MessageContent {
     Text(String),
-    Image { url: String, detail: Option<String> },
+    Image {
+        url: String,
+        detail: Option<String>,
+    },
     /// Multiple parts (text + image) in one message.
     Parts(Vec<MessagePart>),
 }

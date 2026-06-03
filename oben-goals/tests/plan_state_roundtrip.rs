@@ -1,4 +1,4 @@
-use oben_goals::plan::{PlanNode, NodeStatus};
+use oben_goals::plan::{NodeStatus, PlanNode};
 
 /// A plan state serializes and deserializes cleanly.
 #[test]
@@ -6,11 +6,10 @@ fn test_plan_state_roundtrip_json() {
     let mut plan = oben_goals::plan_state::PlanState::new("build a web scraper");
     plan.add_node(
         PlanNode::new("research existing codebase")
-            .description("Read the project files to understand structure")
+            .description("Read the project files to understand structure"),
     );
     plan.add_node(
-        PlanNode::new("implement fetcher")
-            .description("Create HTTP fetcher using reqwest")
+        PlanNode::new("implement fetcher").description("Create HTTP fetcher using reqwest"),
     );
 
     let json = serde_json::to_string(&plan).unwrap();
@@ -75,7 +74,10 @@ fn test_plan_state_next_pending() {
     plan.add_node(PlanNode::new("do me next"));
     plan.add_node(PlanNode::new("later"));
 
-    assert_eq!(plan.next_pending_node().map(|n| n.title.as_str()), Some("do me next"));
+    assert_eq!(
+        plan.next_pending_node().map(|n| n.title.as_str()),
+        Some("do me next")
+    );
 }
 
 /// Plan state returns None when all nodes are done.
@@ -109,7 +111,10 @@ fn test_plan_state_mark_done() {
 
     let node = plan.find_node("task").unwrap();
     assert!(matches!(node.status, NodeStatus::Done));
-    assert_eq!(node.completion_message, Some("completed successfully".to_string()));
+    assert_eq!(
+        node.completion_message,
+        Some("completed successfully".to_string())
+    );
 }
 
 /// Plan state marks a node as failed.

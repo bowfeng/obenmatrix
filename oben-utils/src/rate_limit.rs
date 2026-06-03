@@ -186,27 +186,11 @@ pub fn format_rate_limit_display(state: &RateLimitState) -> String {
     let lines: Vec<String> = [
         format!("{} Rate Limits (captured {}):", provider, freshness),
         String::new(),
-        bucket_line(
-            "Requests/min",
-            &state.requests_min,
-            14,
-        ),
-        bucket_line(
-            "Requests/hr",
-            &state.requests_hour,
-            14,
-        ),
+        bucket_line("Requests/min", &state.requests_min, 14),
+        bucket_line("Requests/hr", &state.requests_hour, 14),
         String::new(),
-        bucket_line(
-            "Tokens/min",
-            &state.tokens_min,
-            14,
-        ),
-        bucket_line(
-            "Tokens/hr",
-            &state.tokens_hour,
-            14,
-        ),
+        bucket_line("Tokens/min", &state.tokens_min, 14),
+        bucket_line("Tokens/hr", &state.tokens_hour, 14),
     ]
     .into_iter()
     .filter(|_l| true)
@@ -234,8 +218,7 @@ pub fn format_rate_limit_compact(state: &RateLimitState) -> String {
     if state.requests_min.limit > 0 {
         parts.push(format!(
             "RPM: {}/{}",
-            state.requests_min.remaining,
-            state.requests_min.limit
+            state.requests_min.remaining, state.requests_min.limit
         ));
     }
     if state.requests_hour.limit > 0 {
@@ -264,10 +247,9 @@ pub fn format_rate_limit_compact(state: &RateLimitState) -> String {
 }
 
 /// Thread-safe global store for last-seen rate limit state per provider.
-pub static RATE_LIMIT_STORE: Lazy<RateLimitStore> =
-    Lazy::new(|| RateLimitStore {
-        map: Mutex::new(HashMap::new()),
-    });
+pub static RATE_LIMIT_STORE: Lazy<RateLimitStore> = Lazy::new(|| RateLimitStore {
+    map: Mutex::new(HashMap::new()),
+});
 
 /// A store that maps provider names to their latest rate limit state.
 #[derive(Debug)]
@@ -379,7 +361,9 @@ impl RateLimitState {
 }
 
 fn safe_int(value: Option<&String>) -> usize {
-    value.map(|v| v.parse::<i64>().unwrap_or(0).max(0) as usize).unwrap_or(0)
+    value
+        .map(|v| v.parse::<i64>().unwrap_or(0).max(0) as usize)
+        .unwrap_or(0)
 }
 
 fn safe_float(value: Option<&String>) -> f64 {

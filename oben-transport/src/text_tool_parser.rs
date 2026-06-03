@@ -9,7 +9,6 @@
 /// This function scans the text for tool invocation patterns and returns
 /// a list of `TransportToolCall` when the LLM outputs text-based tool calls
 /// but the transport receives no structured `tool_calls`.
-
 use oben_models::TransportToolCall;
 
 /// Extract a complete JSON object from a string that starts with `{`.
@@ -46,15 +45,15 @@ fn extract_json_object(s: &str) -> Option<&str> {
                     start = Some(i);
                 }
             }
-                '}' => {
+            '}' => {
                 depth -= 1;
                 if depth == 0 {
                     return Some(&s[..=i]);
                 }
             }
-                '[' => depth += 1,
-                ']' => depth -= 1,
-                _ => {}
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            _ => {}
         }
     }
     None
@@ -86,14 +85,19 @@ pub fn parse_tool_calls_from_text(text: &str) -> Vec<TransportToolCall> {
             if end < len {
                 let word = &text[start..end];
                 // Check: is this a valid tool name (no spaces)?
-                if !word.is_empty() && !word.contains(|c: char| c.is_whitespace())
-                    && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                if !word.is_empty()
+                    && !word.contains(|c: char| c.is_whitespace())
+                    && word
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
                     // Look ahead for a JSON object after this quoted word
                     let after_quote = end + 1;
                     // Skip past trailing quotes or other chars that might appear
                     let mut j = after_quote;
-                    while j < len && bytes[j] == b'"' { j += 1; }
+                    while j < len && bytes[j] == b'"' {
+                        j += 1;
+                    }
                     if j < len && bytes[j] == b'{' {
                         if let Some(args_str) = extract_json_object(&text[j..]) {
                             if let Ok(args) = serde_json::from_str::<serde_json::Value>(args_str) {
@@ -120,7 +124,9 @@ pub fn parse_tool_calls_from_text(text: &str) -> Vec<TransportToolCall> {
             let before = &trimmed[..paren_pos];
             let tool_name = before.trim();
             if !tool_name.is_empty()
-                && tool_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                && tool_name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 && !tool_name.contains('"')
             {
                 if let Some(close_paren) = trimmed.rfind(')') {

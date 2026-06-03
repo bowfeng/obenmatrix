@@ -1,6 +1,5 @@
 /// Plan state — the collection of top-level plan nodes.
-
-use crate::plan::{PlanNode, NodeStatus};
+use crate::plan::{NodeStatus, PlanNode};
 use std::path::Path;
 
 /// The full plan state — goal description and list of nodes.
@@ -48,12 +47,18 @@ impl PlanState {
 
     /// Count pending nodes.
     pub fn pending_count(&self) -> usize {
-        self.nodes.iter().filter(|n| n.status == NodeStatus::Pending).count()
+        self.nodes
+            .iter()
+            .filter(|n| n.status == NodeStatus::Pending)
+            .count()
     }
 
     /// Count done nodes.
     pub fn done_count(&self) -> usize {
-        self.nodes.iter().filter(|n| n.status == NodeStatus::Done).count()
+        self.nodes
+            .iter()
+            .filter(|n| n.status == NodeStatus::Done)
+            .count()
     }
 
     /// Count total nodes.

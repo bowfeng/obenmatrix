@@ -1,16 +1,15 @@
+use reqwest::Client;
+use scraper::{Html, Selector};
+use serde_json::Value;
 /// Web extract tool — extracts readable content from web pages.
 ///
 /// Fetches HTML and converts to plain text/markdown using scraper.
 /// Includes SSRF protection to block private/internal URLs.
-
 use std::sync::Arc;
-use serde_json::Value;
-use reqwest::Client;
-use scraper::{Html, Selector};
 
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{SelfRegisteringTool, ToolHandler};
 
 // ---------------------------------------------------------------------------
 // SSRF protection — block private/internal URLs
@@ -19,24 +18,24 @@ use super::registry::{ToolHandler, SelfRegisteringTool};
 /// Check if a URL is safe (not pointing to private/internal networks).
 fn is_safe_url(url: &str) -> bool {
     let url = url.trim();
-    
+
     // Block empty or malformed URLs
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return false;
     }
-    
+
     // Extract host from URL
     let host = url
         .strip_prefix("http://")
         .or_else(|| url.strip_prefix("https://"))
         .and_then(|u| u.split('/').next())
         .unwrap_or("");
-    
+
     // Remove port if present
     let host = host.split(':').next().unwrap_or("");
-    
+
     // Block localhost and internal names first
-    if host == "localhost" 
+    if host == "localhost"
         || host == "127.0.0.1"
         || host.ends_with(".local")
         || host.ends_with(".internal")
@@ -45,49 +44,49 @@ fn is_safe_url(url: &str) -> bool {
     {
         return false;
     }
-    
+
     // Block private IP ranges
     let parts: Vec<&str> = host.split('.').collect();
     if parts.len() != 4 {
         return true;
     }
-    
+
     // Check for private IP ranges (RFC 1918)
     let first = parts[0].parse::<u8>().unwrap_or(0);
     let second = parts[1].parse::<u8>().unwrap_or(0);
-    
+
     // 10.0.0.0/8
     if first == 10 {
         return false;
     }
-    
+
     // 172.16.0.0/12
     if first == 172 && second >= 16 && second <= 31 {
         return false;
     }
-    
+
     // 192.168.0.0/16
     if first == 192 && second == 168 {
         return false;
     }
-    
+
     // 127.0.0.0/8 (loopback)
     if first == 127 {
         return false;
     }
-    
+
     // 169.254.0.0/16 (link-local)
     if first == 169 && second == 254 {
         return false;
     }
-    
+
     // 0.0.0.0
     if first == 0 {
         return false;
     }
-    
+
     // Block localhost and internal names
-    if host == "localhost" 
+    if host == "localhost"
         || host == "127.0.0.1"
         || host.ends_with(".local")
         || host.ends_with(".internal")
@@ -96,7 +95,7 @@ fn is_safe_url(url: &str) -> bool {
     {
         return false;
     }
-    
+
     true
 }
 
@@ -107,20 +106,20 @@ fn is_safe_url(url: &str) -> bool {
 /// Extract readable content from HTML.
 fn extract_content(html: &str, max_length: usize) -> String {
     let document = Html::parse_document(html);
-    
+
     // Try to extract article/primary content first
     if let Ok(article_selector) = Selector::parse("article") {
         if let Some(el) = document.select(&article_selector).next() {
             return extract_text(&el, max_length);
         }
     }
-    
+
     if let Ok(primary_selector) = Selector::parse("main") {
         if let Some(el) = document.select(&primary_selector).next() {
             return extract_text(&el, max_length);
         }
     }
-    
+
     // Fallback: extract all text
     extract_all_text(&document, max_length)
 }
@@ -129,7 +128,7 @@ fn extract_content(html: &str, max_length: usize) -> String {
 fn extract_text(element: &scraper::ElementRef<'_>, max_length: usize) -> String {
     let text: Vec<&str> = element.text().collect();
     let joined = text.join(" ");
-    
+
     if joined.len() > max_length {
         format!(
             "{}... ({} chars total)",
@@ -144,9 +143,9 @@ fn extract_text(element: &scraper::ElementRef<'_>, max_length: usize) -> String 
 /// Extract all text from a document by walking the DOM tree.
 fn extract_all_text(document: &scraper::Html, max_length: usize) -> String {
     use scraper::node::Node;
-    
+
     let mut text_parts = Vec::new();
-    
+
     // Walk through all nodes in the document
     for node in document.root_element().descendants() {
         if let Node::Text(text_node) = node.value() {
@@ -156,9 +155,9 @@ fn extract_all_text(document: &scraper::Html, max_length: usize) -> String {
             }
         }
     }
-    
+
     let joined = text_parts.join(" ");
-    
+
     if joined.len() > max_length {
         format!(
             "{}... ({} chars total)",
@@ -173,7 +172,7 @@ fn extract_all_text(document: &scraper::Html, max_length: usize) -> String {
 /// Extract title and content from HTML.
 fn extract_page(html: &str) -> (String, String) {
     let document = Html::parse_document(html);
-    
+
     let title = if let Ok(title_selector) = Selector::parse("title") {
         document
             .select(&title_selector)
@@ -183,9 +182,9 @@ fn extract_page(html: &str) -> (String, String) {
     } else {
         "(no title)".to_string()
     };
-    
+
     let content = extract_content(html, 10000);
-    
+
     (title, content)
 }
 
@@ -228,7 +227,8 @@ fn make_web_extract_handler() -> ToolHandler {
                 .and_then(|v| v.as_str())
                 .unwrap_or("text");
 
-            let call_id = args.get("call_id")
+            let call_id = args
+                .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -238,13 +238,16 @@ fn make_web_extract_handler() -> ToolHandler {
                 return Ok(ToolResult {
                     call_id,
                     output: String::new(),
-                    error: Some("Blocked: URL targets a private or internal network address".to_string()),
+                    error: Some(
+                        "Blocked: URL targets a private or internal network address".to_string(),
+                    ),
                 });
             }
 
             // Fetch page
             let client = Client::new();
-            let response = match client.get(url)
+            let response = match client
+                .get(url)
                 .header("User-Agent", "ObenAgent/1.0 (web extract tool)")
                 .send()
                 .await
@@ -260,7 +263,7 @@ fn make_web_extract_handler() -> ToolHandler {
             };
 
             let status = response.status();
-            
+
             if !status.is_success() {
                 return Ok(ToolResult {
                     call_id,
@@ -289,12 +292,16 @@ fn make_web_extract_handler() -> ToolHandler {
                     // by removing tags and normalizing whitespace
                     let stripped_html: String = content
                         .chars()
-                        .scan(false, |in_tag, c| {
-                            match c {
-                                '<' => { *in_tag = true; None },
-                                '>' => { *in_tag = false; None },
-                                _ => Some(if *in_tag { ' ' } else { c }),
+                        .scan(false, |in_tag, c| match c {
+                            '<' => {
+                                *in_tag = true;
+                                None
                             }
+                            '>' => {
+                                *in_tag = false;
+                                None
+                            }
+                            _ => Some(if *in_tag { ' ' } else { c }),
                         })
                         .collect();
                     let body_content: String = stripped_html
@@ -354,7 +361,7 @@ mod tests {
         assert!(is_safe_url("https://example.com"));
         assert!(is_safe_url("http://google.com/search"));
         assert!(is_safe_url("https://github.com/owner/repo"));
-        
+
         // Private IPs should be blocked
         assert!(!is_safe_url("http://192.168.1.1"));
         assert!(!is_safe_url("https://10.0.0.1/admin"));
@@ -378,7 +385,7 @@ mod tests {
                 </body>
             </html>
         "#;
-        
+
         let (title, content) = extract_page(html);
         assert_eq!(title, "Test Page");
         assert!(content.contains("Article Title"));
@@ -395,7 +402,7 @@ mod tests {
                 </body>
             </html>
         "#;
-        
+
         let (title, content) = extract_page(html);
         assert_eq!(title, "Simple Page");
         assert!(content.contains("Simple content"));
@@ -408,7 +415,7 @@ mod tests {
             r#"<html><head><title>Long</title></head><body><div>{}</div></body></html>"#,
             content
         );
-        
+
         let (title, text) = extract_page(&html);
         assert_eq!(title, "Long");
         assert!(text.contains("..."));
@@ -418,10 +425,15 @@ mod tests {
     #[tokio::test]
     async fn extracts_valid_public_url() {
         let registry = make_registry();
-        let result = registry.execute("web_extract", &json!({
-            "url": "https://example.com",
-            "call_id": "test-1",
-        })).await;
+        let result = registry
+            .execute(
+                "web_extract",
+                &json!({
+                    "url": "https://example.com",
+                    "call_id": "test-1",
+                }),
+            )
+            .await;
 
         // Should not error
         assert!(result.error.is_none());
@@ -431,10 +443,15 @@ mod tests {
     #[tokio::test]
     async fn blocks_private_ip() {
         let registry = make_registry();
-        let result = registry.execute("web_extract", &json!({
-            "url": "http://192.168.1.1/admin",
-            "call_id": "test-2",
-        })).await;
+        let result = registry
+            .execute(
+                "web_extract",
+                &json!({
+                    "url": "http://192.168.1.1/admin",
+                    "call_id": "test-2",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Blocked"));
@@ -443,10 +460,15 @@ mod tests {
     #[tokio::test]
     async fn blocks_localhost() {
         let registry = make_registry();
-        let result = registry.execute("web_extract", &json!({
-            "url": "http://localhost:3000/api",
-            "call_id": "test-3",
-        })).await;
+        let result = registry
+            .execute(
+                "web_extract",
+                &json!({
+                    "url": "http://localhost:3000/api",
+                    "call_id": "test-3",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Blocked"));
@@ -455,9 +477,14 @@ mod tests {
     #[tokio::test]
     async fn handles_missing_url_arg() {
         let registry = make_registry();
-        let result = registry.execute("web_extract", &json!({
-            "call_id": "test-4",
-        })).await;
+        let result = registry
+            .execute(
+                "web_extract",
+                &json!({
+                    "call_id": "test-4",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Missing 'url'"));
@@ -466,11 +493,16 @@ mod tests {
     #[tokio::test]
     async fn formats_markdown() {
         let registry = make_registry();
-        let result = registry.execute("web_extract", &json!({
-            "url": "https://example.com",
-            "format": "markdown",
-            "call_id": "test-5",
-        })).await;
+        let result = registry
+            .execute(
+                "web_extract",
+                &json!({
+                    "url": "https://example.com",
+                    "format": "markdown",
+                    "call_id": "test-5",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         // Markdown format should still work

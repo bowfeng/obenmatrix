@@ -3,7 +3,6 @@
 /// Mirrors Hermes' concurrent tool execution for independent tools.
 /// Tools that don't overlap on file paths and aren't destructive are
 /// dispatched in parallel via tokio's JoinSet.
-
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -110,7 +109,9 @@ pub async fn dispatch_tool_calls(
             let call_clone = call.clone();
 
             joinset.spawn(async move {
-                let result = tools_clone.execute(&call_clone.tool_name, &call_clone.arguments).await;
+                let result = tools_clone
+                    .execute(&call_clone.tool_name, &call_clone.arguments)
+                    .await;
                 (idx, call_clone, result)
             });
         }
@@ -122,11 +123,9 @@ pub async fn dispatch_tool_calls(
                 }
                 Err(e) => {
                     debug!("Concurrent task panicked: {}", e);
-                    concurrent_results
-                        .iter_mut()
-                        .for_each(|r| {
-                            r.error = Some(format!("Task panic: {}", e));
-                        });
+                    concurrent_results.iter_mut().for_each(|r| {
+                        r.error = Some(format!("Task panic: {}", e));
+                    });
                 }
             }
         }

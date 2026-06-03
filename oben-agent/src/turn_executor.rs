@@ -5,7 +5,6 @@
 ///
 /// Encapsulates the full turn cycle: budget check → compression → LLM call
 /// → tool dispatch → repeat until no more tool calls.
-
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -19,7 +18,7 @@ use crate::error_classifier::{ClassifiedError, ErrorKind};
 use crate::fallback::FallbackChain;
 use crate::interrupt::SharedInterrupt;
 use crate::message_sanitize::sanitize_messages;
-use crate::retry::{retry_with_backoff, RetryConfig, retryable_transient};
+use crate::retry::{retry_with_backoff, retryable_transient, RetryConfig};
 use crate::stream_processor;
 use oben_models::{Message, MessageRole, Session, SessionManagerExt, TransportProvider};
 
@@ -110,7 +109,8 @@ impl TurnExecutor {
             None,
             None,
             TurnConfig::default(),
-        ).await
+        )
+        .await
     }
 
     /// Execute one turn with full Tier 1 feature integration.
@@ -136,9 +136,8 @@ impl TurnExecutor {
         mut config: TurnConfig,
     ) -> Result<TurnResult> {
         let mut current_session_id = session_id.to_string();
-        let mut current_session: Option<&mut Session> = session_manager
-            .session_mut(&current_session_id)
-            .map(|s| {
+        let mut current_session: Option<&mut Session> =
+            session_manager.session_mut(&current_session_id).map(|s| {
                 current_session_id = s.id.clone();
                 s
             });
@@ -242,16 +241,18 @@ impl TurnExecutor {
                     let child_session = match session_manager.split_after_compression(&parent_id) {
                         Ok(s) => s,
                         Err(e) => {
-                            tracing::warn!("Session rotation failed: {} (continuing with parent)", e);
-                            // Re-acquire old session reference
-                            current_session = Some(
-                                session_manager
-                                    .session_mut(&parent_id)
-                                    .ok_or_else(|| anyhow::anyhow!("Parent session disappeared: {}", parent_id))?,
+                            tracing::warn!(
+                                "Session rotation failed: {} (continuing with parent)",
+                                e
                             );
-                            session = current_session
-                                .as_mut()
-                                .ok_or_else(|| anyhow::anyhow!("Parent session disappeared: {}", parent_id))?;
+                            // Re-acquire old session reference
+                            current_session =
+                                Some(session_manager.session_mut(&parent_id).ok_or_else(|| {
+                                    anyhow::anyhow!("Parent session disappeared: {}", parent_id)
+                                })?);
+                            session = current_session.as_mut().ok_or_else(|| {
+                                anyhow::anyhow!("Parent session disappeared: {}", parent_id)
+                            })?;
                             continue;
                         }
                     };
@@ -261,24 +262,31 @@ impl TurnExecutor {
                     //    Both session_manager.session() and save_compacted need access to
                     //    session_manager, and they conflict with &mut session.
                     let compacted = {
-                        let parent = session_manager.session(&parent_id)
-                            .ok_or_else(|| anyhow::anyhow!("Parent session disappeared after split: {}", parent_id))?;
+                        let parent = session_manager.session(&parent_id).ok_or_else(|| {
+                            anyhow::anyhow!("Parent session disappeared after split: {}", parent_id)
+                        })?;
                         parent.messages.clone()
                     };
                     // Now the &borrow on parent is released, so we can call save_compacted.
-                    session_manager.save_compacted(&child_id, &compacted)
-                        .map_err(|e| anyhow::anyhow!("Failed to persist compacted messages to child {}: {}", child_id, e))?;
+                    session_manager
+                        .save_compacted(&child_id, &compacted)
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to persist compacted messages to child {}: {}",
+                                child_id,
+                                e
+                            )
+                        })?;
 
                     // 4. Update our tracking — take mutable ref to child session
                     current_session_id = child_id.clone();
-                    current_session = Some(
-                        session_manager
-                            .session_mut(&child_id)
-                            .ok_or_else(|| anyhow::anyhow!("Child session disappeared: {}", child_id))?,
-                    );
-                    session = current_session
-                        .as_mut()
-                        .ok_or_else(|| anyhow::anyhow!("Child session disappeared: {}", child_id))?;
+                    current_session =
+                        Some(session_manager.session_mut(&child_id).ok_or_else(|| {
+                            anyhow::anyhow!("Child session disappeared: {}", child_id)
+                        })?);
+                    session = current_session.as_mut().ok_or_else(|| {
+                        anyhow::anyhow!("Child session disappeared: {}", child_id)
+                    })?;
 
                     // 5. Copy compacted messages into child session's in-memory state
                     session.messages = compacted_msgs;
@@ -321,7 +329,9 @@ impl TurnExecutor {
             // not in streaming mode (no_stream / no-stream CLI flag).
             let cb_shared = match &shared_cb {
                 Some(cb) => cb.clone(),
-                None => Arc::new(std::sync::Mutex::new(Box::new(|_text: &str| {}) as oben_models::StreamDeltaCallback)),
+                None => Arc::new(std::sync::Mutex::new(
+                    Box::new(|_text: &str| {}) as oben_models::StreamDeltaCallback
+                )),
             };
             let response = retry_with_backoff(&config.retry_config, || {
                 let transport_ref = transport_ref;
@@ -338,7 +348,10 @@ impl TurnExecutor {
                     let cb_wrapper = Box::new(move |text: &str| {
                         cb_clone.lock().unwrap()(text);
                     }) as oben_models::StreamDeltaCallback;
-                    match transport_ref.stream_chat(&messages, &mode, cb_wrapper).await {
+                    match transport_ref
+                        .stream_chat(&messages, &mode, cb_wrapper)
+                        .await
+                    {
                         Ok(resp) => {
                             if let Some(cb) = callbacks_ref {
                                 cb.call_status("lifecycle", "api_call_complete");
@@ -353,7 +366,8 @@ impl TurnExecutor {
                         }
                     }
                 }
-            }).await;
+            })
+            .await;
 
             // ── Fallback activation (after retry loop) ─────────────────
             if let Err(ref e) = response {
@@ -384,8 +398,12 @@ impl TurnExecutor {
                     // text.len() is byte count (UTF-8), not char count.
                     // Slice by chars to avoid cutting mid-character.
                     let preview: String = text.chars().take(100).collect();
-                    tracing::debug!("TurnExecutor: got LLM response text len={}, tool_calls={}, first_100={:?}",
-                        text.len(), tool_calls.len(), preview);
+                    tracing::debug!(
+                        "TurnExecutor: got LLM response text len={}, tool_calls={}, first_100={:?}",
+                        text.len(),
+                        tool_calls.len(),
+                        preview
+                    );
 
                     // ── Stream scrubbing (Tier 2): strip thinking blocks & memory context ──
                     let before_scrub = text.clone();
@@ -414,7 +432,6 @@ impl TurnExecutor {
                     session.messages.push(assistant_msg);
 
                     if tool_calls.is_empty() {
-
                         // When text is empty, return last tool result if available
                         if text.trim().is_empty() {
                             if let Some(last_tool_result) = session.messages.last().and_then(|m| {
@@ -441,7 +458,8 @@ impl TurnExecutor {
 
                     // ── Dispatch tool calls (concurrent + callbacks, Tier 2) ─────
                     let default_dispatch = ConcurrentDispatchConfig::default();
-                    let dispatch_config = config.dispatch_config.as_ref().unwrap_or(&default_dispatch);
+                    let dispatch_config =
+                        config.dispatch_config.as_ref().unwrap_or(&default_dispatch);
 
                     // Convert to pending calls and dispatch
                     let pending_calls: Vec<PendingToolCall> = tool_calls
@@ -467,13 +485,21 @@ impl TurnExecutor {
                         dispatch_config,
                         &pending_calls,
                         interrupt.as_ref(),
-                    ).await?;
+                    )
+                    .await?;
 
                     // Store results and notify callbacks
                     for (i, result) in results.iter().enumerate() {
-                        session.messages.push(Message::tool_result(&pending_calls[i].call_id, &result.output));
+                        session.messages.push(Message::tool_result(
+                            &pending_calls[i].call_id,
+                            &result.output,
+                        ));
                         if let Some(cb) = &config.callbacks {
-                            cb.call_tool_complete(&pending_calls[i].tool_name, &pending_calls[i].arguments.to_string(), &result.output);
+                            cb.call_tool_complete(
+                                &pending_calls[i].tool_name,
+                                &pending_calls[i].arguments.to_string(),
+                                &result.output,
+                            );
                         }
                     }
                 }
@@ -484,8 +510,6 @@ impl TurnExecutor {
                         "API call failed after retries (kind={:?}, code={:?}): {}",
                         classified.kind, classified.http_code, e
                     );
-
-
 
                     return Err(e);
                 }
@@ -514,7 +538,10 @@ mod tests {
         let text = "\n\n有一天，一块三分熟的牛排在街上走着，突然看到一块五分熟的牛排，却没有打招呼。\n为什么？\n因为他们**不熟**。😄\n\n还想听程序员专属笑话，还是日常冷笑话？随时点单～";
 
         // text.len() is byte count; the old code used it to slice → panic
-        assert!(text.len() > 100, "text must be > 100 bytes for the bug to trigger");
+        assert!(
+            text.len() > 100,
+            "text must be > 100 bytes for the bug to trigger"
+        );
 
         // The OLD buggy code would panic:
         // let _ = &text[..text.len().min(100)]; // panic: end byte index 100 is not a char boundary

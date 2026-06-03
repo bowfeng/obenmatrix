@@ -1,10 +1,9 @@
+use oben_agent::compact::CompactCofig;
 /// Integration tests for session rotation on compression (S.9).
 ///
 /// Tests the TurnExecutor → SessionManager rotation flow using only
 /// public API — this is the integration tier per AGENTS.md.
-
 use oben_agent::compact_context::CompactContextEngine;
-use oben_agent::compact::CompactCofig;
 use oben_agent::context::ContextEngine;
 use oben_agent::turn_executor::TurnExecutor;
 use oben_models::{CallMode, Message, TransportProvider};
@@ -160,7 +159,8 @@ async fn test_turn_exec_rotates_session_on_compaction() {
 /// then: active_session_id points to the new child with auto-numbered title
 #[tokio::test]
 async fn test_rotation_updates_active_session() {
-    let mut mgr = SessionManager::new_with_path(make_test_dir().path().join("active-test")).unwrap();
+    let mut mgr =
+        SessionManager::new_with_path(make_test_dir().path().join("active-test")).unwrap();
     let parent_id = create_populated_session(&mut mgr, 1500);
 
     let mut context_engine = make_compacting_engine();
@@ -190,7 +190,12 @@ async fn test_rotation_updates_active_session() {
     // Child should have the auto-numbered title "test-chat (2)"
     let child = mgr.session(&child_id).unwrap();
     assert!(
-        child.metadata.title.as_deref().unwrap_or("").contains(" (2)"),
+        child
+            .metadata
+            .title
+            .as_deref()
+            .unwrap_or("")
+            .contains(" (2)"),
         "child title should be auto-numbered, got: {:?}",
         child.metadata.title
     );
@@ -227,7 +232,12 @@ async fn test_multiple_rotations_increment_numbering() {
     let child1_id = mgr.active_session_id().unwrap();
     let child1 = mgr.session(&child1_id).unwrap();
     assert!(
-        child1.metadata.title.as_deref().unwrap_or("").contains(" (2)"),
+        child1
+            .metadata
+            .title
+            .as_deref()
+            .unwrap_or("")
+            .contains(" (2)"),
         "first child should be titled (2), got: {:?}",
         child1.metadata.title
     );
@@ -250,10 +260,18 @@ async fn test_multiple_rotations_increment_numbering() {
     .unwrap();
 
     let child2_id = mgr.active_session_id().unwrap();
-    assert_ne!(child2_id, child1_id, "child2 should have different ID from child1");
+    assert_ne!(
+        child2_id, child1_id,
+        "child2 should have different ID from child1"
+    );
     let child2 = mgr.session(&child2_id).unwrap();
     assert!(
-        child2.metadata.title.as_deref().unwrap_or("").contains(" (3)"),
+        child2
+            .metadata
+            .title
+            .as_deref()
+            .unwrap_or("")
+            .contains(" (3)"),
         "second child should be titled (3), got: {:?}",
         child2.metadata.title
     );

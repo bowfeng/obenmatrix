@@ -53,23 +53,39 @@ pub fn redact_sensitive_text(text: &str, force: bool) -> String {
         match *name {
             "api_key" => {
                 let new = pattern
-                    .replace_all(&result, |caps: &regex::Captures| mask_secret(&caps[0], 4, 4, 12, "[REDACTED]"))
+                    .replace_all(&result, |caps: &regex::Captures| {
+                        mask_secret(&caps[0], 4, 4, 12, "[REDACTED]")
+                    })
                     .into_owned();
-                if new != result { result = new; continue; }
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             "env_key" => {
-                let new = pattern
-                    .replace_all(&result, "$1=[REDACTED]")
-                    .into_owned();
-                if new != result { result = new; continue; }
+                let new = pattern.replace_all(&result, "$1=[REDACTED]").into_owned();
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             "json_api_key" => {
-                let new = pattern.replace_all(&result, "\"api_key\": \"[REDACTED]\"").into_owned();
-                if new != result { result = new; continue; }
+                let new = pattern
+                    .replace_all(&result, "\"api_key\": \"[REDACTED]\"")
+                    .into_owned();
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             "auth_header" => {
-                let new = pattern.replace_all(&result, "Authorization: Bearer [REDACTED]").into_owned();
-                if new != result { result = new; continue; }
+                let new = pattern
+                    .replace_all(&result, "Authorization: Bearer [REDACTED]")
+                    .into_owned();
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             "private_key_start" => {
                 if pattern.is_match(&result) {
@@ -78,33 +94,55 @@ pub fn redact_sensitive_text(text: &str, force: bool) -> String {
             }
             "db_conn" => {
                 let new = pattern
-                    .replace_all(&result, |caps: &regex::Captures| format!("{}***{}", &caps[1], &caps[3]))
+                    .replace_all(&result, |caps: &regex::Captures| {
+                        format!("{}***{}", &caps[1], &caps[3])
+                    })
                     .into_owned();
-                if new != result { result = new; continue; }
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             "jwt" => {
                 let new = pattern.replace_all(&result, "[JWT_TOKEN]").into_owned();
-                if new != result { result = new; continue; }
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             "url_creds" => {
                 let new = pattern
-                    .replace_all(&result, |caps: &regex::Captures| format!("{}***@", &caps[1]))
+                    .replace_all(&result, |caps: &regex::Captures| {
+                        format!("{}***@", &caps[1])
+                    })
                     .into_owned();
-                if new != result { result = new; continue; }
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             "params_token" => {
                 let new = pattern
                     .replace_all(&result, |caps: &regex::Captures| format!("{}***", &caps[1]))
                     .into_owned();
-                if new != result { result = new; continue; }
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             "discord" => {
                 let new = pattern.replace_all(&result, "<***>").into_owned();
-                if new != result { result = new; continue; }
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             "phone" => {
                 let new = pattern.replace_all(&result, "[PHONE]").into_owned();
-                if new != result { result = new; continue; }
+                if new != result {
+                    result = new;
+                    continue;
+                }
             }
             _ => {}
         }
@@ -148,7 +186,8 @@ mod tests {
 
     #[test]
     fn test_db_connection_string() {
-        let result = redact_sensitive_text("postgresql://admin:supersecret@localhost:5432/mydb", false);
+        let result =
+            redact_sensitive_text("postgresql://admin:supersecret@localhost:5432/mydb", false);
         assert!(!result.contains("supersecret"));
     }
 
@@ -166,13 +205,19 @@ mod tests {
 
     #[test]
     fn test_private_key_block() {
-        let result = redact_sensitive_text("-----BEGIN RSA PRIVATE KEY-----\ndata\n-----END RSA PRIVATE KEY-----", false);
+        let result = redact_sensitive_text(
+            "-----BEGIN RSA PRIVATE KEY-----\ndata\n-----END RSA PRIVATE KEY-----",
+            false,
+        );
         assert!(result.contains("[REDACTED PRIVATE KEY]"));
     }
 
     #[test]
     fn test_sensitive_url_params() {
-        let result = redact_sensitive_text("https://api.example.com?access_token=secret123&api_key=key456", false);
+        let result = redact_sensitive_text(
+            "https://api.example.com?access_token=secret123&api_key=key456",
+            false,
+        );
         assert!(result.contains("access_token=***"));
         assert!(result.contains("api_key=***"));
     }
@@ -212,7 +257,9 @@ mod tests {
     #[test]
     fn test_akia_prefix() {
         let result = redact_sensitive_text("AKIAIOSFODNN7EXAMPLE", false);
-        assert!(result.is_empty() || result.contains("[REDACTED]") || !result.contains("AKIAIOSFODNN"));
+        assert!(
+            result.is_empty() || result.contains("[REDACTED]") || !result.contains("AKIAIOSFODNN")
+        );
     }
 
     #[test]

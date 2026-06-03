@@ -71,7 +71,9 @@ impl ProviderProfile {
 
     /// Check if required environment variables are available.
     pub fn has_required_env(&self) -> bool {
-        self.requires_env.iter().all(|env| std::env::var(env).is_ok())
+        self.requires_env
+            .iter()
+            .all(|env| std::env::var(env).is_ok())
     }
 
     /// List all models this provider supports, including default.
@@ -87,9 +89,7 @@ impl ProviderProfile {
 
     /// Get the effective model to use.
     pub fn effective_model(&self, requested: Option<&str>) -> Option<String> {
-        let model = requested
-            .map(String::from)
-            .or(self.default_model.clone());
+        let model = requested.map(String::from).or(self.default_model.clone());
         model.filter(|m| self.all_models().iter().any(|s| *s == m.as_str()))
     }
 }
@@ -134,7 +134,9 @@ pub trait ImageGenProvider: Send + Sync {
 
     /// Get the default model name.
     fn default_model(&self) -> Option<String> {
-        self.list_models().first().and_then(|m| m.default_model.clone())
+        self.list_models()
+            .first()
+            .and_then(|m| m.default_model.clone())
     }
 
     /// Generate an image from a text prompt.
@@ -203,7 +205,9 @@ pub trait WebSearchProvider: Send + Sync {
 
     /// Get the default model name.
     fn default_model(&self) -> Option<String> {
-        self.list_models().first().and_then(|m| m.default_model.clone())
+        self.list_models()
+            .first()
+            .and_then(|m| m.default_model.clone())
     }
 
     /// Search the web for a query.
@@ -263,7 +267,9 @@ pub trait BrowserProvider: Send + Sync {
 
     /// Get the default model name.
     fn default_model(&self) -> Option<String> {
-        self.list_models().first().and_then(|m| m.default_model.clone())
+        self.list_models()
+            .first()
+            .and_then(|m| m.default_model.clone())
     }
 
     /// Visit a URL and return page content.
@@ -315,7 +321,9 @@ pub trait VideoGenProvider: Send + Sync {
 
     /// Get the default model name.
     fn default_model(&self) -> Option<String> {
-        self.list_models().first().and_then(|m| m.default_model.clone())
+        self.list_models()
+            .first()
+            .and_then(|m| m.default_model.clone())
     }
 
     /// Generate a video from a text prompt.
@@ -370,7 +378,9 @@ pub trait ContextEngine: Send + Sync {
 
     /// Get the default model name.
     fn default_model(&self) -> Option<String> {
-        self.list_models().first().and_then(|m| m.default_model.clone())
+        self.list_models()
+            .first()
+            .and_then(|m| m.default_model.clone())
     }
 
     /// Compress messages to fit within token limits.
@@ -438,7 +448,9 @@ pub trait ModelProvider: Send + Sync {
 
     /// Get the default model name.
     fn default_model(&self) -> Option<String> {
-        self.list_models().first().and_then(|m| m.default_model.clone())
+        self.list_models()
+            .first()
+            .and_then(|m| m.default_model.clone())
     }
 
     /// Send a chat completion request.
@@ -519,7 +531,10 @@ impl FromStr for ProviderKind {
 
 /// Check if a provider kind string is valid.
 pub fn is_valid_provider_kind(s: &str) -> bool {
-    matches!(s, "image_gen" | "video_gen" | "web_search" | "browser" | "context_engine" | "model_provider")
+    matches!(
+        s,
+        "image_gen" | "video_gen" | "web_search" | "browser" | "context_engine" | "model_provider"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -550,7 +565,10 @@ impl ImageGenRegistry {
 
     /// Get a specific provider by name.
     pub fn get_by_name(&self, name: &str) -> Option<&(dyn ImageGenProvider + Send + Sync)> {
-        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+        self.providers
+            .iter()
+            .find(|p| p.name() == name)
+            .map(|p| p.as_ref())
     }
 
     /// List all registered providers.
@@ -559,11 +577,17 @@ impl ImageGenRegistry {
     }
 
     /// Provider count.
-    pub fn len(&self) -> usize { self.providers.len() }
+    pub fn len(&self) -> usize {
+        self.providers.len()
+    }
     /// Check if empty.
-    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty()
+    }
     /// Clear all providers.
-    pub fn clear(&mut self) { self.providers.clear(); }
+    pub fn clear(&mut self) {
+        self.providers.clear();
+    }
     /// Remove a provider by name. Returns true if found and removed.
     pub fn remove(&mut self, name: &str) -> bool {
         let idx = self.providers.iter().position(|p| p.name() == name);
@@ -578,7 +602,9 @@ impl ImageGenRegistry {
 }
 
 impl Default for ImageGenRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Registry for video generation providers (non-exclusive).
@@ -602,16 +628,25 @@ impl VideoGenRegistry {
     }
 
     pub fn get_by_name(&self, name: &str) -> Option<&(dyn VideoGenProvider + Send + Sync)> {
-        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+        self.providers
+            .iter()
+            .find(|p| p.name() == name)
+            .map(|p| p.as_ref())
     }
 
     pub fn list(&self) -> Vec<&(dyn VideoGenProvider + Send + Sync)> {
         self.providers.iter().map(|p| p.as_ref()).collect()
     }
 
-    pub fn len(&self) -> usize { self.providers.len() }
-    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
-    pub fn clear(&mut self) { self.providers.clear(); }
+    pub fn len(&self) -> usize {
+        self.providers.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.providers.clear();
+    }
     /// Remove a provider by name. Returns true if found and removed.
     pub fn remove(&mut self, name: &str) -> bool {
         let idx = self.providers.iter().position(|p| p.name() == name);
@@ -626,7 +661,9 @@ impl VideoGenRegistry {
 }
 
 impl Default for VideoGenRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Registry for web search providers (non-exclusive).
@@ -650,16 +687,25 @@ impl WebSearchRegistry {
     }
 
     pub fn get_by_name(&self, name: &str) -> Option<&(dyn WebSearchProvider + Send + Sync)> {
-        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+        self.providers
+            .iter()
+            .find(|p| p.name() == name)
+            .map(|p| p.as_ref())
     }
 
     pub fn list(&self) -> Vec<&(dyn WebSearchProvider + Send + Sync)> {
         self.providers.iter().map(|p| p.as_ref()).collect()
     }
 
-    pub fn len(&self) -> usize { self.providers.len() }
-    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
-    pub fn clear(&mut self) { self.providers.clear(); }
+    pub fn len(&self) -> usize {
+        self.providers.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.providers.clear();
+    }
     pub fn remove(&mut self, name: &str) -> bool {
         let idx = self.providers.iter().position(|p| p.name() == name);
         match idx {
@@ -673,7 +719,9 @@ impl WebSearchRegistry {
 }
 
 impl Default for WebSearchRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Registry for browser providers (non-exclusive).
@@ -697,16 +745,25 @@ impl BrowserRegistry {
     }
 
     pub fn get_by_name(&self, name: &str) -> Option<&(dyn BrowserProvider + Send + Sync)> {
-        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+        self.providers
+            .iter()
+            .find(|p| p.name() == name)
+            .map(|p| p.as_ref())
     }
 
     pub fn list(&self) -> Vec<&(dyn BrowserProvider + Send + Sync)> {
         self.providers.iter().map(|p| p.as_ref()).collect()
     }
 
-    pub fn len(&self) -> usize { self.providers.len() }
-    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
-    pub fn clear(&mut self) { self.providers.clear(); }
+    pub fn len(&self) -> usize {
+        self.providers.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.providers.clear();
+    }
     pub fn remove(&mut self, name: &str) -> bool {
         let idx = self.providers.iter().position(|p| p.name() == name);
         match idx {
@@ -720,7 +777,9 @@ impl BrowserRegistry {
 }
 
 impl Default for BrowserRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Registry for context compression engines (exclusive — one at a time).
@@ -746,20 +805,31 @@ impl ContextEngineRegistry {
     }
 
     pub fn get_by_name(&self, name: &str) -> Option<&(dyn ContextEngine + Send + Sync)> {
-        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+        self.providers
+            .iter()
+            .find(|p| p.name() == name)
+            .map(|p| p.as_ref())
     }
 
     pub fn list(&self) -> Vec<&(dyn ContextEngine + Send + Sync)> {
         self.providers.iter().map(|p| p.as_ref()).collect()
     }
 
-    pub fn len(&self) -> usize { self.providers.len() }
-    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
-    pub fn clear(&mut self) { self.providers.clear(); }
+    pub fn len(&self) -> usize {
+        self.providers.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.providers.clear();
+    }
 }
 
 impl Default for ContextEngineRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Registry for model providers (non-exclusive).
@@ -783,16 +853,25 @@ impl ModelProviderRegistry {
     }
 
     pub fn get_by_name(&self, name: &str) -> Option<&(dyn ModelProvider + Send + Sync)> {
-        self.providers.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+        self.providers
+            .iter()
+            .find(|p| p.name() == name)
+            .map(|p| p.as_ref())
     }
 
     pub fn list(&self) -> Vec<&(dyn ModelProvider + Send + Sync)> {
         self.providers.iter().map(|p| p.as_ref()).collect()
     }
 
-    pub fn len(&self) -> usize { self.providers.len() }
-    pub fn is_empty(&self) -> bool { self.providers.is_empty() }
-    pub fn clear(&mut self) { self.providers.clear(); }
+    pub fn len(&self) -> usize {
+        self.providers.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.providers.clear();
+    }
     pub fn remove(&mut self, name: &str) -> bool {
         let idx = self.providers.iter().position(|p| p.name() == name);
         match idx {
@@ -822,11 +901,26 @@ mod tests {
         /// given: provider kind strings
         /// when: ProviderKind::from_str() is called
         /// then: returns correct ProviderKind variants
-        assert_eq!(ProviderKind::from_str("image_gen").unwrap(), ProviderKind::ImageGen);
-        assert_eq!(ProviderKind::from_str("web_search").unwrap(), ProviderKind::WebSearch);
-        assert_eq!(ProviderKind::from_str("browser").unwrap(), ProviderKind::Browser);
-        assert_eq!(ProviderKind::from_str("context_engine").unwrap(), ProviderKind::ContextEngine);
-        assert_eq!(ProviderKind::from_str("model_provider").unwrap(), ProviderKind::ModelProvider);
+        assert_eq!(
+            ProviderKind::from_str("image_gen").unwrap(),
+            ProviderKind::ImageGen
+        );
+        assert_eq!(
+            ProviderKind::from_str("web_search").unwrap(),
+            ProviderKind::WebSearch
+        );
+        assert_eq!(
+            ProviderKind::from_str("browser").unwrap(),
+            ProviderKind::Browser
+        );
+        assert_eq!(
+            ProviderKind::from_str("context_engine").unwrap(),
+            ProviderKind::ContextEngine
+        );
+        assert_eq!(
+            ProviderKind::from_str("model_provider").unwrap(),
+            ProviderKind::ModelProvider
+        );
         assert!(ProviderKind::from_str("invalid").is_err());
     }
 
@@ -946,15 +1040,31 @@ mod tests {
         struct MockImageGen;
         #[async_trait::async_trait]
         impl ImageGenProvider for MockImageGen {
-            fn name(&self) -> &str { "mock" }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
+            fn name(&self) -> &str {
+                "mock"
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
             async fn generate(
                 &self,
-                _prompt: &str, _model: Option<&str>,
-                _width: Option<i32>, _height: Option<i32>, _n: Option<u8>,
+                _prompt: &str,
+                _model: Option<&str>,
+                _width: Option<i32>,
+                _height: Option<i32>,
+                _n: Option<u8>,
             ) -> Result<ImageGenOutput> {
-                Ok(ImageGenOutput { url: None, data: None, mime_type: "image/png".into(), width: 512, height: 512, error: None })
+                Ok(ImageGenOutput {
+                    url: None,
+                    data: None,
+                    mime_type: "image/png".into(),
+                    width: 512,
+                    height: 512,
+                    error: None,
+                })
             }
         }
 
@@ -978,21 +1088,36 @@ mod tests {
             name_val: String,
         }
         impl MockEngine {
-            fn new(name: &str) -> Self { Self { name_val: name.to_string() } }
+            fn new(name: &str) -> Self {
+                Self {
+                    name_val: name.to_string(),
+                }
+            }
         }
 
         #[async_trait::async_trait]
         impl ContextEngine for MockEngine {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
             fn compress(
                 &self,
-                _messages: &[serde_json::Value], _max_tokens: Option<usize>, _model: Option<&str>,
+                _messages: &[serde_json::Value],
+                _max_tokens: Option<usize>,
+                _model: Option<&str>,
             ) -> Result<ContextEngineOutput> {
                 Ok(ContextEngineOutput {
-                    messages: vec![], summary: "test".into(),
-                    input_count: 0, output_count: 0, tokens_saved: 0,
+                    messages: vec![],
+                    summary: "test".into(),
+                    input_count: 0,
+                    output_count: 0,
+                    tokens_saved: 0,
                 })
             }
         }
@@ -1009,20 +1134,46 @@ mod tests {
         /// given: a registry with multiple providers
         /// when: get_by_name() is called with each name
         /// then: returns the matching provider
-        struct MockImageGen { name_val: String }
+        struct MockImageGen {
+            name_val: String,
+        }
         #[async_trait::async_trait]
         impl ImageGenProvider for MockImageGen {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
-            async fn generate(&self, _prompt: &str, _model: Option<&str>, _width: Option<i32>, _height: Option<i32>, _n: Option<u8>) -> Result<ImageGenOutput> {
-                Ok(ImageGenOutput { url: None, data: None, mime_type: "image/png".into(), width: 512, height: 512, error: None })
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
+            async fn generate(
+                &self,
+                _prompt: &str,
+                _model: Option<&str>,
+                _width: Option<i32>,
+                _height: Option<i32>,
+                _n: Option<u8>,
+            ) -> Result<ImageGenOutput> {
+                Ok(ImageGenOutput {
+                    url: None,
+                    data: None,
+                    mime_type: "image/png".into(),
+                    width: 512,
+                    height: 512,
+                    error: None,
+                })
             }
         }
 
         let mut reg = ImageGenRegistry::new();
-        reg.register(Box::new(MockImageGen { name_val: "a".into() }));
-        reg.register(Box::new(MockImageGen { name_val: "b".into() }));
+        reg.register(Box::new(MockImageGen {
+            name_val: "a".into(),
+        }));
+        reg.register(Box::new(MockImageGen {
+            name_val: "b".into(),
+        }));
 
         assert!(reg.get_by_name("a").is_some());
         assert!(reg.get_by_name("b").is_some());
@@ -1036,7 +1187,10 @@ mod tests {
         /// given: "video_gen" string
         /// when: ProviderKind::from_str() is called
         /// then: returns ProviderKind::VideoGen
-        assert_eq!(ProviderKind::from_str("video_gen").unwrap(), ProviderKind::VideoGen);
+        assert_eq!(
+            ProviderKind::from_str("video_gen").unwrap(),
+            ProviderKind::VideoGen
+        );
         assert_eq!(ProviderKind::VideoGen.to_string(), "video_gen");
         assert!(is_valid_provider_kind("video_gen"));
     }
@@ -1067,17 +1221,29 @@ mod tests {
         struct MockVideoGen;
         #[async_trait::async_trait]
         impl VideoGenProvider for MockVideoGen {
-            fn name(&self) -> &str { "mock-video" }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
+            fn name(&self) -> &str {
+                "mock-video"
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
             async fn generate_video(
-                &self, _prompt: &str, _model: Option<&str>,
-                _duration: Option<i32>, _format: Option<&str>,
+                &self,
+                _prompt: &str,
+                _model: Option<&str>,
+                _duration: Option<i32>,
+                _format: Option<&str>,
             ) -> Result<VideoGenOutput> {
                 Ok(VideoGenOutput {
                     url: Some("https://example.com/test.mp4".into()),
-                    data: None, mime_type: "video/mp4".into(),
-                    duration: 15, format: "mp4".into(), error: None,
+                    data: None,
+                    mime_type: "video/mp4".into(),
+                    duration: 15,
+                    format: "mp4".into(),
+                    error: None,
                 })
             }
         }
@@ -1098,27 +1264,45 @@ mod tests {
         /// given: a registry with two VideoGenProviders
         /// when: get_by_name() is called
         /// then: returns the matching provider
-        struct MockVideoGen { name_val: String }
+        struct MockVideoGen {
+            name_val: String,
+        }
         #[async_trait::async_trait]
         impl VideoGenProvider for MockVideoGen {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
             async fn generate_video(
-                &self, _prompt: &str, _model: Option<&str>,
-                _duration: Option<i32>, _format: Option<&str>,
+                &self,
+                _prompt: &str,
+                _model: Option<&str>,
+                _duration: Option<i32>,
+                _format: Option<&str>,
             ) -> Result<VideoGenOutput> {
                 Ok(VideoGenOutput {
                     url: Some("https://example.com/".into()),
-                    data: None, mime_type: "video/mp4".into(),
-                    duration: 0, format: "mp4".into(), error: None,
+                    data: None,
+                    mime_type: "video/mp4".into(),
+                    duration: 0,
+                    format: "mp4".into(),
+                    error: None,
                 })
             }
         }
 
         let mut reg = VideoGenRegistry::new();
-        reg.register(Box::new(MockVideoGen { name_val: "runway".into() }));
-        reg.register(Box::new(MockVideoGen { name_val: "sora".into() }));
+        reg.register(Box::new(MockVideoGen {
+            name_val: "runway".into(),
+        }));
+        reg.register(Box::new(MockVideoGen {
+            name_val: "sora".into(),
+        }));
 
         assert!(reg.get_by_name("runway").is_some());
         assert!(reg.get_by_name("sora").is_some());
@@ -1132,21 +1316,49 @@ mod tests {
         /// given: a registry with 3 image gen providers
         /// when: remove("openai") is called
         /// then: only openai is removed, remaining len is 2
-        struct MockImageGen { name_val: String }
+        struct MockImageGen {
+            name_val: String,
+        }
         #[async_trait::async_trait]
         impl ImageGenProvider for MockImageGen {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
-            async fn generate(&self, _prompt: &str, _model: Option<&str>, _width: Option<i32>, _height: Option<i32>, _n: Option<u8>) -> Result<ImageGenOutput> {
-                Ok(ImageGenOutput { url: None, data: None, mime_type: "image/png".into(), width: 512, height: 512, error: None })
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
+            async fn generate(
+                &self,
+                _prompt: &str,
+                _model: Option<&str>,
+                _width: Option<i32>,
+                _height: Option<i32>,
+                _n: Option<u8>,
+            ) -> Result<ImageGenOutput> {
+                Ok(ImageGenOutput {
+                    url: None,
+                    data: None,
+                    mime_type: "image/png".into(),
+                    width: 512,
+                    height: 512,
+                    error: None,
+                })
             }
         }
 
         let mut reg = ImageGenRegistry::new();
-        reg.register(Box::new(MockImageGen { name_val: "openai".into() }));
-        reg.register(Box::new(MockImageGen { name_val: "stability".into() }));
-        reg.register(Box::new(MockImageGen { name_val: "dalle".into() }));
+        reg.register(Box::new(MockImageGen {
+            name_val: "openai".into(),
+        }));
+        reg.register(Box::new(MockImageGen {
+            name_val: "stability".into(),
+        }));
+        reg.register(Box::new(MockImageGen {
+            name_val: "dalle".into(),
+        }));
         assert_eq!(reg.len(), 3);
 
         let removed = reg.remove("openai");
@@ -1162,20 +1374,46 @@ mod tests {
         /// given: a registry with 2 providers
         /// when: remove("unknown") is called
         /// then: returns false, len unchanged
-        struct MockImageGen { name_val: String }
+        struct MockImageGen {
+            name_val: String,
+        }
         #[async_trait::async_trait]
         impl ImageGenProvider for MockImageGen {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
-            async fn generate(&self, _prompt: &str, _model: Option<&str>, _width: Option<i32>, _height: Option<i32>, _n: Option<u8>) -> Result<ImageGenOutput> {
-                Ok(ImageGenOutput { url: None, data: None, mime_type: "image/png".into(), width: 512, height: 512, error: None })
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
+            async fn generate(
+                &self,
+                _prompt: &str,
+                _model: Option<&str>,
+                _width: Option<i32>,
+                _height: Option<i32>,
+                _n: Option<u8>,
+            ) -> Result<ImageGenOutput> {
+                Ok(ImageGenOutput {
+                    url: None,
+                    data: None,
+                    mime_type: "image/png".into(),
+                    width: 512,
+                    height: 512,
+                    error: None,
+                })
             }
         }
 
         let mut reg = ImageGenRegistry::new();
-        reg.register(Box::new(MockImageGen { name_val: "a".into() }));
-        reg.register(Box::new(MockImageGen { name_val: "b".into() }));
+        reg.register(Box::new(MockImageGen {
+            name_val: "a".into(),
+        }));
+        reg.register(Box::new(MockImageGen {
+            name_val: "b".into(),
+        }));
 
         let removed = reg.remove("unknown");
         assert!(!removed);
@@ -1187,19 +1425,43 @@ mod tests {
         /// given: a registry with 1 provider
         /// when: remove() is called
         /// then: registry is now empty
-        struct MockImageGen { name_val: String }
+        struct MockImageGen {
+            name_val: String,
+        }
         #[async_trait::async_trait]
         impl ImageGenProvider for MockImageGen {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
-            async fn generate(&self, _prompt: &str, _model: Option<&str>, _width: Option<i32>, _height: Option<i32>, _n: Option<u8>) -> Result<ImageGenOutput> {
-                Ok(ImageGenOutput { url: None, data: None, mime_type: "image/png".into(), width: 512, height: 512, error: None })
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
+            async fn generate(
+                &self,
+                _prompt: &str,
+                _model: Option<&str>,
+                _width: Option<i32>,
+                _height: Option<i32>,
+                _n: Option<u8>,
+            ) -> Result<ImageGenOutput> {
+                Ok(ImageGenOutput {
+                    url: None,
+                    data: None,
+                    mime_type: "image/png".into(),
+                    width: 512,
+                    height: 512,
+                    error: None,
+                })
             }
         }
 
         let mut reg = ImageGenRegistry::new();
-        reg.register(Box::new(MockImageGen { name_val: "only".into() }));
+        reg.register(Box::new(MockImageGen {
+            name_val: "only".into(),
+        }));
         assert_eq!(reg.len(), 1);
 
         reg.remove("only");
@@ -1211,20 +1473,42 @@ mod tests {
         /// given: a web search registry with 2 providers
         /// when: remove() is called
         /// then: only the named provider is removed
-        struct MockSearch { name_val: String }
+        struct MockSearch {
+            name_val: String,
+        }
         #[async_trait::async_trait]
         impl WebSearchProvider for MockSearch {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
-            async fn search(&self, _query: &str, _max_results: Option<u8>, _depth: Option<&str>) -> Result<WebSearchOutput> {
-                Ok(WebSearchOutput { results: vec![], num_results: 0, query: String::new(), error: None })
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
+            async fn search(
+                &self,
+                _query: &str,
+                _max_results: Option<u8>,
+                _depth: Option<&str>,
+            ) -> Result<WebSearchOutput> {
+                Ok(WebSearchOutput {
+                    results: vec![],
+                    num_results: 0,
+                    query: String::new(),
+                    error: None,
+                })
             }
         }
 
         let mut reg = WebSearchRegistry::new();
-        reg.register(Box::new(MockSearch { name_val: "tavily".into() }));
-        reg.register(Box::new(MockSearch { name_val: "serpapi".into() }));
+        reg.register(Box::new(MockSearch {
+            name_val: "tavily".into(),
+        }));
+        reg.register(Box::new(MockSearch {
+            name_val: "serpapi".into(),
+        }));
         assert_eq!(reg.len(), 2);
 
         reg.remove("tavily");
@@ -1238,20 +1522,42 @@ mod tests {
         /// given: a browser registry with 2 providers
         /// when: remove() is called
         /// then: only the named provider is removed
-        struct MockBrowser { name_val: String }
+        struct MockBrowser {
+            name_val: String,
+        }
         #[async_trait::async_trait]
         impl BrowserProvider for MockBrowser {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
-            async fn browse(&self, _url: &str, _wait_for_selector: Option<&str>) -> Result<BrowserOutput> {
-                Ok(BrowserOutput { title: String::new(), content: String::new(), final_url: String::new(), status_code: 200, error: None })
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
+            async fn browse(
+                &self,
+                _url: &str,
+                _wait_for_selector: Option<&str>,
+            ) -> Result<BrowserOutput> {
+                Ok(BrowserOutput {
+                    title: String::new(),
+                    content: String::new(),
+                    final_url: String::new(),
+                    status_code: 200,
+                    error: None,
+                })
             }
         }
 
         let mut reg = BrowserRegistry::new();
-        reg.register(Box::new(MockBrowser { name_val: "puppeteer".into() }));
-        reg.register(Box::new(MockBrowser { name_val: "playwright".into() }));
+        reg.register(Box::new(MockBrowser {
+            name_val: "puppeteer".into(),
+        }));
+        reg.register(Box::new(MockBrowser {
+            name_val: "playwright".into(),
+        }));
         assert_eq!(reg.len(), 2);
 
         reg.remove("puppeteer");
@@ -1264,20 +1570,42 @@ mod tests {
         /// given: a model provider registry with 2 providers
         /// when: remove() is called
         /// then: only the named provider is removed
-        struct MockModel { name_val: String }
+        struct MockModel {
+            name_val: String,
+        }
         #[async_trait::async_trait]
         impl ModelProvider for MockModel {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
-            async fn chat_completion(&self, _messages: &[serde_json::Value], _model: Option<&str>, _temperature: Option<f64>, _max_tokens: Option<usize>) -> Result<crate::provider::ChatCompletionOutput> {
-                Ok(crate::provider::ChatCompletionOutput { content: Some("mock".into()), tool_calls: vec![], usage: None })
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
+            async fn chat_completion(
+                &self,
+                _messages: &[serde_json::Value],
+                _model: Option<&str>,
+                _temperature: Option<f64>,
+                _max_tokens: Option<usize>,
+            ) -> Result<crate::provider::ChatCompletionOutput> {
+                Ok(crate::provider::ChatCompletionOutput {
+                    content: Some("mock".into()),
+                    tool_calls: vec![],
+                    usage: None,
+                })
             }
         }
 
         let mut reg = ModelProviderRegistry::new();
-        reg.register(Box::new(MockModel { name_val: "openrouter".into() }));
-        reg.register(Box::new(MockModel { name_val: "vertex".into() }));
+        reg.register(Box::new(MockModel {
+            name_val: "openrouter".into(),
+        }));
+        reg.register(Box::new(MockModel {
+            name_val: "vertex".into(),
+        }));
         assert_eq!(reg.len(), 2);
 
         reg.remove("vertex");
@@ -1291,20 +1619,45 @@ mod tests {
         /// given: a video gen registry with 2 providers
         /// when: remove() is called
         /// then: only the named provider is removed
-        struct MockVideoGen { name_val: String }
+        struct MockVideoGen {
+            name_val: String,
+        }
         #[async_trait::async_trait]
         impl VideoGenProvider for MockVideoGen {
-            fn name(&self) -> &str { &self.name_val }
-            fn is_available(&self) -> bool { true }
-            fn list_models(&self) -> Vec<ProviderProfile> { vec![] }
-            async fn generate_video(&self, _prompt: &str, _model: Option<&str>, _duration: Option<i32>, _format: Option<&str>) -> Result<VideoGenOutput> {
-                Ok(VideoGenOutput { url: None, data: None, mime_type: "video/mp4".into(), duration: 0, format: "mp4".into(), error: None })
+            fn name(&self) -> &str {
+                &self.name_val
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn list_models(&self) -> Vec<ProviderProfile> {
+                vec![]
+            }
+            async fn generate_video(
+                &self,
+                _prompt: &str,
+                _model: Option<&str>,
+                _duration: Option<i32>,
+                _format: Option<&str>,
+            ) -> Result<VideoGenOutput> {
+                Ok(VideoGenOutput {
+                    url: None,
+                    data: None,
+                    mime_type: "video/mp4".into(),
+                    duration: 0,
+                    format: "mp4".into(),
+                    error: None,
+                })
             }
         }
 
         let mut reg = VideoGenRegistry::new();
-        reg.register(Box::new(MockVideoGen { name_val: "sora".into() }));
-        reg.register(Box::new(MockVideoGen { name_val: "runway".into() }));
+        reg.register(Box::new(MockVideoGen {
+            name_val: "sora".into(),
+        }));
+        reg.register(Box::new(MockVideoGen {
+            name_val: "runway".into(),
+        }));
         assert_eq!(reg.len(), 2);
 
         reg.remove("sora");

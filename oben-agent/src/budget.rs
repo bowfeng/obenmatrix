@@ -1,7 +1,6 @@
 /// Iteration budget — limits the number of API calls per turn with warning thresholds.
 ///
 /// Mirrors Hermes' `_api_call_count` tracking with budget warnings at 80% and 90%.
-
 use anyhow::{anyhow, Result};
 
 /// Callback invoked when approaching iteration budget limits.
@@ -102,7 +101,8 @@ impl IterationBudget {
         if self.budget_grace_call || self.current >= self.max_iterations {
             return Err(anyhow!(
                 "Iteration budget exhausted: {} API calls made (max {}).",
-                self.current, self.max_iterations
+                self.current,
+                self.max_iterations
             ));
         }
         Ok(())

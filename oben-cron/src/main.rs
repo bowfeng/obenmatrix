@@ -1,6 +1,6 @@
 use std::fs;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -20,8 +20,7 @@ async fn main() -> Result<()> {
     // Write PID file so supervisors can track the process
     let pid_path = base_dir.join("cron.pid");
     let pid = std::process::id();
-    fs::write(&pid_path, pid.to_string())
-        .with_context(|| "Write PID file")?;
+    fs::write(&pid_path, pid.to_string()).with_context(|| "Write PID file")?;
     info!("PID file written: {} (pid: {})", pid_path.display(), pid);
 
     let running = Arc::new(AtomicBool::new(true));

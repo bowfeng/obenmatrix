@@ -1,12 +1,11 @@
+use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
+use serde_json::Value;
 /// Web search tool.
 ///
 /// Self-registers via `SelfRegisteringTool` trait.
-
 use std::sync::Arc;
-use serde_json::Value;
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool, ToolRegistry};
+use super::registry::{SelfRegisteringTool, ToolHandler, ToolRegistry};
 
 fn make_search_tool() -> Tool {
     let params = vec![
@@ -33,16 +32,22 @@ fn make_search_tool() -> Tool {
 fn make_search_handler() -> ToolHandler {
     Arc::new(|args: Value| {
         Box::pin(async move {
-            let query = args.get("query")
+            let query = args
+                .get("query")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
 
-            let _max_results = args.get("max_results")
+            let _max_results = args
+                .get("max_results")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(5);
 
             Ok(ToolResult {
-                call_id: args.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                call_id: args
+                    .get("call_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 output: format!(
                     "Web search for '{}': (placeholder - configure search provider in config)",
                     query

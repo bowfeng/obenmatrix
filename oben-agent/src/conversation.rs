@@ -1,5 +1,4 @@
 /// Conversation loop — coordinator that wires the deep `TurnExecutor`.
-
 use anyhow::Result;
 use std::io::Write;
 use std::sync::Arc;
@@ -9,12 +8,11 @@ use crate::callbacks::AgentCallbacks;
 use crate::context::ContextEngine;
 use crate::fallback::FallbackChain;
 use crate::interrupt::SharedInterrupt;
-use crate::nudge::{NudgeConfig, build_nudge_prompt, should_trigger_nudge};
+use crate::nudge::{build_nudge_prompt, should_trigger_nudge, NudgeConfig};
 use crate::retry::RetryConfig;
 use crate::turn_executor::{TurnConfig, TurnExecutor};
 use oben_models::{CallMode, Message, SessionManagerExt, StreamDeltaCallback, TransportProvider};
 use oben_sessions::SessionManager;
-
 
 /// Callbacks for interactive_chat — abstracts I/O for CLI/TUI.
 #[derive(Clone)]
@@ -32,7 +30,9 @@ impl ChatCallbacks {
         Self {
             print_info: |msg: &str| tracing::info!("{}", msg),
             print_prompt: || tracing::trace!("> "),
-            print_flush: || { let _ = std::io::stdout().flush(); },
+            print_flush: || {
+                let _ = std::io::stdout().flush();
+            },
             read_input: || {
                 let mut input = String::new();
                 if std::io::stdin().read_line(&mut input).is_ok() {
@@ -111,7 +111,8 @@ impl ConversationLoop {
             budget,
             interrupt,
             turn_config,
-        ).await?;
+        )
+        .await?;
 
         Ok(result.text)
     }
@@ -137,7 +138,8 @@ impl ConversationLoop {
             call_mode,
             delta_callback,
             TurnOptions::default(),
-        ).await
+        )
+        .await
     }
 
     /// Run the interactive chat loop.
@@ -173,7 +175,9 @@ impl ConversationLoop {
                 _ => continue,
             };
 
-            if (callbacks.should_exit)(&input) { break; }
+            if (callbacks.should_exit)(&input) {
+                break;
+            }
 
             let sid = session_manager
                 .active_session()
@@ -226,7 +230,8 @@ impl ConversationLoop {
                 input_msg,
                 &call_mode_val,
                 delta_cb,
-            ).await;
+            )
+            .await;
 
             let response_text = match response {
                 Ok(resp) => Some(resp),
@@ -256,19 +261,22 @@ impl ConversationLoop {
 
             // Check if the active session has memory tool calls (proxy for
             // "memory tools are available").
-            let has_memory_tools = session_manager
-                .active_session()
-                .map_or(false, |s| {
-                    s.messages.iter().any(|m| m.tool_calls.as_ref().map_or(false, |c| !c.is_empty()))
-                });
+            let has_memory_tools = session_manager.active_session().map_or(false, |s| {
+                s.messages
+                    .iter()
+                    .any(|m| m.tool_calls.as_ref().map_or(false, |c| !c.is_empty()))
+            });
 
-            if should_trigger_nudge(turns_since_nudge, nudge_config.memory_nudge_interval, has_memory_tools, is_resumed_session) {
+            if should_trigger_nudge(
+                turns_since_nudge,
+                nudge_config.memory_nudge_interval,
+                has_memory_tools,
+                is_resumed_session,
+            ) {
                 turns_since_nudge = 0;
 
-                let prompt = build_nudge_prompt(
-                    nudge_config.memory_enabled(),
-                    nudge_config.skill_enabled(),
-                );
+                let prompt =
+                    build_nudge_prompt(nudge_config.memory_enabled(), nudge_config.skill_enabled());
                 let review_msg = Message::user(&prompt);
 
                 let budget = IterationBudget::new(16);
@@ -290,7 +298,9 @@ impl ConversationLoop {
                     &call_mode_val,
                     None,
                     turn_options,
-                ).await {
+                )
+                .await
+                {
                     Ok(review_text) => {
                         let text_lower = review_text.to_lowercase();
                         let is_noop = text_lower.contains("nothing to")

@@ -23,7 +23,11 @@ fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
 #[test]
 fn compute_widths_single_row() {
     let headers = &["ID", "Max Tokens", "Owned By"];
-    let rows = vec![vec!["qwen35-local".to_string(), "262144".to_string(), "vllm".to_string()]];
+    let rows = vec![vec![
+        "qwen35-local".to_string(),
+        "262144".to_string(),
+        "vllm".to_string(),
+    ]];
     let widths = compute_widths(headers, &rows);
     assert_eq!(widths, vec![12, 10, 8]); // "qwen35-local", "Max Tokens", "Owned By"
 }
@@ -51,9 +55,11 @@ fn compute_widths_empty_rows() {
 fn print_table_single_row() {
     let output = capture_output(|w| {
         let headers = &["ID", "Max Tokens", "Owned By"];
-        let rows = vec![
-            vec!["qwen35-local".to_string(), "262144".to_string(), "vllm".to_string()],
-        ];
+        let rows = vec![vec![
+            "qwen35-local".to_string(),
+            "262144".to_string(),
+            "vllm".to_string(),
+        ]];
         oben_utils::terminal::print_table(headers, rows, w);
     });
 

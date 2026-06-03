@@ -1,15 +1,14 @@
+use serde_json::Value;
 /// Skill tool — view and list available skills.
 ///
 /// Lists skills from the skills directory and displays full content.
-
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use serde_json::Value;
 
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{SelfRegisteringTool, ToolHandler};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -41,7 +40,7 @@ pub struct SkillMeta {
 /// Supports simple YAML frontmatter between --- delimiters.
 fn parse_skill_metadata(path: &Path) -> Option<SkillMeta> {
     let content = fs::read_to_string(path).ok()?;
-    
+
     let (frontmatter, body) = if let Some(start) = content.find("---\n") {
         let end = content[start + 4..].find("\n---")?;
         let fm = &content[start + 4..start + 4 + end];
@@ -51,7 +50,8 @@ fn parse_skill_metadata(path: &Path) -> Option<SkillMeta> {
         ("", &content[..])
     };
 
-    let mut name = path.file_stem()
+    let mut name = path
+        .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
         .to_string();
@@ -60,17 +60,32 @@ fn parse_skill_metadata(path: &Path) -> Option<SkillMeta> {
 
     for line in frontmatter.lines() {
         if line.starts_with("name:") {
-            name = line["name:".len()..].trim().trim_matches('"').trim_matches('\'').to_string();
+            name = line["name:".len()..]
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
         } else if line.starts_with("description:") {
-            description = line["description:".len()..].trim().trim_matches('"').trim_matches('\'').to_string();
+            description = line["description:".len()..]
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
         } else if line.starts_with("category:") {
-            category = Some(line["category:".len()..].trim().trim_matches('"').trim_matches('\'').to_string());
+            category = Some(
+                line["category:".len()..]
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string(),
+            );
         }
     }
 
     // If no description in frontmatter, extract from body
     if description.is_empty() {
-        description = body.lines()
+        description = body
+            .lines()
             .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
             .take(3)
             .map(|l| l.trim())
@@ -81,7 +96,11 @@ fn parse_skill_metadata(path: &Path) -> Option<SkillMeta> {
         }
     }
 
-    Some(SkillMeta { name, description, category })
+    Some(SkillMeta {
+        name,
+        description,
+        category,
+    })
 }
 
 /// Find all skill files recursively in the skills directory.
@@ -97,19 +116,20 @@ fn find_skills_recursive(dir: &Path, skills_dir: &Path, skills: &mut Vec<SkillMe
 
     for entry in entries.flatten() {
         let path = entry.path();
-        
+
         if path.is_dir() {
             // Check if directory has SKILL.md (directory-based skill)
             let skill_file = path.join("SKILL.md");
             if skill_file.exists() {
                 // This directory is a skill directory
                 if let Some(meta) = parse_skill_metadata(&skill_file) {
-                    let rel_path = path.strip_prefix(skills_dir)
+                    let rel_path = path
+                        .strip_prefix(skills_dir)
                         .ok()
                         .and_then(|p| p.to_str())
                         .unwrap_or("");
                     let category = rel_path.split('/').next().map(|s| s.to_string());
-                    
+
                     skills.push(SkillMeta {
                         name: meta.name,
                         description: meta.description,
@@ -125,12 +145,18 @@ fn find_skills_recursive(dir: &Path, skills_dir: &Path, skills: &mut Vec<SkillMe
             if path.extension().map_or(false, |ext| ext == "md") {
                 if let Some(meta) = parse_skill_metadata(&path) {
                     // Get category from parent directory path
-                    let category = path.strip_prefix(skills_dir)
+                    let category = path
+                        .strip_prefix(skills_dir)
                         .ok()
                         .and_then(|p| p.parent().and_then(|parent| parent.to_str()))
                         .filter(|s| !s.is_empty())
-                        .map(|s| s.split('/').next().map(|n| n.to_string()).unwrap_or_default());
-                    
+                        .map(|s| {
+                            s.split('/')
+                                .next()
+                                .map(|n| n.to_string())
+                                .unwrap_or_default()
+                        });
+
                     skills.push(SkillMeta {
                         name: meta.name,
                         description: meta.description,
@@ -146,7 +172,7 @@ fn find_skills_recursive(dir: &Path, skills_dir: &Path, skills: &mut Vec<SkillMe
 fn find_skills() -> Vec<SkillMeta> {
     let skills_dir = get_skills_dir();
     let mut skills = Vec::new();
-    
+
     find_skills_recursive(&skills_dir, &skills_dir, &mut skills);
 
     // Sort by name
@@ -189,19 +215,22 @@ fn make_skill_tool() -> Tool {
 fn make_skill_handler() -> ToolHandler {
     Arc::new(|args: Value| {
         Box::pin(async move {
-            let call_id = args.get("call_id")
+            let call_id = args
+                .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            let action = args.get("action")
+            let action = args
+                .get("action")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Missing 'action' argument. Use: list, view."))?;
 
             let result = match action {
                 "list" => list_skills(&args, call_id),
                 "view" => {
-                    let name = args.get("name")
+                    let name = args
+                        .get("name")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("'name' is required for 'view' action."))?;
                     view_skill(name, call_id)
@@ -221,7 +250,8 @@ fn make_skill_handler() -> ToolHandler {
 }
 
 fn list_skills(args: &Value, call_id: String) -> ToolResult {
-    let category_filter = args.get("category")
+    let category_filter = args
+        .get("category")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
@@ -229,15 +259,21 @@ fn list_skills(args: &Value, call_id: String) -> ToolResult {
 
     // Filter by category if specified
     let skills: Vec<&SkillMeta> = if let Some(ref cat) = category_filter {
-        skills.iter().filter(|s| {
-            s.category.as_ref().map_or(false, |c| c.to_lowercase() == cat.to_lowercase())
-        }).collect()
+        skills
+            .iter()
+            .filter(|s| {
+                s.category
+                    .as_ref()
+                    .map_or(false, |c| c.to_lowercase() == cat.to_lowercase())
+            })
+            .collect()
     } else {
         skills.iter().collect()
     };
 
     // Get unique categories
-    let mut categories: Vec<String> = skills.iter()
+    let mut categories: Vec<String> = skills
+        .iter()
         .filter_map(|s| s.category.clone())
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
@@ -252,7 +288,7 @@ fn list_skills(args: &Value, call_id: String) -> ToolResult {
         output.push_str("\nSkill directory: ");
         output.push_str(&get_skills_dir().to_string_lossy());
         output.push('\n');
-        
+
         return ToolResult {
             call_id,
             output,
@@ -261,7 +297,8 @@ fn list_skills(args: &Value, call_id: String) -> ToolResult {
     }
 
     // Group by category
-    let mut by_category: std::collections::HashMap<String, Vec<&SkillMeta>> = std::collections::HashMap::new();
+    let mut by_category: std::collections::HashMap<String, Vec<&SkillMeta>> =
+        std::collections::HashMap::new();
     for skill in &skills {
         let cat = skill.category.as_deref().unwrap_or("uncategorized");
         by_category.entry(cat.to_string()).or_default().push(skill);
@@ -279,7 +316,9 @@ fn list_skills(args: &Value, call_id: String) -> ToolResult {
     if !categories.is_empty() {
         output.push_str(&format!("Categories: {}\n", categories.join(", ")));
     }
-    output.push_str(&format!("\nUse `skill view name=<name>` to see full content."));
+    output.push_str(&format!(
+        "\nUse `skill view name=<name>` to see full content."
+    ));
 
     ToolResult {
         call_id,
@@ -321,8 +360,11 @@ fn view_skill(name: &str, call_id: String) -> ToolResult {
                 if search_path.exists() {
                     if let Ok(content) = fs::read_to_string(&search_path) {
                         if content.to_lowercase().contains(&name.to_lowercase())
-                            || path.file_stem().and_then(|s| s.to_str())
-                                .map_or(false, |s| s.to_lowercase() == name.to_lowercase()) {
+                            || path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .map_or(false, |s| s.to_lowercase() == name.to_lowercase())
+                        {
                             found = Some((path, content));
                             break;
                         }
@@ -333,16 +375,13 @@ fn view_skill(name: &str, call_id: String) -> ToolResult {
 
         match found {
             Some((path, content)) => {
-                let display_path = path.strip_prefix(&skills_dir)
+                let display_path = path
+                    .strip_prefix(&skills_dir)
                     .ok()
                     .and_then(|p| p.to_str())
                     .unwrap_or("");
 
-                let mut output = format!(
-                    "📄 Skill: {}\n{}\n\n",
-                    display_path,
-                    "=".repeat(50)
-                );
+                let mut output = format!("📄 Skill: {}\n{}\n\n", display_path, "=".repeat(50));
                 output.push_str(&content);
                 output.push_str("\n\n");
 
@@ -365,16 +404,13 @@ fn view_skill(name: &str, call_id: String) -> ToolResult {
     // Read and display the skill content
     match fs::read_to_string(&skill_file) {
         Ok(content) => {
-            let display_name = skill_file.strip_prefix(&skills_dir)
+            let display_name = skill_file
+                .strip_prefix(&skills_dir)
                 .ok()
                 .and_then(|p| p.to_str())
                 .unwrap_or(name);
 
-            let mut output = format!(
-                "📄 Skill: {}\n{}\n\n",
-                display_name,
-                "=".repeat(50)
-            );
+            let mut output = format!("📄 Skill: {}\n{}\n\n", display_name, "=".repeat(50));
             output.push_str(&content);
             output.push_str("\n\n");
 
@@ -434,10 +470,12 @@ mod tests {
         let skills_dir = get_skills_dir();
         let dir = skills_dir.join(category);
         fs::create_dir_all(&dir).ok();
-        
+
         let skill_file = dir.join(format!("{}.md", name));
-        let frontmatter = format!("---\nname: {}\ndescription: {}\ncategory: {}\n---\n\n{}", 
-                                   name, description, category, content);
+        let frontmatter = format!(
+            "---\nname: {}\ndescription: {}\ncategory: {}\n---\n\n{}",
+            name, description, category, content
+        );
         fs::write(&skill_file, frontmatter).ok();
     }
 
@@ -465,17 +503,26 @@ mod tests {
             "test-skill",
             "A test skill for testing",
             &category,
-            "This is the content of the test skill."
+            "This is the content of the test skill.",
         );
 
         let registry = make_registry();
-        let result = registry.execute("skill", &json!({
-            "action": "list",
-            "call_id": "test-1",
-        })).await;
+        let result = registry
+            .execute(
+                "skill",
+                &json!({
+                    "action": "list",
+                    "call_id": "test-1",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
-        assert!(result.output.contains("test-skill"), "Output: {}", result.output);
+        assert!(
+            result.output.contains("test-skill"),
+            "Output: {}",
+            result.output
+        );
         assert!(result.output.contains("A test skill for testing"));
     }
 
@@ -490,15 +537,20 @@ mod tests {
             "test-view",
             "View test skill",
             &category,
-            "Full content of test skill."
+            "Full content of test skill.",
         );
 
         let registry = make_registry();
-        let result = registry.execute("skill", &json!({
-            "action": "view",
-            "name": &format!("{}/test-view.md", category),
-            "call_id": "test-3",
-        })).await;
+        let result = registry
+            .execute(
+                "skill",
+                &json!({
+                    "action": "view",
+                    "name": &format!("{}/test-view.md", category),
+                    "call_id": "test-3",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("Full content of test skill"));
@@ -507,9 +559,14 @@ mod tests {
     #[tokio::test]
     async fn handles_missing_action() {
         let registry = make_registry();
-        let result = registry.execute("skill", &json!({
-            "call_id": "test-4",
-        })).await;
+        let result = registry
+            .execute(
+                "skill",
+                &json!({
+                    "call_id": "test-4",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Missing 'action'"));
@@ -518,10 +575,15 @@ mod tests {
     #[tokio::test]
     async fn handles_invalid_action() {
         let registry = make_registry();
-        let result = registry.execute("skill", &json!({
-            "action": "invalid",
-            "call_id": "test-5",
-        })).await;
+        let result = registry
+            .execute(
+                "skill",
+                &json!({
+                    "action": "invalid",
+                    "call_id": "test-5",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Unknown action"));
@@ -530,10 +592,15 @@ mod tests {
     #[tokio::test]
     async fn handles_missing_name_for_view() {
         let registry = make_registry();
-        let result = registry.execute("skill", &json!({
-            "action": "view",
-            "call_id": "test-6",
-        })).await;
+        let result = registry
+            .execute(
+                "skill",
+                &json!({
+                    "action": "view",
+                    "call_id": "test-6",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("name"));

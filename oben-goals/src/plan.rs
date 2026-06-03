@@ -1,5 +1,4 @@
 /// Plan node — a single unit of work in the agent's plan.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -141,7 +140,11 @@ impl PlanNode {
 
     /// Count total nodes including all descendants.
     pub fn total_count(&self) -> usize {
-        1 + self.sub_nodes.iter().map(|n| n.total_count()).sum::<usize>()
+        1 + self
+            .sub_nodes
+            .iter()
+            .map(|n| n.total_count())
+            .sum::<usize>()
     }
 
     /// Count nodes at this level (not including descendants).

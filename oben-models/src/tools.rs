@@ -11,9 +11,7 @@ pub struct Tool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolParameters {
     /// OpenAI-style JSON Schema.
-    JsonSchema {
-        schema: serde_json::Value,
-    },
+    JsonSchema { schema: serde_json::Value },
     /// Simple flat schema.
     Flat(Vec<ToolParameter>),
 }
@@ -83,7 +81,13 @@ impl ToolBuilder {
         self
     }
 
-    pub fn param(mut self, name: impl Into<String>, desc: impl Into<String>, ptype: impl Into<String>, required: bool) -> Self {
+    pub fn param(
+        mut self,
+        name: impl Into<String>,
+        desc: impl Into<String>,
+        ptype: impl Into<String>,
+        required: bool,
+    ) -> Self {
         self.flat_params.push(ToolParameter {
             name: name.into(),
             description: desc.into(),

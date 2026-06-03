@@ -1,13 +1,12 @@
+use serde_json::Value;
 /// Code execution tool — safely executes code in a sandboxed environment.
 ///
 /// Supports Python code execution with output capture and timeout protection.
-
 use std::sync::Arc;
-use serde_json::Value;
 
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{SelfRegisteringTool, ToolHandler};
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -30,7 +29,9 @@ fn make_code_execution_tool() -> Tool {
     ];
     Tool {
         name: "code_execution".into(),
-        description: "Execute Python code in a sandboxed environment. Returns stdout, stderr, and exit code.".into(),
+        description:
+            "Execute Python code in a sandboxed environment. Returns stdout, stderr, and exit code."
+                .into(),
         parameters: ToolParameters::Flat(params),
     }
 }
@@ -43,12 +44,10 @@ fn make_code_execution_handler() -> ToolHandler {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Missing 'code' argument"))?;
 
-            let timeout_secs = args
-                .get("timeout")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(30);
+            let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
 
-            let call_id = args.get("call_id")
+            let call_id = args
+                .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -59,10 +58,20 @@ fn make_code_execution_handler() -> ToolHandler {
             let safe_code: String = code.chars().filter(|c| !c.is_ascii_whitespace()).collect();
 
             let dangerous_patterns = [
-                "importos", "importos.", "importsubprocess",
-                "importshutil", "importsocket", "importurllib",
-                "import requests", "importhttp", "open(", "eval(",
-                "exec(", "__import__", ".system(", ".popen(",
+                "importos",
+                "importos.",
+                "importsubprocess",
+                "importshutil",
+                "importsocket",
+                "importurllib",
+                "import requests",
+                "importhttp",
+                "open(",
+                "eval(",
+                "exec(",
+                "__import__",
+                ".system(",
+                ".popen(",
             ];
 
             for pattern in &dangerous_patterns {
@@ -70,7 +79,10 @@ fn make_code_execution_handler() -> ToolHandler {
                     return Ok(ToolResult {
                         call_id,
                         output: String::new(),
-                        error: Some(format!("Security check: code contains disallowed pattern '{}'.", pattern)),
+                        error: Some(format!(
+                            "Security check: code contains disallowed pattern '{}'.",
+                            pattern
+                        )),
                     });
                 }
             }
@@ -82,7 +94,11 @@ fn make_code_execution_handler() -> ToolHandler {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            let code_file = std::env::temp_dir().join(format!("oben_code_{}_{}.py", std::process::id(), timestamp));
+            let code_file = std::env::temp_dir().join(format!(
+                "oben_code_{}_{}.py",
+                std::process::id(),
+                timestamp
+            ));
             if let Err(e) = std::fs::write(&code_file, code) {
                 return Ok(ToolResult {
                     call_id,
@@ -95,14 +111,19 @@ fn make_code_execution_handler() -> ToolHandler {
             let output = match tokio::time::timeout(
                 std::time::Duration::from_secs(timeout_secs),
                 execute_python(&code_file),
-            ).await {
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(_) => {
                     let _ = std::fs::remove_file(&code_file);
                     return Ok(ToolResult {
                         call_id,
                         output: String::new(),
-                        error: Some(format!("Execution timed out after {} seconds.", timeout_secs)),
+                        error: Some(format!(
+                            "Execution timed out after {} seconds.",
+                            timeout_secs
+                        )),
                     });
                 }
             };
@@ -114,11 +135,11 @@ fn make_code_execution_handler() -> ToolHandler {
                     call_id,
                     output: format!(
                         "Exit code: {}\n\nStdout:\n{}\n\nStderr:\n{}",
-                        exec_output.exit_code,
-                        exec_output.stdout,
-                        exec_output.stderr
+                        exec_output.exit_code, exec_output.stdout, exec_output.stderr
                     ),
-                    error: if exec_output.exit_code == 0 { None } else {
+                    error: if exec_output.exit_code == 0 {
+                        None
+                    } else {
                         Some(format!("Exit code: {}", exec_output.exit_code))
                     },
                 }),
@@ -143,10 +164,7 @@ struct ExecutionOutput {
 async fn execute_python(code_file: &std::path::Path) -> Result<ExecutionOutput, anyhow::Error> {
     use tokio::process::Command;
 
-    let output = Command::new("python3")
-        .arg(code_file)
-        .output()
-        .await?;
+    let output = Command::new("python3").arg(code_file).output().await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -199,22 +217,36 @@ mod tests {
         let registry = make_registry();
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let result = registry.execute("code_execution", &json!({
-                "code": "print('HelloCodeExec')",
-                "call_id": "test-1",
-            })).await;
+            let result = registry
+                .execute(
+                    "code_execution",
+                    &json!({
+                        "code": "print('HelloCodeExec')",
+                        "call_id": "test-1",
+                    }),
+                )
+                .await;
             assert!(result.error.is_none(), "Error: {:?}", result.error);
-            assert!(result.output.contains("HelloCodeExec"), "Output: {}", result.output);
+            assert!(
+                result.output.contains("HelloCodeExec"),
+                "Output: {}",
+                result.output
+            );
         })
     }
 
     #[tokio::test]
     async fn blocks_dangerous_imports() {
         let registry = make_registry();
-        let result = registry.execute("code_execution", &json!({
-            "code": "import os\nprint(os.listdir('.'))",
-            "call_id": "test-3",
-        })).await;
+        let result = registry
+            .execute(
+                "code_execution",
+                &json!({
+                    "code": "import os\nprint(os.listdir('.'))",
+                    "call_id": "test-3",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Security check"));
@@ -223,10 +255,15 @@ mod tests {
     #[tokio::test]
     async fn blocks_eval() {
         let registry = make_registry();
-        let result = registry.execute("code_execution", &json!({
-            "code": "eval('1 + 1')",
-            "call_id": "test-4",
-        })).await;
+        let result = registry
+            .execute(
+                "code_execution",
+                &json!({
+                    "code": "eval('1 + 1')",
+                    "call_id": "test-4",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Security check"));
@@ -235,9 +272,14 @@ mod tests {
     #[tokio::test]
     async fn handles_missing_code() {
         let registry = make_registry();
-        let result = registry.execute("code_execution", &json!({
-            "call_id": "test-5",
-        })).await;
+        let result = registry
+            .execute(
+                "code_execution",
+                &json!({
+                    "call_id": "test-5",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Missing 'code'"));
@@ -246,10 +288,15 @@ mod tests {
     #[tokio::test]
     async fn handles_syntax_error() {
         let registry = make_registry();
-        let result = registry.execute("code_execution", &json!({
-            "code": "def broken(",
-            "call_id": "test-6",
-        })).await;
+        let result = registry
+            .execute(
+                "code_execution",
+                &json!({
+                    "code": "def broken(",
+                    "call_id": "test-6",
+                }),
+            )
+            .await;
 
         // Should fail with exit code != 0
         assert!(result.output.contains("Exit code"));

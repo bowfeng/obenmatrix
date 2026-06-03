@@ -1,18 +1,17 @@
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 /// Todo tool — TODO list management with JSON persistence.
 ///
 /// Supports add, complete, remove, list, and priority levels.
-
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::sync::LazyLock;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use chrono::Utc;
+use std::sync::{Arc, Mutex};
 
 use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{ToolHandler, SelfRegisteringTool};
+use super::registry::{SelfRegisteringTool, ToolHandler};
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -23,7 +22,7 @@ pub struct TodoItem {
     pub id: u64,
     pub title: String,
     pub completed: bool,
-    pub priority: String,  // low, medium, high, critical
+    pub priority: String, // low, medium, high, critical
     pub created_at: String,
     pub completed_at: Option<String>,
 }
@@ -36,7 +35,10 @@ pub struct TodoStore {
 
 impl TodoStore {
     fn new() -> Self {
-        Self { items: Vec::new(), next_id: 1 }
+        Self {
+            items: Vec::new(),
+            next_id: 1,
+        }
     }
 
     #[allow(dead_code)]
@@ -44,12 +46,10 @@ impl TodoStore {
         let path = Self::get_path();
         if path.exists() {
             match fs::read_to_string(&path) {
-                Ok(json) => {
-                    match serde_json::from_str(&json) {
-                        Ok(store) => store,
-                        Err(_) => Self::new(),
-                    }
-                }
+                Ok(json) => match serde_json::from_str(&json) {
+                    Ok(store) => store,
+                    Err(_) => Self::new(),
+                },
                 Err(_) => Self::new(),
             }
         } else {
@@ -157,12 +157,14 @@ fn make_todo_tool() -> Tool {
 fn make_todo_handler() -> ToolHandler {
     Arc::new(|args: Value| {
         Box::pin(async move {
-            let call_id = args.get("call_id")
+            let call_id = args
+                .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            let action = args.get("action")
+            let action = args
+                .get("action")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Missing 'action' argument"))?;
 
@@ -173,33 +175,44 @@ fn make_todo_handler() -> ToolHandler {
 
             let result = match action {
                 "add" => {
-                    let title = args.get("title")
+                    let title = args
+                        .get("title")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("'title' is required for 'add'"))?;
-                    let priority = args.get("priority")
+                    let priority = args
+                        .get("priority")
                         .and_then(|v| v.as_str())
                         .unwrap_or("medium");
                     if !["low", "medium", "high", "critical"].contains(&priority) {
                         return Ok(ToolResult {
                             call_id,
                             output: String::new(),
-                            error: Some(format!("Invalid priority '{}'. Use: low, medium, high, critical.", priority)),
+                            error: Some(format!(
+                                "Invalid priority '{}'. Use: low, medium, high, critical.",
+                                priority
+                            )),
                         });
                     }
                     add_task(&store, call_id, title, priority)
                 }
                 "complete" => {
-                    let id_str = args.get("id")
+                    let id_str = args
+                        .get("id")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("'id' is required for 'complete'"))?;
-                    let id: u64 = id_str.parse().map_err(|_| anyhow::anyhow!("Invalid task ID '{}'.", id_str))?;
+                    let id: u64 = id_str
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("Invalid task ID '{}'.", id_str))?;
                     complete_task(&store, call_id, id)
                 }
                 "remove" => {
-                    let id_str = args.get("id")
+                    let id_str = args
+                        .get("id")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| anyhow::anyhow!("'id' is required for 'remove'"))?;
-                    let id: u64 = id_str.parse().map_err(|_| anyhow::anyhow!("Invalid task ID '{}'.", id_str))?;
+                    let id: u64 = id_str
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("Invalid task ID '{}'.", id_str))?;
                     remove_task(&store, call_id, id)
                 }
                 "list" => list_tasks(&store, call_id),
@@ -207,7 +220,10 @@ fn make_todo_handler() -> ToolHandler {
                     return Ok(ToolResult {
                         call_id,
                         output: String::new(),
-                        error: Some(format!("Unknown action '{}'. Use: add, complete, remove, list.", action)),
+                        error: Some(format!(
+                            "Unknown action '{}'. Use: add, complete, remove, list.",
+                            action
+                        )),
                     });
                 }
             };
@@ -354,10 +370,15 @@ mod tests {
     #[tokio::test]
     async fn rejects_invalid_action() {
         let registry = make_registry();
-        let result = registry.execute("todo", &json!({
-            "action": "invalid",
-            "call_id": "test-5",
-        })).await;
+        let result = registry
+            .execute(
+                "todo",
+                &json!({
+                    "action": "invalid",
+                    "call_id": "test-5",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Unknown action"));
@@ -366,10 +387,15 @@ mod tests {
     #[tokio::test]
     async fn rejects_missing_action() {
         let registry = make_registry();
-        let result = registry.execute("todo", &json!({
-            "title": "test",
-            "call_id": "test-6",
-        })).await;
+        let result = registry
+            .execute(
+                "todo",
+                &json!({
+                    "title": "test",
+                    "call_id": "test-6",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Missing 'action'"));
@@ -378,12 +404,17 @@ mod tests {
     #[tokio::test]
     async fn rejects_invalid_priority() {
         let registry = make_registry();
-        let result = registry.execute("todo", &json!({
-            "action": "add",
-            "title": "test",
-            "priority": "ultra",
-            "call_id": "test-7",
-        })).await;
+        let result = registry
+            .execute(
+                "todo",
+                &json!({
+                    "action": "add",
+                    "title": "test",
+                    "priority": "ultra",
+                    "call_id": "test-7",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_some());
         assert!(result.error.as_ref().unwrap().contains("Invalid priority"));
@@ -393,10 +424,15 @@ mod tests {
     async fn empty_list() {
         reset_store();
         let registry = make_registry();
-        let result = registry.execute("todo", &json!({
-            "action": "list",
-            "call_id": "test-8",
-        })).await;
+        let result = registry
+            .execute(
+                "todo",
+                &json!({
+                    "action": "list",
+                    "call_id": "test-8",
+                }),
+            )
+            .await;
 
         assert!(result.error.is_none());
         assert!(result.output.contains("No tasks"));

@@ -1,10 +1,10 @@
 //! Chat panel — message history, streaming, input bar.
 
 use super::{KeyAction, Panel};
-use crate::widgets::input_bar::{InputBarWidget, InputBarResult, InputState};
-use crate::widgets::conversation::{ConversationWidget, ConversationState};
-use crate::widgets::message_renderer::MessageRenderer;
 use crate::turn::turn_state;
+use crate::widgets::conversation::{ConversationState, ConversationWidget};
+use crate::widgets::input_bar::{InputBarResult, InputBarWidget, InputState};
+use crate::widgets::message_renderer::MessageRenderer;
 use crossterm::event::KeyEvent;
 use oben_models::Message;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -37,7 +37,11 @@ impl ChatPanel {
     }
 
     /// Create a chat panel with a specific theme from config.
-    pub fn new_with_theme(session_name: Option<String>, _messages: Option<Vec<Message>>, theme: &str) -> Self {
+    pub fn new_with_theme(
+        session_name: Option<String>,
+        _messages: Option<Vec<Message>>,
+        theme: &str,
+    ) -> Self {
         let mut panel = Self::new(session_name, _messages);
         panel.renderer.set_theme_from_str(theme);
         panel
@@ -92,7 +96,10 @@ impl ChatPanel {
     /// Copy selection to system clipboard, then clear selection.
     pub fn copy_selection_to_clipboard(&mut self) {
         use crate::clipboard;
-        if let Some(text) = self.message_display.get_selected_text(&mut self.message_state) {
+        if let Some(text) = self
+            .message_display
+            .get_selected_text(&mut self.message_state)
+        {
             if !text.is_empty() && crate::clipboard::write_clipboard(&text) {
                 self.message_state.clear_selection();
             }
@@ -133,17 +140,19 @@ impl Panel for ChatPanel {
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let input_height = InputBarWidget.calculate_input_height(&self.input, area.width);
-        let chunks = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(input_height),
-        ])
-        .split(area);
+        let chunks =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).split(area);
 
         let palette = self.renderer.current_palette();
 
         // Message display widget (pass streaming state from ChatPanel)
-        self.message_display
-            .render(frame, chunks[0], &self.message_state, &palette, self.streaming);
+        self.message_display.render(
+            frame,
+            chunks[0],
+            &self.message_state,
+            &palette,
+            self.streaming,
+        );
 
         // Input bar widget
         self.render_input_bar(frame, chunks[1], &self.input);
@@ -155,17 +164,15 @@ impl Panel for ChatPanel {
             InputBarResult::Consumed => KeyAction::None,
             InputBarResult::PassedThrough => KeyAction::None,
             InputBarResult::ChatInput(text) => KeyAction::ChatInput(text),
-            InputBarResult::SlashCommand { cmd_name, extra } => {
-                match cmd_name.as_str() {
-                    "clear" => KeyAction::Clear,
-                    "new" => KeyAction::New,
-                    "compact" => KeyAction::Compact,
-                    "quit" => KeyAction::Quit,
-                    "reasoning" => KeyAction::Reasoning,
-                    "theme" => KeyAction::Theme,
-                    _ => KeyAction::Command { cmd_name, extra },
-                }
-            }
+            InputBarResult::SlashCommand { cmd_name, extra } => match cmd_name.as_str() {
+                "clear" => KeyAction::Clear,
+                "new" => KeyAction::New,
+                "compact" => KeyAction::Compact,
+                "quit" => KeyAction::Quit,
+                "reasoning" => KeyAction::Reasoning,
+                "theme" => KeyAction::Theme,
+                _ => KeyAction::Command { cmd_name, extra },
+            },
         }
     }
 
@@ -176,17 +183,29 @@ impl Panel for ChatPanel {
             MouseEventKind::ScrollDown => {
                 self.message_state.scroll_to_bottom = false;
                 let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
-                self.message_state.user_scroll_offset.fetch_add(scroll_step, Ordering::SeqCst);
+                self.message_state
+                    .user_scroll_offset
+                    .fetch_add(scroll_step, Ordering::SeqCst);
                 let new = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
-                tracing::info!("[mouse] ScrollDown: old_offset={} new_offset={} scroll_to_bottom=false", old, new);
+                tracing::info!(
+                    "[mouse] ScrollDown: old_offset={} new_offset={} scroll_to_bottom=false",
+                    old,
+                    new
+                );
                 true
             }
             MouseEventKind::ScrollUp => {
                 self.message_state.scroll_to_bottom = false;
                 let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
-                self.message_state.user_scroll_offset.fetch_sub(scroll_step, Ordering::SeqCst);
+                self.message_state
+                    .user_scroll_offset
+                    .fetch_sub(scroll_step, Ordering::SeqCst);
                 let new = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
-                tracing::info!("[mouse] ScrollUp: old_offset={} new_offset={} scroll_to_bottom=false", old, new);
+                tracing::info!(
+                    "[mouse] ScrollUp: old_offset={} new_offset={} scroll_to_bottom=false",
+                    old,
+                    new
+                );
                 true
             }
             _ => false,

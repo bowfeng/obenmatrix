@@ -7,21 +7,18 @@ use std::sync::OnceLock;
 use once_cell::sync::Lazy;
 
 /// Hostnames always blocked regardless of config.
-static ALWAYS_BLOCKED_HOSTNAMES: Lazy<Vec<&'static str>> = Lazy::new(|| {
-    vec![
-        "metadata.google.internal",
-        "metadata.goog",
-    ]
-});
+static ALWAYS_BLOCKED_HOSTNAMES: Lazy<Vec<&'static str>> =
+    Lazy::new(|| vec!["metadata.google.internal", "metadata.goog"]);
 
 /// Hosts allowed to resolve to private IPs (HTTPS only bypass).
-static TRUSTED_PRIVATE_IP_HOSTS: Lazy<Vec<&'static str>> = Lazy::new(|| {
-    vec!["multimedia.nt.qq.com.cn"]
-});
+static TRUSTED_PRIVATE_IP_HOSTS: Lazy<Vec<&'static str>> =
+    Lazy::new(|| vec!["multimedia.nt.qq.com.cn"]);
 
 /// Check if the host is always blocked (cloud metadata endpoints).
 pub fn is_always_blocked_host(host: &str) -> bool {
-    ALWAYS_BLOCKED_HOSTNAMES.iter().any(|blocked| host == *blocked)
+    ALWAYS_BLOCKED_HOSTNAMES
+        .iter()
+        .any(|blocked| host == *blocked)
 }
 
 /// Check if a URL is safe to fetch (SSRF protection).
@@ -62,7 +59,12 @@ pub fn is_safe_url(url_str: &str) -> io::Result<bool> {
     }
 
     for addr in addrs {
-        ip_check(addr.ip(), host, allow_private, url_str.starts_with("https://"))?;
+        ip_check(
+            addr.ip(),
+            host,
+            allow_private,
+            url_str.starts_with("https://"),
+        )?;
     }
 
     Ok(true)
@@ -118,10 +120,7 @@ fn ip_check(ip: IpAddr, host: &str, allow_private: bool, is_https: bool) -> io::
 }
 
 fn is_private_or_special(ip: IpAddr, ip_val: Option<u32>) -> bool {
-    if ip.is_loopback()
-        || ip.is_unspecified()
-        || ip.is_multicast()
-    {
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
         return true;
     }
 
