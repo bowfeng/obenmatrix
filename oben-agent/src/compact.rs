@@ -112,6 +112,20 @@ pub struct CompressionResult {
     pub summary: Option<String>,
 }
 
+/// Outcome of a manual `compact_session` operation — distinguishes the
+/// different reasons why compaction may not change the message list.
+#[derive(Debug, Clone)]
+pub enum CompactOutcome {
+    /// Session messages are within token budget — nothing to compact.
+    AlreadyCompact,
+    /// All messages are protected (head/tail) — no middle messages to summarize.
+    NoMiddleMessages { head_count: usize, tail_count: usize },
+    /// Compression attempted but savings below threshold — messages unchanged.
+    Ineffective { original_tokens: usize, compacted_tokens: usize, savings_pct: f64 },
+    /// Compression succeeded — messages were replaced with a summary.
+    Compressed { original_count: usize, compacted_count: usize, savings_pct: f64 },
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

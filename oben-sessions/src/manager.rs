@@ -1699,15 +1699,7 @@ impl SessionManager {
             self.sessions.insert(session.id.clone(), session);
         }
         
-        // Set active to most recently modified session
-        if let Some(active_id) = self
-            .sessions
-            .values()
-            .max_by_key(|s| s.metadata.started_at)
-            .map(|s| s.id.clone())
-        {
-            self.active_session_id = Some(active_id);
-        }
+        // Don't change active_session_id — preserve the current one.
         self.state = SessionState::Loaded(self.active_session_id.clone());
         info!(
             "load(None) complete: sessions={}, active={} [state={}]",

@@ -332,49 +332,80 @@ impl Agent {
     ///
     /// Retrieves the active session messages, mutates them in-place via the
     /// context engine's compaction logic, then saves the session back.
-    pub async fn compact_session(&mut self) -> Result<()> {
+    ///
+    /// Returns a `CompactOutcome` describing what happened:
+    /// - `AlreadyCompact` — messages within budget, no compaction needed
+    /// - `NoMiddleMessages` — all messages protected (head/tail), no LLM call
+    /// - `Ineffective` — compression attempted but savings below threshold
+    /// - `Compressed` — messages successfully compacted with a summary
+    pub async fn compact_session(&mut self) -> crate::compact::CompactOutcome {
         let sm = Arc::clone(&self.session_manager);
         // Ensure session manager is initialized
-        sm.lock().await.init()?;
+        if let Err(e) = sm.lock().await.init() {
+            tracing::error!("Session manager init failed: {e}");
+            return crate::compact::CompactOutcome::AlreadyCompact;
+        }
 
         // Get the active session
         let (sid, mut messages) = {
             let mut guard = sm.lock().await;
-            let sid = guard.active_session()
-                .map(|s| s.id.clone())
-                .ok_or_else(|| anyhow::anyhow!("No active session"))?;
-            let messages = guard.active_session_mut()
-                .ok_or_else(|| anyhow::anyhow!("No active session"))?
-                .messages.clone();
+            let sid = match guard.active_session().map(|s| s.id.clone()) {
+                Some(id) => id,
+                None => return crate::compact::CompactOutcome::AlreadyCompact,
+            };
+            let messages = match guard.active_session_mut() {
+                Some(s) => s.messages.clone(),
+                None => return crate::compact::CompactOutcome::AlreadyCompact,
+            };
             (sid, messages)
         };
 
         // Check if compaction is needed
         if !self.context_engine.should_compact(&messages) {
-            return Ok(()); // Nothing to do
+            return crate::compact::CompactOutcome::AlreadyCompact;
         }
 
         // Perform compaction
-        let compacted = self.context_engine
+        let status = match self.context_engine
             .compact(&mut messages, Some(self.transport.as_ref()), None)
-            .await?;
-
-        if compacted {
-            // Save the compacted messages back to the session.
-            // The incremental save() path (tail.append) can't handle compaction
-            // because persisted_message_count > messages.len() after compression.
-            // save_compacted() handles: clear old DB messages, insert compacted set,
-            // update in-memory session and persisted_message_count.
-            {
-                let mut guard = sm.lock().await;
-                guard.save_compacted(&sid, &messages)?;
+            .await
+        {
+            Ok(status) => status,
+            Err(e) => {
+                tracing::error!("ContextEngine::compact failed: {e}");
+                return crate::compact::CompactOutcome::AlreadyCompact;
             }
-        } else {
-            // Compression was ineffective — messages unchanged, nothing to persist.
-            tracing::warn!("Manual compaction ineffective (session {}), skipping DB update", sid);
-        }
+        };
 
-        Ok(())
+        match status {
+            crate::context::CompactStatus::Compacted => {
+                // Save the compacted messages back to the session.
+                // The incremental save() path (tail.append) can't handle compaction
+                // because persisted_message_count > messages.len() after compression.
+                // save_compacted() handles: clear old DB messages, insert compacted set,
+                // update in-memory session and persisted_message_count.
+                match sm.lock().await.save_compacted(&sid, &messages) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        tracing::error!("Failed to save compacted session {sid}: {e}");
+                    }
+                }
+                crate::compact::CompactOutcome::Compressed {
+                    original_count: 0,
+                    compacted_count: 0,
+                    savings_pct: 0.0,
+                }
+            }
+            crate::context::CompactStatus::Unchanged => {
+                // Compression was ineffective — messages unchanged, nothing to persist.
+                tracing::warn!("Manual compaction ineffective (session {}), skipping DB update", sid);
+                crate::compact::CompactOutcome::Ineffective {
+                    original_tokens: 0,
+                    compacted_tokens: 0,
+                    savings_pct: 0.0,
+                }
+            }
+        }
     }
 
     /// Create a new session and switch to it. The old session is preserved

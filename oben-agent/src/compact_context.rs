@@ -12,7 +12,7 @@ use tracing::info;
 
 use crate::compact;
 use crate::compact::CompactCofig;
-use crate::context::ContextEngine;
+use crate::context::{CompactStatus, ContextEngine};
 use oben_models::{Message, TransportProvider};
 
 // ---------------------------------------------------------------------------
@@ -139,10 +139,10 @@ impl ContextEngine for CompactContextEngine {
         messages: &mut Vec<Message>,
         transport: Option<&dyn TransportProvider>,
         focus_topic: Option<&str>,
-    ) -> Result<bool> {
+    ) -> Result<CompactStatus> {
         let should = self.should_compact(messages);
         if !should {
-            return Ok(false);
+            return Ok(CompactStatus::Unchanged);
         }
 
         info!(
@@ -203,15 +203,15 @@ impl ContextEngine for CompactContextEngine {
                     self.ineffective_compression_count,
                 );
                 // Discard result — original messages are untouched.
-                // Return false so callers skip session rotation / DB save.
-                return Ok(false);
+                // Return Unchanged so callers skip session rotation / DB save.
+                return Ok(CompactStatus::Unchanged);
             } else {
                 self.consecutive_effective_compressions += 1;
                 self.ineffective_compression_count = 0;
                 // Apply compressed result
                 messages.clear();
                 messages.extend(result.messages);
-                return Ok(true);
+                return Ok(CompactStatus::Compacted);
             }
         } else {
             return Err(anyhow::anyhow!("compression requires a transport provider"));
@@ -513,7 +513,7 @@ mod tests {
         let result = engine.compact(&mut messages, Some(&transport), None).await;
 
         assert!(result.is_ok());
-        assert!(result.unwrap(), "effective compression should return Ok(true)");
+        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Compacted), "effective compression should return CompactStatus::Compacted");
         // Messages should have been replaced (fewer after compression)
         assert!(messages.len() < original_count, "messages should be reduced after effective compression");
         assert_eq!(engine.compression_count, 1);
@@ -551,7 +551,7 @@ mod tests {
         let result = engine.compact(&mut messages, Some(&transport), None).await;
 
         assert!(result.is_ok());
-        assert!(!result.unwrap(), "ineffective compression should return Ok(false)");
+        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Unchanged), "ineffective compression should return CompactStatus::Unchanged");
         // Messages must be UNCHANGED (compute-then-commit pattern)
         assert_eq!(messages.len(), original_count, "message count should be unchanged after ineffective compression");
         assert_eq!(messages.first().unwrap().content.to_text(), original_first, "first message should be unchanged");
@@ -611,7 +611,7 @@ mod tests {
         let result = engine.compact(&mut messages, Some(&transport), None).await;
 
         assert!(result.is_ok());
-        assert!(!result.unwrap(), "below threshold should return Ok(false)");
+        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Unchanged), "below threshold should return CompactStatus::Unchanged");
     }
 
     #[tokio::test]
@@ -640,17 +640,17 @@ mod tests {
         // First ineffective compression
         let mut test_msgs = messages.clone();
         let r1 = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(!r1.unwrap());
+        assert!(matches!(r1.unwrap(), crate::context::CompactStatus::Unchanged));
 
         // Second ineffective compression
         let mut test_msgs = messages.clone();
         let r2 = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(!r2.unwrap());
+        assert!(matches!(r2.unwrap(), crate::context::CompactStatus::Unchanged));
 
         // Third ineffective compression → triggers thrashing
         let mut test_msgs = messages.clone();
         let r3 = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(!r3.unwrap());
+        assert!(matches!(r3.unwrap(), crate::context::CompactStatus::Unchanged));
 
         // Now should_compact should return false even if tokens are high
         assert!(engine.is_thrashing(), "should be thrashing after 3 consecutive ineffective compressions");
@@ -658,7 +658,7 @@ mod tests {
         // Fourth attempt should skip due to thrashing
         let mut test_msgs = messages.clone();
         let r4 = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(!r4.unwrap(), "thrashing should prevent further compression attempts");
+        assert!(matches!(r4.unwrap(), crate::context::CompactStatus::Unchanged), "thrashing should prevent further compression attempts");
         assert_eq!(engine.compression_count, 3, "should not count thrashed attempt");
     }
 
@@ -692,7 +692,7 @@ mod tests {
 
         let mut test_msgs = messages;
         let r = engine.compact(&mut test_msgs, Some(&good_transport), None).await;
-        assert!(r.unwrap(), "effective compression should succeed");
+        assert!(matches!(r.unwrap(), crate::context::CompactStatus::Compacted), "effective compression should succeed");
         // Ineffective count is reset on effective compression
         assert_eq!(engine.ineffective_compression_count, 0);
         assert_eq!(engine.consecutive_effective_compressions, 1);
@@ -724,7 +724,7 @@ mod tests {
 
         let mut test_msgs = messages;
         let result = engine.compact(&mut test_msgs, Some(&transport), None).await;
-        assert!(result.unwrap());
+        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Compacted));
 
         // result.summary wraps the transport response with [CONTEXT COMPACTION...] header.
         // Use contains() instead of exact match.
@@ -758,7 +758,7 @@ mod tests {
         let result = engine.compact(&mut test_msgs, Some(&transport), None).await;
         // With seeded _previous_summary, incremental savings < threshold → ineffective
         assert!(result.is_ok());
-        assert!(!result.unwrap(), "should be ineffective with seeded summary");
+        assert!(matches!(result.unwrap(), crate::context::CompactStatus::Unchanged), "should be ineffective with seeded summary");
         // savings_pct should still be tracked
         assert!(engine.last_compression_savings_pct >= 0.0,
             "savings_pct should be >= 0 (got {:.1})", engine.last_compression_savings_pct);

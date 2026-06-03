@@ -213,7 +213,7 @@ impl TurnExecutor {
                     .compact(&mut session.messages, Some(transport), None)
                     .await?;
 
-                if !compacted {
+                if compacted == crate::context::CompactStatus::Unchanged {
                     // Compression was ineffective — messages unchanged,
                     // skip rotation and continue with the current session.
                     tracing::warn!(

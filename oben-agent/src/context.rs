@@ -10,6 +10,18 @@
 use anyhow::Result;
 use oben_models::{Message, TransportProvider};
 
+/// What happened when `ContextEngine::compact()` was called.
+///
+/// Distinguishes between "nothing to do" and "tried but didn't save enough".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactStatus {
+    /// No compaction was needed or possible — messages unchanged.
+    /// This covers: no middle messages to summarize, or savings below threshold.
+    Unchanged,
+    /// A meaningful compaction was applied — messages were replaced with a summary.
+    Compacted,
+}
+
 // ---------------------------------------------------------------------------
 // ContextEngine trait
 // ---------------------------------------------------------------------------
@@ -44,9 +56,9 @@ pub trait ContextEngine: Send + Sync {
 
     /// Compact the message list if it's over the token threshold.
     ///
-    /// Mutates `messages` in-place when compaction fires. Returns `Ok(true)`
+    /// Mutates `messages` in-place when compaction fires. Returns `Ok(CompactStatus::Compacted)`
     /// when a meaningful compaction was applied (savings >= threshold).
-    /// Returns `Ok(false)` when compression was attempted but produced no
+    /// Returns `Ok(CompactStatus::Unchanged)` when compression was attempted but produced no
     /// useful summary — `messages` are left unchanged so the caller can skip
     /// session rotation and other post-compact operations.
     async fn compact(
@@ -54,7 +66,7 @@ pub trait ContextEngine: Send + Sync {
         messages: &mut Vec<Message>,
         transport: Option<&dyn TransportProvider>,
         focus_topic: Option<&str>,
-    ) -> Result<bool>;
+    ) -> Result<CompactStatus>;
 
     // -- Lifecycle hooks ----------------------------------------------------
 
@@ -99,7 +111,7 @@ impl ContextEngine for Box<dyn ContextEngine> {
     fn should_compact(&self, messages: &[Message]) -> bool {
         (**self).should_compact(messages)
     }
-    async fn compact(&mut self, messages: &mut Vec<Message>, transport: Option<&dyn TransportProvider>, focus_topic: Option<&str>) -> Result<bool> {
+    async fn compact(&mut self, messages: &mut Vec<Message>, transport: Option<&dyn TransportProvider>, focus_topic: Option<&str>) -> Result<CompactStatus> {
         (**self).compact(messages, transport, focus_topic).await
     }
     fn on_session_start(&mut self, session_id: &str, model_name: &str, context_length: Option<usize>) {

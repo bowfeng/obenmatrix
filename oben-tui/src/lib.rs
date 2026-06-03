@@ -269,36 +269,46 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         // This avoids an infinite self-loop that would occur
                         // if we re-sent the event via input_tx.
                         if let Some(agent_arc) = &app.agent {
-                            let result = agent_arc.lock().await.compact_session().await;
-                            match result {
-                                Ok(()) => {
-                                    // After compression, reload active session messages
-                                    // into the ChatPanel display.
-                                    let sid = app.session_id.clone();
-                                    let messages = if let Some(agent_arc) = &app.agent {
-                                        let guard = agent_arc.lock().await;
-                                        guard
-                                            .session_manager().lock().await
-                                            .active_session()
-                                            .map(|s| s.messages.clone())
-                                            .unwrap_or_default()
-                                    } else {
-                                        Vec::new()
-                                    };
-                                    if let Some(chat) = app.get_chat_mut() {
-                                        chat.update_from_messages(&messages, sid);
-                                    }
+                            let outcome = agent_arc.lock().await.compact_session().await;
+                            // Reload active session messages into the ChatPanel display.
+                            let sid = app.session_id.clone();
+                            let messages = if let Some(agent_arc) = &app.agent {
+                                let guard = agent_arc.lock().await;
+                                guard
+                                    .session_manager().lock().await
+                                    .active_session()
+                                    .map(|s| s.messages.clone())
+                                    .unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
+                            if let Some(chat) = app.get_chat_mut() {
+                                chat.update_from_messages(&messages, sid);
+                            }
+                            match outcome {
+                                oben_agent::compact::CompactOutcome::Compressed { .. } => {
                                     app.show_toast(
-                                        "Session context compressed.",
+                                        "Session context compressed successfully.",
                                         ToastType::Success,
                                     );
                                 }
-                                Err(e) => {
+                                oben_agent::compact::CompactOutcome::Ineffective { .. } => {
                                     app.show_toast(
-                                        format!("Compact failed: {e}"),
-                                        ToastType::Error,
+                                        "Compaction skipped: no savings (all messages protected in head/tail zones).",
+                                        ToastType::Info,
                                     );
-                                    tracing::error!("Context compression failed: {e}");
+                                }
+                                oben_agent::compact::CompactOutcome::AlreadyCompact => {
+                                    app.show_toast(
+                                        "Session context already within budget.",
+                                        ToastType::Info,
+                                    );
+                                }
+                                oben_agent::compact::CompactOutcome::NoMiddleMessages { .. } => {
+                                    app.show_toast(
+                                        "Compaction skipped: all messages in protected head/tail zones.",
+                                        ToastType::Info,
+                                    );
                                 }
                             }
                         } else {
