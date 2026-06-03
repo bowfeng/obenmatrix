@@ -841,12 +841,12 @@ impl SessionDB {
                 params![session_id],
                 |row| row.get(0),
             )?;
-            eprintln!("DB::save_new_messages: session_id={} total_msgs={}", session_id, total);
+            tracing::debug!("DB::save_new_messages: session_id={} total_msgs={}", session_id, total);
             conn.execute(
                 "UPDATE sessions SET message_count = ? WHERE id = ?",
                 params![total, session_id],
             )?;
-            eprintln!("DB::save_new_messages: updated sessions.message_count to {}", total);
+            tracing::debug!("DB::save_new_messages: updated sessions.message_count to {}", total);
             Ok(())
         })
     }

@@ -6,13 +6,13 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use std::time::Instant;
 use textwrap::wrap;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::widgets::style::Theme;
+
 
 /// Text area state tracked by the input bar widget.
 pub struct InputState {
@@ -134,11 +134,11 @@ impl InputBarWidget {
     /// Render the input bar widget.
     ///
     /// Returns the height of the rendered block in rows (including border).
-    pub fn render(&self, frame: &mut Frame, area: Rect, state: &InputState, theme: &Theme) -> u16 {
+    pub fn render(&self, frame: &mut Frame, area: Rect, state: &InputState, palette: &ratatui_themes::ThemePalette) -> u16 {
         let text_cols = (area.width as usize).saturating_sub(2).max(1);
 
         // Compute wrapped lines for cursor pos + height calc.
-        let input_lines = self.build_text_lines(&state.text, text_cols, theme);
+        let input_lines = self.build_text_lines(&state.text, text_cols, palette);
         let total_lines = input_lines.len() as u16;
         let visible_height = if total_lines > 0 {
             area.height.saturating_sub(2)
@@ -151,7 +151,11 @@ impl InputBarWidget {
             0
         };
 
-        let block = Block::default().borders(Borders::ALL).title(" Typing.. ");
+        // Clean input bar: no title, rounded border, subtle style.
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(palette.muted));
 
         block.render(area, frame.buffer_mut());
         let inner_inner = Rect::new(
@@ -172,14 +176,14 @@ impl InputBarWidget {
             inner_inner.y + screen_row,
         ));
 
-        // Streaming indicator.
+        // Streaming indicator — styled badge on the top-right of the input bar.
         if state.streaming {
-            self.render_streaming_indicator(frame, area, theme);
+            self.render_streaming_indicator(frame, area, palette);
         }
 
         // Tab completion overlay.
         if !state.completion_items.is_empty() {
-            self.render_tab_completion(frame, area, state, theme);
+            self.render_tab_completion(frame, area, state, palette);
         }
 
         area.height
@@ -470,7 +474,7 @@ impl InputBarWidget {
         }
     }
 
-    fn build_text_lines(&self, text: &str, text_cols: usize, _theme: &Theme) -> Vec<Line<'static>> {
+    fn build_text_lines(&self, text: &str, text_cols: usize, _palette: &ratatui_themes::ThemePalette) -> Vec<Line<'static>> {
         if text.is_empty() {
             return vec![Line::from(Span::styled(
                 "Type '/' for commands. Type your message and press Enter.",
@@ -492,13 +496,13 @@ impl InputBarWidget {
             .collect()
     }
 
-    fn render_streaming_indicator(&self, frame: &mut Frame, area: Rect, _theme: &Theme) {
+    fn render_streaming_indicator(&self, frame: &mut Frame, area: Rect, palette: &ratatui_themes::ThemePalette) {
         let text = " \u{23F3} Streaming... ";
         let w = text.len() as u16 + 2;
         let indicator_area = Rect::new(area.right().saturating_sub(w + 2), area.y + 1, w, 1);
         let para = Paragraph::new(Line::from(Span::styled(
             text,
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(palette.info).add_modifier(Modifier::BOLD),
         )));
         frame.render_widget(para, indicator_area);
     }
@@ -508,7 +512,7 @@ impl InputBarWidget {
         frame: &mut Frame,
         area: Rect,
         state: &InputState,
-        _theme: &Theme,
+        palette: &ratatui_themes::ThemePalette,
     ) {
         let max_lines = 8;
         let items = &state.completion_items[..state.completion_items.len().min(max_lines)];
@@ -521,13 +525,13 @@ impl InputBarWidget {
                     Line::from(Span::styled(
                         format!(" \u{25B8} {} ({})", item.cmd, item.desc),
                         Style::default()
-                            .fg(Color::Yellow)
+                            .fg(palette.info)
                             .add_modifier(Modifier::BOLD),
                     ))
                 } else {
                     Line::from(Span::styled(
                         format!("   {} ({})", item.cmd, item.desc),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(palette.muted),
                     ))
                 }
             })

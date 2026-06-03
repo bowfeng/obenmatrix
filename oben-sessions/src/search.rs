@@ -126,7 +126,7 @@ impl Search {
             let view = match view {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("get_anchored_view failed for {}: {}", hit.session_id, e);
+                    tracing::error!("get_anchored_view failed for {}: {}", hit.session_id, e);
                     continue;
                 }
             };

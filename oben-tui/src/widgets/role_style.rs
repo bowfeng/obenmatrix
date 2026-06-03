@@ -1,98 +1,66 @@
 //! Message style traits for role-based rendering.
 //!
-//! Each message role (User, Assistant, System, Tool) has a `MessageStyle` adapter
-//! that controls label, icon, and its semantic color hint. The renderer maps hints
-//! to `ThemePalette` fields at render time so runtime theme switching works.
+//! Each message role (User, Assistant, System, Tool) has a `RoleInfo` struct
+//! that controls label, icon, and theme-aware colors. Used by the bordered-block
+//! renderer in conversation.rs.
 
+use ratatui::prelude::Color;
 use std::borrow::Cow;
 
 use oben_models::MessageRole;
 
-/// Semantic color hint. Maps to a field on `ThemePalette` at render time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColorHint {
-    Success,
-    Info,
-    Accent,
-    Warning,
+/// Metadata for a message role, resolved from a theme palette.
+///
+/// Unlike the old `MessageStyle` trait which returned hardcoded colors,
+/// `RoleInfo` takes a palette and returns semantic colors from it.
+#[derive(Debug, Clone)]
+pub struct RoleInfo {
+    /// Role label for display (e.g. "User", "Assistant").
+    pub label: Cow<'static, str>,
+    /// Icon/emoji rendered before the label.
+    pub icon: Cow<'static, str>,
+    /// Header/title bar color derived from the palette.
+    pub header_color: Color,
+    /// Border color for the message block.
+    pub border_color: Color,
+    /// Whether this is a tool result (for compact styling).
+    pub is_tool: bool,
 }
 
-/// Trait implemented by each message role adapter.
-pub trait MessageStyle: Send + Sync + 'static {
-    /// Role label for the header separator (e.g. "User", "Assistant").
-    fn label(&self) -> Cow<'static, str>;
-
-    /// Icon prefix rendered before the label.
-    fn icon(&self) -> Cow<'static, str>;
-
-    /// Semantic color hint. The renderer maps this to a palette field from the
-    /// current theme so that runtime theme switching changes colors without
-    /// rebuilding message content.
-    fn color_hint(&self) -> ColorHint;
-}
-
-/// Adapter for the User role.
-pub struct UserRoleStyle;
-impl MessageStyle for UserRoleStyle {
-    fn label(&self) -> Cow<'static, str> {
-        "User".into()
-    }
-    fn icon(&self) -> Cow<'static, str> {
-        "\u{1F464}".into()
-    }
-    fn color_hint(&self) -> ColorHint {
-        ColorHint::Success
-    }
-}
-
-/// Adapter for the Assistant role.
-pub struct AssistantRoleStyle;
-impl MessageStyle for AssistantRoleStyle {
-    fn label(&self) -> Cow<'static, str> {
-        "Assistant".into()
-    }
-    fn icon(&self) -> Cow<'static, str> {
-        "\u{1F4AC}".into()
-    }
-    fn color_hint(&self) -> ColorHint {
-        ColorHint::Info
-    }
-}
-
-/// Adapter for the System role.
-pub struct SystemRoleStyle;
-impl MessageStyle for SystemRoleStyle {
-    fn label(&self) -> Cow<'static, str> {
-        "System".into()
-    }
-    fn icon(&self) -> Cow<'static, str> {
-        "\u{2699}".into()
-    }
-    fn color_hint(&self) -> ColorHint {
-        ColorHint::Accent
-    }
-}
-
-/// Adapter for the Tool role.
-pub struct ToolRoleStyle;
-impl MessageStyle for ToolRoleStyle {
-    fn label(&self) -> Cow<'static, str> {
-        "Tool".into()
-    }
-    fn icon(&self) -> Cow<'static, str> {
-        "\u{1F527}".into()
-    }
-    fn color_hint(&self) -> ColorHint {
-        ColorHint::Warning
-    }
-}
-
-/// Lookup the `MessageStyle` for a given `MessageRole`.
-pub fn get_style_for_role(role: &MessageRole) -> &'static dyn MessageStyle {
+/// Resolve role metadata from a theme palette.
+///
+/// Uses the palette's semantic colors (accent, success, warning, info, etc.)
+/// to produce theme-aware role colors. The same role always returns the same
+/// metadata for a given palette.
+pub fn role_info_for_role(role: &MessageRole, palette: &ratatui_themes::ThemePalette) -> RoleInfo {
     match role {
-        MessageRole::User => &UserRoleStyle,
-        MessageRole::Assistant => &AssistantRoleStyle,
-        MessageRole::System => &SystemRoleStyle,
-        MessageRole::Tool => &ToolRoleStyle,
+        MessageRole::User => RoleInfo {
+            label: "You".into(),
+            icon: "\u{276F}".into(), // ❯ right arrow (hermes-agent prompt symbol)
+            header_color: palette.success,
+            border_color: palette.success,
+            is_tool: false,
+        },
+        MessageRole::Assistant => RoleInfo {
+            label: "Assistant".into(),
+            icon: "\u{250A}".into(), // ┊ vertical bar (hermes-agent tool prefix)
+            header_color: palette.accent,
+            border_color: palette.accent,
+            is_tool: false,
+        },
+        MessageRole::System => RoleInfo {
+            label: "System".into(),
+            icon: "\u{00B7}".into(), // · centered dot
+            header_color: palette.muted,
+            border_color: palette.muted,
+            is_tool: false,
+        },
+        MessageRole::Tool => RoleInfo {
+            label: "Tool".into(),
+            icon: "\u{26A1}".into(), // ⚡ lightning bolt (hermes-agent tool symbol)
+            header_color: palette.muted,
+            border_color: palette.muted,
+            is_tool: true,
+        },
     }
 }

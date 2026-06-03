@@ -690,7 +690,7 @@ impl Agent {
 
 fn print_session_messages(messages: &[Message], max_show: usize) {
     if messages.is_empty() {
-        println!("(no messages)");
+        tracing::info!(message_count = 0, "(no messages)");
         return;
     }
     let show_count = messages.len().min(max_show);
@@ -704,8 +704,8 @@ fn print_session_messages(messages: &[Message], max_show: usize) {
             oben_models::MessageRole::Tool => "⚙️ tool",
         };
         let text = msg.content.to_text_ref().unwrap_or("<non-text>");
-        let display = if text.len() > 120 { format!("{}...", &text[..117]) } else { text.to_string() };
-        println!("  {} {}", role, display);
+        let text_display = if text.len() > 120 { format!("{}...", &text[..117]) } else { text.to_string() };
+        tracing::info!(role, display = %text_display, "message preview");
     }
-    if overflow > 0 { println!("  ... {} more messages", overflow); }
+    if overflow > 0 { tracing::info!(overflow, more_messages = true, "... more messages"); }
 }

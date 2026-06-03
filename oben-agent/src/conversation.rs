@@ -30,8 +30,8 @@ pub struct ChatCallbacks {
 impl ChatCallbacks {
     pub fn for_cli() -> Self {
         Self {
-            print_info: |msg: &str| println!("{}", msg),
-            print_prompt: || print!("> "),
+            print_info: |msg: &str| tracing::info!("{}", msg),
+            print_prompt: || tracing::trace!("> "),
             print_flush: || { let _ = std::io::stdout().flush(); },
             read_input: || {
                 let mut input = String::new();
@@ -41,7 +41,7 @@ impl ChatCallbacks {
                     Some(String::new())
                 }
             },
-            print_newline: || println!(),
+            print_newline: || tracing::info!("\n"),
             should_exit: |input: &str| input == "quit" || input == "exit",
         }
     }

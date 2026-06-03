@@ -83,18 +83,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     #[allow(unexpected_cfgs)]
     #[cfg(not(feature = "cli-wired"))]
     {
-        let log_dir = dirs::home_dir()
-            .map(|d| d.join(".obenalien/logs"))
-            .unwrap_or_else(|| std::path::PathBuf::from("./logs"));
-        let _ = std::fs::create_dir_all(&log_dir);
-        let datetime = chrono::Local::now().format("%Y%m%dT%H%M%S");
-        let log_path = log_dir.join(format!("oa-{datetime}.log"));
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)?;
-        let subscriber = tracing_subscriber::registry().with(layer().with_writer(log_file));
-        let _ = subscriber.try_init();
+        // Tracing already initialized by oben_utils::logging::init() in dispatch.rs
     }
 
     enable_raw_mode()?;
@@ -489,7 +478,7 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().fg(Color::Cyan).bold())
         .divider(" ")
         .select(panel_index)
-        .block(Block::default().style(Style::default().bg(Color::Gray)));
+        .block(Block::default().style(Style::default().bg(Color::Blue)));
     frame.render_widget(tabs, layout.header);
 
     if let Some(panel) = app.panels.get(&app.active_panel) {

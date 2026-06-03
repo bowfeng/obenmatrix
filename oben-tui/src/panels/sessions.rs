@@ -56,7 +56,7 @@ impl SessionsPanel {
 
     /// Empty fallback (no agent). Use new_shared() in production.
     pub fn new_empty() -> Self {
-        eprintln!("Warning: SessionsPanel::new_empty() should not be used in production");
+        tracing::warn!("Warning: SessionsPanel::new_empty() should not be used in production");
         panic!("Fatal: SessionsPanel requires an Agent reference");
     }
 
@@ -152,7 +152,7 @@ impl SessionsPanel {
 
     async fn load_preview(&mut self) {
         if self.filtered.is_empty() {
-            self.message_state.base_lines.clear();
+            self.message_state.message_entries.lock().unwrap().clear();
             return;
         }
         let session = match self.sessions.get(self.filtered[self.selected]) {
@@ -203,14 +203,33 @@ impl SessionsPanel {
                 Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             )));
         }
-        self.message_state.base_lines = lines;
+        // Populate entries for bordered-block rendering
+        let renderer = MessageRenderer::new();
+        let mut entries = Vec::new();
+        // Build a system message entry for metadata
+        for line in lines.iter() {
+            let body_lines = vec![crate::widgets::message_renderer::StyledLine {
+                content: line.clone(),
+                role_color: None,
+            }];
+            entries.push(crate::widgets::message_renderer::MessageRenderEntry {
+                role: oben_models::MessageRole::System,
+                body_lines,
+                is_tool_result: false,
+                tool_calls: Vec::new(),
+            });
+        }
+        // Also add actual message entries
+        for msg in &session.messages {
+            entries.push(renderer.render_entry(msg));
+        }
+        self.message_state.message_entries.lock().unwrap().clear();
+        self.message_state.message_entries.lock().unwrap().extend(entries);
         self.message_state.scroll_to_bottom = true;
         // right_lines is read by the tui-widget-list builder closure in render_message_view
         if let Ok(mut rl) = self.right_lines.lock() {
             rl.clear();
-        }
-        if let Ok(mut rl) = self.right_lines.lock() {
-            rl.extend(self.message_state.base_lines.iter().cloned());
+            rl.extend(lines);
         }
     }
 
@@ -579,7 +598,7 @@ impl SessionsPanel {
     }
 
     fn render_message_view(&self, frame: &mut Frame, area: Rect) {
-        if self.filtered.is_empty() || self.message_state.base_lines.is_empty() {
+        if self.filtered.is_empty() || self.message_state.message_entries.lock().unwrap().is_empty() {
             let block = Block::default().borders(Borders::ALL).title(" Info ");
             frame.render_widget(&block, area);
             let inner = block.inner(area);
@@ -621,6 +640,7 @@ impl SessionsPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oben_sessions::SessionManager;
 
     fn make_test_dir() -> std::path::PathBuf {
         tempfile::tempdir().unwrap().path().join("sessions")

@@ -4,13 +4,11 @@ use super::{KeyAction, Panel};
 use crate::widgets::input_bar::{InputBarWidget, InputBarResult, InputState};
 use crate::widgets::conversation::{ConversationWidget, ConversationState};
 use crate::widgets::message_renderer::MessageRenderer;
-use crate::widgets::style::Theme;
 use crate::turn::turn_state;
 use crossterm::event::KeyEvent;
 use oben_models::Message;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::ScrollbarState;
 use std::sync::atomic::Ordering;
 
 /// Chat panel — message history, input bar, and streaming control.
@@ -36,6 +34,21 @@ impl ChatPanel {
             renderer: MessageRenderer::new(),
             message_display: ConversationWidget,
         }
+    }
+
+    /// Create a chat panel with a specific theme from config.
+    pub fn new_with_theme(session_name: Option<String>, _messages: Option<Vec<Message>>, theme: &str) -> Self {
+        let mut panel = Self::new(session_name, _messages);
+        panel.renderer.set_theme_from_str(theme);
+        panel
+    }
+
+    /// Cycle to the next theme, returning the new theme name for persistence.
+    pub fn cycle_theme(&mut self) -> String {
+        let current = self.renderer.current_theme();
+        let next = current.next();
+        self.renderer.set_theme(next);
+        next.slug().to_string()
     }
 
     /// Update message display state from session messages.
@@ -94,16 +107,9 @@ impl ChatPanel {
         self.message_state.turn_state_ref = Some(turn_state);
     }
 
-    /// Toggle theme by pressing Ctrl+T.
-    pub fn cycle_theme(&mut self) {
-        let current = self.renderer.current_theme();
-        let next = current.next();
-        self.renderer.set_theme(next);
-    }
-
     /// Clear all messages from the display and reset the message count.
     pub fn clear_display(&mut self) {
-        self.message_state.base_lines.clear();
+        self.message_state.message_entries.lock().unwrap().clear();
         self.message_state.scroll_to_bottom = true;
         self.message_count = 0;
         self.session_name = None;
@@ -111,7 +117,8 @@ impl ChatPanel {
 
     /// Render the input bar widget.
     fn render_input_bar(&self, frame: &mut Frame, area: Rect, state: &InputState) {
-        InputBarWidget.render(frame, area, state, &Theme::default());
+        let palette = self.renderer.current_palette();
+        InputBarWidget.render(frame, area, state, &palette);
     }
 }
 
@@ -132,9 +139,11 @@ impl Panel for ChatPanel {
         ])
         .split(area);
 
+        let palette = self.renderer.current_palette();
+
         // Message display widget (pass streaming state from ChatPanel)
         self.message_display
-            .render(frame, chunks[0], &self.message_state, &Theme::default(), self.streaming);
+            .render(frame, chunks[0], &self.message_state, &palette, self.streaming);
 
         // Input bar widget
         self.render_input_bar(frame, chunks[1], &self.input);
@@ -166,12 +175,18 @@ impl Panel for ChatPanel {
         match event.kind {
             MouseEventKind::ScrollDown => {
                 self.message_state.scroll_to_bottom = false;
+                let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 self.message_state.user_scroll_offset.fetch_add(scroll_step, Ordering::SeqCst);
+                let new = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
+                tracing::info!("[mouse] ScrollDown: old_offset={} new_offset={} scroll_to_bottom=false", old, new);
                 true
             }
             MouseEventKind::ScrollUp => {
                 self.message_state.scroll_to_bottom = false;
+                let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 self.message_state.user_scroll_offset.fetch_sub(scroll_step, Ordering::SeqCst);
+                let new = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
+                tracing::info!("[mouse] ScrollUp: old_offset={} new_offset={} scroll_to_bottom=false", old, new);
                 true
             }
             _ => false,

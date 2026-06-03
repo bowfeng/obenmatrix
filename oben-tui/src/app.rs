@@ -415,9 +415,11 @@ impl App {
 
     pub async fn create_chat_panel(&mut self) -> Result<()> {
         tracing::info!("[panel] Creating ChatPanel");
+        let theme = self.config.display.theme.clone();
+        tracing::info!("[panel] Using theme: {}", theme);
         self.panels.insert(
             PanelId::Chat,
-            Box::new(ChatPanel::new(None, None)),
+            Box::new(ChatPanel::new_with_theme(None, None, &theme)),
         );
         tracing::info!("[panel] ChatPanel inserted, panels={:?}", self.panels.keys().collect::<Vec<_>>());
         Ok(()) 
@@ -503,7 +505,16 @@ impl App {
             }
             crossterm::event::KeyCode::Char('t') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                 if let Some(chat) = self.get_chat_mut() {
-                    chat.cycle_theme();
+                    let new_theme = chat.cycle_theme();
+                    self.config.display.theme = new_theme.clone();
+                    // Persist to disk (best-effort, don't block UI)
+                    if let Err(e) = self.config.save() {
+                        tracing::warn!("[theme] Failed to save theme to config: {}", e);
+                    }
+                    let display_name: String = new_theme.parse::<ratatui_themes::ThemeName>()
+                        .map(|t| t.display_name().to_string())
+                        .unwrap_or(new_theme);
+                    self.show_toast(format!("Theme: {}", display_name), ratatui_toaster::ToastType::Info);
                 }
             }
             _ => {}
