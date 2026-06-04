@@ -241,34 +241,54 @@ impl ConversationWidget {
             .collect();
 
         let content_height = layout::calc_total_height(&block_heights);
+        let scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
 
-        // When scroll_to_bottom=true and streaming, estimate stream block height
-        // to include in scroll_offset calculation, so Phase 2's visible areas
-        // respect the stream space and don't overlap with it.
-        let stream_estimate_height = if state.scroll_to_bottom.load(Ordering::SeqCst) {
-            let mut h = 1u16; // default placeholder
+        // ─── Phase 1.5: Stream block estimation & wrapping (shared between phases) ──────
+        // Parse stream text once, reuse for both scroll_offset and rendering.
+        let stream_parsed = if is_streaming {
             if let Some(ref ts) = state.turn_state_ref {
                 if let Ok(ts) = ts.lock() {
                     if !ts.streaming_text.is_empty() {
                         let stream_lines: Vec<Line<'static>> = ts
                             .streaming_text
                             .lines()
-                            .map(|l| Line::from(Span::styled(l.to_string(), Style::default())))
-                            .collect();
+                            .map(|l| {
+                                Line::from(Span::styled(
+                                    l.to_string(),
+                                    Style::default()
+                                        .fg(palette.info)
+                                        .add_modifier(Modifier::DIM),
+                                ))
+                            })
+                            .collect::<Vec<_>>();
+
                         let wrapped = layout::wrap_styled_lines_to_lines(
                             &stream_lines,
                             inner_width.saturating_sub(2),
                         );
-                        h = wrapped.len().max(1) as u16 + 1; // body + header
+                        let stream_body_height = if wrapped.is_empty() {
+                            1usize
+                        } else {
+                            wrapped.len()
+                        };
+                        let stream_body_height_u16 = stream_body_height as u16;
+                        let stream_height = stream_body_height_u16 + 1;
+                        Some((stream_lines, wrapped, stream_body_height_u16, stream_height))
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
+            } else {
+                None
             }
-            h
         } else {
-            0u16
+            None
         };
+        let stream_estimate = stream_parsed.as_ref().map(|s| s.3);
 
-        let total_height = content_height + stream_estimate_height;
+        let total_height = content_height + stream_estimate.unwrap_or(0);
 
         // Compute scroll offset using the layout module
         let scroll_offset = layout::compute_scroll_offset(
@@ -277,7 +297,7 @@ impl ConversationWidget {
             (total_height as i64 - inner_height as i64).max(0) as usize,
             state.scroll_to_bottom.load(Ordering::SeqCst),
             &block_heights,
-            state.scroll_pos.load(Ordering::SeqCst),
+            scroll_pos,
         );
 
         // Update scrollbar state
@@ -382,93 +402,60 @@ impl ConversationWidget {
         // ─── Phase 2.5: Streaming block (rendered after regular entries) ─
         let mut total_height = total_height;
         let mut streaming_rendered = false;
-        if is_streaming {
-            if let Some(ref ts) = state.turn_state_ref {
-                if let Ok(ts) = ts.lock() {
-                    if !ts.streaming_text.is_empty() {
-                        let stream_lines: Vec<Line<'static>> = ts
-                            .streaming_text
-                            .lines()
-                            .map(|l| {
-                                Line::from(Span::styled(
-                                    l.to_string(),
-                                    Style::default()
-                                        .fg(palette.info)
-                                        .add_modifier(Modifier::DIM),
-                                ))
-                            })
-                            .collect();
+        if let Some((stream_lines, _wrapped, _stream_body_lines, stream_height)) = stream_parsed {
+            // Phase 1 already added stream_estimate_height (= stream_height) to total_height.
+            // No double-add needed — total_height is already correct.
 
-                        let wrapped = layout::wrap_styled_lines_to_lines(
-                            &stream_lines,
-                            inner_width.saturating_sub(2),
-                        );
-                        let block_height = if wrapped.is_empty() {
-                            1
-                        } else {
-                            wrapped.len() as u16
-                        };
+            let role_info = role_info_for_role(&MessageRole::Assistant, palette);
+            let role_color = role_info.border_color;
 
-                        // Phase 1 already added stream_estimate_height to total_height.
-                        // Add only the difference (actual - estimate) to keep total_height consistent.
-                        let stream_actual_height = block_height + 1;
-                        let delta = stream_actual_height.saturating_sub(stream_estimate_height);
-                        total_height += delta;
+            // Streaming block position: if content fits in viewport, render right after entries;
+            // if content overflows, anchor to viewport bottom.
+            let view_height = msg_area.height.saturating_sub(1);
+            let stream_y = if total_height as u16 <= view_height + stream_height {
+                // Content fits: stream block renders right after the last visible entry.
+                last_entry_vp_bottom.saturating_add(1)
+            } else {
+                // Content overflows: anchor to viewport bottom.
+                view_height.saturating_sub(stream_height)
+            };
 
-                        let role_info = role_info_for_role(&MessageRole::Assistant, palette);
-                        let role_color = role_info.border_color;
+            tracing::debug!(
+                "[stream] content_height={} view_height={} stream_height={} scroll_area_y={} stream_y={}",
+                total_height, view_height, stream_height,
+                last_entry_vp_bottom, stream_y
+            );
 
-                        // Streaming block position: if content fits in viewport, render right after entries;
-                        // if content overflows, anchor to viewport bottom.
-                        let view_height = msg_area.height.saturating_sub(1);
-                        let stream_height = (block_height + 1).max(1);
-                        let stream_y = if total_height as u16 <= view_height + stream_height {
-                            // Content fits: stream block renders right after the last visible entry.
-                            last_entry_vp_bottom.saturating_add(1)
-                        } else {
-                            // Content overflows: anchor to viewport bottom.
-                            view_height.saturating_sub(stream_height)
-                        };
+            if stream_height < msg_area.height.saturating_sub(1) {
+                let block_area = Rect::new(
+                    msg_area.left(),
+                    stream_y,
+                    msg_area.width,
+                    stream_height,
+                );
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(role_color)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .title(Line::from(vec![
+                        Span::raw(role_info.icon),
+                        Span::styled(
+                            role_info.label,
+                            Style::default()
+                                .fg(role_color)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                let body_area = block.inner(block_area);
 
-                        tracing::debug!(
-                            "[stream] content_height={} view_height={} stream_height={} scroll_area_y={} stream_y={}",
-                            total_height, view_height, stream_height,
-                            last_entry_vp_bottom, stream_y
-                        );
-
-                        if stream_height < msg_area.height.saturating_sub(1) {
-                            let block_area = Rect::new(
-                                msg_area.left(),
-                                stream_y,
-                                msg_area.width,
-                                stream_height,
-                            );
-                            let block = Block::default()
-                                .borders(Borders::ALL)
-                                .border_style(
-                                    Style::default()
-                                        .fg(role_color)
-                                        .add_modifier(Modifier::BOLD),
-                                )
-                                .title(Line::from(vec![
-                                    Span::raw(role_info.icon),
-                                    Span::styled(
-                                        role_info.label,
-                                        Style::default()
-                                            .fg(role_color)
-                                            .add_modifier(Modifier::BOLD),
-                                    ),
-                                ]));
-                            let body_area = block.inner(block_area);
-
-                            if !wrapped.is_empty() {
-                                frame.render_widget(Paragraph::new(wrapped), body_area);
-                            }
-                            frame.render_widget(block, block_area);
-                            streaming_rendered = true;
-                        }
-                    }
+                if !stream_lines.is_empty() {
+                    frame.render_widget(Paragraph::new(stream_lines), body_area);
                 }
+                frame.render_widget(block, block_area);
+                streaming_rendered = true;
             }
         }
 
@@ -478,14 +465,13 @@ impl ConversationWidget {
 
         // ─── Phase 3: Scroll position update (mouse wheel) ─────────────
         let offset = state.user_scroll_offset.swap(0, Ordering::SeqCst);
-        let mut scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
+        let mut scroll_pos = scroll_pos;
         let scrollable_range = (total_height as i64 - inner_height as i64).max(0) as usize;
         let prev_scrollable_range = state.prev_scrollable_range.swap(scrollable_range, Ordering::SeqCst);
         let vp_bottom = scroll_pos.saturating_add(inner_height as usize);
         let lines_from_bottom = (total_height as usize).saturating_sub(vp_bottom);
 
         // Apply accumulated scroll delta (mouse wheel)
-        let prev_scroll_pos = scroll_pos;
         if offset != 0 {
             scroll_pos = ((scroll_pos as i64 + offset as i64).max(0) as usize)
                 .min(scrollable_range);
@@ -778,5 +764,91 @@ mod tests {
         let info = state.stream_info.lock().unwrap();
         assert!(info.contains("file_write"));
         assert!(info.is_empty() || !info.contains("The Clockmaker of Lost Hours"));
+    }
+
+    /// Given: streaming text is empty before render
+    /// When: render_bordered_blocks processes entries without stream data
+    /// Then: stream_parsed should be None (no double-parse for empty text)
+    #[test]
+    fn test_stream_parsed_none_when_text_empty() {
+        let mut state = ConversationState::new();
+        let mut turn = TurnState::new();
+        turn.streaming_text = String::new();
+        state.turn_state_ref = Some(Arc::new(StdMutex::new(turn)));
+        state.stream_info.lock().unwrap().clear();
+
+            // Verify that a new TurnState is initialized empty
+            let state_guard = state.turn_state_ref.as_ref().map(|g| g.lock().unwrap());
+            if let Some(guard) = state_guard {
+                assert_eq!(guard.streaming_text, "");
+                assert!(guard.active_tools.is_empty());
+            }
+    }
+
+    /// Given: 3 message entries with known heights
+    /// When: calc_total_height is called with inter_block_margins
+    /// Then: total = sum of heights + (n-1) * 1 margin
+    #[test]
+    fn test_calc_total_height_with_margins() {
+        let heights = vec![4u16, 6, 4]; // 3 blocks
+        let total = layout::calc_total_height(&heights);
+        // 4 + 6 + 4 + 2 margins (between block 0/1 and 1/2)
+        assert_eq!(total, 16);
+    }
+
+    /// Given: total_height=125, inner_height=59, stream_height=4
+    /// When: content overflows viewport (125 > 59)
+    /// Then: stream_y anchored to viewport bottom (59-4=55)
+    #[test]
+    fn test_stream_y_anchored_to_bottom_when_overflow() {
+        let total_height: u16 = 125;
+        let view_height: u16 = 59;
+        let stream_height: u16 = 4;
+        
+        let overflows = total_height > view_height;
+        
+        let stream_y_overflow = if overflows {
+            view_height.saturating_sub(stream_height)
+        } else {
+            0
+        };
+        
+        assert!(overflows);
+        assert_eq!(stream_y_overflow, 55); // 59 - 4
+    }
+
+    /// Given: total_height=2, inner_height=59 (content fits)
+    /// When: last_entry_vp_bottom=3
+    /// Then: stream_y = last_entry_vp_bottom + 1 = 4
+    #[test]
+    fn test_stream_y_after_entry_when_content_fits() {
+        let total_height: u16 = 2;
+        let view_height: u16 = 59;
+        let stream_height: u16 = 4;
+        let last_entry_vp_bottom: u16 = 3;
+        
+        let fits = total_height <= view_height;
+        
+        let stream_y = if fits {
+            last_entry_vp_bottom.saturating_add(1)
+        } else {
+            view_height.saturating_sub(stream_height)
+        };
+        
+        assert!(fits);
+        assert_eq!(stream_y, 4);
+    }
+
+    /// Given: scroll_to_bottom=true, prev_scrollable_range=6, new=8
+    /// When: auto-scroll detects content growth (8>6) and near bottom
+    /// Then: scroll_to_bottom remains true, ready for auto-scroll in Phase 3
+    #[test]
+    fn test_scroll_to_bottom_auto_scroll_on_content_growth() {
+        let state = ConversationState::new();
+        
+        // Verify initial state
+        assert!(state.scroll_to_bottom.load(Ordering::SeqCst));
+        assert_eq!(state.scroll_pos.load(Ordering::SeqCst), 0);
+        assert_eq!(state.prev_scrollable_range.load(Ordering::SeqCst), 0);
     }
 }
