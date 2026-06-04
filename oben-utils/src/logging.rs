@@ -22,6 +22,8 @@ pub fn init(level: tracing::Level) {
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
+        .with_file(true)
+        .with_line_number(true)
         .with_ansi(false)
         .with_writer(log_file);
 
