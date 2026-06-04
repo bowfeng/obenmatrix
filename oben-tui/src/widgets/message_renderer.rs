@@ -330,7 +330,6 @@ pub fn render_message_entry(
         body_lines,
         tool_calls,
     }
-    .with_trailing_blank()
 }
 
 /// Message renderer with runtime theme support and inline markdown rendering.

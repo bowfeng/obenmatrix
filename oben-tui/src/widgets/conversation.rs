@@ -249,8 +249,8 @@ impl ConversationWidget {
             if let Some(ref ts) = state.turn_state_ref {
                 if let Ok(ts) = ts.lock() {
                     if !ts.streaming_text.is_empty() {
-                        let stream_lines: Vec<Line<'static>> = ts
-                            .streaming_text
+                        let raw = ts.streaming_text.trim_start_matches(|c: char| c.is_whitespace());
+                        let stream_lines: Vec<Line<'static>> = raw
                             .lines()
                             .map(|l| {
                                 Line::from(Span::styled(
@@ -271,9 +271,9 @@ impl ConversationWidget {
                         } else {
                             wrapped.len()
                         };
-                        let stream_body_height_u16 = stream_body_height as u16;
-                        let stream_height = stream_body_height_u16 + 1;
-                        Some((stream_lines, wrapped, stream_body_height_u16, stream_height))
+                        let stream_height = stream_body_height as u16 + layout::BODY_HEIGHT_ADJUSTER;
+                        Some((stream_lines, wrapped, stream_body_height, stream_height))
+
                     } else {
                         None
                     }
