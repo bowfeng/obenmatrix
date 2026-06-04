@@ -111,6 +111,61 @@ impl Agent {
         Ok(agent)
     }
 
+    /// Create a minimal Agent for testing. Does NOT call real transport or LLMs.
+    pub async fn new_for_test() -> Self {
+        use crate::fallback::FallbackChain;
+        use oben_models::providers::TransportProvider;
+        use oben_models::{CallMode, TransportResponse};
+
+        // A no-op transport stub
+        struct TestTransport;
+        #[::async_trait::async_trait]
+        impl TransportProvider for TestTransport {
+            fn name(&self) -> &str { "test" }
+            async fn chat(
+                &self,
+                _messages: &[Message],
+                _mode: &CallMode,
+            ) -> Result<TransportResponse> {
+                Ok(TransportResponse {
+                    text: String::new(),
+                    tool_calls: Vec::new(),
+                    tokens_used: None,
+                })
+            }
+            async fn stream_chat(
+                &self,
+                _messages: &[Message],
+                _mode: &CallMode,
+                _callback: StreamDeltaCallback,
+            ) -> Result<TransportResponse> {
+                Ok(TransportResponse {
+                    text: String::new(),
+                    tool_calls: Vec::new(),
+                    tokens_used: None,
+                })
+            }
+        }
+
+        let session_manager = Arc::new(Mutex::new(SessionManager::new().unwrap()));
+        let transport = Arc::new(TestTransport) as Arc<dyn TransportProvider + Send + Sync>;
+        let tools = Arc::new(oben_tools::ToolRegistry::new());
+
+        Self {
+            transport,
+            tools,
+            context_engine: Box::new(crate::compact_context::CompactContextEngine::new()),
+            call_mode: None,
+            session_manager,
+            interrupt_state: Arc::new(InterruptState::new()),
+            fallback_chain: FallbackChain::new(Vec::new()),
+            callbacks: AgentCallbacks::default(),
+            prompt_cache: SystemPromptCache::new(),
+            dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
+            nudge_config: NudgeConfig::default(),
+        }
+    }
+
     async fn eager_load_active_session(&mut self) {
         let sid = self
             .session_manager

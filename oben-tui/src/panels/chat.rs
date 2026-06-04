@@ -65,7 +65,7 @@ impl ChatPanel {
         self.session_name = session_name;
         self.message_count = messages.len();
         self.streaming = false;
-        self.message_state.scroll_to_bottom = true;
+        self.message_state.scroll_to_bottom.store(true, Ordering::SeqCst);
     }
 
     /// Set session data during panel activation.
@@ -117,7 +117,7 @@ impl ChatPanel {
     /// Clear all messages from the display and reset the message count.
     pub fn clear_display(&mut self) {
         self.message_state.message_entries.lock().unwrap().clear();
-        self.message_state.scroll_to_bottom = true;
+        self.message_state.scroll_to_bottom.store(true, Ordering::SeqCst);
         self.message_count = 0;
         self.session_name = None;
     }
@@ -181,7 +181,7 @@ impl Panel for ChatPanel {
         let scroll_step: i32 = 3;
         match event.kind {
             MouseEventKind::ScrollDown => {
-                self.message_state.scroll_to_bottom = false;
+                self.message_state.scroll_to_bottom.store(false, Ordering::SeqCst);
                 let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 self.message_state
                     .user_scroll_offset
@@ -195,7 +195,7 @@ impl Panel for ChatPanel {
                 true
             }
             MouseEventKind::ScrollUp => {
-                self.message_state.scroll_to_bottom = false;
+                self.message_state.scroll_to_bottom.store(false, Ordering::SeqCst);
                 let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 self.message_state
                     .user_scroll_offset

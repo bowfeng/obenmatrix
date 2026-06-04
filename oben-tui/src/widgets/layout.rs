@@ -157,13 +157,9 @@ pub fn compute_scroll_offset(
 /// Calculate which blocks are visible in the current scroll position,
 /// and return their Rect areas.
 ///
-/// Returns a vector of (entry_index, Rect) pairs for blocks that:
-///   - Overlap with the visible area [scroll_offset, scroll_offset + viewport_height)
-///   - Start before msg_area_bottom
-///
-/// The visible area in content-coordinate space is determined by scroll_offset
-/// (the top line shown) and the viewport height (how many lines are visible).
-/// A block is visible if its [y, y + block_height) overlaps with the viewport.
+/// scroll_offset is measured as content lines from the TOP (0-based).
+/// entry_heights contains block heights in line units (NO margin).
+/// Inter-block margins are tracked per-block via `block_line`.
 pub fn calc_visible_areas(
     msg_area_top: u16,
     msg_area_bottom: u16,
@@ -173,40 +169,43 @@ pub fn calc_visible_areas(
     entry_heights: &[u16],
 ) -> Vec<(usize, Rect)> {
     let mut areas = Vec::new();
-    let mut y: usize = 0;
+    let mut block_line: usize = 0;
+    let inner_height = (msg_area_bottom - msg_area_top) as usize;
+    let viewable_end = scroll_offset.saturating_add(inner_height);
 
     for (idx, &block_height) in entry_heights.iter().enumerate() {
-        let block_total_height: usize = (block_height + INTER_BLOCK_MARGIN) as usize;
-        let y_end: usize = y + block_total_height;
+        let block_start = block_line;
+        let block_end = block_start + block_height as usize;
+        block_line = block_end + (if idx > 0 { INTER_BLOCK_MARGIN as usize } else { 0 });
 
-        // Skip if block is completely above the scroll position
-        if y_end <= scroll_offset {
-            y = y.saturating_add(block_total_height);
+        // Skip block if completely outside viewport
+        if block_end <= scroll_offset || block_start >= viewable_end {
             continue;
         }
 
-        // Compute viewport-relative offset from scroll position (content lines relative to viewport top)
-        let vp_offset: usize = y.saturating_sub(scroll_offset);
-
-        // Absolute Y in terminal coordinates = msg_area_top + viewport-relative offset
-        let abs_y: usize = msg_area_top as usize + vp_offset;
-
-        // Stop if block starts at or past the viewport bottom
-        if abs_y >= msg_area_bottom as usize {
-            break;
+        // Visible y in content coords = how much of block is below scroll line
+        let visible_bottom = block_end.min(viewable_end) - block_start.max(scroll_offset);
+        if visible_bottom == 0 {
+            continue;
         }
 
+        // VP-relative y: block's position minus what we scrolled off
+        let vp_y = block_start.saturating_sub(scroll_offset);
+        let abs_y = msg_area_top + (vp_y as u16).min(inner_height as u16);
+
         // Clamp height to fit within viewport
-        let available_height: usize = (msg_area_bottom as usize).saturating_sub(abs_y);
-        let actual_height: u16 = (block_height as usize).min(available_height).max(1) as u16;
+        let visible_height = (visible_bottom as u16).min((msg_area_bottom - abs_y).max(1));
+
+        tracing::debug!(
+            "block[{}] start={} end={} vp_y={} abs_y={} height={} (inner_y=[{}..{}])",
+            idx, block_start, block_end, vp_y, abs_y, visible_height,
+            msg_area_top, msg_area_bottom
+        );
 
         areas.push((
             idx,
-            Rect::new(msg_area_left, abs_y as u16, msg_area_width, actual_height),
+            Rect::new(msg_area_left, abs_y, msg_area_width, visible_height),
         ));
-
-        // Advance to next block (absolute content coordinate)
-        y = y.saturating_add(block_total_height);
     }
 
     areas

@@ -9,7 +9,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{
     Block, BorderType, Borders, Paragraph, ScrollbarState,
 };
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::turn::turn_state::TurnState;
@@ -29,13 +29,15 @@ pub enum BlockType<'a> {
 /// State for the message display widget.
 pub struct ConversationState {
     pub scroll_state: Arc<StdMutex<ScrollbarState>>,
-    pub scroll_to_bottom: bool,
+    pub scroll_to_bottom: Arc<AtomicBool>,
     /// Persisted scroll position across frames (AtomicUsize so render(&self) can update it).
     pub scroll_pos: Arc<AtomicUsize>,
     pub stream_info: Arc<StdMutex<String>>,
     pub turn_state_ref: Option<Arc<StdMutex<TurnState>>>,
     /// Accumulated scroll delta from user mouse scroll. Reset by render.
     pub user_scroll_offset: Arc<AtomicI32>,
+    /// Tracks content line count from previous frame — detects if content has grown.
+    pub prev_scrollable_range: Arc<AtomicUsize>,
     /// Selection start/end as (visual_line_idx, char_offset).
     pub selection_start: Option<(usize, usize)>,
     pub selection_end: Option<(usize, usize)>,
@@ -47,11 +49,12 @@ impl ConversationState {
     pub fn new() -> Self {
         Self {
             scroll_state: Arc::new(StdMutex::new(ScrollbarState::new(0))),
-            scroll_to_bottom: true,
+            scroll_to_bottom: Arc::new(AtomicBool::new(true)),
             scroll_pos: Arc::new(AtomicUsize::new(0)),
             stream_info: Arc::new(StdMutex::new(String::new())),
             turn_state_ref: None,
             user_scroll_offset: Arc::new(AtomicI32::new(0)),
+            prev_scrollable_range: Arc::new(AtomicUsize::new(0)),
             selection_start: None,
             selection_end: None,
             message_entries: Arc::new(StdMutex::new(Vec::new())),
@@ -237,14 +240,42 @@ impl ConversationWidget {
             })
             .collect();
 
-        let total_height = layout::calc_total_height(&block_heights);
+        let content_height = layout::calc_total_height(&block_heights);
+
+        // When scroll_to_bottom=true and streaming, estimate stream block height
+        // to include in scroll_offset calculation, so Phase 2's visible areas
+        // respect the stream space and don't overlap with it.
+        let stream_estimate_height = if state.scroll_to_bottom.load(Ordering::SeqCst) {
+            let mut h = 1u16; // default placeholder
+            if let Some(ref ts) = state.turn_state_ref {
+                if let Ok(ts) = ts.lock() {
+                    if !ts.streaming_text.is_empty() {
+                        let stream_lines: Vec<Line<'static>> = ts
+                            .streaming_text
+                            .lines()
+                            .map(|l| Line::from(Span::styled(l.to_string(), Style::default())))
+                            .collect();
+                        let wrapped = layout::wrap_styled_lines_to_lines(
+                            &stream_lines,
+                            inner_width.saturating_sub(2),
+                        );
+                        h = wrapped.len().max(1) as u16 + 1; // body + header
+                    }
+                }
+            }
+            h
+        } else {
+            0u16
+        };
+
+        let total_height = content_height + stream_estimate_height;
 
         // Compute scroll offset using the layout module
         let scroll_offset = layout::compute_scroll_offset(
             total_height,
             inner_height as u16,
             (total_height as i64 - inner_height as i64).max(0) as usize,
-            state.scroll_to_bottom,
+            state.scroll_to_bottom.load(Ordering::SeqCst),
             &block_heights,
             state.scroll_pos.load(Ordering::SeqCst),
         );
@@ -260,7 +291,7 @@ impl ConversationWidget {
         // Calculate visible areas using the layout module
         let visible_areas = layout::calc_visible_areas(
             msg_area.top(),
-            msg_area.bottom(),
+            msg_area.bottom().saturating_sub(1),
             msg_area.left(),
             msg_area.width,
             scroll_offset,
@@ -268,7 +299,12 @@ impl ConversationWidget {
         );
 
         // ─── Phase 2: Render visible blocks ────────────────────────────
+        // Track the bottom of the last visible entry so Phase 2.5 can position the stream block below it.
+        let mut last_entry_vp_bottom = 0u16;
         for (idx, block_rect) in visible_areas {
+            if block_rect.y.saturating_add(block_rect.height) > last_entry_vp_bottom {
+                last_entry_vp_bottom = block_rect.y.saturating_add(block_rect.height);
+            }
             let (_entry_idx, block_type, wrapped) = &layout_entries[idx];
 
             // body_area = block.inner(block_area) — calculated at render time
@@ -372,52 +408,65 @@ impl ConversationWidget {
                         } else {
                             wrapped.len() as u16
                         };
-                        total_height += block_height + 1;
 
-                        // Render streaming block after regular entries
+                        // Phase 1 already added stream_estimate_height to total_height.
+                        // Add only the difference (actual - estimate) to keep total_height consistent.
+                        let stream_actual_height = block_height + 1;
+                        let delta = stream_actual_height.saturating_sub(stream_estimate_height);
+                        total_height += delta;
+
                         let role_info = role_info_for_role(&MessageRole::Assistant, palette);
                         let role_color = role_info.border_color;
 
-                        // Calculate y position: below all regular entries
-                        let streaming_y: u16 = {
-                            let mut y = msg_area.top();
-                            let mut i = 0;
-                            while i < entries.len() {
-                                y += layout::estimate_block_height(
-                                    &entries[i].body_lines,
-                                    &layout_entries[i].1,
-                                    inner_width.saturating_sub(2),
-                                ) + layout::INTER_BLOCK_MARGIN;
-                                i += 1;
-                            }
-                            y
+                        // Streaming block position: if content fits in viewport, render right after entries;
+                        // if content overflows, anchor to viewport bottom.
+                        let view_height = msg_area.height.saturating_sub(1);
+                        let stream_height = (block_height + 1).max(1);
+                        let stream_y = if total_height as u16 <= view_height + stream_height {
+                            // Content fits: stream block renders right after the last visible entry.
+                            last_entry_vp_bottom.saturating_add(1)
+                        } else {
+                            // Content overflows: anchor to viewport bottom.
+                            view_height.saturating_sub(stream_height)
                         };
 
-                        let block_area = Rect::new(
-                            msg_area.left(),
-                            streaming_y,
-                            msg_area.width,
-                            (block_height + 1).max(1),
+                        tracing::debug!(
+                            "[stream] content_height={} view_height={} stream_height={} scroll_area_y={} stream_y={}",
+                            total_height, view_height, stream_height,
+                            last_entry_vp_bottom, stream_y
                         );
-                        let block = Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(
-                                Style::default().fg(role_color).add_modifier(Modifier::BOLD),
-                            )
-                            .title(Line::from(vec![
-                                Span::raw(role_info.icon),
-                                Span::styled(
-                                    role_info.label,
-                                    Style::default().fg(role_color).add_modifier(Modifier::BOLD),
-                                ),
-                            ]));
-                        let body_area = block.inner(block_area);
 
-                        if !wrapped.is_empty() {
-                            frame.render_widget(Paragraph::new(wrapped), body_area);
+                        if stream_height < msg_area.height.saturating_sub(1) {
+                            let block_area = Rect::new(
+                                msg_area.left(),
+                                stream_y,
+                                msg_area.width,
+                                stream_height,
+                            );
+                            let block = Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(
+                                    Style::default()
+                                        .fg(role_color)
+                                        .add_modifier(Modifier::BOLD),
+                                )
+                                .title(Line::from(vec![
+                                    Span::raw(role_info.icon),
+                                    Span::styled(
+                                        role_info.label,
+                                        Style::default()
+                                            .fg(role_color)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                ]));
+                            let body_area = block.inner(block_area);
+
+                            if !wrapped.is_empty() {
+                                frame.render_widget(Paragraph::new(wrapped), body_area);
+                            }
+                            frame.render_widget(block, block_area);
+                            streaming_rendered = true;
                         }
-                        frame.render_widget(block, block_area);
-                        streaming_rendered = true;
                     }
                 }
             }
@@ -429,37 +478,59 @@ impl ConversationWidget {
 
         // ─── Phase 3: Scroll position update (mouse wheel) ─────────────
         let offset = state.user_scroll_offset.swap(0, Ordering::SeqCst);
-        let mut new_pos = state.scroll_pos.load(Ordering::SeqCst);
+        let mut scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
+        let scrollable_range = (total_height as i64 - inner_height as i64).max(0) as usize;
+        let prev_scrollable_range = state.prev_scrollable_range.swap(scrollable_range, Ordering::SeqCst);
+        let vp_bottom = scroll_pos.saturating_add(inner_height as usize);
+        let lines_from_bottom = (total_height as usize).saturating_sub(vp_bottom);
+
+        // Apply accumulated scroll delta (mouse wheel)
+        let prev_scroll_pos = scroll_pos;
+        if offset != 0 {
+            scroll_pos = ((scroll_pos as i64 + offset as i64).max(0) as usize)
+                .min(scrollable_range);
+        }
+
+        // Detect content growth
+        let content_grew = scrollable_range > prev_scrollable_range;
+        // "near bottom": content bottom is within 10 lines of viewport bottom
+        let near_bottom = lines_from_bottom < 10;
+
+        // When content grows and user is reading at/near bottom, auto-scroll
+        // so new streaming text stays visible.
+        if content_grew && near_bottom {
+            state.scroll_to_bottom.store(true, Ordering::SeqCst);
+        }
+
+        if state.scroll_to_bottom.load(Ordering::SeqCst) {
+            scroll_pos = scrollable_range;
+        }
+
+        state.scroll_pos.store(scroll_pos, Ordering::SeqCst);
+        scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
+        let final_pos = scroll_pos;
 
         tracing::info!(
-            "[scroll_update] BEFORE: scroll_pos={} offset={} scrollable_range={} scroll_to_bottom={}",
-            state.scroll_pos.load(Ordering::SeqCst), offset, (total_height as i64 - inner_height as i64).max(0), state.scroll_to_bottom
+            "[scroll_update] BEFORE: total_height={} inner_height={} scrollable_range={} prev_scrollable_range={} scroll_pos={} vp_bottom={} lines_from_bottom={} scroll_to_bottom={}",
+            total_height, inner_height, scrollable_range, prev_scrollable_range, scroll_pos, vp_bottom,
+            lines_from_bottom, state.scroll_to_bottom.load(Ordering::SeqCst)
         );
 
-        if offset != 0 {
-            new_pos = ((new_pos as i64 + offset as i64).max(0) as usize)
-                .min((total_height as i64 - inner_height as i64).max(0) as usize);
-        }
-
-        // Only force to bottom when user hasn't scrolled away yet
-        let scrollable_range = (total_height as i64 - inner_height as i64).max(0) as usize;
-        if state.scroll_to_bottom && new_pos >= scrollable_range {
-            new_pos = scrollable_range;
-        }
-
-        let final_pos = new_pos;
-        state.scroll_pos.store(new_pos, Ordering::SeqCst);
+        tracing::info!(
+            "[scroll_update] AFTER: final_pos={} new_vp_bottom={} scroll_to_bottom={}",
+            final_pos, final_pos.saturating_add(inner_height as usize),
+            state.scroll_to_bottom.load(Ordering::SeqCst)
+        );
 
         tracing::info!(
-            "[scroll_update] AFTER: new_pos={} (was {})",
-            final_pos,
-            state.scroll_pos.load(Ordering::SeqCst)
+            "[scroll_update] AFTER: final_pos={} scrollable_range={} vp_bottom={} scroll_to_bottom={}",
+            final_pos, scrollable_range, final_pos.saturating_add(inner_height as usize), state.scroll_to_bottom.load(Ordering::SeqCst)
         );
         {
             let mut scroll_state = state.scroll_state.lock().unwrap();
             *scroll_state = ScrollbarState::new(total_height.max(1) as usize)
                 .viewport_content_length(inner_height as usize)
-                .position(new_pos);
+                .position(scroll_pos);
         }
     }
 

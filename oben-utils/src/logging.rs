@@ -24,6 +24,7 @@ pub fn init(level: tracing::Level) {
         .with_target(false)
         .with_file(true)
         .with_line_number(true)
+        .with_thread_ids(true)
         .with_ansi(false)
         .with_writer(log_file);
 

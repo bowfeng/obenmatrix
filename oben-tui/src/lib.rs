@@ -217,6 +217,23 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         redraw = true;
                     }
                     Some(TuiEvent::Mouse(mouse_event)) => {
+                        match mouse_event.kind {
+                            MouseEventKind::ScrollUp => {
+                                tracing::debug!(
+                                    "[mouse] scroll_up: row={}, col={}",
+                                    mouse_event.row,
+                                    mouse_event.column
+                                );
+                            }
+                            MouseEventKind::ScrollDown => {
+                                tracing::debug!(
+                                    "[mouse] scroll_down: row={}, col={}",
+                                    mouse_event.row,
+                                    mouse_event.column
+                                );
+                            }
+                            _ => {}
+                        }
                         let click_on_tabs = matches!(mouse_event.kind, MouseEventKind::Down(crossterm::event::MouseButton::Left))
                             && mouse_event.row == 0;
                         if click_on_tabs {

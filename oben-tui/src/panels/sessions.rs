@@ -12,6 +12,7 @@ use oben_models::Session;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use tui_widget_list::{ListBuilder, ListState, ListView, ScrollDirection};
 
@@ -71,7 +72,13 @@ impl SessionsPanel {
         _sm: oben_sessions::SessionManager,
         _sessions: Vec<Session>,
     ) -> Self {
-        panic!("with_session_manager should not be used in production");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let agent = rt.block_on(Agent::new_for_test());
+        let mut panel = Self::new_shared(Arc::new(tokio::sync::Mutex::new(agent)));
+        panel.sessions = _sessions.clone();
+        panel.filtered = (0.._sessions.len()).collect();
+        panel.sessions_loaded = RwLock::new(true);
+        panel
     }
 
     /// Load sessions from the SessionManager (called on panel activation).
@@ -239,7 +246,7 @@ impl SessionsPanel {
             .lock()
             .unwrap()
             .extend(entries);
-        self.message_state.scroll_to_bottom = true;
+        self.message_state.scroll_to_bottom.store(true, Ordering::SeqCst);
         // right_lines is read by the tui-widget-list builder closure in render_message_view
         if let Ok(mut rl) = self.right_lines.lock() {
             rl.clear();
