@@ -160,19 +160,23 @@ impl ConversationWidget {
             std::cmp::max(rel_sx, rel_ex),
         );
 
-        // Iterate terminal rows sy..=ey (normalized), extract text per row.
-        let mut result = String::new();
-        let row_start = std::cmp::min(sy as usize, ey as usize);
-        let row_end = std::cmp::max(sy as usize, ey as usize);
+        // body_to_flat body_start_offset = msg_area.y = content_y - 1.
+            // body line index = scroll_pos + (row - msg_area.y) = row - msg_area.y + scroll_pos.
+            let body_start_offset = content_y.saturating_sub(1);
 
-        tracing::debug!(
-            "[selection/get_selected_text] sel=({},{})-({},{}) content_x={} body_area_x={} rel_sx={} rel_ex={} body_w={} x0={} x1={} row_range=[{}..{}] body_to_flat_len={}",
-            sy, sx, ey, ex, content_x, body_area_x, rel_sx, rel_ex, body_w,
-            x0_start, x1_start, row_start, row_end, body_to_flat.len()
-        );
+            // Iterate terminal rows sy..=ey (normalized), extract text per row.
+            let mut result = String::new();
+            let row_start = std::cmp::min(sy as usize, ey as usize);
+            let row_end = std::cmp::max(sy as usize, ey as usize);
+
+            tracing::debug!(
+                "[selection/get_selected_text] sel=({},{})-({},{}) content_x={} body_area_x={} rel_sx={} rel_ex={} body_w={} x0={} x1={} row_range=[{}..{}] body_to_flat_len={}",
+                sy, sx, ey, ex, content_x, body_area_x, rel_sx, rel_ex, body_w,
+                x0_start, x1_start, row_start, row_end, body_to_flat.len()
+            );
         
         for row in row_start..=row_end {
-            let abs_body = (row as usize).saturating_sub(content_y) + scroll_pos;
+            let abs_body = (row as usize).saturating_sub(body_start_offset) + scroll_pos;
             // Look up flat line for this body line
             let flat_line = match body_to_flat.get(abs_body).copied().flatten() {
                 Some(v) => v,
@@ -279,9 +283,18 @@ impl ConversationWidget {
                 row_start, row_end, body_to_flat.len()
             );
 
+            // body_to_flat maps body_line → flat_line.
+            // Each entry contributes (wrapped_count + BODY_HEIGHT_ADJUSTER(2)) body lines.
+            // body_to_flat body_start_offset = msg_area.y = content_y - 1.
+            // body line index = scroll_pos + (row - msg_area.y) = row - msg_area.y + scroll_pos.
+            let body_start_offset = content_y.saturating_sub(1);
+            tracing::debug!(
+                "[selection/render_selection] body_start_offset={} content_y={} scroll_pos={}",
+                body_start_offset, content_y, scroll_pos_val
+            );
             let mut highlight_lines: Vec<Line> = Vec::new();
             for row in row_start..=row_end {
-                let abs_body = (row as usize).saturating_sub(content_y).saturating_add(scroll_pos_val);
+                let abs_body = (row as usize).saturating_sub(body_start_offset).saturating_add(scroll_pos_val);
                 
                 // Look up flat line for this body line
                 let flat_line = match body_to_flat.get(abs_body).copied().flatten() {
@@ -353,10 +366,7 @@ impl ConversationWidget {
             }
 
             if !highlight_lines.is_empty() {
-                // msg_area has an outer title/border row + inner body rows; body_rect.y =
-                // content_y + 1, so the body_area.y is 1 row higher than content_y. Offset
-                // highlight up by 1 to match the actual text rendering position.
-                let highlight_area_y = sy.saturating_sub(1);
+                let highlight_area_y = sy;
                 let highlight_area_x = area.x + body_area_x as u16;
                 let highlight_area = Rect::new(
                     highlight_area_x,
