@@ -564,6 +564,8 @@ impl ConversationWidget {
             *body_to_flat = mapping;
         }
         let scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
+        let user_offset = state.user_scroll_offset.load(Ordering::SeqCst);
+        let at_bottom = state.scroll_to_bottom.load(Ordering::SeqCst);
 
         // ─── Phase 1.5: Stream block estimation & wrapping (shared between phases) ──────
         // Parse stream text once, reuse for both scroll_offset and rendering.
@@ -612,6 +614,11 @@ impl ConversationWidget {
 
         let total_height = content_height + stream_estimate.unwrap_or(0);
 
+        tracing::debug!(
+            "[scroll_render_cycle] scroll_pos={} user_offset={} at_bottom={} block_count={} total_height={}",
+            scroll_pos, user_offset, at_bottom, layout_entries.len(), total_height
+        );
+
         // Compute scroll offset using the layout module
         let scroll_offset = layout::compute_scroll_offset(
             total_height,
@@ -620,6 +627,14 @@ impl ConversationWidget {
             state.scroll_to_bottom.load(Ordering::SeqCst),
             &block_heights,
             scroll_pos,
+        );
+
+        tracing::debug!(
+            "[scroll_offset_computed] scrollable_range={} scroll_to_bottom={} manual_scroll_pos={} computed_scroll_offset={}",
+            (total_height as i64 - inner_height as i64).max(0) as usize,
+            state.scroll_to_bottom.load(Ordering::SeqCst),
+            scroll_pos,
+            scroll_offset
         );
 
         // Update scrollbar state
@@ -643,7 +658,7 @@ impl ConversationWidget {
         // ─── Phase 2: Render visible blocks ────────────────────────────
         // Track the bottom of the last visible entry so Phase 2.5 can position the stream block below it.
         let mut last_entry_vp_bottom = 0u16;
-        for (idx, block_rect) in visible_areas {
+        for (idx, block_rect, content_start) in visible_areas {
             if block_rect.y.saturating_add(block_rect.height) > last_entry_vp_bottom {
                 last_entry_vp_bottom = block_rect.y.saturating_add(block_rect.height);
             }
@@ -674,6 +689,17 @@ impl ConversationWidget {
 
             // Render body (Paragraph) before block (borders on top)
             let body_area = block.inner(block_rect);
+
+            // Calculate per-block scroll offset for clipping wrapped lines
+            // content_start is the body-line index where this block starts in the global scroll view
+            // inner_offset = how far into this block's body_lines we should start
+            let inner_offset = scroll_offset.saturating_sub(content_start);
+            let inner_take = (body_area.height.saturating_sub(2)).max(1) as usize;
+            tracing::debug!(
+                "[scroll_in_block] idx={} content_start={} wrap_len={} body_area_h={}(inner_h={}) inner_offset={} (scroll_pos={}) take={}",
+                idx, content_start, wrapped.len(), body_area.height, inner_take, inner_offset, scroll_offset, inner_take
+            );
+
             tracing::debug!(
                 "[layout] body_area.x={} block_rect.x={} msg_area.x={} area.x={}",
                 body_area.x, block_rect.x, msg_area.left(), area.x
@@ -681,7 +707,8 @@ impl ConversationWidget {
             if block_rect.height > layout::BODY_HEIGHT_ADJUSTER && !wrapped.is_empty() {
                 let body_lines: Vec<Line> = wrapped
                     .iter()
-                    .take(body_area.height as usize)
+                    .skip(inner_offset)
+                    .take(inner_take)
                     .cloned()
                     .map(|line| {
                         if is_tool_result {
@@ -790,17 +817,31 @@ impl ConversationWidget {
         }
 
         // ─── Phase 3: Scroll position update (mouse wheel) ─────────────
+        let prev_user_offset = state.user_scroll_offset.load(Ordering::SeqCst);
         let offset = state.user_scroll_offset.swap(0, Ordering::SeqCst);
+        let prev_scroll_pos = scroll_pos;
         let mut scroll_pos = scroll_pos;
         let scrollable_range = (total_height as i64 - inner_height as i64).max(0) as usize;
         let prev_scrollable_range = state.prev_scrollable_range.swap(scrollable_range, Ordering::SeqCst);
         let vp_bottom = scroll_pos.saturating_add(inner_height as usize);
         let lines_from_bottom = (total_height as usize).saturating_sub(vp_bottom);
 
+        tracing::debug!(
+            "[scroll_phase3] user_offset={} (prev={}) scrollable_range={} prev_scroll_pos={} final_scroll_pos={} scroll_to_bottom={} offset_sign={}",
+            offset, prev_user_offset, scrollable_range, prev_scroll_pos, scroll_pos,
+            state.scroll_to_bottom.load(Ordering::SeqCst),
+            if offset > 0 { "+" } else if offset < 0 { "-" } else { "0" }
+        );
+
         // Apply accumulated scroll delta (mouse wheel)
         if offset != 0 {
             scroll_pos = ((scroll_pos as i64 + offset as i64).max(0) as usize)
                 .min(scrollable_range);
+            tracing::debug!(
+                "[scroll_phase3] after_offset: scroll_pos={} vp_bottom={} diff_from_prev={}",
+                scroll_pos, scroll_pos.saturating_add(inner_height as usize),
+                if prev_scroll_pos >= scroll_pos { prev_scroll_pos - scroll_pos } else { scroll_pos - prev_scroll_pos }
+            );
         }
 
         // Detect content growth

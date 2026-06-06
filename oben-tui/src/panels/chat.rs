@@ -224,7 +224,7 @@ impl Panel for ChatPanel {
                 let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 self.message_state
                     .user_scroll_offset
-                    .fetch_add(scroll_step, Ordering::SeqCst);
+                    .fetch_sub(scroll_step, Ordering::SeqCst);
                 tracing::info!(
                     "[mouse] ScrollDown: old_offset={} new_offset={} scroll_to_bottom=false",
                     old,
@@ -237,9 +237,9 @@ impl Panel for ChatPanel {
                 let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 self.message_state
                     .user_scroll_offset
-                    .fetch_sub(scroll_step, Ordering::SeqCst);
+                    .fetch_add(scroll_step, Ordering::SeqCst);
                 tracing::info!(
-                    "[mouse] ScrollUp: old_offset={} new_offset{} scroll_to_bottom=false",
+                    "[mouse] ScrollUp: old_offset={} new_offset={} scroll_to_bottom=false",
                     old,
                     self.message_state.user_scroll_offset.load(Ordering::SeqCst)
                 );

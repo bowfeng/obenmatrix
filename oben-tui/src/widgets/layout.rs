@@ -158,14 +158,20 @@ pub fn calc_visible_areas(
     msg_area_width: u16,
     scroll_offset: usize,
     entry_heights: &[u16],
-) -> Vec<(usize, Rect)> {
+) -> Vec<(usize, Rect, usize)> {
     let mut areas = Vec::new();
     let mut block_line: usize = 0;
     let inner_height = (msg_area_bottom - msg_area_top) as usize;
     let viewable_end = scroll_offset.saturating_add(inner_height);
 
+    tracing::debug!(
+        "[visible_areas] scroll_offset={} viewable_range=[{}..{}] inner_height={} blocks={}",
+        scroll_offset, scroll_offset, viewable_end, inner_height, entry_heights.len()
+    );
+
     for (idx, &block_height) in entry_heights.iter().enumerate() {
         let block_start = block_line;
+        let body_start_in_content = block_line;
         let block_end = block_start + block_height as usize;
         block_line = block_end + (if idx > 0 { INTER_BLOCK_MARGIN as usize } else { 0 });
 
@@ -180,7 +186,8 @@ pub fn calc_visible_areas(
             continue;
         }
 
-        // VP-relative y: block's position minus what we scrolled off
+        // VP-relative y: how far down the block appears in the viewport
+        // With standard scroll model: block at content_pos X appears at position X - scroll_offset
         let vp_y = block_start.saturating_sub(scroll_offset);
         let abs_y = msg_area_top + (vp_y as u16).min(inner_height as u16);
 
@@ -188,14 +195,15 @@ pub fn calc_visible_areas(
         let visible_height = (visible_bottom as u16).min((msg_area_bottom - abs_y).max(1));
 
         tracing::debug!(
-            "block[{}] start={} end={} vp_y={} abs_y={} height={} (inner_y=[{}..{}])",
+            "block[{}] start={} end={} vp_y={} abs_y={} height={}(inner_y=[{}..{}]) content_start={}",
             idx, block_start, block_end, vp_y, abs_y, visible_height,
-            msg_area_top, msg_area_bottom
+            msg_area_top, msg_area_bottom, body_start_in_content
         );
 
         areas.push((
             idx,
             Rect::new(msg_area_left, abs_y, msg_area_width, visible_height),
+            body_start_in_content,
         ));
     }
 
