@@ -694,7 +694,7 @@ impl ConversationWidget {
             // content_start is the body-line index where this block starts in the global scroll view
             // inner_offset = how far into this block's body_lines we should start
             let inner_offset = scroll_offset.saturating_sub(content_start);
-            let inner_take = (body_area.height.saturating_sub(2)).max(1) as usize;
+            let inner_take = body_area.height as usize;
             tracing::debug!(
                 "[scroll_in_block] idx={} content_start={} wrap_len={} body_area_h={}(inner_h={}) inner_offset={} (scroll_pos={}) take={}",
                 idx, content_start, wrapped.len(), body_area.height, inner_take, inner_offset, scroll_offset, inner_take
