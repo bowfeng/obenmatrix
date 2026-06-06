@@ -148,8 +148,6 @@ impl ConversationWidget {
         let body_w = state.body_width;
 
         // Mouse cols are absolute terminal coords. Convert to body-area-relative column.
-        // Flat lines render at body_area.x = area.x + 2, but content_x = area.x + 4,
-        // so body_area.x = content_x - 2.
         let body_area_x = content_x.saturating_sub(2);
         let rel_sx = (sx as usize).saturating_sub(body_area_x);
         let rel_ex = (ex as usize).saturating_sub(body_area_x);
@@ -160,43 +158,37 @@ impl ConversationWidget {
             std::cmp::max(rel_sx, rel_ex),
         );
 
-            // body_to_flat body_start_offset = msg_area.y = content_y - 1.
-            // body line index = scroll_pos + (row - msg_area.y) = row - msg_area.y + scroll_pos.
-            let body_start_offset = content_y.saturating_sub(1);
+        // body_to_flat body_start_offset = msg_area.y = content_y - 1.
+        let body_start_offset = content_y.saturating_sub(1);
 
-            // Iterate terminal rows sy..=ey (normalized), extract text per row.
-            let mut result = String::new();
-            let row_start = std::cmp::min(sy as usize, ey as usize);
-            let row_end = std::cmp::max(sy as usize, ey as usize);
+        // Iterate terminal rows sy..=ey (normalized), extract text per row.
+        let mut result = String::new();
+        let row_start = std::cmp::min(sy as usize, ey as usize);
+        let row_end = std::cmp::max(sy as usize, ey as usize);
 
-            tracing::debug!(
-                "[selection/get_selected_text] sel=({},{})-({},{}) content_x={} body_area_x={} rel_sx={} rel_ex={} body_w={} x0={} x1={} row_range=[{}..{}] body_to_flat_len={}",
-                sy, sx, ey, ex, content_x, body_area_x, rel_sx, rel_ex, body_w,
-                x0_start, x1_start, row_start, row_end, body_to_flat.len()
-            );
-        
         let mut prev_flat_line: Option<usize> = None;
         let mut prev_abs_was_padding = false;
+        tracing::debug!(
+            "[selection/get_text] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}] body_to_flat_len={}",
+            sy, ey, sx, ex, content_y, body_start_offset, scroll_pos, row_start, row_end, body_to_flat.len()
+        );
         for row in row_start..=row_end {
             let abs_body = (row as usize).saturating_sub(body_start_offset) + scroll_pos;
-            
-            // Look up flat line for this body line
+
+            // Look up flat line for this body line.
+            // body_to_flat structure: [...wrapped_lines..., padding, None(sep), next_block...]
+            // None = inter-block separator — skip it to avoid pulling from wrong block.
             let flat_line = match body_to_flat.get(abs_body).copied().flatten() {
                 Some(v) => v,
                 None => {
-                    // body_line is a None margin (inter-block separator).
-                    // Look forward to find the first wrapped line of the next block.
-                    match body_to_flat.get(abs_body + 1..).and_then(|s| s.iter().flatten().next().copied()) {
-                        Some(v) => v,
-                        None => continue, // skip trailing padding
-                    }
+                    // Block boundary — treat as transparent. Don't search forward,
+                    // which would pull content from the next block and cause duplication.
+                    continue;
                 }
             };
-            
-            // Detect if this is a padding line: consecutive body indices within the same block
-            // map padding to last wrapped line. We detect by checking if the PREVIOUS body line
-            // at abs_body-1 also maps to the same flat_line (and wasn't itself padding).
-            // Only skip if abs_body > row_start to avoid deduping the first selected row.
+
+            // Detect if this is a padding line: consecutive body indices within the
+            // same block map padding to last wrapped line.
             let is_padding = if row > row_start {
                 let prev_abs = abs_body.saturating_sub(1);
                 if let Some(prev_flat_opt) = body_to_flat.get(prev_abs) {
@@ -211,22 +203,23 @@ impl ConversationWidget {
             } else {
                 false
             };
-            
-            // Update padding tracking
+
             prev_abs_was_padding = is_padding;
             if is_padding {
                 continue;
             }
             prev_abs_was_padding = false;
-            
+
             // Also skip if same as previous non-padding row's flat_line
             if Some(flat_line) == prev_flat_line {
                 continue;
             }
             prev_flat_line = Some(flat_line);
-            if flat_line >= flat_lines.len() { continue; }
+            if flat_line >= flat_lines.len() {
+                continue;
+            }
             let line = &flat_lines[flat_line];
-            
+
             // Build cell→char map for this line
             let mut chars: Vec<(usize, char)> = Vec::new();
             let mut pos = 0usize;
@@ -237,38 +230,37 @@ impl ConversationWidget {
                     pos += w;
                 }
             }
-            
+
             // Extract text at row level using mouse row position
             let x0 = x0_start.min(body_w);
             let x1 = x1_start.min(body_w).max(x0 + 1);
-            
-            // Debug: log x0/x1 for all rows
-            tracing::debug!(
-                "[selection/get_selected_text] row={} flat_line={} x0={} x1={} chars_count={}",
-                row, flat_line, x0, x1, chars.len()
-            );
-            
+
             let sel: String = chars.iter()
                 .filter(|(p,_)| *p >= x0 && *p < x1)
                 .map(|(_,ch)| *ch)
                 .collect();
-            
+
+            tracing::debug!(
+                "[selection/get_text] row={} abs_body={} flat_line={} abs_in_range={}..={} x0={} x1={} sel=\"{}\"",
+                row, abs_body, flat_line, row_start, row_end, x0, x1,
+                sel.chars().take(60).collect::<String>()
+            );
+
             if !sel.is_empty() {
                 if !result.is_empty() { result.push('\n'); }
                 result.push_str(&sel);
             }
         }
 
+        tracing::debug!(
+            "[selection/get_text] FINAL result={} chars, text_trunc=\"{}\"",
+            result.len(),
+            result.chars().take(200).collect::<String>()
+        );
+
         if !result.is_empty() {
-            let first_line = result.lines().next().unwrap_or("");
-            tracing::debug!(
-                "[selection/get_selected_text] result={} chars first_line_trunc=\"{}\"",
-                result.len(),
-                first_line.chars().take(80).collect::<String>()
-            );
             return Some(result);
         }
-        tracing::debug!("[selection/get_selected_text] no result (empty)");
         None
     }
 
@@ -291,89 +283,64 @@ impl ConversationWidget {
                 Ok(g) => g.clone(),
                 Err(_) => return,
             };
-            let content_y = state.content_y as usize;
-            let content_x = state.content_x as usize;
+            let content_y = state.content_y as u16;
+            let content_x = state.content_x as u16;
             let body_w = state.body_width;
             let scroll_pos_val = state.scroll_pos.load(Ordering::SeqCst);
 
-            // Mouse cols are absolute terminal coords. Convert to body-area-relative column.
-            // Flat lines render at body_area.x = area.x + 2, but content_x = area.x + 4,
-            // so body_area.x = content_x - 2.
+            // Mouse rows are absolute terminal coords. Convert to body-area-relative column.
             let body_area_x = content_x.saturating_sub(2);
-            let rel_sx = (sx as usize).saturating_sub(body_area_x);
-            let rel_ex = (ex as usize).saturating_sub(body_area_x);
+            let rel_sx = (sx as usize).saturating_sub(body_area_x as usize);
+            let rel_ex = (ex as usize).saturating_sub(body_area_x as usize);
 
-            // Normalize: ensure min/max order regardless of drag direction.
+            // Normalize: ensure min/max regardless of drag direction.
             let x0 = std::cmp::min(rel_sx, rel_ex).min(body_w);
             let x1 = std::cmp::max(rel_sx, rel_ex).min(body_w).max(x0 + 1);
 
-            // Iterate terminal rows from min to max, map each to flat line via body_to_flat.
-            // Position highlight at exact terminal row to match mouse selection.
+            // body_start_offset = msg_area.y = content_y - 1.
+            // Same as get_selected_text.
+            let body_start_offset = (content_y.saturating_sub(1)) as usize;
+
+            // Iterate terminal rows from min to max.
             let row_start = std::cmp::min(sy as usize, ey as usize);
             let row_end = std::cmp::max(sy as usize, ey as usize);
 
             tracing::debug!(
-                "[selection/render_selection] sel=({},{})-({},{}) content_y={} scroll_pos={} body_w={} x={}-{} rows=[{}..{}] body_to_flat.len={}",
-                sy, sx, ey, ex, content_y, scroll_pos_val, body_w,
-                x0, x1,
-                row_start, row_end, body_to_flat.len()
+                "[selection/render_sel] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}]",
+                sy, ey, sx, ex, content_y, body_start_offset, scroll_pos_val, row_start, row_end
             );
 
             // body_to_flat maps body_line → flat_line.
-            // Each entry contributes (wrapped_count + BODY_HEIGHT_ADJUSTER(2)) body lines.
-            // body_to_flat body_start_offset = msg_area.y = content_y - 1.
-            // body line index = scroll_pos + (row - msg_area.y) = row - msg_area.y + scroll_pos.
-            let body_start_offset = content_y.saturating_sub(1);
-            tracing::debug!(
-                "[selection/render_selection] body_start_offset={} content_y={} scroll_pos={}",
-                body_start_offset, content_y, scroll_pos_val
-            );
             let mut highlight_lines: Vec<Line> = Vec::new();
-            let mut prev_abs_body: Option<usize> = None;
             for row in row_start..=row_end {
+                // Same formula as get_selected_text
                 let abs_body = (row as usize).saturating_sub(body_start_offset).saturating_add(scroll_pos_val);
-                
-                // Look up flat line for this body line
+
+                // Look up flat line for this body line.
+                // body_to_flat structure: [...wrapped_lines..., padding, None(sep), next_block...]
+                // None = inter-block separator — render transparent (empty highlight).
                 let flat_line = match body_to_flat.get(abs_body).copied().flatten() {
                     Some(v) => v,
                     None => {
-                        // body_to_flat has None (margin between blocks).
-                        // Skip forward to find first line of next block.
-                        match body_to_flat.get(abs_body + 1..).and_then(|s| s.iter().flatten().next().copied()) {
-                            Some(v) => v,
-                            None => {
-                                // Trailing padding/margin with no content — push empty highlight.
-                                highlight_lines.push(Line::from(Span::raw("")));
-                                tracing::debug!(
-                                    "[selection/render_selection] row={} abs_body={} NO_FLAT_LINE (padding/margin) → empty highlight",
-                                    row, abs_body
-                                );
-                                continue;
-                            }
-                        }
+                        highlight_lines.push(Line::from(Span::raw("")));
+                        continue;
                     }
                 };
-                
-                // Detect padding: this row's body_to_flat maps to same flat_line as prev row.
-                // If body_to_flat[prev_abs_body] == flat_line, then this row is a padding line
-                // at the end of a block (BODY_HEIGHT_ADJUSTER lines map to last wrapped line).
-                // If body_to_flat[prev_abs_body] is None, this is first line of next block (margin skip).
-                let is_padding = if let Some(prev) = prev_abs_body {
-                    match body_to_flat.get(prev) {
-                        Some(Some(v)) => *v == flat_line,
-                        _ => false,
-                    }
-                } else {
-                    false
-                };
-                prev_abs_body = Some(abs_body);
-                
-                if is_padding {
+
+                // Detect padding: two consecutive body_indices in same block map to same flat_line
+                // (body_to_flat[padding_idx] = Some(flat_line_of_last_wrapped)).
+                let was_padding = abs_body >= 1
+                    && body_to_flat.get(abs_body - 1)
+                        .and_then(|opt| *opt)
+                        .is_some_and(|prev_flat| prev_flat == flat_line);
+
+                tracing::debug!(
+                    "[selection/render_sel] row={} abs_body={} flat_line={} padding={}",
+                    row, abs_body, flat_line, was_padding
+                );
+
+                if was_padding {
                     highlight_lines.push(Line::from(Span::raw("")));
-                    tracing::debug!(
-                        "[selection/render_selection] row={} abs_body={} padding_line → empty highlight",
-                        row, abs_body
-                    );
                     continue;
                 }
                 
@@ -394,7 +361,7 @@ impl ConversationWidget {
                     }
                 }
 
-                // Build styled spans with highlight for selected column range
+                // Build styled spans with highlight for selected column range.
                 let mut spans: Vec<Span> = Vec::new();
                 let mut in_highlight = false;
                 for (c_pos, ch) in &chars {
@@ -413,15 +380,6 @@ impl ConversationWidget {
                         spans.push(Span::raw(ch.to_string()));
                     }
                 }
-
-                tracing::debug!(
-                    "[selection/render_selection] row={} abs_body={} flat_line={} chars={} highlight_text=\"{}\"",
-                    row, abs_body, flat_line, chars.len(),
-                    chars.iter()
-                        .filter(|(p,_)| *p >= x0 && *p < x1)
-                        .map(|(_,ch)| *ch)
-                        .collect::<String>()
-                );
 
                 highlight_lines.push(Line::from(spans));
             }
