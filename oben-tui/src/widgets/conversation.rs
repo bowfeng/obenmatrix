@@ -385,7 +385,7 @@ impl ConversationWidget {
             }
 
             if !highlight_lines.is_empty() {
-                let highlight_area_y = sy;
+                let highlight_area_y = row_start as u16;
                 let highlight_area_x = area.x + body_area_x as u16;
                 let highlight_area = Rect::new(
                     highlight_area_x,
