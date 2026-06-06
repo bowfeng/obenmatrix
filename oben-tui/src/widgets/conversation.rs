@@ -160,7 +160,7 @@ impl ConversationWidget {
             std::cmp::max(rel_sx, rel_ex),
         );
 
-        // body_to_flat body_start_offset = msg_area.y = content_y - 1.
+            // body_to_flat body_start_offset = msg_area.y = content_y - 1.
             // body line index = scroll_pos + (row - msg_area.y) = row - msg_area.y + scroll_pos.
             let body_start_offset = content_y.saturating_sub(1);
 
@@ -176,35 +176,51 @@ impl ConversationWidget {
             );
         
         let mut prev_flat_line: Option<usize> = None;
+        let mut prev_abs_was_padding = false;
         for row in row_start..=row_end {
             let abs_body = (row as usize).saturating_sub(body_start_offset) + scroll_pos;
+            
             // Look up flat line for this body line
             let flat_line = match body_to_flat.get(abs_body).copied().flatten() {
                 Some(v) => v,
                 None => {
-                    // Search forward for next valid flat line (padding/margin)
-                    let next_flat = body_to_flat.get(abs_body + 1..).and_then(|s| {
-                        s.iter().flatten().next().copied()
-                    });
-                    match next_flat {
-                        Some(v) => {
-                            // Margin skip: if abs_body has None (margin) but abs_body+1 is valid,
-                            // this is a block boundary. Skip if padding line already extracted same flat.
-                            let prev_abs = abs_body.saturating_sub(1);
-                            let margin_skip = match body_to_flat.get(prev_abs).and_then(|x| *x) {
-                                Some(prev_flat) => prev_flat == v,
-                                None => false,
-                            };
-                            if margin_skip { continue; }
-                            v
-                        }
+                    // body_line is a None margin (inter-block separator).
+                    // Look forward to find the first wrapped line of the next block.
+                    match body_to_flat.get(abs_body + 1..).and_then(|s| s.iter().flatten().next().copied()) {
+                        Some(v) => v,
                         None => continue, // skip trailing padding
                     }
                 }
             };
-            // Skip duplicate flat lines from padding (same message block, padding maps to last wrapped line)
+            
+            // Detect if this is a padding line: consecutive body indices within the same block
+            // map padding to last wrapped line. We detect by checking if the PREVIOUS body line
+            // at abs_body-1 also maps to the same flat_line (and wasn't itself padding).
+            // Only skip if abs_body > row_start to avoid deduping the first selected row.
+            let is_padding = if row > row_start {
+                let prev_abs = abs_body.saturating_sub(1);
+                if let Some(prev_flat_opt) = body_to_flat.get(prev_abs) {
+                    match (prev_flat_opt, prev_abs_was_padding) {
+                        (None, _) => false,
+                        (Some(prev_flat), false) => *prev_flat == flat_line,
+                        (Some(_), true) => true,
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            
+            // Update padding tracking
+            prev_abs_was_padding = is_padding;
+            if is_padding {
+                continue;
+            }
+            prev_abs_was_padding = false;
+            
+            // Also skip if same as previous non-padding row's flat_line
             if Some(flat_line) == prev_flat_line {
-                prev_flat_line = Some(flat_line);
                 continue;
             }
             prev_flat_line = Some(flat_line);
@@ -313,6 +329,7 @@ impl ConversationWidget {
                 body_start_offset, content_y, scroll_pos_val
             );
             let mut highlight_lines: Vec<Line> = Vec::new();
+            let mut prev_abs_body: Option<usize> = None;
             for row in row_start..=row_end {
                 let abs_body = (row as usize).saturating_sub(body_start_offset).saturating_add(scroll_pos_val);
                 
@@ -320,12 +337,12 @@ impl ConversationWidget {
                 let flat_line = match body_to_flat.get(abs_body).copied().flatten() {
                     Some(v) => v,
                     None => {
-                        // Search forward for next valid flat line (padding/margin line)
-                        match body_to_flat.get(abs_body + 1).and_then(|x| *x) {
+                        // body_to_flat has None (margin between blocks).
+                        // Skip forward to find first line of next block.
+                        match body_to_flat.get(abs_body + 1..).and_then(|s| s.iter().flatten().next().copied()) {
                             Some(v) => v,
                             None => {
-                                // No valid flat line for this row (trailing padding/margin).
-                                // Push an empty line so the highlight rect covers all selected rows.
+                                // Trailing padding/margin with no content — push empty highlight.
                                 highlight_lines.push(Line::from(Span::raw("")));
                                 tracing::debug!(
                                     "[selection/render_selection] row={} abs_body={} NO_FLAT_LINE (padding/margin) → empty highlight",
@@ -336,6 +353,30 @@ impl ConversationWidget {
                         }
                     }
                 };
+                
+                // Detect padding: this row's body_to_flat maps to same flat_line as prev row.
+                // If body_to_flat[prev_abs_body] == flat_line, then this row is a padding line
+                // at the end of a block (BODY_HEIGHT_ADJUSTER lines map to last wrapped line).
+                // If body_to_flat[prev_abs_body] is None, this is first line of next block (margin skip).
+                let is_padding = if let Some(prev) = prev_abs_body {
+                    match body_to_flat.get(prev) {
+                        Some(Some(v)) => *v == flat_line,
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
+                prev_abs_body = Some(abs_body);
+                
+                if is_padding {
+                    highlight_lines.push(Line::from(Span::raw("")));
+                    tracing::debug!(
+                        "[selection/render_selection] row={} abs_body={} padding_line → empty highlight",
+                        row, abs_body
+                    );
+                    continue;
+                }
+                
                 if flat_line >= flat_lines.len() {
                     highlight_lines.push(Line::from(Span::raw("")));
                     continue;
