@@ -264,71 +264,53 @@ impl ConversationWidget {
                 (body_ey, body_sy)
             };
 
-            let flat_start;
-            if body_start >= body_to_flat.len() {
-                return;
-            } else if let Some(v) = body_to_flat[body_start] {
-                flat_start = v;
-            } else {
-                let mut found = None;
-                for b in (0..body_start).rev() {
-                    if let Some(v) = body_to_flat.get(b).copied().flatten() {
-                        found = Some(v);
-                        break;
-                    }
-                }
-                if let Some(v) = found { flat_start = v; } else { return; }
-            }
-            let flat_end;
-            if body_end >= body_to_flat.len() {
-                return;
-            } else if let Some(v) = body_to_flat[body_end] {
-                flat_end = v;
-            } else {
-                let mut found = None;
-                for b in body_end + 1..body_to_flat.len() {
-                    if let Some(v) = body_to_flat.get(b).copied().flatten() {
-                        found = Some(v);
-                        break;
-                    }
-                }
-                if let Some(v) = found { flat_end = v; } else { return; }
-            }
-            let flat_start = flat_start.min(flat_lines.len().saturating_sub(1));
-            let flat_end = flat_end.min(flat_lines.len().saturating_sub(1));
-            if flat_start > flat_end {
-                return;
-            }
-            let highlight_line_count = flat_end.saturating_sub(flat_start) + 1;
-            let highlight_height = highlight_line_count.max(1) as u16;
-
             tracing::debug!(
-                "[selection/render_selection] sel=({},{})-({},{}) content_y={} scroll_pos={} body_start={} body_end={} flat=[{}..{}) body_w={} flat_lines={}",
+                "[selection/render_selection] sel=({},{})-({},{}) content_y={} scroll_pos={} abs_body[{}..{}] rel_sx={} rel_ex={} body_w={} flat_lines={}",
                 sy, sx, ey, ex, content_y, scroll_pos_val,
-                body_start, body_end, flat_start, flat_end + 1, body_w,
+                body_start, body_end, rel_sx, rel_ex, body_w,
                 flat_lines.len()
             );
 
             // Build highlight lines with REVERSED style for the selected range.
+            // Iterate terminal rows body_start..=body_end (same as get_selected_text),
+            // map each to flat line via body_to_flat.
+            let (x0_min, x1_max) = (
+                std::cmp::min(rel_sx, rel_ex).min(body_w),
+                std::cmp::max(rel_sx, rel_ex).min(body_w),
+            );
+
             let mut highlight_lines: Vec<Line> = Vec::new();
-            for i in flat_start..=flat_end {
-                if i >= flat_lines.len() { break; }
-                let line = &flat_lines[i];
-                let mut cell_chars: Vec<(usize, char)> = Vec::new();
-                let mut cell_pos: usize = 0;
+            for abs_body in body_start..=body_end {
+                // Look up flat line for this body line
+                let flat_line = match body_to_flat.get(abs_body).copied().flatten() {
+                    Some(v) => v,
+                    None => {
+                        // Search forward for next valid flat line (padding/margin line)
+                        match body_to_flat[abs_body + 1..].iter().flatten().next() {
+                            Some(&v) => v,
+                            None => continue, // skip trailing padding/margin
+                        }
+                    }
+                };
+                if flat_line >= flat_lines.len() { continue; }
+                let line = &flat_lines[flat_line];
+                
+                // Build cell→char map for this line
+                let mut chars: Vec<(usize, char)> = Vec::new();
+                let mut pos = 0usize;
                 for span in &line.spans {
                     for ch in span.content.chars() {
                         let w = ch.width().unwrap_or(0);
-                        cell_chars.push((cell_pos, ch));
-                        cell_pos += w.max(1);
+                        chars.push((pos, ch));
+                        pos += w;
                     }
                 }
-                // Use relative column coords for message-area selection
-                let x0 = std::cmp::min(rel_sx, rel_ex).min(body_w);
-                let x1 = std::cmp::max(rel_sx, rel_ex).min(body_w);
-                let x1 = x1.max(x0 + 1);
+                
+                // Extract selection range: same x0/x1 clipping as get_selected_text
+                let x0 = x0_min;
+                let x1 = x1_max.max(x0 + 1);
                 let mut spans: Vec<Span> = Vec::new();
-                for (c_pos, ch) in &cell_chars {
+                for (c_pos, ch) in &chars {
                     if *c_pos >= x0 && *c_pos < x1 {
                         spans.push(Span::styled(
                             ch.to_string(),
@@ -348,7 +330,7 @@ impl ConversationWidget {
                     _area.x,
                     highlight_area_y,
                     _area.width.min(body_w as u16),
-                    highlight_height,
+                    highlight_lines.len() as u16,
                 );
                 frame.render_widget(Paragraph::new(highlight_lines), highlight_area);
             }
