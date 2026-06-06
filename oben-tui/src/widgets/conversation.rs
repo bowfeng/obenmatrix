@@ -238,7 +238,7 @@ impl ConversationWidget {
     pub fn render_selection(
         &self,
         frame: &mut Frame,
-        _area: Rect,
+        area: Rect,
         state: &ConversationState,
         _palette: &ratatui_themes::ThemePalette,
     ) {
@@ -254,6 +254,7 @@ impl ConversationWidget {
             let content_y = state.content_y as usize;
             let content_x = state.content_x as usize;
             let body_w = state.body_width;
+            let scroll_pos_val = state.scroll_pos.load(Ordering::SeqCst);
 
             // Mouse cols are absolute terminal coords. Convert to body-area-relative column.
             // Flat lines render at body_area.x = area.x + 2, but content_x = area.x + 4,
@@ -262,52 +263,52 @@ impl ConversationWidget {
             let rel_sx = (sx as usize).saturating_sub(body_area_x);
             let rel_ex = (ex as usize).saturating_sub(body_area_x);
 
-            // Convert terminal row → body_line → flat line.
-            // Blocks render at msg_area.y + (block_start - scroll_offset), so we add
-            // scroll_pos to map terminal row back to the correct body-line index.
-            // content_y ≈ msg_area.y + 1, thus body_line = row - content_y + scroll_pos_val.
-            let scroll_pos_val = state.scroll_pos.load(Ordering::SeqCst);
-            let body_sy = (sy as usize).saturating_sub(content_y).saturating_add(scroll_pos_val);
-            let body_ey = (ey as usize).saturating_sub(content_y).saturating_add(scroll_pos_val);
+            // Normalize: ensure min/max order regardless of drag direction.
+            let x0 = std::cmp::min(rel_sx, rel_ex).min(body_w);
+            let x1 = std::cmp::max(rel_sx, rel_ex).min(body_w).max(x0 + 1);
 
-            // Normalize: ensure start <= end regardless of drag direction.
-            let (body_start, body_end) = if body_sy <= body_ey {
-                (body_sy, body_ey)
-            } else {
-                (body_ey, body_sy)
-            };
-
-            // Build highlight lines with REVERSED style for the selected range.
-            // Iterate terminal rows body_start..=body_end (same as get_selected_text),
-            // map each to flat line via body_to_flat.
-            let (x0_min, x1_max) = (
-                std::cmp::min(rel_sx, rel_ex).min(body_w),
-                std::cmp::max(rel_sx, rel_ex).min(body_w),
-            );
+            // Iterate terminal rows from min to max, map each to flat line via body_to_flat.
+            // Position highlight at exact terminal row to match mouse selection.
+            let row_start = std::cmp::min(sy as usize, ey as usize);
+            let row_end = std::cmp::max(sy as usize, ey as usize);
 
             tracing::debug!(
-                "[selection/render_selection] sel=({},{})-({},{}) content_x={} body_area_x={} rel_sx={} rel_ex={} body_w={} x0_min={} x1_max={} abs_body[{}..{}]",
-                sy, sx, ey, ex, content_x, body_area_x, rel_sx, rel_ex, body_w,
-                x0_min, x1_max,
-                body_start, body_end
+                "[selection/render_selection] sel=({},{})-({},{}) content_y={} scroll_pos={} body_w={} x={}-{} rows=[{}..{}] body_to_flat.len={}",
+                sy, sx, ey, ex, content_y, scroll_pos_val, body_w,
+                x0, x1,
+                row_start, row_end, body_to_flat.len()
             );
 
             let mut highlight_lines: Vec<Line> = Vec::new();
-            for abs_body in body_start..=body_end {
+            for row in row_start..=row_end {
+                let abs_body = (row as usize).saturating_sub(content_y).saturating_add(scroll_pos_val);
+                
                 // Look up flat line for this body line
                 let flat_line = match body_to_flat.get(abs_body).copied().flatten() {
                     Some(v) => v,
                     None => {
                         // Search forward for next valid flat line (padding/margin line)
-                        match body_to_flat[abs_body + 1..].iter().flatten().next() {
-                            Some(&v) => v,
-                            None => continue, // skip trailing padding/margin
+                        match body_to_flat.get(abs_body + 1).and_then(|x| *x) {
+                            Some(v) => v,
+                            None => {
+                                // No valid flat line for this row (trailing padding/margin).
+                                // Push an empty line so the highlight rect covers all selected rows.
+                                highlight_lines.push(Line::from(Span::raw("")));
+                                tracing::debug!(
+                                    "[selection/render_selection] row={} abs_body={} NO_FLAT_LINE (padding/margin) → empty highlight",
+                                    row, abs_body
+                                );
+                                continue;
+                            }
                         }
                     }
                 };
-                if flat_line >= flat_lines.len() { continue; }
+                if flat_line >= flat_lines.len() {
+                    highlight_lines.push(Line::from(Span::raw("")));
+                    continue;
+                }
                 let line = &flat_lines[flat_line];
-                
+
                 // Build cell→char map for this line
                 let mut chars: Vec<(usize, char)> = Vec::new();
                 let mut pos = 0usize;
@@ -318,35 +319,56 @@ impl ConversationWidget {
                         pos += w;
                     }
                 }
-                
-                // Extract selection range: same x0/x1 clipping as get_selected_text
-                let x0 = x0_min;
-                let x1 = x1_max.max(x0 + 1);
+
+                // Build styled spans with highlight for selected column range
                 let mut spans: Vec<Span> = Vec::new();
+                let mut in_highlight = false;
                 for (c_pos, ch) in &chars {
                     if *c_pos >= x0 && *c_pos < x1 {
+                        if !in_highlight {
+                            in_highlight = true;
+                        }
                         spans.push(Span::styled(
                             ch.to_string(),
                             Style::default().add_modifier(Modifier::REVERSED),
                         ));
                     } else {
+                        if in_highlight {
+                            in_highlight = false;
+                        }
                         spans.push(Span::raw(ch.to_string()));
                     }
                 }
+
+                tracing::debug!(
+                    "[selection/render_selection] row={} abs_body={} flat_line={} chars={} highlight_text=\"{}\"",
+                    row, abs_body, flat_line, chars.len(),
+                    chars.iter()
+                        .filter(|(p,_)| *p >= x0 && *p < x1)
+                        .map(|(_,ch)| *ch)
+                        .collect::<String>()
+                );
+
                 highlight_lines.push(Line::from(spans));
             }
 
             if !highlight_lines.is_empty() {
-                let visual_top = (body_start as i64).saturating_sub(scroll_pos_val as i64) as u16;
-                let highlight_area_y = (content_y as u16).saturating_add(visual_top);
-                // Use body_area_x for the x-position so highlight aligns with the message text
-                // (body_area is rendered at body_area.x = content_x - 2, not at _area.x)
-                let highlight_area_x = (_area.x as i32 + body_area_x as i32) as u16;
+                // msg_area has an outer title/border row + inner body rows; body_rect.y =
+                // content_y + 1, so the body_area.y is 1 row higher than content_y. Offset
+                // highlight up by 1 to match the actual text rendering position.
+                let highlight_area_y = sy.saturating_sub(1);
+                let highlight_area_x = area.x + body_area_x as u16;
                 let highlight_area = Rect::new(
                     highlight_area_x,
                     highlight_area_y,
-                    _area.width.min(body_w as u16),
+                    area.width.min(body_w as u16),
                     highlight_lines.len() as u16,
+                );
+                tracing::debug!(
+                    "[selection/render_selection] highlight_area=x={} y={} w={} h={} (sy={}, rows={})",
+                    highlight_area.x, highlight_area.y,
+                    highlight_area.width, highlight_area.height,
+                    sy, highlight_lines.len()
                 );
                 frame.render_widget(Paragraph::new(highlight_lines), highlight_area);
             }
