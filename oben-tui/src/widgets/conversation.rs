@@ -339,8 +339,11 @@ impl ConversationWidget {
             if !highlight_lines.is_empty() {
                 let visual_top = (body_start as i64).saturating_sub(scroll_pos_val as i64) as u16;
                 let highlight_area_y = (content_y as u16).saturating_add(visual_top);
+                // Use body_area_x for the x-position so highlight aligns with the message text
+                // (body_area is rendered at body_area.x = content_x - 2, not at _area.x)
+                let highlight_area_x = (_area.x as i32 + body_area_x as i32) as u16;
                 let highlight_area = Rect::new(
-                    _area.x,
+                    highlight_area_x,
                     highlight_area_y,
                     _area.width.min(body_w as u16),
                     highlight_lines.len() as u16,
