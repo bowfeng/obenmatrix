@@ -175,6 +175,7 @@ impl ConversationWidget {
                 x0_start, x1_start, row_start, row_end, body_to_flat.len()
             );
         
+        let mut prev_flat_line: Option<usize> = None;
         for row in row_start..=row_end {
             let abs_body = (row as usize).saturating_sub(body_start_offset) + scroll_pos;
             // Look up flat line for this body line
@@ -182,12 +183,31 @@ impl ConversationWidget {
                 Some(v) => v,
                 None => {
                     // Search forward for next valid flat line (padding/margin)
-                    match body_to_flat[abs_body + 1..].iter().flatten().next() {
-                        Some(&v) => v,
+                    let next_flat = body_to_flat.get(abs_body + 1..).and_then(|s| {
+                        s.iter().flatten().next().copied()
+                    });
+                    match next_flat {
+                        Some(v) => {
+                            // Margin skip: if abs_body has None (margin) but abs_body+1 is valid,
+                            // this is a block boundary. Skip if padding line already extracted same flat.
+                            let prev_abs = abs_body.saturating_sub(1);
+                            let margin_skip = match body_to_flat.get(prev_abs).and_then(|x| *x) {
+                                Some(prev_flat) => prev_flat == v,
+                                None => false,
+                            };
+                            if margin_skip { continue; }
+                            v
+                        }
                         None => continue, // skip trailing padding
                     }
                 }
             };
+            // Skip duplicate flat lines from padding (same message block, padding maps to last wrapped line)
+            if Some(flat_line) == prev_flat_line {
+                prev_flat_line = Some(flat_line);
+                continue;
+            }
+            prev_flat_line = Some(flat_line);
             if flat_line >= flat_lines.len() { continue; }
             let line = &flat_lines[flat_line];
             
