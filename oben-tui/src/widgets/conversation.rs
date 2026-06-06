@@ -160,15 +160,16 @@ impl ConversationWidget {
             std::cmp::max(rel_sx, rel_ex),
         );
 
-        tracing::debug!(
-            "[selection/get_selected_text] sel=({},{})-({},{}) content_y={} scroll_pos={} rel_sx={} rel_ex={} body_to_flat_len={}",
-            sy, sx, ey, ex, content_y, scroll_pos, rel_sx, rel_ex, body_to_flat.len()
-        );
-
         // Iterate terminal rows sy..=ey (normalized), extract text per row.
         let mut result = String::new();
         let row_start = std::cmp::min(sy as usize, ey as usize);
         let row_end = std::cmp::max(sy as usize, ey as usize);
+
+        tracing::debug!(
+            "[selection/get_selected_text] sel=({},{})-({},{}) content_x={} body_area_x={} rel_sx={} rel_ex={} body_w={} x0={} x1={} row_range=[{}..{}] body_to_flat_len={}",
+            sy, sx, ey, ex, content_x, body_area_x, rel_sx, rel_ex, body_w,
+            x0_start, x1_start, row_start, row_end, body_to_flat.len()
+        );
         
         for row in row_start..=row_end {
             let abs_body = (row as usize).saturating_sub(content_y) + scroll_pos;
@@ -200,6 +201,12 @@ impl ConversationWidget {
             // Extract text at row level using mouse row position
             let x0 = x0_start.min(body_w);
             let x1 = x1_start.min(body_w).max(x0 + 1);
+            
+            // Debug: log x0/x1 for all rows
+            tracing::debug!(
+                "[selection/get_selected_text] row={} flat_line={} x0={} x1={} chars_count={}",
+                row, flat_line, x0, x1, chars.len()
+            );
             
             let sel: String = chars.iter()
                 .filter(|(p,_)| *p >= x0 && *p < x1)
@@ -270,19 +277,19 @@ impl ConversationWidget {
                 (body_ey, body_sy)
             };
 
-            tracing::debug!(
-                "[selection/render_selection] sel=({},{})-({},{}) content_y={} scroll_pos={} abs_body[{}..{}] rel_sx={} rel_ex={} body_w={} flat_lines={}",
-                sy, sx, ey, ex, content_y, scroll_pos_val,
-                body_start, body_end, rel_sx, rel_ex, body_w,
-                flat_lines.len()
-            );
-
             // Build highlight lines with REVERSED style for the selected range.
             // Iterate terminal rows body_start..=body_end (same as get_selected_text),
             // map each to flat line via body_to_flat.
             let (x0_min, x1_max) = (
                 std::cmp::min(rel_sx, rel_ex).min(body_w),
                 std::cmp::max(rel_sx, rel_ex).min(body_w),
+            );
+
+            tracing::debug!(
+                "[selection/render_selection] sel=({},{})-({},{}) content_x={} body_area_x={} rel_sx={} rel_ex={} body_w={} x0_min={} x1_max={} abs_body[{}..{}]",
+                sy, sx, ey, ex, content_x, body_area_x, rel_sx, rel_ex, body_w,
+                x0_min, x1_max,
+                body_start, body_end
             );
 
             let mut highlight_lines: Vec<Line> = Vec::new();
@@ -613,6 +620,10 @@ impl ConversationWidget {
 
             // Render body (Paragraph) before block (borders on top)
             let body_area = block.inner(block_rect);
+            tracing::debug!(
+                "[layout] body_area.x={} block_rect.x={} msg_area.x={} area.x={}",
+                body_area.x, block_rect.x, msg_area.left(), area.x
+            );
             if block_rect.height > layout::BODY_HEIGHT_ADJUSTER && !wrapped.is_empty() {
                 let body_lines: Vec<Line> = wrapped
                     .iter()
