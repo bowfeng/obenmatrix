@@ -147,9 +147,12 @@ impl ConversationWidget {
         let scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
         let body_w = state.body_width;
 
-        // Mouse cols are absolute terminal coords. Convert to message-area-relative column.
-        let rel_sx = (sx as usize).saturating_sub(content_x);
-        let rel_ex = (ex as usize).saturating_sub(content_x);
+        // Mouse cols are absolute terminal coords. Convert to body-area-relative column.
+        // Flat lines render at body_area.x = area.x + 2, but content_x = area.x + 4,
+        // so body_area.x = content_x - 2.
+        let body_area_x = content_x.saturating_sub(2);
+        let rel_sx = (sx as usize).saturating_sub(body_area_x);
+        let rel_ex = (ex as usize).saturating_sub(body_area_x);
 
         // Ensure min/max order for x
         let (x0_start, x1_start) = (
@@ -245,9 +248,12 @@ impl ConversationWidget {
             let content_x = state.content_x as usize;
             let body_w = state.body_width;
 
-            // Mouse cols are absolute terminal coords. Convert to message-area-relative column.
-            let rel_sx = (sx as usize).saturating_sub(content_x);
-            let rel_ex = (ex as usize).saturating_sub(content_x);
+            // Mouse cols are absolute terminal coords. Convert to body-area-relative column.
+            // Flat lines render at body_area.x = area.x + 2, but content_x = area.x + 4,
+            // so body_area.x = content_x - 2.
+            let body_area_x = content_x.saturating_sub(2);
+            let rel_sx = (sx as usize).saturating_sub(body_area_x);
+            let rel_ex = (ex as usize).saturating_sub(body_area_x);
 
             // Convert terminal row → body_line → flat line.
             // Blocks render at msg_area.y + (block_start - scroll_offset), so we add
