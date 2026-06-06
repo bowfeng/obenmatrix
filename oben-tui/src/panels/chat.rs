@@ -95,14 +95,23 @@ impl ChatPanel {
 
     /// Copy selection to system clipboard, then clear selection.
     pub fn copy_selection_to_clipboard(&mut self) {
-        use crate::clipboard;
+        tracing::debug!(
+            "[selection] copy: start={:?} end={:?} body_width={} scroll_pos={}",
+            self.message_state.selection_start,
+            self.message_state.selection_end,
+            self.message_state.body_width,
+            self.message_state.scroll_pos.load(Ordering::SeqCst)
+        );
         if let Some(text) = self
             .message_display
-            .get_selected_text(&mut self.message_state)
+            .get_selected_text(&self.message_state)
         {
+            tracing::debug!("[selection] copy: got {} chars", text.len());
             if !text.is_empty() && crate::clipboard::write_clipboard(&text) {
                 self.message_state.clear_selection();
             }
+        } else {
+            tracing::debug!("[selection] copy: no text returned");
         }
     }
 
@@ -154,6 +163,16 @@ impl Panel for ChatPanel {
             self.streaming,
         );
 
+        // Render text selection highlight (drawn on top of message blocks).
+        if self.message_state.selection_start.is_some() {
+            self.message_display.render_selection(
+                frame,
+                chunks[0],
+                &self.message_state,
+                &palette,
+            );
+        }
+
         // Input bar widget
         self.render_input_bar(frame, chunks[1], &self.input);
     }
@@ -176,9 +195,29 @@ impl Panel for ChatPanel {
         }
     }
 
-    fn handle_mouse(&mut self, event: &crossterm::event::MouseEvent) -> bool {
+    fn handle_mouse(&mut self, area: Rect, event: &crossterm::event::MouseEvent) -> Option<String> {
         use crossterm::event::MouseEventKind;
+        use crossterm::event::MouseButton;
+
         let scroll_step: i32 = 3;
+        let actual_body_width = area.width.saturating_sub(6);
+        let content_x_offset = area.x.saturating_add(4);
+        tracing::info!(
+            "[selection] mouse event: row={} col={} kind={:?} msg_area_y={} content_x={} content_x_offset={} body_width={} old_body_width={}",
+            event.row, event.column, event.kind, area.y,
+            self.message_state.content_x,
+            content_x_offset,
+            actual_body_width,
+            self.message_state.body_width
+        );
+        if actual_body_width > 0 {
+            self.message_state.body_width = actual_body_width as usize;
+        }
+        self.message_state.wrap_width = actual_body_width as usize;
+        self.message_state.content_x = content_x_offset;
+        self.message_state.msg_area_y = area.y;
+        self.message_state.content_y = area.y.saturating_add(2);
+
         match event.kind {
             MouseEventKind::ScrollDown => {
                 self.message_state.scroll_to_bottom.store(false, Ordering::SeqCst);
@@ -186,13 +225,12 @@ impl Panel for ChatPanel {
                 self.message_state
                     .user_scroll_offset
                     .fetch_add(scroll_step, Ordering::SeqCst);
-                let new = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 tracing::info!(
                     "[mouse] ScrollDown: old_offset={} new_offset={} scroll_to_bottom=false",
                     old,
-                    new
+                    self.message_state.user_scroll_offset.load(Ordering::SeqCst)
                 );
-                true
+                return None;
             }
             MouseEventKind::ScrollUp => {
                 self.message_state.scroll_to_bottom.store(false, Ordering::SeqCst);
@@ -200,15 +238,56 @@ impl Panel for ChatPanel {
                 self.message_state
                     .user_scroll_offset
                     .fetch_sub(scroll_step, Ordering::SeqCst);
-                let new = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 tracing::info!(
-                    "[mouse] ScrollUp: old_offset={} new_offset={} scroll_to_bottom=false",
+                    "[mouse] ScrollUp: old_offset={} new_offset{} scroll_to_bottom=false",
                     old,
-                    new
+                    self.message_state.user_scroll_offset.load(Ordering::SeqCst)
                 );
-                true
+                return None;
             }
-            _ => false,
+            MouseEventKind::Down(MouseButton::Left) => {
+                let row = event.row;
+                let col = event.column;
+                self.message_state.selection_start = Some((row, col));
+                self.message_state.selection_end = None;
+                tracing::debug!(
+                    "[selection] MOUSE_DOWN: row={} col={} → selection=({},{})",
+                    row, col, row, col
+                );
+                return None;
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let row = event.row;
+                let col = event.column;
+                self.message_state.selection_end = Some((row, col));
+                return None;
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let row = event.row;
+                let col = event.column;
+                self.message_state.selection_end = Some((row, col));
+                tracing::debug!(
+                    "[mouse] LeftRelease: sel=(row={},col={}) content_y={} scroll_pos={}",
+                    row, col, self.message_state.content_y,
+                    self.message_state.scroll_pos.load(Ordering::SeqCst)
+                );
+                if self.message_state.selection_start.is_some() && self.message_state.selection_end.is_some() {
+                    if let Some(text) = self.message_display.get_selected_text(&self.message_state) {
+                        tracing::debug!("[mouse] LeftRelease: got {} chars", text.len());
+                        if !text.is_empty() && crate::clipboard::write_clipboard(&text) {
+                            tracing::info!("[mouse] auto-copied {} chars", text.len());
+                            self.message_state.clear_selection();
+                            return Some(text);
+                        } else {
+                            tracing::debug!("[mouse] LeftRelease: write_clipboard failed or empty");
+                        }
+                    } else {
+                        tracing::debug!("[mouse] LeftRelease: get_selected_text returned None");
+                    }
+                }
+                return None;
+            }
+            _ => None,
         }
     }
 }

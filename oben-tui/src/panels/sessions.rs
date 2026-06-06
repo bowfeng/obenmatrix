@@ -610,14 +610,7 @@ impl SessionsPanel {
     }
 
     fn render_message_view(&self, frame: &mut Frame, area: Rect) {
-        if self.filtered.is_empty()
-            || self
-                .message_state
-                .message_entries
-                .lock()
-                .unwrap()
-                .is_empty()
-        {
+        if self.filtered.is_empty() || self.sessions.is_empty() || self.selected >= self.filtered.len() {
             let block = Block::default().borders(Borders::ALL).title(" Info ");
             frame.render_widget(&block, area);
             let inner = block.inner(area);
@@ -630,7 +623,6 @@ impl SessionsPanel {
             frame.render_widget(para, inner);
             return;
         }
-
         let s = &self.sessions[self.filtered[self.selected]];
         let name = s.metadata.title.as_deref().unwrap_or(&s.name);
         let block = Block::default()

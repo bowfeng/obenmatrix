@@ -11,6 +11,7 @@ use ratatui::widgets::{
 };
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use unicode_width::UnicodeWidthChar;
 
 use crate::turn::turn_state::TurnState;
 use crate::widgets::layout;
@@ -38,9 +39,27 @@ pub struct ConversationState {
     pub user_scroll_offset: Arc<AtomicI32>,
     /// Tracks content line count from previous frame — detects if content has grown.
     pub prev_scrollable_range: Arc<AtomicUsize>,
-    /// Selection start/end as (visual_line_idx, char_offset).
-    pub selection_start: Option<(usize, usize)>,
-    pub selection_end: Option<(usize, usize)>,
+    /// Width of the message body content area in display columns.
+    pub body_width: usize,
+    /// X offset of the body content area from the left edge of the screen.
+    pub content_x: u16,
+    /// Y offset of the first content row (below borders).
+    pub content_y: u16,
+    /// Y position of the message display area.
+    pub msg_area_y: u16,
+    /// Width available for line wrapping in the message body (in display columns).
+    pub wrap_width: usize,
+    /// Block heights in body-line units. index i = height of entry[i] block.
+    /// Used to map body_line_idx (from mouse) → flat_line_idx (from content).
+    pub cached_block_heights: Arc<StdMutex<Vec<u16>>>,
+    /// Maps body_line_idx → flat_line_idx for selection alignment.
+    /// body_line 0=text, 1-2=borders, then margin + next entry 0=text, 1-2=borders, etc.
+    pub cached_body_to_flat: Arc<StdMutex<Vec<Option<usize>>>>,
+    /// Cached wrapped lines for selection/render alignment. Populated during render.
+    pub cached_lines: Arc<StdMutex<Vec<Line<'static>>>>,
+    /// Selection start/end as terminal (row, col).
+    pub selection_start: Option<(u16, u16)>,
+    pub selection_end: Option<(u16, u16)>,
     /// Per-message structured entries for bordered-block rendering.
     pub message_entries: Arc<StdMutex<Vec<MessageRenderEntry>>>,
 }
@@ -58,6 +77,14 @@ impl ConversationState {
             selection_start: None,
             selection_end: None,
             message_entries: Arc::new(StdMutex::new(Vec::new())),
+            body_width: 0,
+            content_x: 0,
+            content_y: 0,
+            msg_area_y: 0,
+            wrap_width: 0,
+            cached_block_heights: Arc::new(StdMutex::new(Vec::new())),
+            cached_body_to_flat: Arc::new(StdMutex::new(Vec::new())),
+            cached_lines: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -105,68 +132,227 @@ impl ConversationWidget {
     }
 
     /// Get the selected text from the current state, if any.
-    pub fn get_selected_text(&self, state: &mut ConversationState) -> Option<String> {
-        let sy = state.selection_start.map(|(s, _)| s);
-        let sx = state.selection_start.map(|(_, s)| s);
-        let ey = state.selection_end.map(|(s, _)| s);
-        let ex = state.selection_end.map(|(_, s)| s);
+    ///
+    /// Converts terminal (row, col) → body_line → flat line.
+    /// Uses the CURRENT cached_body_to_flat mapping from render_bordered_blocks
+    /// so it stays consistent with what's currently being rendered.
+    pub fn get_selected_text(&self, state: &ConversationState) -> Option<String> {
+        let (sy, sx) = state.selection_start?;
+        let (ey, ex) = state.selection_end?;
 
-        if let (Some(sy), Some(sx), Some(ey), Some(ex)) = (sy, sx, ey, ex) {
-            // Build flat lines from entries
-            let entries = state.message_entries.lock().unwrap();
-            let mut lines: Vec<Line<'static>> = Vec::new();
-            for entry in entries.iter() {
-                for sl in entry.body_lines.iter() {
-                    lines.push(sl.content.clone());
+        let flat_lines = state.cached_lines.lock().ok()?.clone();
+        let body_to_flat = state.cached_body_to_flat.lock().ok()?;
+        let content_y = state.content_y as usize;
+        let content_x = state.content_x as usize;
+        let scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
+        let body_w = state.body_width;
+
+        // Mouse cols are absolute terminal coords. Convert to message-area-relative column.
+        let rel_sx = (sx as usize).saturating_sub(content_x);
+        let rel_ex = (ex as usize).saturating_sub(content_x);
+
+        // Ensure min/max order for x
+        let (x0_start, x1_start) = (
+            std::cmp::min(rel_sx, rel_ex),
+            std::cmp::max(rel_sx, rel_ex),
+        );
+
+        tracing::debug!(
+            "[selection/get_selected_text] sel=({},{})-({},{}) content_y={} scroll_pos={} rel_sx={} rel_ex={} body_to_flat_len={}",
+            sy, sx, ey, ex, content_y, scroll_pos, rel_sx, rel_ex, body_to_flat.len()
+        );
+
+        // Iterate terminal rows sy..=ey (normalized), extract text per row.
+        let mut result = String::new();
+        let row_start = std::cmp::min(sy as usize, ey as usize);
+        let row_end = std::cmp::max(sy as usize, ey as usize);
+        
+        for row in row_start..=row_end {
+            let abs_body = (row as usize).saturating_sub(content_y) + scroll_pos;
+            // Look up flat line for this body line
+            let flat_line = match body_to_flat.get(abs_body).copied().flatten() {
+                Some(v) => v,
+                None => {
+                    // Search forward for next valid flat line (padding/margin)
+                    match body_to_flat[abs_body + 1..].iter().flatten().next() {
+                        Some(&v) => v,
+                        None => continue, // skip trailing padding
+                    }
+                }
+            };
+            if flat_line >= flat_lines.len() { continue; }
+            let line = &flat_lines[flat_line];
+            
+            // Build cell→char map for this line
+            let mut chars: Vec<(usize, char)> = Vec::new();
+            let mut pos = 0usize;
+            for span in &line.spans {
+                for ch in span.content.chars() {
+                    let w = ch.width().unwrap_or(0).max(1);
+                    chars.push((pos, ch));
+                    pos += w;
                 }
             }
-
-            let vy_start = std::cmp::min(sy, ey);
-            let vy_end = std::cmp::max(sy, ey);
-            let mut result = String::new();
-
-            for v in vy_start..=vy_end {
-                if v >= lines.len() {
-                    break;
-                }
-                let line = &lines[v];
-                let line_text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-                let chars: Vec<char> = line_text.chars().collect();
-
-                if vy_start == vy_end {
-                    let (x_start, x_end) = (std::cmp::min(sx, ex), std::cmp::max(sx, ex));
-                    if x_start < chars.len() {
-                        let sel: String = chars[x_start..std::cmp::min(x_end, chars.len())]
-                            .iter()
-                            .collect();
-                        if !result.is_empty() {
-                            result.push('\n');
-                        }
-                        result.push_str(&sel);
-                    }
-                } else if v == vy_start {
-                    let start_x = std::cmp::min(sx, chars.len());
-                    let sel: String = chars[start_x..].iter().collect();
-                    if !result.is_empty() {
-                        result.push('\n');
-                    }
-                    result.push_str(&sel);
-                } else if v == vy_end {
-                    let end_x = std::cmp::min(ex, chars.len());
-                    let sel: String = chars[..end_x].iter().collect();
-                    result.push('\n');
-                    result.push_str(&sel);
-                } else {
-                    result.push('\n');
-                    result.push_str(&line_text);
-                }
-            }
-
-            if !result.is_empty() {
-                return Some(result);
+            
+            // Extract text at row level using mouse row position
+            let x0 = x0_start.min(body_w);
+            let x1 = x1_start.min(body_w).max(x0 + 1);
+            
+            let sel: String = chars.iter()
+                .filter(|(p,_)| *p >= x0 && *p < x1)
+                .map(|(_,ch)| *ch)
+                .collect();
+            
+            if !sel.is_empty() {
+                if !result.is_empty() { result.push('\n'); }
+                result.push_str(&sel);
             }
         }
+
+        if !result.is_empty() {
+            let first_line = result.lines().next().unwrap_or("");
+            tracing::debug!(
+                "[selection/get_selected_text] result={} chars first_line_trunc=\"{}\"",
+                result.len(),
+                first_line.chars().take(80).collect::<String>()
+            );
+            return Some(result);
+        }
+        tracing::debug!("[selection/get_selected_text] no result (empty)");
         None
+    }
+
+    /// Render selection highlight overlay.
+    ///
+    /// Uses the CURRENT cached_body_to_flat mapping from render_bordered_blocks.
+    pub fn render_selection(
+        &self,
+        frame: &mut Frame,
+        _area: Rect,
+        state: &ConversationState,
+        _palette: &ratatui_themes::ThemePalette,
+    ) {
+        if let (Some((sy, sx)), Some((ey, ex))) = (state.selection_start, state.selection_end) {
+            let flat_lines = match state.cached_lines.lock() {
+                Ok(g) => g.clone(),
+                Err(_) => return,
+            };
+            let body_to_flat = match state.cached_body_to_flat.lock() {
+                Ok(g) => g.clone(),
+                Err(_) => return,
+            };
+            let content_y = state.content_y as usize;
+            let content_x = state.content_x as usize;
+            let body_w = state.body_width;
+
+            // Mouse cols are absolute terminal coords. Convert to message-area-relative column.
+            let rel_sx = (sx as usize).saturating_sub(content_x);
+            let rel_ex = (ex as usize).saturating_sub(content_x);
+
+            // Convert terminal row → body_line → flat line.
+            // Blocks render at msg_area.y + (block_start - scroll_offset), so we add
+            // scroll_pos to map terminal row back to the correct body-line index.
+            // content_y ≈ msg_area.y + 1, thus body_line = row - content_y + scroll_pos_val.
+            let scroll_pos_val = state.scroll_pos.load(Ordering::SeqCst);
+            let body_sy = (sy as usize).saturating_sub(content_y).saturating_add(scroll_pos_val);
+            let body_ey = (ey as usize).saturating_sub(content_y).saturating_add(scroll_pos_val);
+
+            // Normalize: ensure start <= end regardless of drag direction.
+            let (body_start, body_end) = if body_sy <= body_ey {
+                (body_sy, body_ey)
+            } else {
+                (body_ey, body_sy)
+            };
+
+            let flat_start;
+            if body_start >= body_to_flat.len() {
+                return;
+            } else if let Some(v) = body_to_flat[body_start] {
+                flat_start = v;
+            } else {
+                let mut found = None;
+                for b in (0..body_start).rev() {
+                    if let Some(v) = body_to_flat.get(b).copied().flatten() {
+                        found = Some(v);
+                        break;
+                    }
+                }
+                if let Some(v) = found { flat_start = v; } else { return; }
+            }
+            let flat_end;
+            if body_end >= body_to_flat.len() {
+                return;
+            } else if let Some(v) = body_to_flat[body_end] {
+                flat_end = v;
+            } else {
+                let mut found = None;
+                for b in body_end + 1..body_to_flat.len() {
+                    if let Some(v) = body_to_flat.get(b).copied().flatten() {
+                        found = Some(v);
+                        break;
+                    }
+                }
+                if let Some(v) = found { flat_end = v; } else { return; }
+            }
+            let flat_start = flat_start.min(flat_lines.len().saturating_sub(1));
+            let flat_end = flat_end.min(flat_lines.len().saturating_sub(1));
+            if flat_start > flat_end {
+                return;
+            }
+            let highlight_line_count = flat_end.saturating_sub(flat_start) + 1;
+            let highlight_height = highlight_line_count.max(1) as u16;
+
+            tracing::debug!(
+                "[selection/render_selection] sel=({},{})-({},{}) content_y={} scroll_pos={} body_start={} body_end={} flat=[{}..{}) body_w={} flat_lines={}",
+                sy, sx, ey, ex, content_y, scroll_pos_val,
+                body_start, body_end, flat_start, flat_end + 1, body_w,
+                flat_lines.len()
+            );
+
+            // Build highlight lines with REVERSED style for the selected range.
+            let mut highlight_lines: Vec<Line> = Vec::new();
+            for i in flat_start..=flat_end {
+                if i >= flat_lines.len() { break; }
+                let line = &flat_lines[i];
+                let mut cell_chars: Vec<(usize, char)> = Vec::new();
+                let mut cell_pos: usize = 0;
+                for span in &line.spans {
+                    for ch in span.content.chars() {
+                        let w = ch.width().unwrap_or(0);
+                        cell_chars.push((cell_pos, ch));
+                        cell_pos += w.max(1);
+                    }
+                }
+                // Use relative column coords for message-area selection
+                let x0 = std::cmp::min(rel_sx, rel_ex).min(body_w);
+                let x1 = std::cmp::max(rel_sx, rel_ex).min(body_w);
+                let x1 = x1.max(x0 + 1);
+                let mut spans: Vec<Span> = Vec::new();
+                for (c_pos, ch) in &cell_chars {
+                    if *c_pos >= x0 && *c_pos < x1 {
+                        spans.push(Span::styled(
+                            ch.to_string(),
+                            Style::default().add_modifier(Modifier::REVERSED),
+                        ));
+                    } else {
+                        spans.push(Span::raw(ch.to_string()));
+                    }
+                }
+                highlight_lines.push(Line::from(spans));
+            }
+
+            if !highlight_lines.is_empty() {
+                let visual_top = (body_start as i64).saturating_sub(scroll_pos_val as i64) as u16;
+                let highlight_area_y = (content_y as u16).saturating_add(visual_top);
+                let highlight_area = Rect::new(
+                    _area.x,
+                    highlight_area_y,
+                    _area.width.min(body_w as u16),
+                    highlight_height,
+                );
+                frame.render_widget(Paragraph::new(highlight_lines), highlight_area);
+            }
+        }
     }
 
     /// Render message blocks with bordered styling.
@@ -209,6 +395,8 @@ impl ConversationWidget {
 
         // Accumulate (entry_index, block_type, wrapped_lines) for later rendering
         let mut layout_entries: Vec<(usize, BlockType<'_>, Vec<Line<'static>>)> = Vec::new();
+        let mut entry_flat_ranges: Vec<(usize, usize)> = Vec::new(); // (start, end) in flat lines
+        let mut flat_accum = 0usize;
         for entry in entries {
             let plain_lines: Vec<Line<'static>> = entry
                 .body_lines
@@ -222,11 +410,51 @@ impl ConversationWidget {
                 BlockType::Message(&entry.role)
             };
 
-            // Wrap using the layout module's function (consistent height estimation)
-            let wrapped =
-                layout::wrap_styled_lines_to_lines(&plain_lines, inner_width.saturating_sub(2));
+            let actual_wrap_w = if matches!(&block_type, BlockType::ToolResult) {
+                // ToolResult: -2 for tool indent box + -2 for inner border = -4
+                inner_width.saturating_sub(4)
+            } else {
+                // Regular message: -2 for inner block borders + -2 for body border = -4
+                inner_width.saturating_sub(2)
+            };
 
+            // Wrap using the layout module's function (consistent height estimation)
+            let wrapped = layout::wrap_styled_lines_to_lines(&plain_lines, actual_wrap_w);
+
+            let flat_start = flat_accum;
+            let flat_end = flat_accum + wrapped.len();
             layout_entries.push((layout_entries.len(), block_type, wrapped));
+            entry_flat_ranges.push((flat_start, flat_end));
+            flat_accum = flat_end;
+        }
+
+        // Debug: log entry flat ranges and wrap widths
+        tracing::debug!(
+            "[selection/render_bordered_blocks] area.w={} msg_area.w={} inner_width={} entry_count={} total_flat_lines={}",
+            area.width, msg_area.width, inner_width,
+            entry_flat_ranges.len(),
+            entry_flat_ranges.last().map(|(s,e)| e.saturating_sub(*s)).unwrap_or(0)
+        );
+        for (ei, (fs, fe)) in entry_flat_ranges.iter().enumerate() {
+            let count = fe.saturating_sub(*fs);
+            if ei < layout_entries.len() {
+                let wrap_w = if matches!(layout_entries[ei].1, BlockType::ToolResult) {
+                    inner_width.saturating_sub(4)
+                } else {
+                    inner_width.saturating_sub(2)
+                };
+                let wrapped = &layout_entries[ei].2;
+                let first_line: String = if !wrapped.is_empty() {
+                    wrapped[0].spans.iter().map(|s| s.content.to_string()).collect()
+                } else {
+                    String::new()
+                };
+                tracing::debug!(
+                    "[selection/render_bordered_blocks]   entry[{}] flat[{}..{}) wrap_w={} count={} first=\"...{}...\"",
+                    ei, fs, fe, wrap_w, count,
+                    first_line.chars().take(60).collect::<String>()
+                );
+            }
         }
 
         // Compute block heights using the layout module's estimator
@@ -241,6 +469,51 @@ impl ConversationWidget {
             .collect();
 
         let content_height = layout::calc_total_height(&block_heights);
+
+        // Cache the full flat wrapped lines for selection/render alignment.
+        // Cache block heights and body→flat mapping for selection alignment.
+        {
+            *state.cached_block_heights.lock().unwrap() = block_heights.clone();
+            if let Ok(ref mut cached_lines) = state.cached_lines.lock() {
+                let mut flat: Vec<Line<'static>> = Vec::new();
+                for (_, _, ref wrapped_lines) in &layout_entries {
+                    flat.extend(wrapped_lines.iter().cloned());
+                }
+                **cached_lines = flat;
+            }
+            // Cache body→flat mapping for selection alignment.
+            // body_to_flat[body_line] = flat_line index for text lookup.
+            // Each block contributes (wrapped.len() + BODY_HEIGHT_ADJUSTER) entries.
+            // Padding (BODY_HEIGHT_ADJUSTER) lines map to last wrapped line.
+            // One inter-block margin (None) between blocks.
+            let mut body_to_flat = state.cached_body_to_flat.lock().unwrap();
+            let mapping: Vec<Option<usize>> = {
+                let mut mapping: Vec<Option<usize>> = Vec::new();
+                let mut flat_accum = 0usize;
+                let total_blocks = layout_entries.len();
+                for (i, (_, _, wrapped)) in layout_entries.iter().enumerate() {
+                    let wrapped_count = wrapped.len();
+                    let block_height = block_heights[i];
+                    // Map body_line indices to flat_line indices
+                    for j in 0..block_height {
+                        let j_usize = j as usize;
+                        if j_usize < wrapped_count {
+                            mapping.push(Some(flat_accum + j_usize));
+                        } else {
+                            // Padding lines (BODY_HEIGHT_ADJUSTER) map to last wrapped line
+                            mapping.push(Some(flat_accum + (wrapped_count.saturating_sub(1))));
+                        }
+                    }
+                    flat_accum += wrapped_count.max(1);
+                    // Inter-block margin entry
+                    if i < total_blocks - 1 {
+                        mapping.push(None);
+                    }
+                }
+                mapping
+            };
+            *body_to_flat = mapping;
+        }
         let scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
 
         // ─── Phase 1.5: Stream block estimation & wrapping (shared between phases) ──────

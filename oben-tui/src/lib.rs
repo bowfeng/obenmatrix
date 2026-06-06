@@ -20,7 +20,7 @@ use crossterm::event::{
     MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, size,
 };
 use crossterm::ExecutableCommand;
 use panels::PanelId;
@@ -36,7 +36,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
-use tracing_subscriber::{fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::app::TurnCompletion;
 
@@ -217,6 +216,9 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         redraw = true;
                     }
                     Some(TuiEvent::Mouse(mouse_event)) => {
+                        // Body area: y=1 (after 1-row header), terminal width, remaining height
+                        let (term_w, term_h) = size().unwrap_or((80, 24));
+                        let body_area = Rect::new(0, 1, term_w, term_h.saturating_sub(2));
                         match mouse_event.kind {
                             MouseEventKind::ScrollUp => {
                                 tracing::debug!(
@@ -242,20 +244,35 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             let mut consumed = 0usize;
                             for (i, &pw) in tab_widths.iter().enumerate() {
                                 if mouse_event.column >= consumed as u16 && mouse_event.column < (consumed + pw) as u16 {
-                                    app.active_panel = match i {
+                                    let target = match i {
                                         0 => PanelId::Chat,
                                         1 => PanelId::Sessions,
                                         2 => PanelId::Config,
                                         3 => PanelId::Setup,
                                         _ => break,
                                     };
+                                    if app.active_panel != target {
+                                        app.activate_panel(target).await;
+                                    }
+                                    app.active_panel = target;
                                     break;
                                 }
                                 consumed += pw + 1;
                             }
-                            redraw = true;
+                            continue;
                         } else if let Some(panel) = app.panels.get_mut(&app.active_panel) {
-                            panel.handle_mouse(&mouse_event);
+                            if let Some(text) = panel.handle_mouse(body_area, &mouse_event) {
+                                tracing::debug!("[lib] handle_mouse returned text, about to show toast");
+                                let lines = text.lines().count();
+                                let msg = if lines == 1 {
+                                    "Copied selection.".to_string()
+                                } else {
+                                    format!("Copied {} lines.", lines)
+                                };
+                                app.show_toast(msg, ratatui_toaster::ToastType::Success);
+                            } else {
+                                tracing::debug!("[lib] handle_mouse returned None for event={:?}", mouse_event.kind);
+                            }
                             redraw = true;
                         }
                     }

@@ -488,7 +488,7 @@ impl App {
 
     pub async fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
         match key.code {
-            crossterm::event::KeyCode::Char('c')
+            crossterm::event::KeyCode::Char('w')
                 if key
                     .modifiers
                     .contains(crossterm::event::KeyModifiers::CONTROL) =>
@@ -504,6 +504,12 @@ impl App {
                     }
                     return;
                 }
+            }
+            crossterm::event::KeyCode::Char('c')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.running = false;
                 return;
             }

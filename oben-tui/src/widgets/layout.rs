@@ -38,18 +38,9 @@ pub fn calc_wrapped_line_count(lines: &[Line<'static>], width: usize) -> usize {
         let total_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
         if total_width == 0 || total_width <= width {
             count += 1;
-        } else if line.spans.len() == 1 {
-            let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-            count += textwrap_wrap(&text, width)
-                .into_iter()
-                .map(|wrapped| wrapped.as_ref().len())
-                .sum::<usize>();
         } else {
             let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-            count += textwrap_wrap(&text, width)
-                .into_iter()
-                .map(|wrapped| wrapped.as_ref().len())
-                .sum::<usize>();
+            count += textwrap_wrap(&text, width).len();
         }
     }
     count

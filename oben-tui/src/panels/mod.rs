@@ -63,9 +63,10 @@ pub trait Panel: Send + Sync {
     /// processes the returned action after the panel has consumed the key.
     async fn handle_key(&mut self, key: KeyEvent) -> KeyAction;
 
-    /// Handle a mouse event. Default no-op (returns false).
-    fn handle_mouse(&mut self, _event: &MouseEvent) -> bool {
-        false
+    /// Handle a mouse event in the given area.
+    /// Returns Some(text) when selection was made and text should be auto-copied.
+    fn handle_mouse(&mut self, _area: Rect, _event: &MouseEvent) -> Option<String> {
+        None
     }
 
     /// Called when this panel becomes active. Default no-op.
