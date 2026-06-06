@@ -161,6 +161,9 @@ impl ConversationWidget {
         // body_to_flat body_start_offset = msg_area.y = content_y - 1.
         let body_start_offset = content_y.saturating_sub(1);
 
+        // Calculate max valid abs_body from body_to_flat bounds.
+        let max_abs_body = body_to_flat.len();
+
         // Iterate terminal rows sy..=ey (normalized), extract text per row.
         let mut result = String::new();
         let row_start = std::cmp::min(sy as usize, ey as usize);
@@ -169,11 +172,14 @@ impl ConversationWidget {
         let mut prev_flat_line: Option<usize> = None;
         let mut prev_abs_was_padding = false;
         tracing::debug!(
-            "[selection/get_text] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}] body_to_flat_len={}",
-            sy, ey, sx, ex, content_y, body_start_offset, scroll_pos, row_start, row_end, body_to_flat.len()
+            "[selection/get_text] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}] body_to_flat_len={} max_abs_body={}",
+            sy, ey, sx, ex, content_y, body_start_offset, scroll_pos, row_start, row_end, body_to_flat.len(), max_abs_body
         );
         for row in row_start..=row_end {
             let abs_body = (row as usize).saturating_sub(body_start_offset) + scroll_pos;
+            if abs_body >= max_abs_body {
+                continue;
+            }
 
             // Look up flat line for this body line.
             // body_to_flat structure: [...wrapped_lines..., padding, None(sep), next_block...]
@@ -288,6 +294,15 @@ impl ConversationWidget {
             let body_w = state.body_width;
             let scroll_pos_val = state.scroll_pos.load(Ordering::SeqCst);
 
+            // Clip mouse coordinates to message panel boundaries.
+            let msg_top = area.y;
+            let msg_bottom = area.bottom().saturating_sub(1);
+            let sy_clamped = sy.max(msg_top).min(msg_bottom);
+            let ey_clamped = ey.max(msg_top).min(msg_bottom);
+            if sy_clamped > ey_clamped {
+                return;
+            }
+
             // Mouse rows are absolute terminal coords. Convert to body-area-relative column.
             let body_area_x = content_x.saturating_sub(2);
             let rel_sx = (sx as usize).saturating_sub(body_area_x as usize);
@@ -302,12 +317,12 @@ impl ConversationWidget {
             let body_start_offset = (content_y.saturating_sub(1)) as usize;
 
             // Iterate terminal rows from min to max.
-            let row_start = std::cmp::min(sy as usize, ey as usize);
-            let row_end = std::cmp::max(sy as usize, ey as usize);
+            let row_start = std::cmp::min(sy_clamped, ey_clamped);
+            let row_end = std::cmp::max(sy_clamped, ey_clamped);
 
             tracing::debug!(
-                "[selection/render_sel] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}]",
-                sy, ey, sx, ex, content_y, body_start_offset, scroll_pos_val, row_start, row_end
+                "[selection/render_sel] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}] msg_bounds=[{}..{}]",
+                sy_clamped, ey_clamped, sx, ex, content_y, body_start_offset, scroll_pos_val, row_start, row_end, msg_top, msg_bottom
             );
 
             // body_to_flat maps body_line → flat_line.
@@ -385,13 +400,14 @@ impl ConversationWidget {
             }
 
             if !highlight_lines.is_empty() {
-                let highlight_area_y = row_start as u16;
+                let highlight_area_y = row_start;
                 let highlight_area_x = area.x + body_area_x as u16;
+                let highlight_area_h = (row_end - row_start) as u16 + 1;
                 let highlight_area = Rect::new(
                     highlight_area_x,
                     highlight_area_y,
                     area.width.min(body_w as u16),
-                    highlight_lines.len() as u16,
+                    highlight_area_h.min((area.bottom() - highlight_area_y).max(1)),
                 );
                 tracing::debug!(
                     "[selection/render_selection] highlight_area=x={} y={} w={} h={} (sy={}, rows={})",
