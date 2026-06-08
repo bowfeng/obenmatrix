@@ -179,16 +179,7 @@ impl ConversationWidget {
         let row_end = std::cmp::max(sy as usize, ey as usize);
 
         let mut prev_flat_line: Option<usize> = None;
-        let mut prev_abs_was_padding = false;
-        
-        // Pre-check which ranges exist
-        if visible_ranges.is_empty() {
-            tracing::debug!(
-                "[selection/get_text] VISIBLE_RANGES_EMPTY sy={} ey={}",
-                sy, ey
-            );
-        }
-        
+
         tracing::debug!(
             "[selection/get_text] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}] body_to_flat_len={} max_abs_body={} visible_ranges_count={}",
             sy, ey, sx, ex, content_y, body_start_offset, scroll_pos, row_start, row_end, body_to_flat.len(), max_abs_body, visible_ranges.len()
@@ -206,10 +197,6 @@ impl ConversationWidget {
                 row >= body_y as usize && row < body_y.saturating_add(body_h) as usize
             });
             if !in_visible_body {
-                tracing::debug!(
-                    "[selection/get_text] SKIPPED row={} (outside visible body)",
-                    row
-                );
                 continue;
             }
 
@@ -230,34 +217,13 @@ impl ConversationWidget {
                 }
             };
 
-            // Detect if this is a padding line: consecutive body indices within the
-            // same block map padding to last wrapped line.
-            let is_padding = if row > row_start {
-                let prev_abs = abs_body.saturating_sub(1);
-                if let Some(prev_flat_opt) = body_to_flat.get(prev_abs) {
-                    match (prev_flat_opt, prev_abs_was_padding) {
-                        (None, _) => false,
-                        (Some(prev_flat), false) => *prev_flat == flat_line,
-                        (Some(_), true) => true,
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            prev_abs_was_padding = is_padding;
-            if is_padding {
-                continue;
-            }
-            prev_abs_was_padding = false;
-
-            // Also skip if same as previous non-padding row's flat_line
+            // Dedup: skip if same flat_line as previous row (handles padding rows
+            // mapping to the same wrapped line).
             if Some(flat_line) == prev_flat_line {
                 continue;
             }
             prev_flat_line = Some(flat_line);
+
             if flat_line >= flat_lines.len() {
                 continue;
             }
@@ -382,10 +348,6 @@ impl ConversationWidget {
                 });
                 if !in_visible_body {
                     highlight_lines.push(Line::from(Span::raw("")));
-                    tracing::debug!(
-                        "[selection/render_sel] SKIPPED row={} (outside visible body)",
-                        row
-                    );
                     continue;
                 }
 
@@ -772,16 +734,11 @@ impl ConversationWidget {
             // inner_offset = how far into this block's body_lines we should start
             let inner_offset = scroll_offset.saturating_sub(content_start);
             let max_take = wrapped.len().saturating_sub(inner_offset);
-            let inner_take = if max_take < body_area.height as usize {
-                max_take
-            } else {
-                body_area.height as usize
-            };
-            let body_start = scroll_offset.saturating_sub(msg_area.y as usize - 1);
+            let inner_take = max_take.min(body_area.height as usize);
+
             tracing::debug!(
-                "[scroll_in_block] idx={} content_start={} wrap_len={} body_area_h={} scroll_offset={} viewport_top={} first_visible_body={}",
-                idx, content_start, wrapped.len(), body_area.height, scroll_offset,
-                msg_area.y, body_start
+                "[scroll_in_block] idx={} content_start={} body_area_h={} scroll_offset={} view_top={}",
+                idx, content_start, body_area.height, scroll_offset, msg_area.y
             );
 
             tracing::debug!(
@@ -794,38 +751,6 @@ impl ConversationWidget {
                     .skip(inner_offset)
                     .take(inner_take)
                     .cloned()
-                    .map(|line| {
-                        if is_tool_result {
-                            // Tool result: muted style
-                            let muted_spans: Vec<Span> = line
-                                .spans
-                                .iter()
-                                .filter_map(|span| {
-                                    span.style
-                                        .fg(palette.muted)
-                                        .add_modifier(Modifier::DIM)
-                                        .fg
-                                        .map(|fg| {
-                                            Span::styled(
-                                                span.content.clone(),
-                                                Style::default().fg(fg).add_modifier(Modifier::DIM),
-                                            )
-                                        })
-                                        .or_else(|| {
-                                            Some(Span::styled(
-                                                span.content.clone(),
-                                                Style::default()
-                                                    .fg(palette.muted)
-                                                    .add_modifier(Modifier::DIM),
-                                            ))
-                                        })
-                                })
-                                .collect();
-                            Line::from(muted_spans)
-                        } else {
-                            line
-                        }
-                    })
                     .collect();
 
                 if !body_lines.is_empty() {
