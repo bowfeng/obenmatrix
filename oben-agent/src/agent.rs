@@ -21,6 +21,12 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use anyhow::Result;
+
+fn generate_session_name() -> String {
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let r = rand::random::<u64>() % 1_000_000;
+    format!("{}-{:06}", ts, r)
+}
 use oben_models::{CallMode, Message, StreamDeltaCallback};
 use oben_sessions::SessionManager;
 
@@ -340,10 +346,7 @@ impl Agent {
                     Err(_) => sm
                         .lock()
                         .await
-                        .new_session(&format!(
-                            "chat-{}",
-                            chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                        ))
+                        .new_session(&generate_session_name())
                         .id
                         .clone(),
                 },
@@ -490,10 +493,7 @@ impl Agent {
         let new_id = sm
             .lock()
             .await
-            .new_session(&format!(
-                "chat-{}",
-                chrono::Utc::now().format("%Y%m%d-%H%M%S")
-            ))
+            .new_session(&generate_session_name())
             .id
             .clone();
         // Reset call mode so next turn starts Fresh
@@ -709,10 +709,7 @@ impl Agent {
                 None => sm
                     .lock()
                     .await
-                    .new_session(&format!(
-                        "chat-{}",
-                        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                    ))
+                    .new_session(&generate_session_name())
                     .id
                     .clone(),
             };
@@ -722,10 +719,7 @@ impl Agent {
                 .map(|s| s.id.clone())
                 .unwrap_or_else(|_| {
                     // Already ensured we have a valid session above; fall back to a fresh one
-                    format!(
-                        "chat-{}-fallback",
-                        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                    )
+                    generate_session_name()
                 })
         };
         let call_mode = self
