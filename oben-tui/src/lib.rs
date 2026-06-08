@@ -239,7 +239,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         let click_on_tabs = matches!(mouse_event.kind, MouseEventKind::Down(crossterm::event::MouseButton::Left))
                             && mouse_event.row == 0;
                         if click_on_tabs {
-                            let tab_names = ["Chat", "Sessions", "Config", "Setup"];
+                            let tab_names = ["Chat", "Sessions"];
                             let tab_widths: Vec<usize> = tab_names.iter().map(|n| n.len() + 2).collect();
                             let mut consumed = 0usize;
                             for (i, &pw) in tab_widths.iter().enumerate() {
@@ -247,8 +247,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                     let target = match i {
                                         0 => PanelId::Chat,
                                         1 => PanelId::Sessions,
-                                        2 => PanelId::Config,
-                                        3 => PanelId::Setup,
                                         _ => break,
                                     };
                                     if app.active_panel != target {
@@ -506,12 +504,11 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
 
     let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);
 
-    let panel_names: [&str; 4] = ["Chat", "Sessions", "Config", "Setup"];
+    let panel_names: [&str; 2] = ["Chat", "Sessions"];
     let panel_index = match app.active_panel {
         PanelId::Chat => 0,
         PanelId::Sessions => 1,
-        PanelId::Config => 2,
-        PanelId::Setup => 3,
+        _ => 0,
     };
     let tabs = Tabs::new(panel_names)
         .style(Style::default().fg(Color::DarkGray))

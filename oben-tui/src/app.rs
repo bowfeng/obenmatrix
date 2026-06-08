@@ -529,22 +529,7 @@ impl App {
                 self.activate_panel(PanelId::Sessions).await;
                 return;
             }
-            crossterm::event::KeyCode::Char('3')
-                if key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
-            {
-                self.activate_panel(PanelId::Config).await;
-                return;
-            }
-            crossterm::event::KeyCode::Char('4')
-                if key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
-            {
-                self.activate_panel(PanelId::Setup).await;
-                return;
-            }
+
             crossterm::event::KeyCode::F(1) => {
                 self.activate_panel(PanelId::Chat).await;
                 return;
@@ -553,27 +538,17 @@ impl App {
                 self.activate_panel(PanelId::Sessions).await;
                 return;
             }
-            crossterm::event::KeyCode::F(3) => {
-                self.activate_panel(PanelId::Config).await;
-                return;
-            }
-            crossterm::event::KeyCode::F(4) => {
-                self.activate_panel(PanelId::Setup).await;
-                return;
-            }
+
             crossterm::event::KeyCode::Tab => {
-                let n = 4usize;
+                let n = 2usize;
                 let next_idx = match self.active_panel {
                     PanelId::Chat => 0,
                     PanelId::Sessions => 1,
-                    PanelId::Config => 2,
-                    PanelId::Setup => 3,
+                    _ => 0,
                 };
                 let next = match (next_idx + 1) % n {
                     0 => PanelId::Chat,
                     1 => PanelId::Sessions,
-                    2 => PanelId::Config,
-                    3 => PanelId::Setup,
                     _ => unreachable!(),
                 };
                 self.activate_panel(next).await;
