@@ -566,6 +566,12 @@ impl Agent {
         Ok(msgs)
     }
 
+    /// Load a session's messages into the in-memory cache (for refresh_list).
+    pub async fn load_session_messages(&mut self, session_id: &str) -> Result<()> {
+        self.session_manager.lock().await.ensure_session_loaded(session_id)?;
+        Ok(())
+    }
+
     /// Delete a session (wrapper for SessionsPanel).
     pub async fn delete_session(&mut self, session_id: &str) -> Result<()> {
         self.session_manager.lock().await.delete(session_id)?;

@@ -162,7 +162,7 @@ impl App {
                     .get_mut(&PanelId::Sessions)
                     .and_then(|p| p.downcast_mut::<crate::panels::sessions::SessionsPanel>())
                 {
-                    sp.refresh_list().await;
+                    sp.refresh_list(None).await;
                 }
                 // Display info message in conversation so user sees "Session cleared"
                 if let Some(chat) = self.get_chat_mut() {
@@ -227,7 +227,7 @@ impl App {
                                     p.downcast_mut::<crate::panels::sessions::SessionsPanel>()
                                 })
                             {
-                                sp.refresh_list().await;
+                                sp.refresh_list(None).await;
                             }
                         }
                         Err(e) => {

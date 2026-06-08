@@ -1640,6 +1640,17 @@ impl SessionManager {
         self.db.load_messages(session_id)
     }
 
+    /// Load a session's messages into the in-memory cache.
+    /// Does NOT change `active_session_id` and does NOT change session state.
+    pub fn ensure_session_loaded(&mut self, session_id: &str) -> Result<()> {
+        // Ensure initialized
+        if self.state == SessionState::Off {
+            self.init()?;
+        }
+        self.load_session_into_cache(session_id)?;
+        Ok(())
+    }
+
     fn find_session_key_by_name(&self, name: &str) -> Option<String> {
         self.sessions
             .iter()
