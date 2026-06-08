@@ -62,6 +62,11 @@ pub struct ConversationState {
     pub selection_end: Option<(u16, u16)>,
     /// Per-message structured entries for bordered-block rendering.
     pub message_entries: Arc<StdMutex<Vec<MessageRenderEntry>>>,
+    /// Visible body ranges: (body_y_in_terminal, body_visible_rows).
+    /// Set by render_bordered_blocks from block.inner() so it correctly
+    /// accounts for title+BODERS distinction. Used by render_selection/get_selected_text
+    /// to skip rows outside actual rendered body area.
+    pub visible_body_ranges: Arc<StdMutex<Vec<(u16, u16)>>>,
 }
 
 impl ConversationState {
@@ -85,6 +90,7 @@ impl ConversationState {
             cached_block_heights: Arc::new(StdMutex::new(Vec::new())),
             cached_body_to_flat: Arc::new(StdMutex::new(Vec::new())),
             cached_lines: Arc::new(StdMutex::new(Vec::new())),
+            visible_body_ranges: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -136,6 +142,8 @@ impl ConversationWidget {
     /// Converts terminal (row, col) → body_line → flat line.
     /// Uses the CURRENT cached_body_to_flat mapping from render_bordered_blocks
     /// so it stays consistent with what's currently being rendered.
+    /// Filters terminal rows to only those within visible body ranges,
+    /// preventing copying text that isn't actually displayed.
     pub fn get_selected_text(&self, state: &ConversationState) -> Option<String> {
         let (sy, sx) = state.selection_start?;
         let (ey, ex) = state.selection_end?;
@@ -146,6 +154,7 @@ impl ConversationWidget {
         let content_x = state.content_x as usize;
         let scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
         let body_w = state.body_width;
+        let visible_ranges = state.visible_body_ranges.lock().ok()?.clone();
 
         // Mouse cols are absolute terminal coords. Convert to body-area-relative column.
         let body_area_x = content_x.saturating_sub(2);
@@ -171,11 +180,39 @@ impl ConversationWidget {
 
         let mut prev_flat_line: Option<usize> = None;
         let mut prev_abs_was_padding = false;
+        
+        // Pre-check which ranges exist
+        if visible_ranges.is_empty() {
+            tracing::debug!(
+                "[selection/get_text] VISIBLE_RANGES_EMPTY sy={} ey={}",
+                sy, ey
+            );
+        }
+        
         tracing::debug!(
-            "[selection/get_text] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}] body_to_flat_len={} max_abs_body={}",
-            sy, ey, sx, ex, content_y, body_start_offset, scroll_pos, row_start, row_end, body_to_flat.len(), max_abs_body
+            "[selection/get_text] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}] body_to_flat_len={} max_abs_body={} visible_ranges_count={}",
+            sy, ey, sx, ex, content_y, body_start_offset, scroll_pos, row_start, row_end, body_to_flat.len(), max_abs_body, visible_ranges.len()
         );
+        for (i, &(by, bh)) in visible_ranges.iter().enumerate() {
+            tracing::debug!(
+                "[selection/get_text]   visible_range[{}] body_y={} body_h={}",
+                i, by, bh
+            );
+        }
+        
         for row in row_start..=row_end {
+            // Skip rows outside all visible body areas.
+            let in_visible_body = visible_ranges.iter().any(|&(body_y, body_h)| {
+                row >= body_y as usize && row < body_y.saturating_add(body_h) as usize
+            });
+            if !in_visible_body {
+                tracing::debug!(
+                    "[selection/get_text] SKIPPED row={} (outside visible body)",
+                    row
+                );
+                continue;
+            }
+
             let abs_body = (row as usize).saturating_sub(body_start_offset) + scroll_pos;
             if abs_body >= max_abs_body {
                 continue;
@@ -273,6 +310,8 @@ impl ConversationWidget {
     /// Render selection highlight overlay.
     ///
     /// Uses the CURRENT cached_body_to_flat mapping from render_bordered_blocks.
+    /// Filters terminal rows to only those within visible body ranges of rendered blocks,
+    /// preventing selection of invisible content.
     pub fn render_selection(
         &self,
         frame: &mut Frame,
@@ -292,6 +331,7 @@ impl ConversationWidget {
             let content_y = state.content_y as u16;
             let content_x = state.content_x as u16;
             let body_w = state.body_width;
+            let visible_ranges = state.visible_body_ranges.lock().unwrap().clone();
             let scroll_pos_val = state.scroll_pos.load(Ordering::SeqCst);
 
             // Clip mouse coordinates to message panel boundaries.
@@ -303,7 +343,7 @@ impl ConversationWidget {
                 return;
             }
 
-            // Mouse rows are absolute terminal coords. Convert to body-area-relative column.
+            // Mouse cols are absolute terminal coords. Convert to body-area-relative column.
             let body_area_x = content_x.saturating_sub(2);
             let rel_sx = (sx as usize).saturating_sub(body_area_x as usize);
             let rel_ex = (ex as usize).saturating_sub(body_area_x as usize);
@@ -321,13 +361,34 @@ impl ConversationWidget {
             let row_end = std::cmp::max(sy_clamped, ey_clamped);
 
             tracing::debug!(
-                "[selection/render_sel] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}] msg_bounds=[{}..{}]",
-                sy_clamped, ey_clamped, sx, ex, content_y, body_start_offset, scroll_pos_val, row_start, row_end, msg_top, msg_bottom
+                "[selection/render_sel] INIT sy={} ey={} sx={} ex={} content_y={} body_start_offset={} scroll_pos={} row_range=[{}..{}] msg_bounds=[{}..{}] visible_body_ranges_count={}",
+                sy_clamped, ey_clamped, sx, ex, content_y, body_start_offset, scroll_pos_val, row_start, row_end, msg_top, msg_bottom, visible_ranges.len()
             );
+            for (i, &(by, bh)) in visible_ranges.iter().enumerate() {
+                tracing::debug!(
+                    "[selection/render_sel]   visible_range[{}] body_y={} body_h={}",
+                    i, by, bh
+                );
+            }
 
             // body_to_flat maps body_line → flat_line.
             let mut highlight_lines: Vec<Line> = Vec::new();
+            let mut last_flat_line: Option<usize> = None;
             for row in row_start..=row_end {
+                // Skip rows that fall outside all visible body areas.
+                let in_visible_body = visible_ranges.iter().any(|&(body_y, body_h)| {
+                    let r = row as usize;
+                    r >= body_y as usize && r < body_y.saturating_add(body_h) as usize
+                });
+                if !in_visible_body {
+                    highlight_lines.push(Line::from(Span::raw("")));
+                    tracing::debug!(
+                        "[selection/render_sel] SKIPPED row={} (outside visible body)",
+                        row
+                    );
+                    continue;
+                }
+
                 // Same formula as get_selected_text
                 let abs_body = (row as usize).saturating_sub(body_start_offset).saturating_add(scroll_pos_val);
 
@@ -342,23 +403,6 @@ impl ConversationWidget {
                     }
                 };
 
-                // Detect padding: two consecutive body_indices in same block map to same flat_line
-                // (body_to_flat[padding_idx] = Some(flat_line_of_last_wrapped)).
-                let was_padding = abs_body >= 1
-                    && body_to_flat.get(abs_body - 1)
-                        .and_then(|opt| *opt)
-                        .is_some_and(|prev_flat| prev_flat == flat_line);
-
-                tracing::debug!(
-                    "[selection/render_sel] row={} abs_body={} flat_line={} padding={}",
-                    row, abs_body, flat_line, was_padding
-                );
-
-                if was_padding {
-                    highlight_lines.push(Line::from(Span::raw("")));
-                    continue;
-                }
-                
                 if flat_line >= flat_lines.len() {
                     highlight_lines.push(Line::from(Span::raw("")));
                     continue;
@@ -379,6 +423,13 @@ impl ConversationWidget {
                 // Build styled spans with highlight for selected column range.
                 let mut spans: Vec<Span> = Vec::new();
                 let mut in_highlight = false;
+                // Dedup: skip if this flat_line was already processed (handles padding rows
+                // mapping to the same flat_line as text).
+                if Some(flat_line) == last_flat_line {
+                    highlight_lines.push(Line::from(Span::raw("")));
+                    continue;
+                }
+                last_flat_line = Some(flat_line);
                 for (c_pos, ch) in &chars {
                     if *c_pos >= x0 && *c_pos < x1 {
                         if !in_highlight {
@@ -653,6 +704,10 @@ impl ConversationWidget {
             scroll_offset
         );
 
+        // Sync computed scroll_offset back to state so render_selection/get_text
+        // use the correct body line range (prevents selecting beyond viewport).
+        state.scroll_pos.store(scroll_offset, Ordering::SeqCst);
+
         // Update scrollbar state
         {
             let mut scroll_state = state.scroll_state.lock().unwrap();
@@ -674,6 +729,7 @@ impl ConversationWidget {
         // ─── Phase 2: Render visible blocks ────────────────────────────
         // Track the bottom of the last visible entry so Phase 2.5 can position the stream block below it.
         let mut last_entry_vp_bottom = 0u16;
+        state.visible_body_ranges.lock().unwrap().clear();
         for (idx, block_rect, content_start) in visible_areas {
             if block_rect.y.saturating_add(block_rect.height) > last_entry_vp_bottom {
                 last_entry_vp_bottom = block_rect.y.saturating_add(block_rect.height);
@@ -706,14 +762,26 @@ impl ConversationWidget {
             // Render body (Paragraph) before block (borders on top)
             let body_area = block.inner(block_rect);
 
+            // Track body rendering area per block from actual block.inner() — correctly
+            // accounts for title+BODERS for all block types. Used by render_selection and
+            // get_selected_text to filter terminal rows to visible body lines only.
+            state.visible_body_ranges.lock().unwrap().push((body_area.y, body_area.height));
+
             // Calculate per-block scroll offset for clipping wrapped lines
             // content_start is the body-line index where this block starts in the global scroll view
             // inner_offset = how far into this block's body_lines we should start
             let inner_offset = scroll_offset.saturating_sub(content_start);
-            let inner_take = body_area.height as usize;
+            let max_take = wrapped.len().saturating_sub(inner_offset);
+            let inner_take = if max_take < body_area.height as usize {
+                max_take
+            } else {
+                body_area.height as usize
+            };
+            let body_start = scroll_offset.saturating_sub(msg_area.y as usize - 1);
             tracing::debug!(
-                "[scroll_in_block] idx={} content_start={} wrap_len={} body_area_h={}(inner_h={}) inner_offset={} (scroll_pos={}) take={}",
-                idx, content_start, wrapped.len(), body_area.height, inner_take, inner_offset, scroll_offset, inner_take
+                "[scroll_in_block] idx={} content_start={} wrap_len={} body_area_h={} scroll_offset={} viewport_top={} first_visible_body={}",
+                idx, content_start, wrapped.len(), body_area.height, scroll_offset,
+                msg_area.y, body_start
             );
 
             tracing::debug!(
