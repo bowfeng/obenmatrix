@@ -183,7 +183,7 @@ impl ConversationLoop {
                 .active_session()
                 .map(|s| s.id.clone())
                 .unwrap_or_else(|| {
-                    let id = format!("chat-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+                    let id = crate::agent::generate_session_name();
                     session_manager.new_session(&id);
                     session_manager.active_session().unwrap().id.clone()
                 });

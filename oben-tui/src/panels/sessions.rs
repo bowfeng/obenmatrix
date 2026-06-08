@@ -499,32 +499,32 @@ impl Panel for SessionsPanel {
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
                 self.handle_action(Action::Switch(KeyModifiers::NONE)).await;
             }
-            KeyCode::Enter if key.modifiers == KeyModifiers::ALT => {
-                self.handle_action(Action::Switch(KeyModifiers::ALT)).await;
-            }
-            KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::New).await;
-            }
-            KeyCode::Char('c') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Compact).await;
-            }
+            // KeyCode::Enter if key.modifiers == KeyModifiers::ALT => {
+            //     self.handle_action(Action::Switch(KeyModifiers::ALT)).await;
+            // }
+            // KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
+            //     self.handle_action(Action::New).await;
+            // }
+            // KeyCode::Char('c') if key.modifiers == KeyModifiers::NONE => {
+            //     self.handle_action(Action::Compact).await;
+            // }
             KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => {
                 self.handle_action(Action::Delete).await;
             }
-            KeyCode::Char('/') if key.modifiers == KeyModifiers::NONE => {
-                self.searching = true;
-                self.search_input.clear();
-                self.search_cursor = 0;
-            }
-            KeyCode::Char('x') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Close).await;
-            }
-            KeyCode::Char('r') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Rename).await;
-            }
-            KeyCode::Char('v') if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Fork).await;
-            }
+            // KeyCode::Char('/') if key.modifiers == KeyModifiers::NONE => {
+            //     self.searching = true;
+            //     self.search_input.clear();
+            //     self.search_cursor = 0;
+            // }
+            // KeyCode::Char('x') if key.modifiers == KeyModifiers::NONE => {
+            //     self.handle_action(Action::Close).await;
+            // }
+            // KeyCode::Char('r') if key.modifiers == KeyModifiers::NONE => {
+            //     self.handle_action(Action::Rename).await;
+            // }
+            // KeyCode::Char('v') if key.modifiers == KeyModifiers::NONE => {
+            //     self.handle_action(Action::Fork).await;
+            // }
             KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
                 let session_id = self.get_session_id().map(|s| s);
                 self.load_session().await;

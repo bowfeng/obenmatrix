@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 
 use anyhow::Result;
 
-fn generate_session_name() -> String {
+pub(crate) fn generate_session_name() -> String {
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     let r = rand::random::<u64>() % 1_000_000;
     format!("{}-{:06}", ts, r)
@@ -353,10 +353,7 @@ impl Agent {
                 None => sm
                     .lock()
                     .await
-                    .new_session(&format!(
-                        "chat-{}",
-                        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                    ))
+                    .new_session(&generate_session_name())
                     .id
                     .clone(),
             }
