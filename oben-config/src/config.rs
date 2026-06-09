@@ -18,6 +18,41 @@ pub struct AppConfig {
     pub context: ContextConfig,
     pub providers: Vec<ProviderConfig>,
     pub custom_providers: Vec<String>,
+    pub vision: VisionConfig,
+}
+
+/// Configuration for vision/image analysis.
+/// When set, vision tools call the specified API with downloaded images.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VisionConfig {
+    /// API provider: "openai" or "anthropic".
+    #[serde(default = "default_vision_provider")]
+    pub provider: String,
+    /// Base URL for the API (use OpenRouter-compatible URL for multi-provider).
+    pub base_url: Option<String>,
+    /// API key for the vision provider.
+    pub api_key: Option<String>,
+    /// Model name for vision analysis.
+    pub model: Option<String>,
+    /// Max tokens for the analysis response.
+    pub max_tokens: Option<usize>,
+}
+
+fn default_vision_provider() -> String {
+    "openai".to_string()
+}
+
+impl Default for VisionConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_vision_provider(),
+            base_url: None,
+            api_key: None,
+            model: None,
+            max_tokens: Some(1024),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +192,7 @@ impl Default for AppConfig {
             },
             providers: Vec::new(),
             custom_providers: Vec::new(),
+            vision: VisionConfig::default(),
         }
     }
 }

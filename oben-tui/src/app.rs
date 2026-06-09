@@ -705,6 +705,7 @@ impl App {
             context: self.config.context.clone(),
             providers: self.config.providers.clone(),
             custom_providers: self.config.custom_providers.clone(),
+            vision: self.config.vision.clone(),
         });
         self.panels.insert(PanelId::Setup, Box::new(panel));
     }
