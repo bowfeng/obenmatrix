@@ -493,9 +493,13 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                 );
                             }
                         }
-                        // Also display the steer text as a user message in chat
+                        // Only display steer text as a chat message on the first Ctrl+Enter
+                        // of a batch. Subsequent steers in the same turn are suppressed.
                         if let Some(chat) = app.get_chat_mut() {
-                            chat.append_user_message(&text);
+                            if chat.input.pending_steer_count == 0 {
+                                chat.append_user_message(&text);
+                                chat.input.pending_steer_count += 1;
+                            }
                         }
                         redraw = true;
                     }

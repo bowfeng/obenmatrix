@@ -53,6 +53,9 @@ pub struct InputState {
     /// Message queue (Hermes-style): Enter during streaming appends,
     /// Ctrl+Enter drains the head and submits immediately.
     pub input_queue: Vec<String>,
+    /// Count of steer messages already appended to chat for this turn.
+    /// Only 0 or 1 — increments when steer appends to chat.
+    pub pending_steer_count: u32,
 }
 
 /// Single tab completion entry.
@@ -74,6 +77,7 @@ impl InputState {
             completion_index: 0,
             last_enter_time: None,
             input_queue: Vec::new(),
+            pending_steer_count: 0,
         }
     }
 
@@ -312,13 +316,13 @@ impl InputBarWidget {
                 tracing::info!("[input_bar] ESC received during streaming, interrupting");
                 state.streaming = false;
                 state.input_queue.clear();
+                state.pending_steer_count = 0;
                 return InputBarResult::Interrupt;
             }
 
             // Ctrl+Enter → submit current input as a steer message (inject into next tool call).
-            if key.code == KeyCode::Enter
-                && key.modifiers.contains(KeyModifiers::CONTROL)
-            {
+            // Each press is independent — chat layer handles deduplication.
+            if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL) {
                 let text = std::mem::take(&mut state.text).trim().to_string();
                 state.cursor = 0;
                 state.completion_items.clear();
@@ -348,6 +352,8 @@ impl InputBarWidget {
                 state.cursor = 0;
                 state.completion_items.clear();
                 state.completion_index = 0;
+                // Moving on to queued message — reset steer dedup.
+                state.pending_steer_count = 0;
                 return InputBarResult::Consumed;
             }
 
