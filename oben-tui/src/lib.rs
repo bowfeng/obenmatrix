@@ -420,6 +420,25 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             handle.abort();
                             tracing::info!("[interrupt] aborted turn handle");
                         }
+                        // The user message was inserted into the in-memory session buffer
+                        // by handle_chat_input before spawning. Truncate to remove orphaned messages.
+                        if let Some(agent) = &app.agent {
+                            let message_count = app.turn_message_count;
+                            let g = agent.lock().await;
+                            if let Some(session) = g.session_manager().lock().await.active_session_mut() {
+                                let current_count = session.messages.len();
+                                if current_count > message_count {
+                                    let removed = current_count - message_count;
+                                    session.messages.drain(message_count..);
+                                    tracing::info!(
+                                        "[interrupt] truncated {} orphaned messages ({} → {})",
+                                        removed,
+                                        current_count,
+                                        message_count
+                                    );
+                                }
+                            }
+                        }
                         app.status = "Interrupted".into();
                         if let Some(chat) = app.get_chat_mut() {
                             chat.input.text.clear();
@@ -544,6 +563,23 @@ async fn handle_chat_input(
     let done_tx_clone = done_tx.clone();
     let input_clone = input.clone();
     let interrupt_clone = Arc::clone(&app.interrupt_state);
+
+    // Record session message count from the session manager BEFORE the
+    // spawned task inserts the user message via execute_turn_with_options.
+    // If the task is aborted, those orphaned messages must be truncated.
+    // Lock dropped before spawn to avoid deadlock.
+    if was_chat {
+        if let Some(agent) = &app.agent {
+            let g = agent.lock().await;
+            app.turn_message_count = g
+                .session_manager()
+                .lock()
+                .await
+                .active_session()
+                .map(|s| s.messages.len())
+                .unwrap_or(0);
+        }
+    }
 
     let handle = tokio::spawn({
         tracing::info!("handle_chat_input: tokio::spawn called");

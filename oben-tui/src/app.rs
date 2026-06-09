@@ -46,6 +46,11 @@ pub struct App {
     /// spawn task and event loop.  Allows handler to call request_interrupt()
     /// without acquiring tokio::sync::Mutex, preventing deadlock.
     pub interrupt_state: Arc<oben_agent::interrupt::InterruptState>,
+    /// Message count in the session before the current turn's user message
+    /// is inserted.  Used to truncate orphaned in-memory messages on abort
+    /// (the spawn task calls `insert_message` before `execute_turn_with_options`,
+    /// so the message survives if the task is aborted).
+    pub turn_message_count: usize,
     pub turn_handle: Option<tokio::task::JoinHandle<()>>,
     pub session_id: Option<String>,
     pub tools: std::sync::Arc<ToolRegistry>,
@@ -351,6 +356,7 @@ impl App {
             interrupt_state: Arc::from(
                 oben_agent::interrupt::InterruptState::new(),
             ),
+            turn_message_count: 0,
             turn_handle: None,
             session_id: None,
             tools: std::sync::Arc::new(tools),
