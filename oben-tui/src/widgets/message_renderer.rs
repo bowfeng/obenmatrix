@@ -279,10 +279,7 @@ pub fn render_message_entry(
     };
 
     let mut body_lines = if text.is_empty() {
-        vec![StyledLine {
-            content: Line::raw("(empty)"),
-            role_color: None,
-        }]
+        vec![]
     } else {
         render_body_lines(&text, palette)
     };
