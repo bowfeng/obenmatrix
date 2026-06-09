@@ -192,6 +192,7 @@ impl Panel for ChatPanel {
                 "theme" => KeyAction::Theme,
                 _ => KeyAction::Command { cmd_name, extra },
             },
+            InputBarResult::Interrupt => KeyAction::Interrupt,
         }
     }
 

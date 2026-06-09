@@ -46,6 +46,8 @@ pub enum KeyAction {
     ChatInput(String),
     /// Session switched by SessionsPanel — refresh ChatPanel.
     SessionChanged,
+    /// Interrupt the current streaming turn.
+    Interrupt,
 }
 
 /// Trait that every panel must implement.

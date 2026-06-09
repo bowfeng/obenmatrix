@@ -42,6 +42,10 @@ pub struct App {
     /// Agent protected by TokioMutex — guard is Send, needed for spawn()
     /// where we hold the lock across .await in agent.turn().
     pub agent: Option<Arc<tokio::sync::Mutex<Agent>>>,
+    /// Shared interrupt state — cloned from Agent and shared between
+    /// spawn task and event loop.  Allows handler to call request_interrupt()
+    /// without acquiring tokio::sync::Mutex, preventing deadlock.
+    pub interrupt_state: Arc<oben_agent::interrupt::InterruptState>,
     pub turn_handle: Option<tokio::task::JoinHandle<()>>,
     pub session_id: Option<String>,
     pub tools: std::sync::Arc<ToolRegistry>,
@@ -342,7 +346,11 @@ impl App {
             splash_started: std::time::Instant::now(),
             agent_init_error: None,
             status: String::new(),
-            config,            agent: None,
+            config,
+            agent: None,
+            interrupt_state: Arc::from(
+                oben_agent::interrupt::InterruptState::new(),
+            ),
             turn_handle: None,
             session_id: None,
             tools: std::sync::Arc::new(tools),
@@ -450,6 +458,14 @@ impl App {
             })
             .await?,
         )));
+
+        // Share the Agent's internal InterruptState with App so the event loop
+        // can call request_interrupt() without acquiring the tokio::sync::Mutex
+        // that the spawn task holds across `guard.turn()`.
+        {
+            let guard = self.agent.as_ref().unwrap().lock().await;
+            self.interrupt_state = guard.get_interrupt_state();
+        }
 
         Ok(())
     }
@@ -634,6 +650,11 @@ impl App {
             KeyAction::ChatInput(text) => {
                 if let Some(tx) = &self.input_tx {
                     let _ = tx.send(crate::TuiEvent::ChatInput(text));
+                }
+            }
+            KeyAction::Interrupt => {
+                if let Some(tx) = &self.input_tx {
+                    let _ = tx.send(crate::TuiEvent::Interrupt);
                 }
             }
             KeyAction::SwitchPanel(panel_id) => {

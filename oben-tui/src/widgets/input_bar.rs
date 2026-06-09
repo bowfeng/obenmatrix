@@ -120,6 +120,8 @@ pub enum InputBarResult {
     ChatInput(String),
     /// Execute this slash command.
     SlashCommand { cmd_name: String, extra: String },
+    /// Interrupt the current streaming turn.
+    Interrupt,
 }
 
 /// Input bar widget.
@@ -214,11 +216,12 @@ impl InputBarWidget {
     ///
     /// Returns an `InputBarResult` indicating how the event was handled.
     pub fn handle_key(&mut self, state: &mut InputState, key: KeyEvent) -> InputBarResult {
-        // Streaming: only Ctrl+C kills it.
+        // Streaming: only ESC interrupts it.
         if state.streaming {
-            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if key.code == KeyCode::Esc {
+                tracing::info!("[input_bar] ESC received during streaming, interrupting");
                 state.streaming = false;
-                return InputBarResult::Consumed;
+                return InputBarResult::Interrupt;
             }
             return InputBarResult::Consumed; // suppress all other keys during stream
         }
@@ -799,10 +802,10 @@ mod tests {
     }
 
     /// Given: streaming=true state
-    /// When: any key except Ctrl+C
+    /// When: any key except ESC
     /// Then: consumed=Consumed, streaming stays true
     #[test]
-    fn test_streaming_suppresses_all_keys_except_ctrl_c() {
+    fn test_streaming_suppresses_all_keys_except_esc() {
         let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.streaming = true;
@@ -812,18 +815,18 @@ mod tests {
         assert!(state.streaming, "streaming should stay true");
     }
 
-    /// Given: streaming=true with Ctrl+C
-    /// When: Ctrl+C is pressed
-    /// Then: streaming becomes false, consumed=Consumed
+    /// Given: streaming=true with ESC
+    /// When: ESC is pressed
+    /// Then: streaming becomes false, result=Interrupt
     #[test]
-    fn test_ctrl_c_exits_streaming() {
+    fn test_esc_interrupts_streaming() {
         let mut ib = InputBarWidget;
         let mut state = make_state("hello");
         state.streaming = true;
-        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let result = ib.handle_key(&mut state, key);
-        assert!(matches!(result, InputBarResult::Consumed));
-        assert!(!state.streaming, "ctrl+c should stop streaming");
+        assert!(matches!(result, InputBarResult::Interrupt));
+        assert!(!state.streaming, "esc should stop streaming");
     }
 
     /// Given: an InputState with "/co"

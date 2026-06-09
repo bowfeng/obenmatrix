@@ -190,6 +190,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
                     std::io::stdout().flush().ok();
                 }) as oben_models::StreamDeltaCallback
             }),
+            None, // no interrupt from CLI
         )
         .await?;
 

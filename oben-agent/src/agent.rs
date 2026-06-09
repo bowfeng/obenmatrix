@@ -212,6 +212,15 @@ impl Agent {
         self.interrupt_state.steer(text)
     }
 
+    /// Get a shared reference to the interrupt state.
+    ///
+    /// This allows external code (e.g. TUI event loop) to call
+    /// `request_interrupt()` without acquiring the tokio::sync::Mutex
+    /// that the spawn task holds across `turn()`.  Prevents deadlock.
+    pub fn get_interrupt_state(&self) -> Arc<crate::interrupt::InterruptState> {
+        Arc::clone(&self.interrupt_state)
+    }
+
     // ── Tier 2: Fallback Models ──────────────────────────────────────────
 
     /// Set the fallback model chain.
@@ -291,6 +300,7 @@ impl Agent {
         input: &str,
         _stream: bool,
         delta_callback: Option<StreamDeltaCallback>,
+        interrupt: Option<Arc<crate::interrupt::InterruptState>>,
     ) -> Result<String> {
         let sid = self.resolve_session().await;
 
@@ -318,7 +328,7 @@ impl Agent {
             crate::conversation::TurnOptions {
                 retry_config: crate::retry::RetryConfig::default(),
                 budget: None,
-                interrupt: None,
+                interrupt,
                 callbacks: Some(std::mem::replace(
                     &mut self.callbacks,
                     crate::callbacks::AgentCallbacks::default(),

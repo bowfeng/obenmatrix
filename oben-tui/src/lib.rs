@@ -68,6 +68,7 @@ pub enum TuiEvent {
     CompactSession,
     Mouse(MouseEvent),
     Resize(u16, u16),
+    Interrupt,
 }
 
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
@@ -267,6 +268,8 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         tracing::info!("[done_rx] messages to display: {}, calling update_from_messages", messages.len());
                         if let Some(chat) = app.get_chat_mut() {
                             tracing::info!("[done_rx] chat.message_count before update: {}", chat.message_count);
+                            chat.streaming = false;
+                            chat.input.streaming = false;
                             chat.update_from_messages(&messages, completion.session_name);
                             tracing::info!("[done_rx] chat.update_from_messages done, streaming={}", chat.streaming);
                         }
@@ -275,6 +278,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         let eb_state = Arc::clone(&app.event_bus.state());
                         if let Some(chat) = app.get_chat_mut() {
                             chat.streaming = false;
+                            chat.input.streaming = false;
                             chat.update_from_turn_state(&eb_state.lock().unwrap());
                         }
                     }
@@ -405,6 +409,27 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                         redraw = true;
                     }
+                    Some(TuiEvent::Interrupt) => {
+                        tracing::info!("[interrupt] received, turn_handle={}", app.turn_handle.is_some());
+                        // Use Arc<InterruptState> directly — no tokio::sync::Mutex needed,
+                        // avoids the deadlock where spawn task holds the lock across turn().
+                        app.interrupt_state.request_interrupt(Some("interrupted".to_string()));
+                        app.interrupt_state.reset_for_turn();
+                        tracing::info!("[interrupt] signal sent via InterruptState");
+                        if let Some(handle) = app.turn_handle.take() {
+                            handle.abort();
+                            tracing::info!("[interrupt] aborted turn handle");
+                        }
+                        app.status = "Interrupted".into();
+                        if let Some(chat) = app.get_chat_mut() {
+                            chat.input.text.clear();
+                            chat.input.cursor = 0;
+                            chat.streaming = false;
+                            chat.input.streaming = false;
+                        }
+                        app.event_bus.on_turn_completed("interrupted");
+                        redraw = true;
+                    }
                     None => break,
                 }
             }
@@ -497,6 +522,7 @@ async fn handle_chat_input(
         if let Some(chat) = app.get_chat_mut() {
             tracing::info!("handle_chat_input: setting ChatPanel.streaming=true");
             chat.streaming = true;
+            chat.input.streaming = true;
             chat.message_state.turn_state_ref = Some(eb_state);
             chat.append_user_message(&input);
             tracing::info!(
@@ -509,11 +535,15 @@ async fn handle_chat_input(
     // Spawn turn in background so event loop is not blocked.
     // TokioMutex guard IS Send, so the spawned future can hold the lock
     // across .await in agent.turn().
+    // Clone InterruptState for spawn closure — avoids deadlocking the
+    // interrupt handler which also needs to request_interrupt()
+    // without acquiring the tokio::sync::Mutex.
     let agent_clone = agent;
     let eb = Arc::clone(&app.event_bus);
     let eb_for_finalize = Arc::clone(&app.event_bus);
     let done_tx_clone = done_tx.clone();
     let input_clone = input.clone();
+    let interrupt_clone = Arc::clone(&app.interrupt_state);
 
     let handle = tokio::spawn({
         tracing::info!("handle_chat_input: tokio::spawn called");
@@ -526,7 +556,7 @@ async fn handle_chat_input(
                     tracing::info!("[delta_callback] text.len={} text='{}'", text.len(), text);
                     eb.on_stream_delta(text);
                 });
-                let result = guard.turn(&input_clone, false, Some(delta_callback)).await;
+                let result = guard.turn(&input_clone, false, Some(delta_callback), Some(Arc::clone(&interrupt_clone))).await;
                 let sid = guard.active_session_name().await.map(|s| s.clone());
                 let msgs = guard
                     .session_manager()
