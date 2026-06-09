@@ -110,7 +110,15 @@ impl EventBus {
 
     /// Update streaming text from agent.
     pub fn on_stream_delta(&self, text: &str) {
+        let len = text.len();
         self.emit(AgentEvent::StreamDelta(text.to_string()));
+        if len > 0 {
+            tracing::debug!(
+                "[event_bus] on_stream_delta: text.len={} total_streaming_text={}",
+                len,
+                self.state.lock().map(|s| s.streaming_text.len()).unwrap_or(0)
+            );
+        }
     }
 
     /// Record a tool being started.
@@ -180,6 +188,11 @@ impl EventBus {
             match event {
                 AgentEvent::TurnStart => {
                     state.phase = TurnPhase::Streaming;
+                    // Clear streaming_text at turn start so each new turn
+                    // begins with a clean slate. Old streaming_text from a
+                    // previous turn is no longer needed — it was either
+                    // already committed to message_entries (via done_rx) or
+                    // will be overwritten by new deltas in this turn.
                     state.streaming_text.clear();
                     state.active_tools.clear();
                     state.completed_tools.clear();

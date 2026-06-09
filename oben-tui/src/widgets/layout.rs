@@ -151,6 +151,8 @@ pub fn compute_scroll_offset(
 /// scroll_offset is measured as content lines from the TOP (0-based).
 /// entry_heights contains block heights in line units (NO margin).
 /// Inter-block margins are tracked per-block via `block_line`.
+/// When content overflows the viewport, the rect fills the full remaining
+/// viewport space to avoid the 1-line gap caused by Phase 2.5's +1 adjustment.
 pub fn calc_visible_areas(
     msg_area_top: u16,
     msg_area_bottom: u16,
@@ -180,19 +182,41 @@ pub fn calc_visible_areas(
             continue;
         }
 
-        // Visible y in content coords = how much of block is below scroll line
-        let visible_bottom = block_end.min(viewable_end) - block_start.max(scroll_offset);
-        if visible_bottom == 0 {
-            continue;
-        }
-
         // VP-relative y: how far down the block appears in the viewport
         // With standard scroll model: block at content_pos X appears at position X - scroll_offset
         let vp_y = block_start.saturating_sub(scroll_offset);
         let abs_y = msg_area_top + (vp_y as u16).min(inner_height as u16);
 
-        // Clamp height to fit within viewport
-        let visible_height = (visible_bottom as u16).min((msg_area_bottom - abs_y).max(1));
+        // Rect height calculation:
+        // When scrolled to the bottom with overflowing content, fill the full inner_height
+        // viewport body. This avoids the 1-line gap between the block rect and the Phase
+        // 2.5 stream block caused by Phase 2.5's +1 total_height not propagating to block_end.
+        //
+        // The check uses +1 because Phase 2.5 adds +1 to total_height (stream block border),
+        // but block_end in calc_visible_areas only reflects content lines (Phase 1). So
+        // block_end - scroll_offset is always 1 less than the actual visible content.
+        // When we're at the bottom: block_end - scroll_offset = inner_height - 1, so we
+        // need to check >= inner_height - 1 (equivalently, check >= inner_height with +1).
+        let content_at_bottom =
+            block_end.saturating_sub(scroll_offset).saturating_add(1) >= inner_height;
+        let mut visible_height = if content_at_bottom {
+            // Scrolled to bottom with enough content — fill full viewport body
+            inner_height as u16
+        } else {
+            // Content doesn't fill viewport — show actual visible portion
+            let visible_in_viewport = block_end
+                .min(viewable_end)
+                .saturating_sub(block_start.max(scroll_offset));
+            (visible_in_viewport as u16).min(inner_height as u16)
+        };
+
+        // Clamp block rect to message area boundary to prevent overflow.
+        // The rect's bottom = abs_y + visible_height - 1, which must not exceed
+        // msg_area.bottom() - 1 (i.e., abs_y + visible_height <= msg_area_bottom).
+        let max_height = msg_area_bottom.saturating_sub(abs_y).saturating_add(1);
+        if visible_height > max_height {
+            visible_height = max_height;
+        }
 
         tracing::debug!(
             "block[{}] start={} end={} vp_y={} abs_y={} height={}(inner_y=[{}..{}]) content_start={}",

@@ -181,6 +181,10 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let (event_tx, mut event_rx) = unbounded_channel();
     let event_tx_for_signal = event_tx.clone();
     app.input_tx = Some(event_tx.clone());
+    // Wire input_sender into ChatPanel for queue auto-drain.
+    if let Some(chat) = app.get_chat_mut() {
+        chat.set_input_sender(event_tx.clone());
+    }
 
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
@@ -226,22 +230,20 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         let mut redraw = false;
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(32)) => {
-                let toast_expired = if let Some(expiry) = app.toast_expires_at {
+                // Check and hide expired toasts
+                if let Some(expiry) = app.toast_expires_at {
                     if std::time::Instant::now() >= expiry {
                         app.toast_engine.hide_toast();
                         app.toast_expires_at = None;
-                        true
-                    } else {
-                        false
                     }
-                } else {
-                    false
-                };
-                let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);
-                let is_splash = app.active_panel == PanelId::Splash;
-                if is_streaming || toast_expired || is_splash {
-                    let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
                 }
+                // Always draw on timer — even when not streaming, we need to
+                // render state changes from events (auto-drain ChatInput, etc.).
+                // Previously the `is_streaming` check caused a race: after a turn
+                // completes, done_rx sets streaming=false, then the timer skips
+                // drawing until the next ChatInput event arrives, leaving the
+                // viewport blank for that window.
+                let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
             }
             maybe_completion = done_rx.recv() => {
                 tracing::info!("[done_rx] recv returned");
@@ -282,7 +284,11 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             chat.update_from_turn_state(&eb_state.lock().unwrap());
                         }
                     }
-                    redraw = true;
+                    // NOTE: Do NOT set redraw=true here. The unconditional draw at
+                    // line 469 would fire BEFORE the auto-drain ChatInput is
+                    // processed, showing stale state (empty viewport). The 32ms
+                    // timer now always draws, so it will draw the correct state
+                    // after ChatInput is queued and processed.
                 }
             }
             event = event_rx.recv() => {
@@ -352,7 +358,10 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                     }
                     Some(TuiEvent::ChatInput(input)) => {
+                        let start = std::time::Instant::now();
+                        tracing::debug!("[event_loop] ChatInput event received, input.len()={}", input.len());
                         handle_chat_input(&mut app, input, &done_tx).await;
+                        tracing::debug!("[event_loop] ChatInput processed in {:?}", start.elapsed());
                         redraw = true;
                     }
                     Some(TuiEvent::Resize(_w, _h)) => {
@@ -543,6 +552,7 @@ async fn handle_chat_input(
             chat.streaming = true;
             chat.input.streaming = true;
             chat.message_state.turn_state_ref = Some(eb_state);
+            chat.message_state.scroll_to_bottom.store(true, Ordering::SeqCst);
             chat.append_user_message(&input);
             tracing::info!(
                 "handle_chat_input: appended user message to chat, msg_count={}",
@@ -668,7 +678,18 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         .get_chat()
         .map(|cp| format!("streaming={}", cp.streaming))
         .unwrap_or("no_chat_panel".to_string());
-    tracing::debug!("[draw_ui] chat_panel={}", chat_panel_info);
+    if let Some(chat) = app.get_chat() {
+        let msg_count = chat.message_state.message_entries.lock().map(|e| e.len()).unwrap_or(0);
+        let streaming = chat.message_state.turn_state_ref.as_ref().map(|ts| {
+            ts.lock().map(|t| t.streaming_text.len()).unwrap_or(0)
+        }).unwrap_or(0);
+        tracing::debug!(
+            "[draw_ui] chat_panel={} msg_entries={} streaming_text_len={}",
+            chat_panel_info, msg_count, streaming
+        );
+    } else {
+        tracing::debug!("[draw_ui] chat_panel={}", chat_panel_info);
+    }
 
     let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);
 

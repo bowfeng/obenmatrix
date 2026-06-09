@@ -771,15 +771,22 @@ impl ConversationWidget {
             let role_info = role_info_for_role(&MessageRole::Assistant, palette);
             let role_color = role_info.border_color;
 
-            // Streaming block position: if content fits in viewport, render right after entries;
-            // if content overflows, anchor to viewport bottom.
+            // Streaming block position:
+            // - If total content fits in viewport (total_height <= view_height), render stream
+            //   right after the last visible entry (below it in viewport).
+            // - If content overflows (total_height > view_height), anchor stream block to
+            //   viewport bottom so newly streamed text stays visible.
+            // - When stream_height > view_height, the rect extends below the viewport and is
+            //   clipped by ratatui — the visible portion stays at the bottom.
             let view_height = msg_area.height.saturating_sub(1);
-            let stream_y = if total_height as u16 <= view_height + stream_height {
+            let stream_y = if total_height as u16 <= view_height {
                 // Content fits: stream block renders right after the last visible entry.
                 last_entry_vp_bottom.saturating_add(1)
             } else {
-                // Content overflows: anchor to viewport bottom.
-                view_height.saturating_sub(stream_height)
+                // Content overflows: anchor stream to the position below the last entry.
+                // Block rect starts at scroll_area_y and extends downward, clipped by msg_area.
+                // This prevents the block from floating above the message when stream_height > view_height.
+                last_entry_vp_bottom.saturating_add(1)
             };
 
             tracing::debug!(
@@ -788,12 +795,24 @@ impl ConversationWidget {
                 last_entry_vp_bottom, stream_y
             );
 
-            if stream_height < msg_area.height.saturating_sub(1) {
+            if !stream_lines.is_empty() && stream_height > 0 {
+                // Calculate available space below the last entry.
+                // This prevents the stream block from overlapping the message above.
+                let available_height = msg_area.height.saturating_sub(last_entry_vp_bottom.saturating_add(1));
+                // Clamp the block rect to available space + any overflow that gets clipped.
+                // The content is anchored to the BOTTOM of this rect via Paragraph scroll.
+                let block_height = if total_height as u16 > view_height {
+                    // Overflow: limit to available space below the last entry.
+                    // Paragraph scroll shows the tail of the content at the bottom.
+                    available_height
+                } else {
+                    msg_area.height.min(stream_height)
+                };
                 let block_area = Rect::new(
                     msg_area.left(),
-                    stream_y,
+                    last_entry_vp_bottom.saturating_add(1),
                     msg_area.width,
-                    stream_height,
+                    block_height,
                 );
                 let block = Block::default()
                     .borders(Borders::ALL)
@@ -813,8 +832,43 @@ impl ConversationWidget {
                     ]));
                 let body_area = block.inner(block_area);
 
+                // The stream block starts at: (total_height - stream_height).
+                let stream_block_start = (total_height as usize).saturating_sub(stream_height as usize);
+
+                // Calculate line_offset so content is anchored to the BOTTOM of the viewport.
+                // Always use inner_height (viewport height), NOT body_area.height, because
+                // body_area can overflow the viewport when stream_height > viewport_height.
+                let max_visible_lines = inner_height.min(stream_lines.len());
+                let line_offset = stream_lines.len().saturating_sub(max_visible_lines);
+
+                tracing::debug!(
+                    "[stream_render] block_area={:?} body_area={:?} stream_lines_count={} stream_block_start={} scroll_pos={} line_offset={} max_visible_lines={}",
+                    block_area, body_area, stream_lines.len(), stream_block_start, scroll_pos, line_offset, max_visible_lines
+                );
+
                 if !stream_lines.is_empty() {
-                    frame.render_widget(Paragraph::new(stream_lines), body_area);
+                    // Log last few lines to see where content ends
+                    let tail_count = stream_lines.len().min(5);
+                    let tail_lines: Vec<String> = stream_lines
+                        .iter()
+                        .rev()
+                        .take(tail_count)
+                        .map(|l| {
+                            l.spans
+                                .iter()
+                                .map(|s| s.content.to_string())
+                                .collect::<Vec<_>>()
+                                .join("")
+                        })
+                        .collect();
+                    tracing::debug!(
+                        "[stream_render] tail_lines: {:?}", tail_lines
+                    );
+                    let mut para = Paragraph::new(stream_lines.clone());
+                    if line_offset > 0 {
+                        para = para.scroll((line_offset as u16, 0));
+                    }
+                    frame.render_widget(para, body_area);
                 }
                 frame.render_widget(block, block_area);
                 streaming_rendered = true;
@@ -829,31 +883,20 @@ impl ConversationWidget {
         let prev_user_offset = state.user_scroll_offset.load(Ordering::SeqCst);
         let offset = state.user_scroll_offset.swap(0, Ordering::SeqCst);
         let prev_scroll_pos = scroll_pos;
-        let mut scroll_pos = scroll_pos;
+        let mut scroll_pos = 0usize;
         let scrollable_range = (total_height as i64 - inner_height as i64).max(0) as usize;
         let prev_scrollable_range = state.prev_scrollable_range.swap(scrollable_range, Ordering::SeqCst);
-        let vp_bottom = scroll_pos.saturating_add(inner_height as usize);
+        let vp_bottom = prev_scroll_pos.saturating_add(inner_height as usize);
         let lines_from_bottom = (total_height as usize).saturating_sub(vp_bottom);
 
         tracing::debug!(
-            "[scroll_phase3] user_offset={} (prev={}) scrollable_range={} prev_scroll_pos={} final_scroll_pos={} scroll_to_bottom={} offset_sign={}",
-            offset, prev_user_offset, scrollable_range, prev_scroll_pos, scroll_pos,
+            "[scroll_phase3] user_offset={} (prev={}) scrollable_range={} prev_scrollable_range={} scroll_to_bottom={} offset_sign={}",
+            offset, prev_user_offset, scrollable_range, prev_scrollable_range,
             state.scroll_to_bottom.load(Ordering::SeqCst),
             if offset > 0 { "+" } else if offset < 0 { "-" } else { "0" }
         );
 
-        // Apply accumulated scroll delta (mouse wheel)
-        if offset != 0 {
-            scroll_pos = ((scroll_pos as i64 + offset as i64).max(0) as usize)
-                .min(scrollable_range);
-            tracing::debug!(
-                "[scroll_phase3] after_offset: scroll_pos={} vp_bottom={} diff_from_prev={}",
-                scroll_pos, scroll_pos.saturating_add(inner_height as usize),
-                if prev_scroll_pos >= scroll_pos { prev_scroll_pos - scroll_pos } else { scroll_pos - prev_scroll_pos }
-            );
-        }
-
-        // Detect content growth
+        // Detect content growth BEFORE computing scroll_pos
         let content_grew = scrollable_range > prev_scrollable_range;
         // "near bottom": content bottom is within 10 lines of viewport bottom
         let near_bottom = lines_from_bottom < 10;
@@ -864,8 +907,28 @@ impl ConversationWidget {
             state.scroll_to_bottom.store(true, Ordering::SeqCst);
         }
 
+        // Initialize scroll_pos based on whether we should snap to bottom
         if state.scroll_to_bottom.load(Ordering::SeqCst) {
             scroll_pos = scrollable_range;
+        } else {
+            // Read from the Phase 2.1 write — only if user hasn't scrolled away
+            scroll_pos = prev_scroll_pos;
+        }
+
+        tracing::debug!(
+            "[scroll_phase3] initialized scroll_pos={} vp_bottom={} lines_from_bottom={}",
+            scroll_pos, scroll_pos.saturating_add(inner_height as usize),
+            (total_height as usize).saturating_sub(scroll_pos.saturating_add(inner_height as usize))
+        );
+
+        // Apply accumulated scroll delta (mouse wheel)
+        if offset != 0 && !state.scroll_to_bottom.load(Ordering::SeqCst) {
+            scroll_pos = ((scroll_pos as i64 + offset as i64).max(0) as usize)
+                .min(scrollable_range);
+            tracing::debug!(
+                "[scroll_phase3] after_offset: scroll_pos={} vp_bottom={}",
+                scroll_pos, scroll_pos.saturating_add(inner_height as usize)
+            );
         }
 
         state.scroll_pos.store(scroll_pos, Ordering::SeqCst);
@@ -1010,11 +1073,16 @@ impl ConversationWidget {
     }
 
     /// Rebuild message entries from session messages using the renderer.
+    /// When `reset_scroll` is true the scroll position is reset to the top
+    /// so the caller (e.g. a turn-completion path) can show the newly
+    /// arrived response from its beginning rather than snapping to the
+    /// bottom where only the tail of a long reply would be visible.
     pub fn rebuild_from_messages(
         &self,
         state: &mut ConversationState,
         messages: &[Message],
         renderer: &MessageRenderer,
+        reset_scroll: bool,
     ) {
         let mut entries = Vec::new();
         for msg in messages {
@@ -1022,6 +1090,9 @@ impl ConversationWidget {
         }
         let mut entry_lock = state.message_entries.lock().unwrap();
         *entry_lock = entries;
+        if reset_scroll {
+            state.scroll_pos.store(0, Ordering::SeqCst);
+        }
     }
 
     /// Update stream_info from turn state into ConversationState.

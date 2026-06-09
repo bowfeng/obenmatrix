@@ -487,11 +487,16 @@ impl App {
     pub async fn create_chat_panel(&mut self) -> Result<()> {
         tracing::info!("[panel] Creating ChatPanel");
         let theme = self.config.display.theme.clone();
+        let event_bus = Arc::clone(&self.event_bus);
         tracing::info!("[panel] Using theme: {}", theme);
         self.panels.insert(
             PanelId::Chat,
-            Box::new(ChatPanel::new_with_theme(None, None, &theme)),
+            Box::new(ChatPanel::new_with_theme(None, &theme)),
         );
+        // Wire event bus into chat panel for queue auto-drain.
+        if let Some(chat) = self.get_chat_mut() {
+            chat.set_event_bus(event_bus);
+        }
         tracing::info!(
             "[panel] ChatPanel inserted, panels={:?}",
             self.panels.keys().collect::<Vec<_>>()
