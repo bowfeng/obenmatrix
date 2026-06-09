@@ -4,6 +4,7 @@ pub mod chat;
 pub mod config;
 pub mod sessions;
 pub mod setup;
+pub mod splash;
 
 use async_trait::async_trait;
 use crossterm::event::{KeyEvent, MouseEvent};
@@ -13,6 +14,7 @@ use ratatui::Frame;
 /// Unique identifier for each panel type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanelId {
+    Splash,
     Chat,
     Sessions,
     Config,
@@ -47,8 +49,11 @@ pub enum KeyAction {
 }
 
 /// Trait that every panel must implement.
+/// 
+/// Note: The Panel trait is NOT Send + Sync during the splash phase.
+/// The async splash loop borrows `app` mutably via the frame closure.
 #[async_trait]
-pub trait Panel: Send + Sync {
+pub trait Panel: Send {
     /// Cast to `dyn Any` for downcasting in TUI runtime.
     fn as_any(&self) -> &dyn std::any::Any;
 

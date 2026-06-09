@@ -2,6 +2,9 @@
 target/
 Cargo.lock
 
+# Local patches (compatibility fixes for upstream crates)
+tui-rain-patched/
+
 # IDE
 .idea/
 *.swp

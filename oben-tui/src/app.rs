@@ -5,6 +5,7 @@ use crate::panels::chat::ChatPanel;
 use crate::panels::config::ConfigPanel;
 use crate::panels::sessions::SessionsPanel;
 use crate::panels::setup::SetupPanel;
+use crate::panels::splash::SplashPanel;
 use crate::panels::{KeyAction, Panel, PanelId};
 use anyhow::Result;
 use ratatui::layout::Rect;
@@ -34,6 +35,10 @@ pub struct App {
     pub panels: HashMap<PanelId, Box<dyn Panel>>,
     pub status: String,
     pub config: AppConfig,
+    /// Timestamp when splash was first created. Used to enforce minimum 5s display.
+    pub splash_started: std::time::Instant,
+    /// If agent init failed, stores the error. Splash stays visible.
+    pub agent_init_error: Option<anyhow::Error>,
     /// Agent protected by TokioMutex — guard is Send, needed for spawn()
     /// where we hold the lock across .await in agent.turn().
     pub agent: Option<Arc<tokio::sync::Mutex<Agent>>>,
@@ -326,13 +331,18 @@ impl App {
             ToastEngineBuilder::<()>::new(Rect::new(0, 0, 0, 0))
                 .default_duration(Duration::from_secs(3)),
         ));
+        // Insert Splash panel — shown during agent initialization
+        let mut panels: HashMap<PanelId, Box<dyn Panel>> = HashMap::new();
+        panels.insert(PanelId::Splash, Box::new(SplashPanel::new()));
+
         Ok(Self {
             running: true,
-            active_panel: PanelId::Chat,
-            panels: HashMap::new(),
+            active_panel: PanelId::Splash,
+            panels,
+            splash_started: std::time::Instant::now(),
+            agent_init_error: None,
             status: String::new(),
-            config,
-            agent: None,
+            config,            agent: None,
             turn_handle: None,
             session_id: None,
             tools: std::sync::Arc::new(tools),

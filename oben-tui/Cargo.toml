@@ -39,7 +39,9 @@ textwrap = "0.16"
 ratatui-themes = "0.2"
 tui-widget-list = "0.15"
 ratatui-toaster = "0.1.3"
+rand = { version = "0.8", features = ["std", "std_rng"] }
 parking_lot = "0.12"
+tui-rain = { path = "../tui-rain-patched" }
 
 [features]
 default = []

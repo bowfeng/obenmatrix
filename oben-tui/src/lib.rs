@@ -24,6 +24,7 @@ use crossterm::terminal::{
 };
 use crossterm::ExecutableCommand;
 use panels::PanelId;
+use panels::splash::SplashPanel;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
@@ -70,17 +71,9 @@ pub enum TuiEvent {
 }
 
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
-    let mut app = App::new()?;
-    app.init_agent().await?;
-    app.init_active_panel(session_name).await?;
+    let app = App::new()?;
 
-    // Set up logging
-    #[allow(unexpected_cfgs)]
-    #[cfg(not(feature = "cli-wired"))]
-    {
-        // Tracing already initialized by oben_utils::logging::init() in dispatch.rs
-    }
-
+    // Raw mode + terminal — needed for splash loop to draw
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
     io::stdout().execute(EnableMouseCapture)?;
@@ -89,6 +82,101 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
+    // Wrap app in Arc<TokioMutex<>> — needed because init task and splash loop
+    // both need mutable access to app.panels during splash phase.
+    let arc_app = Arc::new(tokio::sync::Mutex::new(app));
+
+    // Configure splash minimum duration from terminal height — ensures at least
+    // one full rain drop falls from top to bottom.
+    {
+        let term_h = terminal.size().unwrap().height;
+        let mut a = arc_app.lock().await;
+        if let Some(splash) = a.panels.get_mut(&PanelId::Splash)
+            .and_then(|p| p.downcast_mut::<SplashPanel>())
+        {
+            splash.set_min_duration(term_h);
+        }
+    }
+
+    // --- SPLASH LOOP ---
+    // Use oneshot channel so init and draw don't contend for the app mutex.
+    let (init_done_tx, mut init_done_rx) = tokio::sync::oneshot::channel::<Result<(), anyhow::Error>>();
+
+    {
+        let init_arc_app = Arc::clone(&arc_app);
+        let tx = init_done_tx;
+        tokio::spawn(async move {
+            let mut a = init_arc_app.lock().await;
+            let result = a.init_agent().await;
+            let _ = tx.send(result);
+        });
+    }
+
+    let mut interval = tokio::time::interval(Duration::from_millis(32));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        // Draw splash — single lock, ~32ms cadence
+        {
+            let a = arc_app.lock().await;
+            if let Some(splash) = a.panels.get(&PanelId::Splash) {
+                terminal.draw(|frame| {
+                    splash.draw(frame, frame.area());
+                }).ok();
+            }
+        }
+
+        // Check init result via oneshot (no app lock needed)
+        if let Ok(result) = init_done_rx.try_recv() {
+            if let Err(e) = result {
+                if let Some(splash) = arc_app.lock().await
+                    .panels.get_mut(&PanelId::Splash)
+                    .and_then(|p| p.downcast_mut::<SplashPanel>())
+                {
+                    splash.set_error(e.to_string());
+                }
+            } else {
+                arc_app.lock().await.init_active_panel(session_name).await.ok();
+            }
+        }
+
+        // Break once full fall cycle elapsed
+        {
+            let a = arc_app.lock().await;
+            if let Some(splash) = a.panels.get(&PanelId::Splash)
+                .and_then(|p| p.downcast_ref::<SplashPanel>())
+            {
+                if splash.remaining_min_display() == Duration::ZERO {
+                    break;
+                }
+            }
+        }
+
+        interval.tick().await;
+    }
+
+    // Post-loop: check if init failed and enter error splash
+    if arc_app.lock().await
+        .panels.get(&PanelId::Splash)
+        .and_then(|p| p.downcast_ref::<SplashPanel>())
+        .map(|s| s.error.is_some())
+        .unwrap_or(false)
+    {
+        enter_error_splash(arc_app).await;
+    }
+
+    // --- UNWRAP arc_app for main event loop ---
+    let mut app = Arc::try_unwrap(arc_app)
+        .map_err(|_| anyhow::anyhow!("Arc has extra references after splash phase"))?
+        .into_inner();
+
+    // --- MAIN EVENT LOOP SETUP ---
+    #[allow(unexpected_cfgs)]
+    #[cfg(not(feature = "cli-wired"))]
+    {
+        // Tracing already initialized
+    }
+
     let (event_tx, mut event_rx) = unbounded_channel();
     let event_tx_for_signal = event_tx.clone();
     app.input_tx = Some(event_tx.clone());
@@ -96,7 +184,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
 
-    // Read events from crossterm in a blocking task
     let reader_handle = tokio::task::spawn_blocking(move || {
         while running_clone.load(Ordering::SeqCst) {
             if crossterm::event::poll(Duration::from_millis(16)).unwrap() {
@@ -118,7 +205,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         }
     });
 
-    // Ctrl+C signal handler — raw mode intercepts key events, so we must catch SIGINT directly
     let running_for_signal = running.clone();
     let quit_ev = TuiEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     tokio::spawn(async move {
@@ -129,12 +215,8 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         let _ = event_tx_for_signal.send(quit_ev);
     });
 
-    // Channel for signaling task completion back to the main event loop
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
 
-    // Main event loop — draw when something changes.
-    // Only redraw periodically when streaming (to show live updates).
-    // Draw once on startup so the UI is visible immediately.
     terminal.draw(|frame| draw_ui(frame, &mut app))?;
     loop {
         if !app.running {
@@ -142,10 +224,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         }
         let mut redraw = false;
         tokio::select! {
-            // Timeout: always check toast expiry so toasts auto-hide even when idle.
-            // Only redraw during streaming so live text remains visible.
             _ = tokio::time::sleep(Duration::from_millis(32)) => {
-                // Check toast expiry even if not streaming
                 let toast_expired = if let Some(expiry) = app.toast_expires_at {
                     if std::time::Instant::now() >= expiry {
                         app.toast_engine.hide_toast();
@@ -158,22 +237,17 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     false
                 };
                 let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);
-                if is_streaming || toast_expired {
+                let is_splash = app.active_panel == PanelId::Splash;
+                if is_streaming || toast_expired || is_splash {
                     let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
                 }
             }
-
-            // Check for completion signal from spawned turn task
             maybe_completion = done_rx.recv() => {
                 tracing::info!("[done_rx] recv returned");
                 if let Some(completion) = maybe_completion {
                     tracing::info!("[done_rx] success={}, session_name={:?}, messages.len={}", completion.success, completion.session_name, completion.messages.len());
                     app.turn_handle = None;
                     if completion.success {
-                        // Read messages from the agent's current session instead of the
-                        // stale snapshot carried in TurnCompletion. This prevents /clear
-                        // (which resets the agent session and clears the chat) from being
-                        // undone when a previously-spawned turn finally completes.
                         let messages = if let Some(agent) = &app.agent {
                             let guard = agent.lock().await;
                             let count = guard
@@ -207,8 +281,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     redraw = true;
                 }
             }
-
-            // Event branch: handles key, mouse, and chat input events.
             event = event_rx.recv() => {
                 match event {
                     Some(TuiEvent::Key(key)) => {
@@ -216,7 +288,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         redraw = true;
                     }
                     Some(TuiEvent::Mouse(mouse_event)) => {
-                        // Body area: y=1 (after 1-row header), terminal width, remaining height
                         let (term_w, term_h) = size().unwrap_or((80, 24));
                         let body_area = Rect::new(0, 1, term_w, term_h.saturating_sub(2));
                         match mouse_event.kind {
@@ -258,7 +329,9 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                 consumed += pw + 1;
                             }
                             continue;
-                        } else if let Some(panel) = app.panels.get_mut(&app.active_panel) {
+                        }
+                        let current_panel = app.active_panel;
+                        if let Some(panel) = app.panels.get_mut(&current_panel) {
                             if let Some(text) = panel.handle_mouse(body_area, &mouse_event) {
                                 tracing::debug!("[lib] handle_mouse returned text, about to show toast");
                                 let lines = text.lines().count();
@@ -282,12 +355,8 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         redraw = true;
                     }
                     Some(TuiEvent::CompactSession) => {
-                        // Execute compact directly in the main loop.
-                        // This avoids an infinite self-loop that would occur
-                        // if we re-sent the event via input_tx.
                         if let Some(agent_arc) = &app.agent {
                             let outcome = agent_arc.lock().await.compact_session().await;
-                            // Reload active session messages into the ChatPanel display.
                             let sid = app.session_id.clone();
                             let messages = if let Some(agent_arc) = &app.agent {
                                 let guard = agent_arc.lock().await;
@@ -341,7 +410,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
             }
         }
 
-        // Redraw after events and during streaming
         if redraw {
             let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
         }
@@ -357,8 +425,42 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Handle a chat input: spawn a turn in a background task so the event loop
-/// can keep drawing the UI during streaming.
+/// Enters error splash mode: draws rain with centered error message forever.
+/// Only exits when the user presses Ctrl+C.
+async fn enter_error_splash(arc_app: Arc<tokio::sync::Mutex<App>>) -> ! {
+    // Create a dedicated terminal for error splash, separate from the one used
+    // during the splash loop. Error splash never exits normally — only Ctrl+C.
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.clear().unwrap();
+
+    loop {
+        {
+            let a = arc_app.lock().await;
+            if let Some(splash) = a.panels.get(&PanelId::Splash) {
+                terminal.draw(|frame| {
+                    splash.draw(frame, frame.area());
+                }).ok();
+            }
+        }
+
+        // Wait + poll for Ctrl+C
+        tokio::time::sleep(Duration::from_millis(32)).await;
+        if crossterm::event::poll(Duration::from_millis(32)).unwrap_or(false) {
+            if let Ok(event) = crossterm::event::read() {
+                if let crossterm::event::Event::Key(key) = event {
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        drop(terminal);
+                        io::stdout().execute(LeaveAlternateScreen).ok();
+                        io::stdout().execute(DisableMouseCapture).ok();
+                        disable_raw_mode().ok();
+                        std::process::exit(0);
+                    }
+                }
+            }
+        }
+    }
+}
 async fn handle_chat_input(
     app: &mut App,
     input: String,
