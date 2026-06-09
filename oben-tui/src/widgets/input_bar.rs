@@ -190,6 +190,9 @@ pub enum InputBarResult {
     SlashCommand { cmd_name: String, extra: String },
     /// Interrupt the current streaming turn.
     Interrupt,
+    /// Inject a message into the next tool call without interrupting
+    /// (mirrors `/steer` from the Hermes CLI).
+    Steer(String),
 }
 
 // ── Widget ────────────────────────────────────────────────────────────────
@@ -312,17 +315,21 @@ impl InputBarWidget {
                 return InputBarResult::Interrupt;
             }
 
-            // Ctrl+Enter → drain head of queue and submit immediately.
+            // Ctrl+Enter → submit current input as a steer message (inject into next tool call).
             if key.code == KeyCode::Enter
                 && key.modifiers.contains(KeyModifiers::CONTROL)
             {
-                if let Some(msg) = state.dequeue_msg() {
-                    return InputBarResult::ChatInput(msg);
+                let text = std::mem::take(&mut state.text).trim().to_string();
+                state.cursor = 0;
+                state.completion_items.clear();
+                state.completion_index = 0;
+                if !text.is_empty() {
+                    return InputBarResult::Steer(text);
                 }
                 return InputBarResult::Consumed;
             }
 
-            // Enter → append current text to queue (Hermes-style).
+            // Enter → append current text to queue.
             if key.code == KeyCode::Enter
                 || key.code == KeyCode::Char('\n')
                 || key.code == KeyCode::Char('\r')
@@ -1203,38 +1210,37 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_enter_during_streaming_drains_queue() {
-        let mut state = InputState::new();
+    fn test_ctrl_enter_during_streaming_triggers_steer() {
+        let mut state = make_state("steer instruction");
         state.streaming = true;
-        state.enqueue_msg("hello world".into());
-        state.enqueue_msg("second".into());
+        state.enqueue_msg("queued msg".into());
 
-        // Ctrl+Enter → first queued message is submitted.
+        // Ctrl+Enter → current text input is sent as steer, queue is untouched.
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
         let result = ib().handle_key(&mut state, key);
         assert!(matches!(
             result,
-            InputBarResult::ChatInput(ref s) if s == "hello world"
+            InputBarResult::Steer(ref s) if s == "steer instruction"
         ));
-        assert_eq!(state.input_queue, vec!["second".to_string()]);
+        assert_eq!(state.input_queue, vec!["queued msg".to_string()]);
+        assert_eq!(state.text, "");
     }
 
     #[test]
-    fn test_ctrl_enter_during_streaming_clears_text_input() {
+    fn test_ctrl_enter_clears_text_input() {
         let mut state = make_state("composer text");
         state.streaming = true;
-        state.enqueue_msg("queued msg".into());
 
-        // Ctrl+Enter should drain the queue, NOT the current text.
+        // Ctrl+Enter → current text is sent as steer, queue is untouched.
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
         ib().handle_key(&mut state, key);
-        assert!(state.input_queue.is_empty());
-        // current text is preserved (Ctrl+Enter drains queue only).
-        assert_eq!(state.text, "composer text");
+        // Queue is untouched — Ctrl+Enter sends current input as steer.
+        assert_eq!(state.input_queue.len(), 0);
+        assert_eq!(state.text, "");
     }
 
     #[test]
-    fn test_ctrl_enter_empty_queue_consumed() {
+    fn test_ctrl_enter_empty_text_consumed() {
         let mut state = InputState::new();
         state.streaming = true;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);

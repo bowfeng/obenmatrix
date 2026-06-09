@@ -69,6 +69,9 @@ pub enum TuiEvent {
     Mouse(MouseEvent),
     Resize(u16, u16),
     Interrupt,
+    /// Inject a message into the next tool call without interrupting.
+    /// (Mirrors `/steer` from the Hermes CLI.)
+    Steer(String),
 }
 
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
@@ -456,6 +459,44 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             chat.input.streaming = false;
                         }
                         app.event_bus.on_turn_completed("interrupted");
+                        redraw = true;
+                    }
+                    Some(TuiEvent::Steer(text)) => {
+                        // Inject a mid-run message into the next tool result.
+                        // (Mirrors `/steer` from the Hermes CLI.)
+                        if let Some(agent) = &app.agent {
+                            let accepted = agent.lock().await.steer(&text);
+                            if accepted {
+                                tracing::info!(
+                                    "[steer] queued: {text}",
+                                );
+                                app.show_toast(
+                                    format!("Steer queued — arrives after next tool call"),
+                                    ToastType::Info,
+                                );
+                            } else {
+                                app.show_toast(
+                                    "Steer rejected (empty payload).",
+                                    ToastType::Warning,
+                                );
+                            }
+                        } else {
+                            // No active run — fall back to queue semantics
+                            if let Some(chat) = app.get_chat_mut() {
+                                chat.input.enqueue_msg(text.clone());
+                                tracing::info!(
+                                    "[steer] no agent — queued message instead: {text}",
+                                );
+                                app.show_toast(
+                                    "Agent not running — queued for next turn",
+                                    ToastType::Info,
+                                );
+                            }
+                        }
+                        // Also display the steer text as a user message in chat
+                        if let Some(chat) = app.get_chat_mut() {
+                            chat.append_user_message(&text);
+                        }
                         redraw = true;
                     }
                     None => break,

@@ -283,6 +283,7 @@ impl Panel for ChatPanel {
                 _ => KeyAction::Command { cmd_name, extra },
             },
             InputBarResult::Interrupt => KeyAction::Interrupt,
+            InputBarResult::Steer(text) => KeyAction::Steer(text),
         }
     }
 

@@ -48,6 +48,8 @@ pub enum KeyAction {
     SessionChanged,
     /// Interrupt the current streaming turn.
     Interrupt,
+    /// Inject a message into the next tool call without interrupting (mirrors /steer).
+    Steer(String),
 }
 
 /// Trait that every panel must implement.

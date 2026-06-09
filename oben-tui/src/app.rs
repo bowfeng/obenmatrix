@@ -668,6 +668,11 @@ impl App {
                     let _ = tx.send(crate::TuiEvent::Interrupt);
                 }
             }
+            KeyAction::Steer(text) => {
+                if let Some(tx) = &self.input_tx {
+                    let _ = tx.send(crate::TuiEvent::Steer(text));
+                }
+            }
             KeyAction::SwitchPanel(panel_id) => {
                 self.active_panel = panel_id;
             }
