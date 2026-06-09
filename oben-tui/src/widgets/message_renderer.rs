@@ -7,7 +7,7 @@ use ratatui::prelude::*;
 use ratatui_themes::ThemeName;
 
 use crate::widgets::role_style::role_info_for_role;
-use oben_models::{Message, MessageContent, MessageRole};
+use oben_models::{Message, MessageContent, MessagePart, MessageRole};
 
 /// State machine token types produced by the inline markdown lexer.
 #[derive(Debug, PartialEq, Eq)]
@@ -273,9 +273,58 @@ pub fn render_message_entry(
     let color = info.border_color;
     let icon = info.icon;
 
-    let text = match &msg.content {
-        MessageContent::Text(t) => t.clone(),
-        _ => String::new(),
+    // Extract text content and image placeholders from message content.
+    // For Image/Parts, build a combined text with image placeholders that
+    // terminals can render as clickable OSC-8 hyperlinks.
+    let mut has_images = false;
+    let mut combined_parts: Vec<String> = Vec::new();
+
+    match &msg.content {
+        MessageContent::Text(t) => {
+            if !t.is_empty() {
+                combined_parts.push(t.clone());
+            }
+        }
+        MessageContent::Image { url, detail } => {
+            has_images = true;
+            let image_placeholder = if let Some(d) = detail {
+                format!("\u{1F3F7}\u{FE0F} {} <{}>", d, url)
+            } else {
+                format!("\u{1F3F7}\u{FE0F} <{}>", url)
+            };
+            combined_parts.push(image_placeholder);
+        }
+        MessageContent::Parts(parts) => {
+            for part in parts {
+                match part {
+                    MessagePart::Text(t) => {
+                        if !t.is_empty() {
+                            combined_parts.push(t.clone());
+                        }
+                    }
+                    MessagePart::Image { url, detail } => {
+                        has_images = true;
+                        let image_placeholder = if let Some(d) = detail {
+                            format!("\u{1F3F7}\u{FE0F} {} <{}>", d, url)
+                        } else {
+                            format!("\u{1F3F7}\u{FE0F} <{}>", url)
+                        };
+                        combined_parts.push(image_placeholder);
+                    }
+                }
+            }
+        }
+    }
+
+    let text = if combined_parts.is_empty() {
+        String::new()
+    } else {
+        // Join with space if there are images, otherwise directly
+        if has_images && combined_parts.len() > 1 {
+            combined_parts.join(" ")
+        } else {
+            combined_parts.join("")
+        }
     };
 
     let mut body_lines = if text.is_empty() {

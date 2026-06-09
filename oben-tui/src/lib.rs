@@ -23,6 +23,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, size,
 };
 use crossterm::ExecutableCommand;
+use oben_models::{Message, MessageContent, MessagePart};
 use panels::PanelId;
 use panels::splash::SplashPanel;
 use ratatui::backend::CrosstermBackend;
@@ -31,6 +32,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Paragraph, Tabs};
 use ratatui::{Frame, Terminal};
 use ratatui_toaster::ToastType;
+use regex::Regex;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -559,6 +561,117 @@ async fn enter_error_splash(arc_app: Arc<tokio::sync::Mutex<App>>) -> ! {
         }
     }
 }
+
+/// Detect image URLs in the input text and build the appropriate [`Message`].
+///
+/// When the user drags or pastes an image, the TUI receives a plain text string
+/// that may contain image URLs. This function:
+/// 1. Extracts all image URLs using a regex.
+/// 2. Strips those URLs from the text so the user sees a clean chat message.
+/// 3. Builds a [`Message`] with [`MessageContent::Image`] (image only) or
+///    [`MessageContent::Parts`] (text + images), or falls back to plain text.
+fn build_image_message(input: &str) -> oben_models::Message {
+    static IMAGE_URL_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| {
+            // Match http/https URLs ending with image extensions.
+            // We deliberately do not include quotes or angle brackets in the
+            // negated set — URLs never contain them, and keeping them out
+            // avoids Rust raw-string escaping issues.
+            Regex::new(r"https?://[^\s'(),]+(?:\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff?|ico|avif))([^\s'()]*)?").unwrap()
+        });
+
+    let urls: Vec<(usize, String)> = IMAGE_URL_RE
+        .captures_iter(input)
+        .filter_map(|cap| {
+            cap.get(0).map(|m| (m.start(), m.as_str().to_string()))
+        })
+        .collect();
+
+    if urls.is_empty() {
+        // No images — fall back to plain text message
+        return oben_models::Message::user(input);
+    }
+
+    // Strip URLs from text, leaving text-only content
+    let remaining: String = {
+        let mut out = String::with_capacity(input.len());
+        let mut last = 0;
+        for (start, _) in &urls {
+            out.push_str(&input[last..*start]);
+            last = *start;
+            // skip past the URL
+            let mut i = *start;
+            while i < input.len() {
+                let ch = input[i..].chars().next().unwrap();
+                i += ch.len_utf8();
+                if !ch.is_ascii_alphanumeric() && !matches!(ch, '.' | '/' | '?' | '=' | '&' | '%' | '-' | '_' | '~' | '#' | '+' | ',' | ';' | ':' | '@' | '!') {
+                    break;
+                }
+            }
+        }
+        out.push_str(&input[last..]);
+        out.trim().to_string()
+    };
+
+    if urls.len() == 1 && remaining.is_empty() {
+        // Single image, no surrounding text — use Image variant
+        Message {
+            role: oben_models::MessageRole::User,
+            content: MessageContent::Image {
+                url: urls[0].1.clone(),
+                detail: None,
+            },
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        }
+    } else {
+        // Multiple images or text + images — use Parts variant
+        let mut parts: Vec<MessagePart> = if !remaining.is_empty() {
+            vec![MessagePart::Text(remaining)]
+        } else {
+            Vec::new()
+        };
+
+        for (i, (_, url)) in urls.iter().enumerate() {
+            // Add separator before each image if there's preceding content
+            if i == 0 && !parts.is_empty() {
+                parts.push(MessagePart::Text(" ".into()));
+            } else if i > 0 {
+                parts.push(MessagePart::Text(" ".into()));
+            }
+            parts.push(MessagePart::Image {
+                url: url.clone(),
+                detail: None,
+            });
+        }
+
+        Message {
+            role: oben_models::MessageRole::User,
+            content: MessageContent::Parts(parts),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        }
+    }
+}
+
+/// Parse input text and return (text_without_images, image_urls).
+fn parse_input_for_images(input: &str) -> (String, Vec<(String, Option<String>)>) {
+    use regex::Regex;
+    let re = Regex::new(r"https?://[^\s'(),]+(?:\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff?|ico|avif))([^\s'()]*)?").unwrap();
+
+    let urls: Vec<(String, Option<String>)> = re
+        .captures_iter(input)
+        .filter_map(|cap| {
+            cap.get(0).map(|m| (m.as_str().to_string(), None))
+        })
+        .collect();
+
+    let text = re.replace_all(input, "").trim().to_string();
+    (text, urls)
+}
+
 async fn handle_chat_input(
     app: &mut App,
     input: String,
@@ -639,7 +752,7 @@ async fn handle_chat_input(
     let handle = tokio::spawn({
         tracing::info!("handle_chat_input: tokio::spawn called");
         async move {
-            info!("spawned_turn_task: calling agent.turn()");
+            info!("spawned_turn_task: calling agent");
             let (result, sid, messages) = {
                 let mut guard = agent_clone.lock().await;
                 // inline delta_callback now emits through EventBus
@@ -647,7 +760,25 @@ async fn handle_chat_input(
                     tracing::info!("[delta_callback] text.len={} text='{}'", text.len(), text);
                     eb.on_stream_delta(text);
                 });
-                let result = guard.turn(&input_clone, false, Some(delta_callback), Some(Arc::clone(&interrupt_clone))).await;
+
+                // Detect image URLs in input and build the appropriate message type
+                let input_msg = build_image_message(&input_clone);
+                let has_images = matches!(
+                    input_msg.content,
+                    oben_models::MessageContent::Image { .. }
+                        | oben_models::MessageContent::Parts(_)
+                );
+
+                let result = if has_images {
+                    tracing::info!("spawned_turn_task: sending image message via turn_with_message");
+                    guard
+                        .turn_with_message(input_msg, Some(delta_callback), Some(Arc::clone(&interrupt_clone)))
+                        .await
+                } else {
+                    guard
+                        .turn(&input_clone, false, Some(delta_callback), Some(Arc::clone(&interrupt_clone)))
+                        .await
+                };
                 let sid = guard.active_session_name().await.map(|s| s.clone());
                 let msgs = guard
                     .session_manager()

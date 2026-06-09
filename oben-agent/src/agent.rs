@@ -343,6 +343,58 @@ impl Agent {
         Ok(response)
     }
 
+    /// Variant of [`Self::turn`] that accepts a pre-built [`Message`].
+    ///
+    /// Used by the TUI layer to send image messages when the user drags an
+    /// image into the input bar — the URL is detected and wrapped in
+    /// `MessageContent::Image` or `MessageContent::Parts` before reaching the
+    /// transport layer.
+    pub async fn turn_with_message(
+        &mut self,
+        input_msg: Message,
+        delta_callback: Option<StreamDeltaCallback>,
+        interrupt: Option<Arc<crate::interrupt::InterruptState>>,
+    ) -> Result<String> {
+        let sid = self.resolve_session().await;
+
+        let call_mode = match &self.call_mode {
+            Some(m) => m.clone(),
+            None => {
+                let mode = oben_models::CallMode::Fresh(sid.clone());
+                self.call_mode = Some(mode.clone());
+                mode
+            }
+        };
+
+        let sm = Arc::clone(&self.session_manager);
+
+        let response = ConversationLoop::execute_turn_with_options(
+            &mut self.context_engine,
+            &self.transport,
+            &self.tools,
+            &mut *sm.lock().await,
+            &sid,
+            input_msg,
+            &call_mode,
+            delta_callback,
+            crate::conversation::TurnOptions {
+                retry_config: crate::retry::RetryConfig::default(),
+                budget: None,
+                interrupt,
+                callbacks: Some(std::mem::replace(
+                    &mut self.callbacks,
+                    crate::callbacks::AgentCallbacks::default(),
+                )),
+                fallback: None,
+            },
+        )
+        .await?;
+
+        sm.lock().await.incremental_save(None)?;
+
+        Ok(response)
+    }
+
     /// Resolve session ID (lazy create if no active session).
     async fn resolve_session(&mut self) -> String {
         let sm = Arc::clone(&self.session_manager);

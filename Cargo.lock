@@ -2283,6 +2283,7 @@ dependencies = [
  "ratatui-textarea",
  "ratatui-themes",
  "ratatui-toaster",
+ "regex",
  "serde_json",
  "serde_yaml",
  "tempfile",
