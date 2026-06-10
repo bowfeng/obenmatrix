@@ -8,6 +8,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod event;
 pub mod history;
+pub mod image;
 pub mod panels;
 pub mod turn;
 pub mod widgets;
@@ -299,9 +300,10 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
             event = event_rx.recv() => {
                 match event {
                     Some(TuiEvent::Key(key)) => {
-                        app.handle_key(key).await;
-                        redraw = true;
-                    }
+                tracing::info!("[event_loop] Key event: code={:?} modifiers={:?}", key.code, key.modifiers);
+                app.handle_key(key).await;
+                redraw = true;
+            }
                     Some(TuiEvent::Mouse(mouse_event)) => {
                         let (term_w, term_h) = size().unwrap_or((80, 24));
                         let body_area = Rect::new(0, 1, term_w, term_h.saturating_sub(2));
@@ -562,15 +564,83 @@ async fn enter_error_splash(arc_app: Arc<tokio::sync::Mutex<App>>) -> ! {
     }
 }
 
-/// Detect image URLs in the input text and build the appropriate [`Message`].
-///
-/// When the user drags or pastes an image, the TUI receives a plain text string
-/// that may contain image URLs. This function:
-/// 1. Extracts all image URLs using a regex.
-/// 2. Strips those URLs from the text so the user sees a clean chat message.
-/// 3. Builds a [`Message`] with [`MessageContent::Image`] (image only) or
-///    [`MessageContent::Parts`] (text + images), or falls back to plain text.
+/// Detect image URLs and local image file paths in the input text, then build
+/// the appropriate [`Message`].
 fn build_image_message(input: &str) -> oben_models::Message {
+    // 1. Collect local image paths (tokens that start with `/` and end with an
+    // image extension, e.g. `/Users/foo/photo.png`).
+    let known_exts = [
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".tiff",
+        ".tif", ".ico", ".avif",
+    ];
+    
+    let tokens: Vec<&str> = input.split_whitespace().collect();
+    let mut image_tokens: Vec<String> = Vec::new();
+    let mut text_tokens: Vec<&str> = Vec::new();
+    
+    for token in tokens {
+        let is_image = known_exts
+            .iter()
+            .any(|ext| token.to_lowercase().ends_with(ext));
+        if is_image && token.starts_with('/') {
+            // Try to read and encode the image
+            if image::is_image_path(token) {
+                if let Some((msg, _)) = image::path_to_image_message(token, "") {
+                    image_tokens.push(match msg.content {
+                        MessageContent::Parts(parts) => {
+                            // Extract just the image part from the message
+                            parts.iter().find_map(|p| match p {
+                                MessagePart::Image { url, .. } => Some(url.clone()),
+                                _ => None,
+                            }).unwrap_or_else(|| "data:image/png;base64,unknown".to_string())
+                        }
+                        _ => "data:image/png;base64,unknown".to_string(),
+                    });
+                }
+            }
+        } else {
+            text_tokens.push(token);
+        }
+    }
+    
+    if !image_tokens.is_empty() {
+        // Mix of text and/or images — collect any non-image text
+        let text: String = text_tokens.join(" ");
+        let text_trimmed = text.trim();
+        
+        if text_trimmed.is_empty() && image_tokens.len() == 1 {
+            // Just one image, no surrounding text — use Image variant
+            return Message {
+                role: oben_models::MessageRole::User,
+                content: MessageContent::Image {
+                    url: image_tokens[0].clone(),
+                    detail: None,
+                },
+                id: None,
+                tool_call_ids: vec![],
+                tool_calls: None,
+            };
+        }
+        
+        // Build Parts: text (if any) followed by images
+        let mut parts: Vec<MessagePart> = Vec::new();
+        if !text_trimmed.is_empty() {
+            parts.push(MessagePart::Text(text_trimmed.to_string()));
+        }
+        for url in image_tokens {
+            parts.push(MessagePart::Image { url, detail: None });
+        }
+        
+        return Message {
+            role: oben_models::MessageRole::User,
+            content: MessageContent::Parts(parts),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        };
+    }
+
+    // 2. Check for image URLs (http/https)
     static IMAGE_URL_RE: std::sync::LazyLock<Regex> =
         std::sync::LazyLock::new(|| {
             // Match http/https URLs ending with image extensions.
@@ -958,4 +1028,111 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         layout.statusbar.height,
     );
     frame.render_widget(status_para, status_area);
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_test_image(path: &std::path::Path) {
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+    }
+
+    #[test]
+    fn test_build_image_message_single_local_path() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oben_single_test.png");
+        write_test_image(&path);
+
+        let msg = build_image_message(&path.to_string_lossy());
+        assert!(matches!(msg.content, MessageContent::Image { .. }));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_build_image_message_multiple_local_paths() {
+        let dir = std::env::temp_dir();
+        let path1 = dir.join("oben_multi_test_1.png");
+        let path2 = dir.join("oben_multi_test_2.jpg");
+        write_test_image(&path1);
+        // .jpg is a valid image extension
+        let mut file2 = std::fs::File::create(&path2).unwrap();
+        file2.write_all(&[0xFF, 0xD8, 0xFF, 0xE0]).unwrap();
+        drop(file2);
+
+        let combined = format!("{} 分析 {}", path1.to_string_lossy(), path2.to_string_lossy());
+        let msg = build_image_message(&combined);
+        
+        // Should produce a Parts message with both images
+        if let MessageContent::Parts(parts) = msg.content {
+            let image_count = parts.iter().filter(|p| matches!(p, MessagePart::Image { .. })).count();
+            assert_eq!(image_count, 2, "expected 2 image parts");
+            // First part should be text (the Chinese phrase)
+            if let MessagePart::Text(t) = &parts[0] {
+                assert!(t.contains("分析"), "first part should be text");
+            }
+        } else {
+            panic!("expected Parts variant for multi-image");
+        }
+
+        let _ = std::fs::remove_file(&path1);
+        let _ = std::fs::remove_file(&path2);
+    }
+
+    #[test]
+    fn test_build_image_message_images_only() {
+        let dir = std::env::temp_dir();
+        let path1 = dir.join("oben_only_1.png");
+        let path2 = dir.join("oben_only_2.jpg");
+        write_test_image(&path1);
+        let mut file2 = std::fs::File::create(&path2).unwrap();
+        file2.write_all(&[0xFF, 0xD8, 0xFF, 0xE0]).unwrap();
+
+        let combined = format!("{} {}", path1.to_string_lossy(), path2.to_string_lossy());
+        let msg = build_image_message(&combined);
+
+        if let MessageContent::Parts(parts) = msg.content {
+            let image_count = parts.iter().filter(|p| matches!(p, MessagePart::Image { .. })).count();
+            assert_eq!(image_count, 2, "expected 2 image parts with no text");
+        } else {
+            panic!("expected Parts variant for multi-image");
+        }
+
+        let _ = std::fs::remove_file(&path1);
+        let _ = std::fs::remove_file(&path2);
+    }
+
+    #[test]
+    fn test_build_image_message_single_with_text() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("oben_single_text.png");
+        write_test_image(&path);
+
+        let input = format!("{} 分析下这个图片", path.to_string_lossy());
+        let msg = build_image_message(&input);
+
+        if let MessageContent::Parts(parts) = msg.content {
+            assert_eq!(parts.len(), 2);
+            if let MessagePart::Text(t) = &parts[0] {
+                assert!(t.contains("分析下这个图片"));
+            } else {
+                panic!("expected first part to be text");
+            }
+        } else {
+            panic!("expected Parts variant for image+text");
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_build_image_message_no_images_fallback() {
+        let msg = build_image_message("just some regular text");
+        assert!(matches!(msg.content, MessageContent::Text(_)));
+    }
 }

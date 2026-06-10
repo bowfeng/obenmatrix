@@ -269,6 +269,10 @@ impl Panel for ChatPanel {
 
     async fn handle_key(&mut self, key: KeyEvent) -> KeyAction {
         let result = InputBarWidget.handle_key(&mut self.input, key);
+        tracing::debug!(
+            "[chat_panel] handle_key: code={:?} result={:?}",
+            key.code, result
+        );
         match result {
             InputBarResult::Consumed => KeyAction::None,
             InputBarResult::PassedThrough => KeyAction::None,

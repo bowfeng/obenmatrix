@@ -35,6 +35,7 @@ chrono = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tui-scrollview = "0.6.4"
+base64 = "0.22"
 textwrap = "0.16"
 ratatui-themes = "0.2"
 tui-widget-list = "0.15"

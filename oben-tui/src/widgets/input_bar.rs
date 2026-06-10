@@ -310,6 +310,10 @@ impl InputBarWidget {
     ///
     /// Returns an `InputBarResult` indicating how the event was handled.
     pub fn handle_key(&mut self, state: &mut InputState, key: KeyEvent) -> InputBarResult {
+        tracing::info!(
+            "[input_bar] handle_key: streaming={}, code={:?}, text.len={}, cursor={}",
+            state.streaming, key.code, state.text.len(), state.cursor
+        );
         // ── Streaming mode (Hermes `busy_input_mode: queue`) ───────────
         if state.streaming {
             if key.code == KeyCode::Esc {
@@ -649,17 +653,25 @@ impl InputBarWidget {
         state.completion_items.clear();
         state.completion_index = 0;
 
-        // Slash command dispatch — pass through to panel which maps to KeyAction
+        // Slash command dispatch — only if it matches a known command.
+        // Paths like "/Users/foo/photo.png" must NOT be treated as commands.
         if trimmed.starts_with('/') {
             let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
             let cmd_name = parts[0][1..].to_lowercase(); // strip '/' and lowercase
             let extra = if parts.len() > 1 { parts[1].trim() } else { "" };
-            state.text.clear();
-            state.cursor = 0;
-            return InputBarResult::SlashCommand {
-                cmd_name,
-                extra: extra.to_string(),
-            };
+            let known_commands = [
+                "rename", "new", "compact", "clear", "help", "reasoning",
+                "theme", "todo", "quit",
+            ];
+            if known_commands.contains(&cmd_name.as_str()) {
+                state.text.clear();
+                state.cursor = 0;
+                return InputBarResult::SlashCommand {
+                    cmd_name,
+                    extra: extra.to_string(),
+                };
+            }
+            // Not a known command — fall through to ChatInput below
         }
 
         // Default: submit as chat input

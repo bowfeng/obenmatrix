@@ -659,8 +659,11 @@ impl App {
                 }
             },
             KeyAction::ChatInput(text) => {
+                tracing::info!("[app] KeyAction::ChatInput: text.len={}, text='{}'", text.len(), text);
                 if let Some(tx) = &self.input_tx {
                     let _ = tx.send(crate::TuiEvent::ChatInput(text));
+                } else {
+                    tracing::warn!("[app] KeyAction::ChatInput: input_tx is None");
                 }
             }
             KeyAction::Interrupt => {

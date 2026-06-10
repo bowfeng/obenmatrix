@@ -2244,6 +2244,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "eventsource-stream",
  "futures-util",
  "oben-models",
@@ -2265,6 +2266,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "chrono",
  "crossterm 0.29.0",
  "dirs",
