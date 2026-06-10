@@ -9,6 +9,40 @@ use oben_models::{
 use serde_json::json;
 use tracing::debug;
 
+/// Mask base64 data URLs in log output to avoid exposing image data in logs.
+fn mask_data_urls(json_str: &str) -> String {
+    static DATA_IMG: &[u8] = b"data:image/";
+    if !json_str.contains("data:image/") {
+        return json_str.to_string();
+    }
+
+    let mut result = String::with_capacity(json_str.len());
+    let mut remaining = json_str.as_bytes();
+
+    while let Some(pos) = remaining.windows(11).position(|w| w == DATA_IMG) {
+        let before = unsafe { std::str::from_utf8_unchecked(&remaining[..pos]) };
+        result.push_str(before);
+        
+        let content = &remaining[pos + 11..];
+        let mut total = 0usize;
+        let mut i = 0;
+        while i < content.len() {
+            if content[i] == 0x22 && (i == 0 || content[i-1] != 0x5C) {
+                break;
+            } else {
+                i += 1;
+                total += 1;
+            }
+        }
+        
+        result.push_str(&format!("data:image/[data URL {} bytes]", total));
+        remaining = &content[i + 1..];
+    }
+    
+    result.push_str(unsafe { std::str::from_utf8_unchecked(remaining) });
+    result
+}
+
 use super::base::{BaseTransport, ChatResponse};
 
 /// For GPT-5 and Codex models, the API expects "developer" instead of "system".
@@ -632,10 +666,8 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
             self.base.model,
             messages.len()
         );
-        debug!(
-            "Prompt: {}",
-            serde_json::to_string(&request).unwrap_or_default()
-        );
+        let logged = mask_data_urls(&serde_json::to_string(&request).unwrap_or_default());
+        debug!("Prompt: {}", logged);
 
         let mut req = self.base.client.post(&url).json(&request);
         if !self.base.api_key.is_empty() {
@@ -718,7 +750,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         debug!("Streaming request to {}", url);
         debug!(
             "Prompt: {}",
-            serde_json::to_string(&request).unwrap_or_default()
+            mask_data_urls(&serde_json::to_string(&request).unwrap_or_default())
         );
 
         let mut req = self.base.client.post(&url).json(&request);
@@ -861,6 +893,30 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_mask_data_url_long() {
+        let input = r#"{"prompt":"hello","image":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="}}"#;
+        let output = mask_data_urls(input);
+        assert!(output.contains("[data URL"));
+        assert!(!output.contains("iVBORw0KGgo"));
+        assert!(output.contains("bytes]"));
+    }
+
+    #[test]
+    fn test_mask_data_url_short() {
+        let input = r#"{"image":{"url":"data:image/png;base64,abc123def456"}}"#;
+        let output = mask_data_urls(input);
+        assert!(output.contains("[data URL"));
+        assert!(!output.contains("abc123def456"));
+    }
+
+    #[test]
+    fn test_mask_no_data_url() {
+        let input = r#"{"prompt":"hello","role":"user"}"#;
+        let output = mask_data_urls(input);
+        assert_eq!(output, input);
+    }
 
     #[test]
     fn test_message_role_json() {

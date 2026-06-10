@@ -6,9 +6,34 @@
 use oben_models::{Message, MessageContent, MessagePart, MessageRole};
 
 /// Run the full sanitization pipeline on a message list.
+///
+/// For history messages (all except the last user message), runs thinking-only
+/// removal and consecutive user message merging.
+/// The **last user message** is preserved as-is — no merging, no content loss.
+/// This ensures the most recent user input (potentially containing images/base64
+/// data URLs) is never stripped.
 pub fn sanitize_messages(messages: &mut Vec<Message>) {
     drop_thinking_only_assistant(messages);
-    merge_consecutive_user_messages(messages);
+
+    // Find the index of the last user message.
+    let last_user_idx = messages.iter().rposition(|m| m.role == MessageRole::User);
+
+    if let Some(last_user_idx) = last_user_idx {
+        // Split into history and remainder (last user message + everything after it)
+        let mut history: Vec<Message> = messages.drain(..last_user_idx).collect();
+        let remainder: Vec<Message> = messages.drain(..).collect();
+
+        // Merge consecutive users in history only
+        merge_consecutive_user_messages(&mut history);
+
+        history.extend(remainder);
+        *messages = history;
+    } else {
+        // No user messages at all — nothing to change
+    }
+
+    // Note: merge_consecutive_user_messages is also called after drop_thinking_only_assistant
+    // on the history portion, since history messages may now have consecutive users.
 }
 
 /// Drop assistant messages that are "thinking-only" — they have reasoning
@@ -50,11 +75,35 @@ pub fn is_thinking_only_assistant(msg: &Message) -> bool {
     }
 }
 
+/// Check whether a user message contains non-text content (images/parts with images).
+fn user_message_has_image(msg: &Message) -> bool {
+    match &msg.content {
+        MessageContent::Image { .. } => true,
+        MessageContent::Parts(parts) => parts.iter().any(|p| matches!(p, MessagePart::Image { .. })),
+        MessageContent::Text(_) => false,
+    }
+}
+
+/// Flush the pending text-based user message into the merged list.
+fn flush_pending_user(merged: &mut Vec<Message>, pending_text: String) {
+    merged.push(Message {
+        role: MessageRole::User,
+        content: MessageContent::Text(pending_text),
+        id: None,
+        tool_call_ids: vec![],
+        tool_calls: None,
+    });
+}
+
 /// Merge consecutive user messages into single messages.
 ///
-/// Merges consecutive user/developer messages into one to avoid provider-specific
-/// issues with message role alternation. System messages are NOT merged — they
-/// are emitted separately to preserve system prompt integrity.
+/// Merges consecutive user messages that contain only plain text into one
+/// to avoid provider-specific issues with message role alternation.
+///
+/// User messages that contain images (MessageContent::Image or MessageContent::Parts
+/// with image parts) are NOT merged — they are emitted as-is to preserve the
+/// base64 data URLs. System messages are NOT merged — they are emitted separately
+/// to preserve system prompt integrity.
 pub fn merge_consecutive_user_messages(messages: &mut Vec<Message>) {
     if messages.len() <= 1 {
         return;
@@ -66,41 +115,48 @@ pub fn merge_consecutive_user_messages(messages: &mut Vec<Message>) {
     for msg in messages.drain(..) {
         match msg.role {
             MessageRole::User => {
-                let text = match &msg.content {
-                    MessageContent::Text(t) => t.clone(),
-                    MessageContent::Parts(parts) => parts
-                        .iter()
-                        .filter_map(|p| {
-                            if let MessagePart::Text(t) = p {
-                                Some(t.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    MessageContent::Image { .. } => "[image]".to_string(),
-                };
-
-                if let Some(ref mut pending) = pending_user {
-                    pending.push_str("\n\n");
-                    pending.push_str(&text);
+                if user_message_has_image(&msg) {
+                    // Flush any accumulated text messages first
+                    if let Some(text) = pending_user.take() {
+                        flush_pending_user(&mut merged, text);
+                    }
+                    // Keep image message as-is
+                    merged.push(msg);
                 } else {
-                    pending_user = Some(text);
+                    // Plain text user message — merge into pending
+                    let text = match &msg.content {
+                        MessageContent::Text(t) => t.clone(),
+                        MessageContent::Parts(parts) => parts
+                            .iter()
+                            .filter_map(|p| match p {
+                                MessagePart::Text(t) => Some(t.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        _ => String::new(),
+                    };
+
+                    if let Some(ref mut pending) = pending_user {
+                        pending.push_str("\n\n");
+                        pending.push_str(&text);
+                    } else {
+                        pending_user = Some(text);
+                    }
                 }
             }
             MessageRole::System => {
                 // System messages are NOT merged — emit pending user first,
                 // then emit the system message as its own entry.
                 if let Some(text) = pending_user.take() {
-                    merged.push(Message::user(text));
+                    flush_pending_user(&mut merged, text);
                 }
                 merged.push(msg);
             }
             _ => {
                 // Non-user/system message — flush pending user message first
                 if let Some(text) = pending_user.take() {
-                    merged.push(Message::user(text));
+                    flush_pending_user(&mut merged, text);
                 }
                 merged.push(msg);
             }
@@ -109,7 +165,7 @@ pub fn merge_consecutive_user_messages(messages: &mut Vec<Message>) {
 
     // Flush any remaining user message
     if let Some(text) = pending_user {
-        merged.push(Message::user(text));
+        flush_pending_user(&mut merged, text);
     }
 
     *messages = merged;
@@ -224,6 +280,168 @@ mod tests {
         assert!(combined.contains("Third"));
         assert_eq!(messages[1].role, MessageRole::System);
         assert_eq!(messages[2].role, MessageRole::User);
+    }
+
+    #[test]
+    fn test_merge_preserves_image_messages() {
+
+        let img_msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Image {
+                url: "data:image/png;base64,abc123".into(),
+                detail: None,
+            },
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        };
+
+        let text_msg = make_user("Hello");
+
+        let mut messages = vec![text_msg, img_msg];
+        merge_consecutive_user_messages(&mut messages);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content.to_text(), "Hello");
+        assert!(matches!(messages[1].content, MessageContent::Image { ref url, .. } if url == "data:image/png;base64,abc123"));
+    }
+
+    #[test]
+    fn test_merge_preserves_parts_with_image() {
+        let parts_msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Parts(vec![
+                MessagePart::Text("分析下这个图片".into()),
+                MessagePart::Image {
+                    url: "data:image/jpg;base64,xyz".into(),
+                    detail: None,
+                },
+            ]),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        };
+
+        let text_msg = make_user("先看这张");
+        let text_msg2 = make_user("再看那张");
+
+        // Image in the middle means text1 and text2 are NOT consecutive
+        let mut messages = vec![text_msg, parts_msg, text_msg2];
+        merge_consecutive_user_messages(&mut messages);
+
+        assert_eq!(messages.len(), 3);
+        // text_msg preserved as-is
+        assert!(matches!(messages[0].content, MessageContent::Text(ref t) if t == "先看这张"));
+        // parts_msg preserved with image intact
+        assert!(matches!(messages[1].content, MessageContent::Parts(ref parts) if parts.len() == 2 && matches!(&parts[1], MessagePart::Image { .. })));
+        // text_msg2 preserved as-is
+        assert!(matches!(messages[2].content, MessageContent::Text(ref t) if t == "再看那张"));
+    }
+
+    #[test]
+    fn test_sanitize_preserves_latest_user_message() {
+        // Mode A: latest user message is preserved intact
+        let img_msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Image {
+                url: "data:image/png;base64,abc123".into(),
+                detail: None,
+            },
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        };
+
+        let mut messages = vec![
+            make_user("previous"),
+            make_assistant("hello"),
+            img_msg,
+        ];
+
+        sanitize_messages(&mut messages);
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].content.to_text(), "previous");
+        assert_eq!(messages[1].content.to_text(), "hello");
+        assert!(matches!(messages[2].content, MessageContent::Image { ref url, .. } if url == "data:image/png;base64,abc123"));
+    }
+
+    #[test]
+    fn test_sanitize_preserves_latest_user_parts_with_image() {
+        let parts_msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Parts(vec![
+                MessagePart::Text("分析下这个图片".into()),
+                MessagePart::Image {
+                    url: "data:image/png;base64,screenshot".into(),
+                    detail: None,
+                },
+            ]),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        };
+
+        let mut messages = vec![
+            make_user("prev1"),
+            make_user("prev2"),
+            make_assistant("hi"),
+            parts_msg,
+        ];
+
+        sanitize_messages(&mut messages);
+
+        // "prev1" and "prev2" should be merged in history
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(messages[0].content, MessageContent::Text(ref t) if t.contains("prev1") && t.contains("prev2")));
+        assert_eq!(messages[1].content.to_text(), "hi");
+        // Latest user message preserved with image content intact
+        assert!(matches!(messages[2].content, MessageContent::Parts(ref parts) if parts.len() == 2 && matches!(&parts[1], MessagePart::Image { .. })));
+    }
+
+    #[test]
+    fn test_sanitize_merging_history_user_messages() {
+        let mut messages = vec![
+            make_user("hi"),
+            make_user("there"),
+            make_user("world"),
+        ];
+
+        sanitize_messages(&mut messages);
+
+        // Only the last message is exempt — history should merge
+        // Actually with Mode A: history = [hi, there], last = [world]
+        // merge history → user("hi\n\nthere")
+        // result → [user("hi\n\nthere"), user("world")]
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0].content, MessageContent::Text(ref t) if t.contains("hi") && t.contains("there")));
+        assert_eq!(messages[1].content.to_text(), "world");
+    }
+
+    #[test]
+    fn test_merge_image_before_text_messages() {
+        let img_msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Image {
+                url: "data:image/png;base64,abc".into(),
+                detail: None,
+            },
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        };
+
+        let text_msg1 = make_user("先");
+        let text_msg2 = make_user("后");
+
+        let mut messages = vec![img_msg, text_msg1, text_msg2];
+        merge_consecutive_user_messages(&mut messages);
+
+        assert_eq!(messages.len(), 2);
+        // Image should be first
+        assert!(matches!(messages[0].content, MessageContent::Image { .. }));
+        // text_msg1 and text_msg2 should be merged
+        assert!(matches!(messages[1].content, MessageContent::Text(ref t) if t.contains("先") && t.contains("后")));
     }
 
     #[test]

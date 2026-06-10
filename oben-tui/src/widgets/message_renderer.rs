@@ -264,7 +264,50 @@ fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> Vec<
     result
 }
 
+/// Check if a URL is a base64 data URL (starts with "data:").
+fn is_data_url(url: &str) -> bool {
+    url.starts_with("data:")
+}
+
+/// Generate a display placeholder for an image URL.
+/// For data URLs (base64), returns a compact icon + type indicator.
+/// For HTTP URLs, returns the URL as-is for potential hyperlink rendering.
+fn image_placeholder(url: &str, detail: Option<&str>) -> String {
+    if is_data_url(url) {
+        // Determine mime type from the data URL prefix (e.g. "data:image/png")
+        let mime_hint = url
+            .split_once(':')
+            .and_then(|(_, rest)| rest.split_once(';'))
+            .map(|(first, _)| first.trim())
+            .unwrap_or("");
+
+        // Determine mime type from detail if provided
+        let detail_hint = detail.unwrap_or("");
+
+        let mime_or_detail = if !mime_hint.is_empty() {
+            mime_hint
+        } else if !detail_hint.is_empty() {
+            detail_hint
+        } else {
+            "image"
+        };
+
+        format!("\u{1F3F7}\u{FE0F} {}", mime_or_detail)
+    } else {
+        // Remote URL — show it as-is so terminals can render as hyperlink
+        if let Some(d) = detail {
+            format!("\u{1F3F7}\u{FE0F} {} <{}>", d, url)
+        } else {
+            format!("\u{1F3F7}\u{FE0F} <{}>", url)
+        }
+    }
+}
+
 /// Render a single message into a structured `MessageRenderEntry`.
+///
+/// For image messages, generates a compact placeholder (e.g. `🖼️ png`) instead
+/// of expanding the full base64 data URL into the display text.
+/// Remote HTTP URLs are preserved as-is for potential hyperlink rendering.
 pub fn render_message_entry(
     msg: &Message,
     palette: &ratatui_themes::ThemePalette,
@@ -274,8 +317,6 @@ pub fn render_message_entry(
     let icon = info.icon;
 
     // Extract text content and image placeholders from message content.
-    // For Image/Parts, build a combined text with image placeholders that
-    // terminals can render as clickable OSC-8 hyperlinks.
     let mut has_images = false;
     let mut combined_parts: Vec<String> = Vec::new();
 
@@ -287,12 +328,7 @@ pub fn render_message_entry(
         }
         MessageContent::Image { url, detail } => {
             has_images = true;
-            let image_placeholder = if let Some(d) = detail {
-                format!("\u{1F3F7}\u{FE0F} {} <{}>", d, url)
-            } else {
-                format!("\u{1F3F7}\u{FE0F} <{}>", url)
-            };
-            combined_parts.push(image_placeholder);
+            combined_parts.push(image_placeholder(url, detail.as_deref()));
         }
         MessageContent::Parts(parts) => {
             for part in parts {
@@ -304,12 +340,7 @@ pub fn render_message_entry(
                     }
                     MessagePart::Image { url, detail } => {
                         has_images = true;
-                        let image_placeholder = if let Some(d) = detail {
-                            format!("\u{1F3F7}\u{FE0F} {} <{}>", d, url)
-                        } else {
-                            format!("\u{1F3F7}\u{FE0F} <{}>", url)
-                        };
-                        combined_parts.push(image_placeholder);
+                        combined_parts.push(image_placeholder(url, detail.as_deref()));
                     }
                 }
             }
@@ -505,5 +536,117 @@ mod tests {
         };
         let entry = renderer.render_entry(&msg);
         assert!(entry.is_tool_result);
+    }
+
+    /// Given: a MessageContent::Image with base64 data URL
+    /// When: render_entry is called
+    /// Then: body contains icon and mime type — no base64 string
+    #[test]
+    fn test_render_image_data_url_no_base64() {
+        let renderer = MessageRenderer::new();
+        let msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Image {
+                url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+                    .into(),
+                detail: None,
+            },
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        };
+        let entry = renderer.render_entry(&msg);
+        assert!(!entry.body_lines.is_empty());
+        // The full base64 string MUST NOT appear in any body line
+        let text: String = entry.body_lines.iter()
+            .map(|l| l.content.spans.iter()
+                .map(|s| s.content.to_string()).collect::<String>())
+            .collect();
+        assert!(!text.contains("iVBORw0KGgo"), "base64 data should not appear in rendered text");
+        assert!(text.contains("png") || text.contains("\u{1F3F7}"), "should contain icon or mime hint");
+    }
+
+    /// Given: MessageContent::Parts with image + text
+    /// When: render_entry is called
+    /// Then: image placeholder is compact, text is preserved
+    #[test]
+    fn test_render_parts_with_image() {
+        let renderer = MessageRenderer::new();
+        let msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Parts(vec![
+                MessagePart::Text("分析下这个图片".into()),
+                MessagePart::Image {
+                    url: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQ".into(),
+                    detail: None,
+                },
+            ]),
+            id: None,
+            tool_call_ids: vec![],
+            tool_calls: None,
+        };
+        let entry = renderer.render_entry(&msg);
+        assert!(!entry.body_lines.is_empty());
+        let text: String = entry.body_lines.iter()
+            .map(|l| l.content.spans.iter()
+                .map(|s| s.content.to_string()).collect::<String>())
+            .collect();
+        assert!(text.contains("分析下这个图片"), "text part should be preserved");
+        assert!(!text.contains("/9j/4AAQSkZJR"), "base64 data should not appear");
+    }
+
+    /// Given: a remote HTTP image URL
+    /// When: render_entry is called
+    /// Then: URL is preserved for terminal hyperlink rendering
+    #[test]
+    fn test_render_remote_image_url_preserved() {
+        use crate::widgets::message_renderer::image_placeholder;
+        let placeholder = image_placeholder("https://example.com/cool.png", None);
+        assert!(placeholder.contains("https://example.com/cool.png"));
+    }
+
+    /// Given: a data URL with mime type
+    /// When: image_placeholder is called
+    /// Then: it returns icon + mime type, no URL
+    #[test]
+    fn test_image_placeholder_data_url() {
+        use crate::widgets::message_renderer::image_placeholder;
+        let placeholder = image_placeholder("data:image/png;base64,abc", None);
+        assert!(!placeholder.contains("abc"));
+        assert!(placeholder.contains("png"));
+    }
+
+    /// Given: a data URL with detail parameter
+    /// When: image_placeholder is called
+    /// Then: it returns icon + mime type from URL (detail only used when no mime)
+    #[test]
+    fn test_image_placeholder_with_detail() {
+        use crate::widgets::message_renderer::image_placeholder;
+        let placeholder = image_placeholder("data:image/png;base64,abc", Some("high"));
+        // mime type from URL takes priority
+        assert!(!placeholder.contains("high"));
+        assert!(placeholder.contains("png"));
+    }
+
+    /// Given: a data URL with unknown mime + detail parameter
+    /// When: image_placeholder is called
+    /// Then: it returns icon + mime (octet-stream is still a valid mime hint)
+    #[test]
+    fn test_image_placeholder_detail_fallback() {
+        use crate::widgets::message_renderer::image_placeholder;
+        // Even application/octet-stream is a non-empty mime hint, takes priority
+        let placeholder = image_placeholder("data:application/octet-stream;base64,abc", Some("screenshot"));
+        assert!(placeholder.contains("octet-stream"));
+    }
+
+    /// Given: a remote HTTP URL with no detail
+    /// When: image_placeholder is called
+    /// Then: it shows icon + URL in angle brackets
+    #[test]
+    fn test_image_placeholder_remote_no_detail() {
+        use crate::widgets::message_renderer::image_placeholder;
+        let placeholder = image_placeholder("https://example.com/cool.png", None);
+        assert!(placeholder.contains("\u{1F3F7}"));
+        assert!(placeholder.contains("<https://example.com/cool.png>"));
     }
 }

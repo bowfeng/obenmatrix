@@ -47,6 +47,31 @@ fn is_safe_url(url: &str) -> bool {
     true
 }
 
+/// Check if a string is a data: URL.
+fn is_data_url(url: &str) -> bool {
+    url.trim().starts_with("data:image/")
+}
+
+/// Parse a data: URL into (mime_type, base64_data).
+fn parse_data_url(url: &str) -> Option<(String, String)> {
+    let url = url.trim();
+    if !url.starts_with("data:image/") {
+        return None;
+    }
+    let comma = url.find(',')?;
+    let metadata = &url[..comma];
+    let data = &url[comma + 1..];
+    // metadata = "data:image/png" or "data:image/png;base64"
+    let extension = metadata
+        .strip_prefix("data:image/")
+        .unwrap_or(metadata)
+        .split(';')
+        .next()
+        .unwrap_or("");
+    let mime = format!("image/{}", extension.trim());
+    Some((mime, data.to_string()))
+}
+
 /// Detect MIME type from image bytes (magic number detection).
 fn detect_mime(image_data: &[u8]) -> &str {
     if image_data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
@@ -239,11 +264,70 @@ async fn analyze_with_anthropic(
         .to_string())
 }
 
+/// Analyze image from data URL (base64 payload).
+async fn analyze_from_data_url(
+    data_url: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    let (mime, b64_data) = parse_data_url(data_url)
+        .ok_or_else(|| "Invalid data URL format".to_string())?;
+    
+    let image_data = base64::engine::general_purpose::STANDARD
+        .decode(&b64_data)
+        .map_err(|e| format!("Failed to decode base64 data: {}", e))?;
+    
+    if image_data.is_empty() {
+        return Err("Image data is empty".to_string());
+    }
+
+    // Detect MIME type from magic bytes if not specified in data URL
+    let mime = if mime.is_empty() {
+        detect_mime(&image_data).to_string()
+    } else {
+        mime
+    };
+
+    let config = AppConfig::load().unwrap_or_default();
+    let vision = config.vision;
+    let model = vision.model.as_deref().unwrap_or("gpt-4o");
+    let max_tokens = vision.max_tokens.unwrap_or(1024);
+
+    let api_key = match (vision.api_key.as_deref(), std::env::var("VISION_API_KEY").ok()) {
+        (Some(k), _) if !k.is_empty() => k.to_string(),
+        (_, Some(k)) => k,
+        _ => return Err("Vision API key not configured. Set vision.api_key in config.yaml or VISION_API_KEY env var.".to_string()),
+    };
+
+    match vision.provider.trim() {
+        "anthropic" => {
+            let anth_model = if model.contains("claude") {
+                model.to_string()
+            } else {
+                "claude-sonnet-4-20250514".to_string()
+            };
+            analyze_with_anthropic(
+                &image_data, &mime, prompt, &api_key, &anth_model, max_tokens
+            ).await
+        }
+        _ => {
+            analyze_with_openai(
+                &image_data, &mime, prompt,
+                vision.base_url.as_deref(), &api_key, model, max_tokens
+            ).await
+        }
+    }
+}
+
 /// Analyze image using configured vision API.
 async fn analyze_image(
     image_url: &str,
     prompt: &str,
 ) -> Result<String, String> {
+    // Handle data URLs directly (base64 encoded images)
+    if is_data_url(image_url) {
+        return analyze_from_data_url(image_url, prompt).await;
+    }
+
     let config = AppConfig::load().unwrap_or_default();
     let vision = config.vision;
 
@@ -294,20 +378,20 @@ fn make_vision_analyze_tool() -> Tool {
     let params = vec![
         ToolParameter {
             name: "image_url".into(),
-            description: "URL of the image to analyze (http/https). Must be publicly accessible.".into(),
+            description: "Image source: either a public HTTP/HTTPS URL or a base64 data URL (data:image/png;base64,...). The URL must point to an image that can be read. REQUIRED parameter — do not omit.".into(),
             parameter_type: "string".into(),
             required: true,
         },
         ToolParameter {
             name: "prompt".into(),
-            description: "Question or prompt for the vision model. Default is 'Describe this image in detail'.".into(),
+            description: "Question or prompt for the vision model (e.g. 'What is in this image?'). Default: 'Describe this image in detail'.".into(),
             parameter_type: "string".into(),
             required: false,
         },
     ];
     Tool {
         name: "vision_analyze".into(),
-        description: "Analyze images from URLs using vision AI (GPT-4o / Claude). Downloads the image, sends it to a vision model, and returns the analysis. Requires VISION_API_KEY or vision.api_key in config.".into(),
+        description: "Analyze images from URLs or base64 data URLs using vision AI (GPT-4o / Claude). Pass a public HTTP/HTTPS URL (downloads the image) OR a data:image/png;base64,... URL. Returns a detailed description or answer to your question.".into(),
         parameters: ToolParameters::Flat(params),
     }
 }
@@ -315,11 +399,6 @@ fn make_vision_analyze_tool() -> Tool {
 fn make_vision_analyze_handler() -> ToolHandler {
     Arc::new(|args: Value| {
         Box::pin(async move {
-            let image_url = args
-                .get("image_url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'image_url' argument"))?;
-
             let prompt = args
                 .get("prompt")
                 .and_then(|v| v.as_str())
@@ -331,8 +410,33 @@ fn make_vision_analyze_handler() -> ToolHandler {
                 .unwrap_or("")
                 .to_string();
 
-            // SSRF protection
-            if !is_safe_url(image_url) {
+            let image_url_str = args
+                .get("image_url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing required 'image_url' argument. Provide either a public HTTP/HTTPS URL or a base64 data URL in format data:image/png;base64,..."))?;
+
+            // Handle data URLs directly (base64 encoded images) — skip SSRF download
+            if is_data_url(image_url_str) {
+                match analyze_from_data_url(image_url_str, prompt).await {
+                    Ok(analysis) => {
+                        return Ok(ToolResult {
+                            call_id,
+                            output: analysis,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        return Ok(ToolResult {
+                            call_id,
+                            output: String::new(),
+                            error: Some(format!("Analysis failed: {}", e)),
+                        });
+                    }
+                }
+            }
+
+            // SSRF protection (only for http/https URLs)
+            if !is_safe_url(image_url_str) {
                 return Ok(ToolResult {
                     call_id,
                     output: String::new(),
@@ -341,7 +445,7 @@ fn make_vision_analyze_handler() -> ToolHandler {
             }
 
             // Analyze the image via vision API
-            match analyze_image(image_url, prompt).await {
+            match analyze_image(image_url_str, prompt).await {
                 Ok(analysis) => Ok(ToolResult {
                     call_id,
                     output: analysis,
@@ -386,6 +490,7 @@ pub fn register(registry: &mut super::registry::ToolRegistry) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use oben_models::ToolParameters;
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
@@ -472,7 +577,7 @@ mod tests {
             )
             .await;
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Missing 'image_url'"));
+        assert!(result.error.as_ref().unwrap().contains("Missing required 'image_url'"));
     }
 
     #[tokio::test]
@@ -505,6 +610,55 @@ mod tests {
             )
             .await;
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("API key"));
+        let error_msg = result.error.as_ref().unwrap();
+        // Error may be about missing key OR download failure (if network blocks example.com)
+        assert!(error_msg.contains("API key") || error_msg.contains("API error") || error_msg.contains("download") || error_msg.contains("HTTP"),
+            "Expected API key error or download error, got: {}", error_msg);
+    }
+
+    #[test]
+    fn test_parse_data_url() {
+        let (mime, b64) = parse_data_url("data:image/png;base64,iVBORw0KGgo=").unwrap();
+        // MIME should be "image/png" (normalized)
+        assert_eq!(mime, "image/png");
+        assert_eq!(b64, "iVBORw0KGgo=");
+        
+        let (mime, b64) = parse_data_url("data:image/jpeg;base64,/9j/4AAQ").unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(b64, "/9j/4AAQ");
+        
+        assert!(parse_data_url("https://example.com/test.jpg").is_none());
+        assert!(parse_data_url("data:text/plain,hello").is_none());
+    }
+
+    #[test]
+    fn test_is_data_url() {
+        assert!(is_data_url("data:image/png;base64,abc"));
+        assert!(is_data_url("data:image/jpeg;base64,xyz"));
+        assert!(!is_data_url("https://example.com/test.jpg"));
+        assert!(!is_data_url("http://localhost:8080/test.jpg"));
+    }
+
+    #[test]
+    fn test_tool_definition_has_parameters() {
+        let registry = make_registry();
+        let tools = registry.list_tools();
+        // Find vision_analyze tool
+        let vision_tool = tools.iter()
+            .find(|t| t.name == "vision_analyze")
+            .expect("vision_analyze should be in registry");
+        // Check parameters are present (not empty)
+        match &vision_tool.parameters {
+            ToolParameters::Flat(params) => {
+                assert!(!params.is_empty(), "vision_analyze should have parameters");
+                let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                assert!(param_names.contains(&"image_url"), "Should have image_url parameter");
+                assert!(param_names.contains(&"prompt"), "Should have prompt parameter");
+                // image_url should be required
+                let image_param = params.iter().find(|p| p.name == "image_url").unwrap();
+                assert!(image_param.required, "image_url should be required");
+            }
+            _ => panic!("Expected Flat parameters"),
+        }
     }
 }

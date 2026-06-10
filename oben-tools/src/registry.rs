@@ -45,10 +45,13 @@ pub trait SelfRegisteringTool {
     fn tool() -> oben_models::Tool;
     fn handler() -> ToolHandler;
     fn register_self(registry: &mut ToolRegistry) {
-        registry.register(Box::new(SelfRegisteringToolAdapter::new(
-            Self::tool(),
-            Self::handler(),
-        )));
+        let tool = Self::tool();
+        let handler = Self::handler();
+        let adapter = Box::new(SelfRegisteringToolAdapter::new(
+            tool.clone(),
+            handler,
+        ));
+        registry.register_with_def(adapter, tool);
     }
 }
 
@@ -93,12 +96,16 @@ impl Tool for SelfRegisteringToolAdapter {
 
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
+    /// Full tool definitions with parameters, stored alongside the trait objects.
+    /// Used by `list_tool_definitions()` to return complete specs to the LLM.
+    tool_defs: HashMap<String, oben_models::Tool>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            tool_defs: HashMap::new(),
         }
     }
 
@@ -107,15 +114,30 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Register a tool and store its full definition (including parameters).
+    pub fn register_with_def(&mut self, tool: Box<dyn Tool>, def: oben_models::Tool) {
+        let name = tool.name().to_string();
+        info!("Registering tool: {}", name);
+        self.tools.insert(name.clone(), tool);
+        self.tool_defs.insert(name, def);
+    }
+
     pub fn list_tools(&self) -> Vec<oben_models::Tool> {
-        self.tools
-            .values()
-            .map(|t| oben_models::Tool {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                parameters: oben_models::ToolParameters::Flat(vec![]),
-            })
-            .collect()
+        // Return stored tool definitions with full parameter specs.
+        // Fall back to empty params for any tool registered without a def.
+        let mut defs: Vec<oben_models::Tool> = self.tool_defs.values().cloned().collect();
+        // If there are tools without definitions, fill them in with empty params
+        for name in self.tools.keys() {
+            if !defs.iter().any(|d| d.name == *name) {
+                let tool = &self.tools[name];
+                defs.push(oben_models::Tool {
+                    name: tool.name().to_string(),
+                    description: tool.description().to_string(),
+                    parameters: oben_models::ToolParameters::Flat(vec![]),
+                });
+            }
+        }
+        defs
     }
 
     pub async fn execute(&self, tool_name: &str, arguments: &Value) -> ToolResult {

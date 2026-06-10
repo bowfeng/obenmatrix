@@ -584,18 +584,19 @@ fn build_image_message(input: &str) -> oben_models::Message {
             .any(|ext| token.to_lowercase().ends_with(ext));
         if is_image && token.starts_with('/') {
             // Try to read and encode the image
-            if image::is_image_path(token) {
-                if let Some((msg, _)) = image::path_to_image_message(token, "") {
-                    image_tokens.push(match msg.content {
-                        MessageContent::Parts(parts) => {
-                            // Extract just the image part from the message
-                            parts.iter().find_map(|p| match p {
-                                MessagePart::Image { url, .. } => Some(url.clone()),
-                                _ => None,
-                            }).unwrap_or_else(|| "data:image/png;base64,unknown".to_string())
-                        }
-                        _ => "data:image/png;base64,unknown".to_string(),
-                    });
+            if let Some((msg, _)) = image::path_to_image_message(token, "") {
+                let url = match &msg.content {
+                    MessageContent::Image { url, .. } => url.clone(),
+                    MessageContent::Parts(parts) => {
+                        parts.iter().find_map(|p| match p {
+                            MessagePart::Image { url, .. } => Some(url.clone()),
+                            _ => None,
+                        }).unwrap_or_else(|| String::new())
+                    }
+                    _ => String::new(),
+                };
+                if !url.is_empty() {
+                    image_tokens.push(url);
                 }
             }
         } else {

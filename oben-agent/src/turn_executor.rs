@@ -490,10 +490,32 @@ impl TurnExecutor {
 
                     // Store results and notify callbacks
                     for (i, result) in results.iter().enumerate() {
-                        session.messages.push(Message::tool_result(
-                            &pending_calls[i].call_id,
-                            &result.output,
-                        ));
+                        let tool_call_id = &pending_calls[i].call_id;
+                        
+                        // Skip completely empty results unless it was a steer message.
+                        // A result with an error is not empty — the error message
+                        // is critical feedback for the LLM to understand what went wrong.
+                        let is_steer = tool_call_id == "steer";
+                        if result.output.is_empty() && !is_steer && result.error.is_none() {
+                            continue;
+                        }
+                        
+                        let msg = if !result.output.is_empty() {
+                            Message::tool_result(tool_call_id, &result.output)
+                        } else if let Some(ref err) = result.error {
+                            // Store the error as the tool result so the LLM can learn
+                            Message::tool_result(tool_call_id, err)
+                        } else {
+                            // For steer messages with no output/error, add placeholder
+                            Message {
+                                role: oben_models::MessageRole::Tool,
+                                content: oben_models::MessageContent::Text(String::new()),
+                                id: None,
+                                tool_call_ids: vec![tool_call_id.clone()],
+                                tool_calls: None,
+                            }
+                        };
+                        session.messages.push(msg);
                         if let Some(cb) = &config.callbacks {
                             cb.call_tool_complete(
                                 &pending_calls[i].tool_name,
