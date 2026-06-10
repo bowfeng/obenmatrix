@@ -205,7 +205,7 @@ impl EventBus {
                     state.streaming_text.push_str(text);
                     state.add_activity(
                         ActivityKind::Streaming,
-                        format!("Streaming: {}...", &text[..text.len().min(30)]),
+                        format!("Streaming: {}...", text.chars().take(30).collect::<String>()),
                     );
                 }
                 AgentEvent::ToolStart(id, name, context) => {

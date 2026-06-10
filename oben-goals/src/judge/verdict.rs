@@ -76,14 +76,14 @@ pub fn parse_judge_response(raw: &str) -> JudgeVerdict {
                 if let Ok(v) = serde_json::from_str(&json_str) {
                     v
                 } else {
-                    let preview = &text[..text.len().min(200)];
+                    let preview: String = text.chars().take(200).collect();
                     return JudgeVerdict::Continue(format!(
                         "judge reply was not JSON: {:?}",
                         preview
                     ));
                 }
             } else {
-                let preview = &text[..text.len().min(200)];
+                let preview: String = text.chars().take(200).collect();
                 return JudgeVerdict::Continue(format!("judge reply was not JSON: {:?}", preview));
             }
         }
