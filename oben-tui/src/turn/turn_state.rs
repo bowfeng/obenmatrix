@@ -98,8 +98,8 @@ impl TurnState {
         // Remove from active and add to completed
         let has_error =
             result.to_lowercase().contains("error") || result.to_lowercase().contains("failed");
-        let preview = if result.len() > 60 {
-            format!("{}...", &result[..60])
+        let preview: String = if result.chars().count() > 60 {
+            result.chars().take(60).collect::<String>() + "..."
         } else {
             result.to_string()
         };
@@ -139,15 +139,16 @@ impl TurnState {
         self.streaming_text.push_str(text);
         self.add_activity(
             ActivityKind::Streaming,
-            format!("Streaming: {}...", &text[..text.len().min(30)]),
+            format!("Streaming: {}...", text.chars().take(30).collect::<String>()),
         );
     }
 
     pub fn on_reasoning(&mut self, text: &str) {
         self.reasoning_text.push_str(text);
-        if self.reasoning_text.len() > 2000 {
-            self.reasoning_text =
-                self.reasoning_text[self.reasoning_text.len() - 2000..].to_string();
+        let char_count = self.reasoning_text.chars().count();
+        if char_count > 2000 {
+            let skip = char_count - 2000;
+            self.reasoning_text = self.reasoning_text.chars().skip(skip).collect();
         }
     }
 
@@ -191,8 +192,8 @@ impl TurnState {
 
     /// Get current streaming text (first 1000 chars for UI display)
     pub fn display_text(&self) -> String {
-        if self.streaming_text.len() > 1000 {
-            format!("{}...", &self.streaming_text[..1000])
+        if self.streaming_text.chars().count() > 1000 {
+            self.streaming_text.chars().take(1000).collect::<String>() + "..."
         } else {
             self.streaming_text.clone()
         }

@@ -205,7 +205,7 @@ impl EventBus {
                     state.streaming_text.push_str(text);
                     state.add_activity(
                         ActivityKind::Streaming,
-                        format!("Streaming: {}...", &text[..text.len().min(30)]),
+                        format!("Streaming: {}...", text.chars().take(30).collect::<String>()),
                     );
                 }
                 AgentEvent::ToolStart(id, name, context) => {
@@ -222,9 +222,11 @@ impl EventBus {
                 }
                 AgentEvent::Reasoning(text) => {
                     state.reasoning_text.push_str(text);
-                    if state.reasoning_text.len() > 2000 {
+                    let char_count = state.reasoning_text.chars().count();
+                    if char_count > 2000 {
+                        let skip = char_count - 2000;
                         state.reasoning_text =
-                            state.reasoning_text[state.reasoning_text.len() - 2000..].to_string();
+                            state.reasoning_text.chars().skip(skip).collect();
                     }
                 }
                 AgentEvent::TurnCompleted(outcome) => {
@@ -262,8 +264,8 @@ impl EventBus {
     fn finish_tool(&self, state: &mut TurnState, id: &str, name: &str, result: &str) {
         let has_error =
             result.to_lowercase().contains("error") || result.to_lowercase().contains("failed");
-        let preview = if result.len() > 60 {
-            format!("{}...", &result[..60])
+        let preview: String = if result.chars().count() > 60 {
+            result.chars().take(60).collect::<String>() + "..."
         } else {
             result.to_string()
         };

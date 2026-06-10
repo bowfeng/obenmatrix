@@ -168,7 +168,7 @@ async fn test_live_chat_simple() -> Result<()> {
     eprintln!(
         "✅ Live chat test passed: text_len={}, text_preview='{}...'",
         resp.text.len(),
-        &resp.text[..resp.text.len().min(80)]
+        resp.chars().take(80).collect::<String>()
     );
 
     Ok(())
@@ -217,7 +217,7 @@ async fn test_live_chat_with_large_system_prompt() -> Result<()> {
     eprintln!(
         "✅ Large system prompt test passed: text_len={}, text_preview='{}...'",
         resp.text.len(),
-        &resp.text[..resp.text.len().min(80)]
+        &resp.text.chars().take(80).collect::<String>()
     );
 
     Ok(())
@@ -251,11 +251,11 @@ async fn test_live_stream_chat() -> Result<()> {
     eprintln!("  callback captured len={}", captured_text.len());
     eprintln!(
         "  response.text preview='{}'",
-        &resp.text[..resp.text.len().min(80)]
+        &resp.text.chars().take(80).collect::<String>()
     );
     eprintln!(
         "  callback preview='{}'",
-        &captured_text[..captured_text.len().min(80)]
+        &captured_text.chars().take(80).collect::<String>()
     );
 
     assert!(
@@ -291,7 +291,7 @@ async fn test_live_chat_with_tool_calls_response() -> Result<()> {
     eprintln!("✅ Tool call test passed:");
     eprintln!(
         "  response.text='{}'",
-        &resp.text[..resp.text.len().min(200)]
+        &resp.text.chars().take(200).collect::<String>()
     );
     eprintln!("  tool_calls.len={}", resp.tool_calls.len());
     if !resp.tool_calls.is_empty() {
@@ -402,7 +402,7 @@ async fn test_live_stream_chat_with_tool_calls() -> Result<()> {
     eprintln!("  tool_calls.len={}", resp.tool_calls.len());
     eprintln!(
         "  response preview='{}'",
-        &resp.text[..resp.text.len().min(100)]
+        &resp.text.chars().take(100).collect::<String>()
     );
 
     assert!(

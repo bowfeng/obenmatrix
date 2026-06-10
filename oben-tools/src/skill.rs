@@ -91,8 +91,11 @@ fn parse_skill_metadata(path: &Path) -> Option<SkillMeta> {
             .map(|l| l.trim())
             .collect::<Vec<_>>()
             .join(" ");
-        if description.len() > 100 {
-            description = format!("{}...", &description[..100]);
+        if description.chars().count() > 100 {
+            description = format!(
+                "{}...",
+                &description.chars().take(100).collect::<String>()
+            );
         }
     }
 

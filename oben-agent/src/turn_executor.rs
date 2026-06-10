@@ -171,6 +171,10 @@ impl TurnExecutor {
         }
 
         // ── Core loop: LLM call → tool dispatch → repeat ─────────────
+        // Tracks consecutive empty (no text, no tool calls) LLM responses.
+        // Used to retry when a model returns empty output after tool results.
+        let mut consecutive_empty_responses: u32 = 0;
+
         loop {
             // Check interrupt
             if let Some(int_state) = &interrupt {
@@ -419,6 +423,35 @@ impl TurnExecutor {
                         context_engine.update_from_response(tokens, 0, tokens);
                     }
 
+                    // ── Detect empty LLM response (text="" + tool_calls=[]). ──────
+                    // When the model returns a fully empty response after tool
+                    // results, it has gone silent. Inject a system hint and retry,
+                    // bounded to prevent infinite loops (up to 2 extra attempts).
+                    let is_response_empty =
+                        text.trim().is_empty() && tool_calls.is_empty() && response.tokens_used.unwrap_or(0) > 0;
+                    if is_response_empty {
+                        consecutive_empty_responses += 1;
+                        let hint = "Your previous response was completely empty and will be skipped. Please summarize what you learned from the tool results above, or use a tool call if you need more information.";
+
+                        if consecutive_empty_responses < 2 {
+                            info!(
+                                "Empty LLM response (attempt {}), injecting system hint to recover",
+                                consecutive_empty_responses
+                            );
+                            if let Some(cb) = &config.callbacks {
+                                cb.call_status("info", &format!("empty_response_recovery: attempt={}", consecutive_empty_responses));
+                            }
+                            session.messages.push(Message::system(hint.to_string()));
+                            continue;
+                        } else {
+                            info!(
+                                "Empty LLM response after 2 retries, skipping assistant message and falling back to last tool result"
+                            );
+                        }
+                    } else {
+                        consecutive_empty_responses = 0;
+                    }
+
                     // Add assistant response to session
                     let assistant_msg = if !tool_calls.is_empty() {
                         let tool_call_data = tool_calls
@@ -462,12 +495,23 @@ impl TurnExecutor {
                         config.dispatch_config.as_ref().unwrap_or(&default_dispatch);
 
                     // Convert to pending calls and dispatch
+                    let parent_session_id = current_session_id.clone();
                     let pending_calls: Vec<PendingToolCall> = tool_calls
                         .iter()
-                        .map(|c| PendingToolCall {
-                            tool_name: c.tool_name.clone(),
-                            arguments: c.arguments.clone(),
-                            call_id: c.id.clone(),
+                        .map(|c| {
+                            let mut args = c.arguments.clone();
+                            // Inject parent_session_id into delegate task calls
+                            if c.tool_name == "delegate_task" {
+                                if let Some(obj) = args.as_object_mut() {
+                                    obj.entry("parent_session_id")
+                                        .or_insert_with(|| serde_json::Value::String(parent_session_id.clone()));
+                                }
+                            }
+                            PendingToolCall {
+                                tool_name: c.tool_name.clone(),
+                                arguments: args,
+                                call_id: c.id.clone(),
+                            }
                         })
                         .collect();
 
@@ -589,5 +633,51 @@ mod tests {
         let text = "short";
         let preview: String = text.chars().take(100).collect();
         assert_eq!(preview, "short");
+    }
+
+    /// Verifies the empty-response detection heuristic.
+    ///
+    /// When text is blank, tool_calls is empty, and tokens_used > 0 (the model
+    /// consumed prompt tokens but produced nothing), the executor injects a
+    /// system hint on the first empty response and falls back to the last
+    /// tool result on the second consecutive empty response.
+    #[test]
+    fn test_empty_response_heuristic() {
+        fn mk(text: &str, tool_calls: Vec<oben_models::TransportToolCall>, tokens: Option<usize>) -> oben_models::TransportResponse {
+            oben_models::TransportResponse {
+                text: text.to_string(),
+                tool_calls,
+                tokens_used: tokens,
+            }
+        }
+
+        // Non-empty response with tokens → NOT empty
+        let resp = mk("Hello", vec![], Some(100));
+        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
+        assert!(!is_empty, "Normal response should not be flagged as empty");
+
+        // Empty text, no tool calls, but tokens > 0 → IS empty
+        let resp = mk("", vec![], Some(100));
+        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
+        assert!(is_empty, "Empty response with tokens should be flagged");
+
+        // Zero/None tokens → model produced nothing (likely error), NOT empty-flagged
+        let resp = mk("", vec![], None);
+        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
+        assert!(!is_empty, "Response with no tokens should not be flagged (likely error)");
+
+        // Response with tool calls → not empty (even if text is blank)
+        let resp = mk("", vec![oben_models::TransportToolCall {
+            id: "tc1".into(),
+            tool_name: "terminal".into(),
+            arguments: serde_json::json!({"command": "ls"}),
+        }], Some(100));
+        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
+        assert!(!is_empty, "Response with tool calls should not be flagged as empty");
+
+        // Whitespace-only text with tokens → empty
+        let resp = mk("   \n  ", vec![], Some(50));
+        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
+        assert!(is_empty, "Whitespace-only text should be flagged as empty");
     }
 }

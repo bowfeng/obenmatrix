@@ -29,9 +29,9 @@
 | TL.18 | **Image generation** (FLUX, DALL-E, Midjourney) | 🟡 | ❌ | [TBD] | `image_gen_provider.py` |
 | TL.19 | **MCP integration** | 🟢 | ❌ | [TBD] | `mcp_oauth.py`, `mcp_tool.py` |
 | TL.20 | **Cron scheduler** | 🟢 | ✅ (#63) | [#63](https://github.com/.../63) `oben-cron/` | Schedule parsing (duration/interval/ISO/cron), JSON persistence, daemon |
-| TL.21 | **Delegate tool** | 🟡 | ❌ | [TBD] | Subagent delegation (`delegate_tool.py`) |
+| TL.21 | **Delegate tool** | 🟡 | ✅ | #25 | Subagent delegation (`delegate_tool.py`): `SubagentSpawner` (shared DB, fresh context), `CallbacksRelay` (parent→child forwarding), `ToolsetFilter` (blocked tools), TUI wiring with `SpawnFn` |
 | TL.22 | **Kanban tools** | 🟡 | ❌ | [TBD] | Task management board |
-| TL.23 | **Computer use** | 🟡 | ❌ | [TBD] | `computer_use_tool.py` — macOS GUI control |
+| TL.23 | **Computer use** | 🟡 | ✅ (#TL.23) | (built-in) | `computer_use.rs` — macOS GUI via cua-driver stdio MCP; capture/click/drag/scroll/type/key/set_value/wait/list_apps/focus_app; safety gates for type/key patterns |
 | TL.24 | **Video generation** | 🟢 | ❌ | [TBD] | `video_gen_provider.py` |
 | TL.25 | **Home Assistant** | 🟢 | ❌ | [TBD] | `homeassistant_tool.py` |
 | TL.26 | **Mixture of Agents** | 🟢 | ❌ | [TBD] | `mixture_of_agents_tool.py` |

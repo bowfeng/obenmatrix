@@ -53,9 +53,45 @@ To ensure maximum performance and scannability, you must write idiomatic, modern
 * **Idiomatic Control Flow**: Rely on functional combinators (`.map()`, `.and_then()`, `.unwrap_or_else()`) for cleaner, localized logic handling instead of deeply nested `if let` blocks.
 * **No Silent Failures**: Propagate errors explicitly using the `?` operator. Never hide critical subsystem errors behind broad unlogs or silent `Default::default()` returns.
 
-### 4. Info and Debug log
+### 4. INFO and Debug Log
 
 MUST output a complete Trace Log for every complex task
+
+---
+
+### 5. UTF-8 String Slicing — NEVER Use Byte Indices
+
+**Rule: Never slice a `&str` using byte indices (`.len()`, char positions, or literal byte numbers). Always operate on `.chars()` instead.**
+
+Rust's string slicing `&s[..N]` and `s.len()` use **byte offsets**, not character positions. Multi-byte characters (Chinese, Japanese, emoji, accented chars like `é` or `é`) occupy 2-4 bytes, so slicing at byte position N often lands in the middle of a multi-byte UTF-8 character, triggering a **fatal panic**.
+
+**Correct pattern (char-safe):**
+```rust
+// ❌ PANIC on "查看今天天气" - Chinese chars are multi-byte
+&s[..s.len().min(80)]
+
+// ✅ SAFE - counts characters, not bytes
+let truncated: String = s.chars().take(80).collect();
+```
+
+**Why this happens:**
+- ASCII `"abc"`: `'a'` = bytes 0..1 (1 byte = 1 char)
+- Chinese `"查看"`: `'查'` = bytes 0..3 (1 char = 3 bytes)
+- `&s[..80]` where `'查'` starts at byte 79 → **panic: "byte index 80 is not a char boundary"**
+
+**Locations that always contain UTF-8 (NEVER use byte indices):**
+- User input / chat messages (`AgentEvent::ChatInput`, `Message::user`)
+- LLM output / streaming text / tool results
+- Error messages that echo user-facing content
+- Web scraping responses
+- Session titles / file paths with non-ASCII characters
+
+**Locations that are likely safe (may skip):**
+- ASCII-only identifiers: tool names (`"web_search"`), log prefixes
+- Config values known to be ASCII: API keys, model names
+- Cron schedule strings validated by digit-only checks
+
+When in doubt, use `.chars().take(N).collect()` or `.chars().position()`.
 
 ---
 

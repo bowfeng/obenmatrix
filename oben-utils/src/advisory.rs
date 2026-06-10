@@ -417,8 +417,9 @@ fn query_osv(package: &str, ecosystem: &str, version: Option<&str>) -> Option<St
         .take(3)
         .filter_map(|v| v.get("summary").and_then(|s| s.as_str()))
         .map(|s| {
-            let limit = s.len().min(100);
-            s[..limit].to_string()
+            let char_count = s.chars().count();
+            let limit = char_count.min(100);
+            s.chars().take(limit).collect::<String>()
         })
         .collect();
 

@@ -27,6 +27,28 @@ pub enum BlockType<'a> {
     ToolResult,
 }
 
+/// Cache for layout computation (wrapped lines + heights).
+///
+/// Messages are append-only — content never changes. When entry count + window
+/// dimensions + streaming state are the same as last render, we can skip the
+/// whole wrap loop and reuse cached heights/ranges/flat-lines.
+#[derive(Clone)]
+struct CachedLayout {
+    /// Entry count at cache time.
+    entry_count: usize,
+    /// Window height/width at cache time.
+    area_h: u16,
+    area_w: u16,
+    /// Whether we were streaming when cache was created.
+    was_streaming: bool,
+    /// Pre-computed block heights (entry index → height_in_lines).
+    heights: Vec<u16>,
+    /// Flat line index ranges per entry: (start, end) in flat_lines.
+    entry_ranges: Vec<(usize, usize)>,
+    /// All wrapped lines concatenated in order.
+    flat_lines: Vec<Line<'static>>,
+}
+
 /// State for the message display widget.
 pub struct ConversationState {
     pub scroll_state: Arc<StdMutex<ScrollbarState>>,
@@ -67,6 +89,9 @@ pub struct ConversationState {
     /// accounts for title+BODERS distinction. Used by render_selection/get_selected_text
     /// to skip rows outside actual rendered body area.
     pub visible_body_ranges: Arc<StdMutex<Vec<(u16, u16)>>>,
+
+    /// Cached layout from last render (entry wrap, heights, flat lines).
+    pub cached_layout: Arc<StdMutex<Option<CachedLayout>>>,
 }
 
 impl ConversationState {
@@ -91,6 +116,7 @@ impl ConversationState {
             cached_body_to_flat: Arc::new(StdMutex::new(Vec::new())),
             cached_lines: Arc::new(StdMutex::new(Vec::new())),
             visible_body_ranges: Arc::new(StdMutex::new(Vec::new())),
+            cached_layout: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -468,85 +494,95 @@ impl ConversationWidget {
         let inner_width = (msg_area.width as usize).saturating_sub(2);
         let inner_height = (msg_area.height as usize).saturating_sub(1);
 
-        // ─── Phase 1: Layout calculation ───────────────────────────────
-        // Wrap lines and compute heights — pure data, no rendering.
-
-        // Accumulate (entry_index, block_type, wrapped_lines) for later rendering
-        let mut layout_entries: Vec<(usize, BlockType<'_>, Vec<Line<'static>>)> = Vec::new();
-        let mut entry_flat_ranges: Vec<(usize, usize)> = Vec::new(); // (start, end) in flat lines
-        let mut flat_accum = 0usize;
-        for entry in entries {
-            let plain_lines: Vec<Line<'static>> = entry
-                .body_lines
-                .iter()
-                .map(|sl| sl.content.clone())
-                .collect();
-
-            let block_type = if entry.is_tool_result {
-                BlockType::ToolResult
-            } else {
-                BlockType::Message(&entry.role)
+        // ─── Phase 1: Layout calculation (skip wrap if cache valid) ────────
+        // Messages are append-only — content never changes. On scroll events,
+        // when entry count + window size + streaming haven't changed, reuse cache.
+        let inner_wrap_w = inner_width.saturating_sub(is_streaming as usize);
+        let (layout_entries, block_heights, content_height) = {
+            let entry_count = entries.len();
+            // Check cache: same entries + same window + same streaming?
+            let cache_hit = {
+                match state.cached_layout.lock() {
+                    Ok(lock) => lock.as_ref().is_some_and(|c| {
+                        let hit = c.entry_count == entry_count
+                            && c.area_h == area.height
+                            && c.area_w == area.width
+                            && c.was_streaming == is_streaming;
+                        if hit {
+                            tracing::trace!("cached_layout HIT entries={} h={} w={}", c.entry_count, c.area_h, c.area_w);
+                        }
+                        hit
+                    }),
+                    Err(_) => false,
+                }
             };
 
-            let actual_wrap_w = if matches!(&block_type, BlockType::ToolResult) {
-                // ToolResult: -2 for tool indent box + -2 for inner border = -4
-                inner_width.saturating_sub(4)
-            } else {
-                // Regular message: -2 for inner block borders + -2 for body border = -4
-                inner_width.saturating_sub(2)
-            };
+            let mut layout_entries: Vec<(usize, BlockType<'_>, Vec<Line<'static>>)> = Vec::new();
+            let mut block_heights: Vec<u16> = Vec::new();
 
-            // Wrap using the layout module's function (consistent height estimation)
-            let wrapped = layout::wrap_styled_lines_to_lines(&plain_lines, actual_wrap_w);
-
-            let flat_start = flat_accum;
-            let flat_end = flat_accum + wrapped.len();
-            layout_entries.push((layout_entries.len(), block_type, wrapped));
-            entry_flat_ranges.push((flat_start, flat_end));
-            flat_accum = flat_end;
-        }
-
-        // Debug: log entry flat ranges and wrap widths
-        tracing::debug!(
-            "[selection/render_bordered_blocks] area.w={} msg_area.w={} inner_width={} entry_count={} total_flat_lines={}",
-            area.width, msg_area.width, inner_width,
-            entry_flat_ranges.len(),
-            entry_flat_ranges.last().map(|(s,e)| e.saturating_sub(*s)).unwrap_or(0)
-        );
-        for (ei, (fs, fe)) in entry_flat_ranges.iter().enumerate() {
-            let count = fe.saturating_sub(*fs);
-            if ei < layout_entries.len() {
-                let wrap_w = if matches!(layout_entries[ei].1, BlockType::ToolResult) {
-                    inner_width.saturating_sub(4)
-                } else {
-                    inner_width.saturating_sub(2)
-                };
-                let wrapped = &layout_entries[ei].2;
-                let first_line: String = if !wrapped.is_empty() {
-                    wrapped[0].spans.iter().map(|s| s.content.to_string()).collect()
-                } else {
-                    String::new()
-                };
-                tracing::debug!(
-                    "[selection/render_bordered_blocks]   entry[{}] flat[{}..{}) wrap_w={} count={} first=\"...{}...\"",
-                    ei, fs, fe, wrap_w, count,
-                    first_line.chars().take(60).collect::<String>()
-                );
+            if cache_hit {
+                // Reuse cached layout — skip the O(n) wrap pass
+                if let Ok(guard) = state.cached_layout.lock() {
+                    if let Some(ref c) = guard.as_ref() {
+                        block_heights = c.heights.clone();
+                        for (i, entry) in entries.iter().enumerate() {
+                            let bt = if entry.is_tool_result { BlockType::ToolResult } else { BlockType::Message(&entry.role) };
+                            let (r_start, r_end) = c.entry_ranges[i];
+                            let wrapped: Vec<Line<'static>> = c.flat_lines[r_start..r_end].iter().cloned().collect();
+                            layout_entries.push((i, bt, wrapped));
+                        }
+                    }
+                }
             }
-        }
 
-        // Compute block heights using the layout module's estimator
-        let block_heights: Vec<u16> = layout_entries
-            .iter()
-            .map(|(_, _block_type, wrapped)| {
-                // Estimate height from wrapped line count + border
-                // Match exactly what the render loop produces
-                let body_height = wrapped.len().max(1) as u16;
-                body_height + layout::BODY_HEIGHT_ADJUSTER
-            })
-            .collect();
+            if layout_entries.is_empty() {
+                // Full compute: wrap ALL entries
+                let mut flat_accum = 0usize;
+                for (i, entry) in entries.iter().enumerate() {
+                    let plain_lines: Vec<Line<'static>> = entry
+                        .body_lines
+                        .iter()
+                        .map(|sl| sl.content.clone())
+                        .collect();
+                    let bt = if entry.is_tool_result { BlockType::ToolResult } else { BlockType::Message(&entry.role) };
+                    let wrap_w = if matches!(bt, BlockType::ToolResult) {
+                        inner_width.saturating_sub(4)
+                    } else {
+                        inner_width.saturating_sub(2)
+                    };
+                    let wrapped = layout::wrap_styled_lines_to_lines(&plain_lines, wrap_w);
+                    let h = (wrapped.len().max(1) as u16) + layout::BODY_HEIGHT_ADJUSTER as u16;
+                    layout_entries.push((i, bt, wrapped));
+                    flat_accum += layout_entries.last().unwrap().2.len();
+                    block_heights.push(h);
+                }
+            }
 
-        let content_height = layout::calc_total_height(&block_heights);
+                    // Update cache
+                    let ch = layout::calc_total_height(&block_heights);
+                    let entry_ranges: Vec<(usize, usize)> = {
+                        let mut ranges = Vec::with_capacity(layout_entries.len());
+                        let mut acc = 0usize;
+                        for (_, _, wl) in &layout_entries {
+                            let end = acc + wl.len();
+                            ranges.push((acc, end));
+                            acc = end;
+                        }
+                        ranges
+                    };
+                    if let Ok(mut guard) = state.cached_layout.lock() {
+                        *guard = Some(CachedLayout {
+                            entry_count,
+                            area_h: area.height,
+                            area_w: area.width,
+                            was_streaming: is_streaming,
+                            heights: block_heights.clone(),
+                            entry_ranges,
+                            flat_lines: layout_entries.iter().flat_map(|(_, _, wl)| wl.iter().cloned()).collect(),
+                        });
+                    }
+                    (layout_entries, block_heights, ch)
+        };
 
         // Cache the full flat wrapped lines for selection/render alignment.
         // Cache block heights and body→flat mapping for selection alignment.

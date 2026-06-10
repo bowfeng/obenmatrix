@@ -1627,6 +1627,15 @@ impl SessionManager {
         &self.state
     }
 
+    /// Set the parent_session_id for a session (DB + in-memory).
+    pub fn set_parent_session_id_for_child(
+        &mut self,
+        child_session_id: &str,
+        parent_id: &str,
+    ) -> Result<()> {
+        self.db.set_parent_session_id(child_session_id, parent_id)
+    }
+
     /// Close the session manager — drops the DB connection and resets to Off.
     pub fn close(&mut self) -> Result<()> {
         self.sessions.clear();
@@ -2485,6 +2494,59 @@ pub struct SwitchResult {
     pub was_new: bool,
 }
 
+// ── Subagent session delegation ───────────────────────────────────────────
+
+/// Metadata returned when spawning a child session for subagent delegation.
+///
+/// The parent's `active_session_id` is **not** changed. The child session
+/// lives in the shared database and must be managed externally by the
+/// delegate tool, which creates its own `SessionManager` (or uses `SessionDB`
+/// directly) and passes the child session ID to the child agent.
+pub struct SpawnedSession {
+    /// The newly created child session ID.
+    pub session_id: String,
+    /// The parent session ID that the child is linked to.
+    pub parent_session_id: String,
+}
+
+impl SessionManager {
+    /// Create a new session for a subagent delegate run.
+    ///
+    /// Sets `parent_session_id` on the session in the database so lineage
+    /// is recorded. The parent's `active_session_id` is **not** changed.
+    ///
+    /// Returns the child session ID which the delegate tool can use to
+    /// pass to a child `SessionManager` or `SessionDB` directly.
+    ///
+    /// Returns an error if there is no active session.
+    pub fn spawn_session_for_subagent(&mut self, name: impl Into<String>) -> Result<SpawnedSession> {
+        let parent_id = self.active_session_id.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "No active session to spawn child from \
+                 — call init() or create_session() first"
+            )
+        })?;
+
+        // create_session sets active_session_id to the new session.
+        // We restore the parent after to keep the parent active.
+        let child = self.create_session(&name.into());
+        let child_id = child.id.clone();
+
+        // Restore parent as active session.
+        self.active_session_id = Some(parent_id.clone());
+
+        // Set parent_session_id
+        self.db.set_parent_session_id(&child_id, &parent_id)?;
+        if let Some(s) = self.sessions.get_mut(&child_id) {
+            s.metadata.parent_session_id = Some(parent_id.clone());
+        }
+
+        Ok(SpawnedSession {
+            session_id: child_id,
+            parent_session_id: parent_id,
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3033,5 +3095,62 @@ mod tests {
             db_session.metadata.message_count, 5,
             "session metadata message_count should be 5"
         );
+    }
+
+
+    /// ChildSessionGuard creates a child session.
+    ///
+    /// Given: a manager with an active session
+    /// When: spawn_child_session is called
+    /// Then: the guard holds the child session and parent_id
+    #[test]
+    fn test_spawn_subagent_session_leaves_parent_active() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.init().unwrap();
+        let _parent = mgr.create_session("parent");
+        let parent_id = mgr.active_session_id().unwrap();
+
+        let spawned = mgr.spawn_session_for_subagent("child-task").unwrap();
+        assert_eq!(spawned.session_id.len(), 36); // UUID
+        assert_eq!(spawned.parent_session_id, parent_id);
+
+        // Parent's active_session_id is NOT changed
+        assert_eq!(mgr.active_session_id(), Some(parent_id), "parent should remain active");
+    }
+
+    /// spawn_session_for_subagent persists parent_session_id to the DB.
+    #[test]
+    fn test_spawn_subagent_session_sets_parent_id_in_db() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.init().unwrap();
+        let _parent = mgr.create_session("parent");
+        let parent_id = mgr.active_session_id().unwrap();
+
+        let spawned = mgr.spawn_session_for_subagent("child-task").unwrap();
+
+        // Check DB directly (child is not active, so we can't see it through manager)
+        let db_child = mgr.db.get_session(&spawned.session_id).unwrap().unwrap();
+        assert_eq!(
+            db_child.metadata.parent_session_id,
+            Some(parent_id.clone()),
+            "child should have parent_session_id set"
+        );
+    }
+
+    /// spawn_session_for_subagent fails when there is no active session.
+    #[test]
+    fn test_spawn_no_active_session_fails() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.init().unwrap();
+        match mgr.spawn_session_for_subagent("unexpected") {
+            Err(ref e) => {
+                assert!(
+                    e.to_string().contains("No active session"),
+                    "error: {}",
+                    e.to_string()
+                );
+            }
+            Ok(_) => panic!("expected Err"),
+        }
     }
 }

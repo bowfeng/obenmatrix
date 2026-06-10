@@ -29,6 +29,8 @@ pub trait Tool: Send + Sync {
         Ok(())
     }
     async fn execute(&self, args: &Value) -> ToolResult;
+    /// Clone this tool into a new Box<dyn Tool>.
+    fn clone_tool(&self) -> Box<dyn Tool>;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +40,45 @@ pub trait Tool: Send + Sync {
 /// Closure-based handler type alias (used by all existing tool modules).
 pub type ToolHandler =
     Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send>> + Send + Sync>;
+
+/// Spawn function for subagent delegation.
+/// Maps to `delegate_task_handler` from hermes-agent.
+///
+/// Parameters:
+/// - `parent_session_id`: session ID of the delegating agent
+/// - `goal`: task description for the child
+/// - `agent_depth`: current nesting depth (0 = parent, increments on each delegate call)
+/// - `role`: "leaf" (default, cannot delegate further) or "orchestrator" (can delegate further if depth < max)
+///
+/// Creates a child session in the shared database, then spawns a child agent.
+/// Returns a `JoinHandle` for the child's async execution.
+pub type SpawnFn = Arc<dyn Fn(String, String, usize, &str) -> tokio::task::JoinHandle<Result<SubagentResult>> + Send + Sync>;
+
+/// Result of executing a child agent delegation run.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SubagentResult {
+    /// Whether the child completed successfully.
+    pub status: String,
+    /// The child's final response (truncated to 500 chars).
+    pub summary: String,
+    /// Number of API calls the child made.
+    pub api_calls: u32,
+    /// How long the child ran (monotonic seconds).
+    pub duration_seconds: f64,
+    /// The model the child used.
+    pub model: Option<String>,
+    /// The child's session ID in the shared database.
+    pub session_id: String,
+    /// The parent session ID that spawned this child.
+    pub parent_session_id: String,
+    /// Role: "leaf" or "orchestrator".
+    pub role: Option<String>,
+    /// Depth of this subagent in the delegate tree.
+    pub depth: usize,
+    /// Optional exit reason (for parity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_reason: Option<String>,
+}
 
 /// Trait for tools that register via (tool_def, handler) pair.
 /// The impl block below converts this to a Tool.
@@ -87,6 +128,12 @@ impl Tool for SelfRegisteringToolAdapter {
                 output: String::new(),
                 error: Some(e.to_string()),
             })
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(SelfRegisteringToolAdapter {
+            tool_def: self.tool_def.clone(),
+            handler: Arc::clone(&self.handler),
+        })
     }
 }
 
@@ -182,11 +229,46 @@ impl ToolRegistry {
     pub fn has_tool(&self, name: &str) -> bool {
         self.tools.contains_key(name)
     }
+
+    /// Create a new registry containing only the tools NOT in the `blocked` list.
+    /// Used by `build_child_toolset` to restrict subagent tool access.
+    pub fn filtered_clone(&self, blocked: &[&str]) -> Self {
+        let blocked_set: std::collections::HashSet<&str> = blocked.iter().copied().collect();
+        let mut filtered = Self::new();
+        for name in self.tools.keys() {
+            if blocked_set.contains(name.as_str()) {
+                continue;
+            }
+            if let Some(tool) = self.tools.get(name) {
+                // Clone via re-registering the boxed dyn Tool
+                filtered.register(tool.as_ref().clone_tool());
+                if let Some(def) = self.tool_defs.get(name) {
+                    filtered.tool_defs.insert(name.clone(), def.clone());
+                }
+            }
+        }
+        filtered
+    }
+
     pub fn len(&self) -> usize {
         self.tools.len()
     }
+
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+}
+
+impl Clone for ToolRegistry {
+    fn clone(&self) -> Self {
+        let mut cloned = Self::new();
+        for (name, tool) in &self.tools {
+            cloned.tools.insert(name.clone(), tool.clone_tool());
+        }
+        for (name, def) in &self.tool_defs {
+            cloned.tool_defs.insert(name.clone(), def.clone());
+        }
+        cloned
     }
 }
 
@@ -280,6 +362,9 @@ mod tests {
                 output: "ok".into(),
                 error: None,
             }
+        }
+        fn clone_tool(&self) -> Box<dyn Tool> {
+            Box::new(ValidatingTool)
         }
     }
 

@@ -1,5 +1,6 @@
 pub mod clarify;
 pub mod code_execution;
+pub mod computer_use;
 pub mod memory;
 pub mod osv_check;
 pub mod patch;
@@ -16,6 +17,8 @@ pub mod todo;
 pub mod vision_analyze;
 pub mod web;
 pub mod web_extract;
+pub mod toolset_filter;
+pub mod delegate;
 
 pub use registry::*;
 pub use terminal::*;
@@ -49,4 +52,6 @@ pub static ALL_TOOLS: &[fn(&mut ToolRegistry)] = &[
     code_execution::register,
     osv_check::register,
     skill::register,
+    computer_use::ComputerUseTool::register_self,
+    delegate::register,
 ];

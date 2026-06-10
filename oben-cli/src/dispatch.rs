@@ -64,7 +64,9 @@ pub async fn run_cli() -> Result<()> {
     if cli.verbose && std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "oben=debug");
     }
-    oben_utils::logging::init(tracing::Level::INFO);
+    let _log_path = oben_utils::logging::init(tracing::Level::INFO);
+    // Install panic hook so `panic!` goes into the log file instead of the TUI screen.
+    oben_utils::logging::init_panic_hook();
 
     match cli.command {
         Commands::Chat {

@@ -11,6 +11,12 @@ pub struct AppConfig {
     pub temperature: Option<f64>,
     pub max_tokens: Option<usize>,
     pub max_iterations: Option<usize>,
+    /// Maximum delegation depth for subagent spawning. When depth >= this value,
+    /// children become leaf agents and cannot delegate further.
+    pub max_spawn_depth: Option<usize>,
+    /// Maximum number of subagent tasks running concurrently in batch mode.
+    /// Excess tasks wait in a queue until a slot opens up. Default is 5.
+    pub max_concurrent_tasks: Option<usize>,
     pub tools: ToolsConfig,
     pub skills: SkillsConfig,
     pub gateway: Option<GatewayConfig>,
@@ -170,6 +176,8 @@ impl Default for AppConfig {
             temperature: Some(0.7),
             max_tokens: Some(8192),
             max_iterations: Some(50),
+            max_spawn_depth: Some(3),
+            max_concurrent_tasks: Some(5),
             tools: ToolsConfig {
                 enabled: vec![],
                 auto_detect: true,

@@ -258,8 +258,8 @@ fn extract_error_detail(msg: &str, _http_code: Option<u16>) -> String {
     }
 
     // Truncate long messages
-    if trimmed.len() > 200 {
-        format!("{}...", &trimmed[..197])
+    if trimmed.chars().count() > 200 {
+        format!("{}...", trimmed.chars().take(197).collect::<String>())
     } else {
         trimmed.to_string()
     }

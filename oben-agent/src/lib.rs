@@ -30,6 +30,7 @@ pub mod retry;
 pub mod stream_processor;
 pub mod system_prompt;
 pub mod system_prompt_cache;
+pub mod delegate;
 pub mod turn_executor;
 
 pub use agent::*;

@@ -45,8 +45,8 @@ fn make_http_get_handler() -> ToolHandler {
 
             let body = response.text().await?;
 
-            let body = if body.len() > 50_000 {
-                format!("{}... (truncated)", &body[..50_000])
+            let body: String = if body.chars().count() > 50_000 {
+                format!("{}... (truncated)", body.chars().take(50_000).collect::<String>())
             } else {
                 body
             };

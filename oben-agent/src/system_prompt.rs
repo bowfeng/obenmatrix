@@ -367,6 +367,18 @@ pub fn build_system_prompt(
              or completed-work logs.",
         );
     }
+    if tool_set.contains("delegate_task") {
+        tool_guidance.push(
+            "You have a `delegate_task` tool for spawning subagents. Use it when:\n\
+             - The task requires multiple reasoning steps, research, or debugging\n\
+             - A task would fill your context with intermediate data\n\
+             - You have 2+ independent subtasks that run in parallel\n\
+             Do NOT use it for: single mechanical steps (do it directly), tasks \
+             needing user interaction (subagents can't call `clarify`), trivial tasks, \
+             or work that must outlive the current turn (use cronjob instead). Each \
+             subagent should do 2-5 minutes of focused work.",
+        );
+    }
     if !tool_guidance.is_empty() {
         parts.push("## Tool Usage Guidelines\n\n".to_string() + &tool_guidance.join("\n\n"));
     }
@@ -443,6 +455,11 @@ fn build_stable_only(
     }
     if tool_set.contains("memory") || tool_set.contains("session_search") {
         tool_guidance.push("You have memory tools for persistent knowledge.");
+    }
+    if tool_set.contains("delegate_task") {
+        tool_guidance.push(
+            "You have `delegate_task` for spawning subagents to parallelize independent work.",
+        );
     }
     if !tool_guidance.is_empty() {
         parts.push(tool_guidance.join("\n"));

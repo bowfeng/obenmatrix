@@ -883,8 +883,8 @@ fn print_session_messages(messages: &[Message], max_show: usize) {
             oben_models::MessageRole::Tool => "⚙️ tool",
         };
         let text = msg.content.to_text_ref().unwrap_or("<non-text>");
-        let text_display = if text.len() > 120 {
-            format!("{}...", &text[..117])
+        let text_display: String = if text.chars().count() > 120 {
+            text.chars().take(117).collect::<String>() + "..."
         } else {
             text.to_string()
         };

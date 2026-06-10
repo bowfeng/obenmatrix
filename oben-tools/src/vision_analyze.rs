@@ -169,9 +169,10 @@ async fn analyze_with_openai(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(200).collect();
         return Err(format!(
             "API error {} ({}): {}",
-            status, model, &body[..body.len().min(200)]
+            status, model, preview
         ));
     }
 
@@ -243,9 +244,10 @@ async fn analyze_with_anthropic(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(200).collect();
         return Err(format!(
             "API error {} ({}): {}",
-            status, model, &body[..body.len().min(200)]
+            status, model, preview
         ));
     }
 

@@ -350,11 +350,13 @@ fn extract_turn_content(trajectory: &Value, start: usize, end: usize) -> String 
                     .unwrap_or("unknown")
                     .to_uppercase();
                 let val = turn.get("value").and_then(|v| v.as_str()).unwrap_or("");
-                let mut s = val.to_string();
-                if s.len() > 3000 {
-                    let e = s.len().saturating_sub(500);
-                    s = format!("{}\n...[truncated]...\n{}", &s[..1500], &s[e..]);
-                }
+                let s: String = val.chars().collect(); // UTF-8 safe string
+                let s = if s.len() > 3000 {
+                    let head: String = s.chars().take(1500).collect();
+                    let tail_start = 3000 - 500;
+                    let tail: String = s.chars().skip(tail_start).take(500).collect();
+                    format!("{}\n...[truncated]...\n{}", head, tail)
+                } else { s };
                 Some(format!("[Turn {} - {}]:\n{}", i, role, s))
             })
             .collect::<Vec<_>>()
