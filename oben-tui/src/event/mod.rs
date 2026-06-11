@@ -116,7 +116,10 @@ impl EventBus {
             tracing::debug!(
                 "[event_bus] on_stream_delta: text.len={} total_streaming_text={}",
                 len,
-                self.state.lock().map(|s| s.streaming_text.len()).unwrap_or(0)
+                self.state
+                    .lock()
+                    .map(|s| s.streaming_text.len())
+                    .unwrap_or(0)
             );
         }
     }
@@ -205,7 +208,10 @@ impl EventBus {
                     state.streaming_text.push_str(text);
                     state.add_activity(
                         ActivityKind::Streaming,
-                        format!("Streaming: {}...", text.chars().take(30).collect::<String>()),
+                        format!(
+                            "Streaming: {}...",
+                            text.chars().take(30).collect::<String>()
+                        ),
                     );
                 }
                 AgentEvent::ToolStart(id, name, context) => {
@@ -225,8 +231,7 @@ impl EventBus {
                     let char_count = state.reasoning_text.chars().count();
                     if char_count > 2000 {
                         let skip = char_count - 2000;
-                        state.reasoning_text =
-                            state.reasoning_text.chars().skip(skip).collect();
+                        state.reasoning_text = state.reasoning_text.chars().skip(skip).collect();
                     }
                 }
                 AgentEvent::TurnCompleted(outcome) => {

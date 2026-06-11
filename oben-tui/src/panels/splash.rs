@@ -110,7 +110,10 @@ impl Panel for SplashPanel {
 
         // Show error message centered at bottom of screen if present
         if let Some(ref err) = self.error {
-            let err_text = format!("  ⚠  Agent initialization failed.\n  {}\n\n  Press Ctrl+C to quit.", err);
+            let err_text = format!(
+                "  ⚠  Agent initialization failed.\n  {}\n\n  Press Ctrl+C to quit.",
+                err
+            );
             let lines = err_text.lines().count() as u16;
             let para = Paragraph::new(err_text)
                 .alignment(Alignment::Center)
@@ -202,5 +205,3 @@ mod tests {
         assert!(ms <= 5000); // max default is 5s
     }
 }
-
-

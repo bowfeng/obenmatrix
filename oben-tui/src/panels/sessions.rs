@@ -249,7 +249,9 @@ impl SessionsPanel {
             .lock()
             .unwrap()
             .extend(entries);
-        self.message_state.scroll_to_bottom.store(true, Ordering::SeqCst);
+        self.message_state
+            .scroll_to_bottom
+            .store(true, Ordering::SeqCst);
         // right_lines is read by the tui-widget-list builder closure in render_message_view
         if let Ok(mut rl) = self.right_lines.lock() {
             rl.clear();
@@ -613,7 +615,10 @@ impl SessionsPanel {
     }
 
     fn render_message_view(&self, frame: &mut Frame, area: Rect) {
-        if self.filtered.is_empty() || self.sessions.is_empty() || self.selected >= self.filtered.len() {
+        if self.filtered.is_empty()
+            || self.sessions.is_empty()
+            || self.selected >= self.filtered.len()
+        {
             let block = Block::default().borders(Borders::ALL).title(" Info ");
             frame.render_widget(&block, area);
             let inner = block.inner(area);

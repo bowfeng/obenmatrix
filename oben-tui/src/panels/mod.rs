@@ -53,7 +53,7 @@ pub enum KeyAction {
 }
 
 /// Trait that every panel must implement.
-/// 
+///
 /// Note: The Panel trait is NOT Send + Sync during the splash phase.
 /// The async splash loop borrows `app` mutably via the frame closure.
 #[async_trait]

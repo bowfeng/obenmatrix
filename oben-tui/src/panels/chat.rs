@@ -58,13 +58,8 @@ impl ChatPanel {
         }
     }
 
-
-
     /// Create a chat panel with a specific theme from config.
-    pub fn new_with_theme(
-        session_name: Option<String>,
-        theme: &str,
-    ) -> Self {
+    pub fn new_with_theme(session_name: Option<String>, theme: &str) -> Self {
         let mut panel = Self::new(session_name);
         panel.renderer.set_theme_from_str(theme);
         panel
@@ -133,7 +128,10 @@ impl ChatPanel {
             current,
             turn_state::TurnPhase::Completed | turn_state::TurnPhase::Error(_)
         );
-        let transitioning = !matches!(prev, turn_state::TurnPhase::Completed | turn_state::TurnPhase::Error(_));
+        let transitioning = !matches!(
+            prev,
+            turn_state::TurnPhase::Completed | turn_state::TurnPhase::Error(_)
+        );
 
         // Only drain when transitioned INTO settled AND agent is truly idle
         // (no pending delta callbacks from the just-finished turn) AND
@@ -147,7 +145,10 @@ impl ChatPanel {
         );
 
         if drain_trigger {
-            tracing::debug!("[chat_panel] auto-drain trigger: queue_len={}", self.input.queue_len());
+            tracing::debug!(
+                "[chat_panel] auto-drain trigger: queue_len={}",
+                self.input.queue_len()
+            );
             if let Some(msg) = self.input.dequeue_msg() {
                 let drain_time = Instant::now();
                 tracing::info!("[chat_panel] auto-drain queued message: {}", msg);
@@ -164,7 +165,9 @@ impl ChatPanel {
                     // AI response is visible.  Even if the user had scrolled
                     // up while reading the previous response, the auto-drain
                     // is sending a new message which should be visible.
-                    self.message_state.scroll_to_bottom.store(true, Ordering::SeqCst);
+                    self.message_state
+                        .scroll_to_bottom
+                        .store(true, Ordering::SeqCst);
                     tracing::debug!(
                         "[chat_panel] drain: sent ChatInput in {:?}, queue_len_after={}, scroll_to_bottom=true",
                         drain_time.elapsed(),
@@ -192,10 +195,7 @@ impl ChatPanel {
             self.message_state.body_width,
             self.message_state.scroll_pos.load(Ordering::SeqCst)
         );
-        if let Some(text) = self
-            .message_display
-            .get_selected_text(&self.message_state)
-        {
+        if let Some(text) = self.message_display.get_selected_text(&self.message_state) {
             tracing::debug!("[selection] copy: got {} chars", text.len());
             if !text.is_empty() && crate::clipboard::write_clipboard(&text) {
                 self.message_state.clear_selection();
@@ -216,7 +216,9 @@ impl ChatPanel {
     /// Clear all messages from the display and reset the message count.
     pub fn clear_display(&mut self) {
         self.message_state.message_entries.lock().unwrap().clear();
-        self.message_state.scroll_to_bottom.store(true, Ordering::SeqCst);
+        self.message_state
+            .scroll_to_bottom
+            .store(true, Ordering::SeqCst);
         self.message_count = 0;
         self.session_name = None;
     }
@@ -255,12 +257,8 @@ impl Panel for ChatPanel {
 
         // Render text selection highlight (drawn on top of message blocks).
         if self.message_state.selection_start.is_some() {
-            self.message_display.render_selection(
-                frame,
-                chunks[0],
-                &self.message_state,
-                &palette,
-            );
+            self.message_display
+                .render_selection(frame, chunks[0], &self.message_state, &palette);
         }
 
         // Input bar widget
@@ -271,7 +269,8 @@ impl Panel for ChatPanel {
         let result = InputBarWidget.handle_key(&mut self.input, key);
         tracing::debug!(
             "[chat_panel] handle_key: code={:?} result={:?}",
-            key.code, result
+            key.code,
+            result
         );
         match result {
             InputBarResult::Consumed => KeyAction::None,
@@ -292,8 +291,8 @@ impl Panel for ChatPanel {
     }
 
     fn handle_mouse(&mut self, area: Rect, event: &crossterm::event::MouseEvent) -> Option<String> {
-        use crossterm::event::MouseEventKind;
         use crossterm::event::MouseButton;
+        use crossterm::event::MouseEventKind;
 
         let scroll_step: i32 = 3;
         let actual_body_width = area.width.saturating_sub(6);
@@ -316,7 +315,9 @@ impl Panel for ChatPanel {
 
         match event.kind {
             MouseEventKind::ScrollDown => {
-                self.message_state.scroll_to_bottom.store(false, Ordering::SeqCst);
+                self.message_state
+                    .scroll_to_bottom
+                    .store(false, Ordering::SeqCst);
                 let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 self.message_state
                     .user_scroll_offset
@@ -329,7 +330,9 @@ impl Panel for ChatPanel {
                 return None;
             }
             MouseEventKind::ScrollUp => {
-                self.message_state.scroll_to_bottom.store(false, Ordering::SeqCst);
+                self.message_state
+                    .scroll_to_bottom
+                    .store(false, Ordering::SeqCst);
                 let old = self.message_state.user_scroll_offset.load(Ordering::SeqCst);
                 self.message_state
                     .user_scroll_offset
@@ -348,7 +351,10 @@ impl Panel for ChatPanel {
                 self.message_state.selection_end = None;
                 tracing::debug!(
                     "[selection] MOUSE_DOWN: row={} col={} → selection=({},{})",
-                    row, col, row, col
+                    row,
+                    col,
+                    row,
+                    col
                 );
                 return None;
             }
@@ -364,11 +370,16 @@ impl Panel for ChatPanel {
                 self.message_state.selection_end = Some((row, col));
                 tracing::debug!(
                     "[mouse] LeftRelease: sel=(row={},col={}) content_y={} scroll_pos={}",
-                    row, col, self.message_state.content_y,
+                    row,
+                    col,
+                    self.message_state.content_y,
                     self.message_state.scroll_pos.load(Ordering::SeqCst)
                 );
-                if self.message_state.selection_start.is_some() && self.message_state.selection_end.is_some() {
-                    if let Some(text) = self.message_display.get_selected_text(&self.message_state) {
+                if self.message_state.selection_start.is_some()
+                    && self.message_state.selection_end.is_some()
+                {
+                    if let Some(text) = self.message_display.get_selected_text(&self.message_state)
+                    {
                         tracing::debug!("[mouse] LeftRelease: got {} chars", text.len());
                         if !text.is_empty() && crate::clipboard::write_clipboard(&text) {
                             tracing::info!("[mouse] auto-copied {} chars", text.len());

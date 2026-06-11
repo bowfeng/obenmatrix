@@ -312,7 +312,10 @@ impl InputBarWidget {
     pub fn handle_key(&mut self, state: &mut InputState, key: KeyEvent) -> InputBarResult {
         tracing::info!(
             "[input_bar] handle_key: streaming={}, code={:?}, text.len={}, cursor={}",
-            state.streaming, key.code, state.text.len(), state.cursor
+            state.streaming,
+            key.code,
+            state.text.len(),
+            state.cursor
         );
         // ── Streaming mode (Hermes `busy_input_mode: queue`) ───────────
         if state.streaming {
@@ -384,7 +387,10 @@ impl InputBarWidget {
 
             // Block movement/editing keys during streaming: consume but
             // apply them so the user can edit the input area freely.
-            if matches!(key.code, KeyCode::Left | KeyCode::Right | KeyCode::Backspace | KeyCode::Delete) {
+            if matches!(
+                key.code,
+                KeyCode::Left | KeyCode::Right | KeyCode::Backspace | KeyCode::Delete
+            ) {
                 self.apply_text_edit(state, key);
                 return InputBarResult::Consumed;
             }
@@ -414,7 +420,11 @@ impl InputBarWidget {
                         .collect();
                     let mut word_end = prefix.len();
                     for (i, g) in prefix.iter().enumerate().rev() {
-                        if g.trim().is_empty() { word_end = i; } else { break; }
+                        if g.trim().is_empty() {
+                            word_end = i;
+                        } else {
+                            break;
+                        }
                     }
                     while word_end > 0 && !prefix[word_end - 1].trim().is_empty() {
                         word_end -= 1;
@@ -439,9 +449,7 @@ impl InputBarWidget {
                 state.cursor = state.grapheme_count();
                 return InputBarResult::Consumed;
             }
-            if key.modifiers.contains(KeyModifiers::CONTROL)
-                && key.code == KeyCode::Char('v')
-            {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v') {
                 if let Some(text) = crate::clipboard::read_clipboard() {
                     if !text.is_empty() {
                         let byte_idx = state.grapheme_to_byte(state.cursor);
@@ -558,7 +566,11 @@ impl InputBarWidget {
                         .collect();
                     let mut word_end = prefix.len();
                     for (i, g) in prefix.iter().enumerate().rev() {
-                        if g.trim().is_empty() { word_end = i; } else { break; }
+                        if g.trim().is_empty() {
+                            word_end = i;
+                        } else {
+                            break;
+                        }
                     }
                     while word_end > 0 && !prefix[word_end - 1].trim().is_empty() {
                         word_end -= 1;
@@ -591,8 +603,12 @@ impl InputBarWidget {
                         .graphemes(true)
                         .collect();
                     let mut i = prefix.len();
-                    while i > 0 && prefix[i - 1].trim().is_empty() { i -= 1; }
-                    while i > 0 && !prefix[i - 1].trim().is_empty() { i -= 1; }
+                    while i > 0 && prefix[i - 1].trim().is_empty() {
+                        i -= 1;
+                    }
+                    while i > 0 && !prefix[i - 1].trim().is_empty() {
+                        i -= 1;
+                    }
                     state.cursor = i;
                 }
                 self.update_completions(state);
@@ -604,8 +620,12 @@ impl InputBarWidget {
                         .graphemes(true)
                         .collect();
                     let mut j = 0;
-                    while j < remaining.len() && remaining[j].trim().is_empty() { j += 1; }
-                    while j < remaining.len() && !remaining[j].trim().is_empty() { j += 1; }
+                    while j < remaining.len() && remaining[j].trim().is_empty() {
+                        j += 1;
+                    }
+                    while j < remaining.len() && !remaining[j].trim().is_empty() {
+                        j += 1;
+                    }
                     state.cursor += j;
                 }
                 self.update_completions(state);
@@ -660,8 +680,15 @@ impl InputBarWidget {
             let cmd_name = parts[0][1..].to_lowercase(); // strip '/' and lowercase
             let extra = if parts.len() > 1 { parts[1].trim() } else { "" };
             let known_commands = [
-                "rename", "new", "compact", "clear", "help", "reasoning",
-                "theme", "todo", "quit",
+                "rename",
+                "new",
+                "compact",
+                "clear",
+                "help",
+                "reasoning",
+                "theme",
+                "todo",
+                "quit",
             ];
             if known_commands.contains(&cmd_name.as_str()) {
                 state.text.clear();
@@ -713,8 +740,12 @@ impl InputBarWidget {
                         .graphemes(true)
                         .collect();
                     let mut i = prefix.len();
-                    while i > 0 && prefix[i - 1].trim().is_empty() { i -= 1; }
-                    while i > 0 && !prefix[i - 1].trim().is_empty() { i -= 1; }
+                    while i > 0 && prefix[i - 1].trim().is_empty() {
+                        i -= 1;
+                    }
+                    while i > 0 && !prefix[i - 1].trim().is_empty() {
+                        i -= 1;
+                    }
                     state.cursor = i;
                 }
             }
@@ -724,8 +755,12 @@ impl InputBarWidget {
                         .graphemes(true)
                         .collect();
                     let mut j = 0;
-                    while j < remaining.len() && remaining[j].trim().is_empty() { j += 1; }
-                    while j < remaining.len() && !remaining[j].trim().is_empty() { j += 1; }
+                    while j < remaining.len() && remaining[j].trim().is_empty() {
+                        j += 1;
+                    }
+                    while j < remaining.len() && !remaining[j].trim().is_empty() {
+                        j += 1;
+                    }
                     state.cursor += j;
                 }
             }
@@ -744,12 +779,8 @@ impl InputBarWidget {
     ) -> u16 {
         let text = " \u{23F3} Streaming... ";
         let w = text.len() as u16 + 2;
-        let indicator_area = Rect::new(
-            area.right().saturating_sub(w + 2),
-            area.y + 1 + row_y,
-            w,
-            1,
-        );
+        let indicator_area =
+            Rect::new(area.right().saturating_sub(w + 2), area.y + 1 + row_y, w, 1);
         let para = Paragraph::new(Line::from(Span::styled(
             text,
             Style::default()
@@ -1017,9 +1048,7 @@ mod tests {
     #[test]
     fn test_calculate_input_height_word_wraps() {
         let ib = ib();
-        let state = make_state(
-            "hello world foo bar baz qux quux corge extra long text here",
-        );
+        let state = make_state("hello world foo bar baz qux quux corge extra long text here");
         let h = ib.calculate_input_height(&state, 40);
         assert_eq!(h, 4, "word wrap should add height");
     }
@@ -1044,9 +1073,18 @@ mod tests {
         let ib = ib();
         let mut state = make_state("");
         state.completion_items = vec![
-            CompletionItem { cmd: "/foo".into(), desc: "a".into() },
-            CompletionItem { cmd: "/bar".into(), desc: "b".into() },
-            CompletionItem { cmd: "/baz".into(), desc: "c".into() },
+            CompletionItem {
+                cmd: "/foo".into(),
+                desc: "a".into(),
+            },
+            CompletionItem {
+                cmd: "/bar".into(),
+                desc: "b".into(),
+            },
+            CompletionItem {
+                cmd: "/baz".into(),
+                desc: "c".into(),
+            },
         ];
         assert_eq!(ib.calculate_input_height(&state, 40), 6);
     }

@@ -168,14 +168,23 @@ pub fn calc_visible_areas(
 
     tracing::debug!(
         "[visible_areas] scroll_offset={} viewable_range=[{}..{}] inner_height={} blocks={}",
-        scroll_offset, scroll_offset, viewable_end, inner_height, entry_heights.len()
+        scroll_offset,
+        scroll_offset,
+        viewable_end,
+        inner_height,
+        entry_heights.len()
     );
 
     for (idx, &block_height) in entry_heights.iter().enumerate() {
         let block_start = block_line;
         let body_start_in_content = block_line;
         let block_end = block_start + block_height as usize;
-        block_line = block_end + (if idx > 0 { INTER_BLOCK_MARGIN as usize } else { 0 });
+        block_line = block_end
+            + (if idx > 0 {
+                INTER_BLOCK_MARGIN as usize
+            } else {
+                0
+            });
 
         // Skip block if completely outside viewport
         if block_end <= scroll_offset || block_start >= viewable_end {

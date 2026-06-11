@@ -547,8 +547,7 @@ mod tests {
         let msg = Message {
             role: MessageRole::User,
             content: MessageContent::Image {
-                url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
-                    .into(),
+                url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ".into(),
                 detail: None,
             },
             id: None,
@@ -558,12 +557,25 @@ mod tests {
         let entry = renderer.render_entry(&msg);
         assert!(!entry.body_lines.is_empty());
         // The full base64 string MUST NOT appear in any body line
-        let text: String = entry.body_lines.iter()
-            .map(|l| l.content.spans.iter()
-                .map(|s| s.content.to_string()).collect::<String>())
+        let text: String = entry
+            .body_lines
+            .iter()
+            .map(|l| {
+                l.content
+                    .spans
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<String>()
+            })
             .collect();
-        assert!(!text.contains("iVBORw0KGgo"), "base64 data should not appear in rendered text");
-        assert!(text.contains("png") || text.contains("\u{1F3F7}"), "should contain icon or mime hint");
+        assert!(
+            !text.contains("iVBORw0KGgo"),
+            "base64 data should not appear in rendered text"
+        );
+        assert!(
+            text.contains("png") || text.contains("\u{1F3F7}"),
+            "should contain icon or mime hint"
+        );
     }
 
     /// Given: MessageContent::Parts with image + text
@@ -587,12 +599,25 @@ mod tests {
         };
         let entry = renderer.render_entry(&msg);
         assert!(!entry.body_lines.is_empty());
-        let text: String = entry.body_lines.iter()
-            .map(|l| l.content.spans.iter()
-                .map(|s| s.content.to_string()).collect::<String>())
+        let text: String = entry
+            .body_lines
+            .iter()
+            .map(|l| {
+                l.content
+                    .spans
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<String>()
+            })
             .collect();
-        assert!(text.contains("分析下这个图片"), "text part should be preserved");
-        assert!(!text.contains("/9j/4AAQSkZJR"), "base64 data should not appear");
+        assert!(
+            text.contains("分析下这个图片"),
+            "text part should be preserved"
+        );
+        assert!(
+            !text.contains("/9j/4AAQSkZJR"),
+            "base64 data should not appear"
+        );
     }
 
     /// Given: a remote HTTP image URL
@@ -635,7 +660,10 @@ mod tests {
     fn test_image_placeholder_detail_fallback() {
         use crate::widgets::message_renderer::image_placeholder;
         // Even application/octet-stream is a non-empty mime hint, takes priority
-        let placeholder = image_placeholder("data:application/octet-stream;base64,abc", Some("screenshot"));
+        let placeholder = image_placeholder(
+            "data:application/octet-stream;base64,abc",
+            Some("screenshot"),
+        );
         assert!(placeholder.contains("octet-stream"));
     }
 

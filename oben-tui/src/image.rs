@@ -5,9 +5,7 @@ use base64::Engine;
 use std::fs;
 use std::path::Path;
 
-use oben_models::{
-    Message, MessageContent, MessagePart, MessageRole,
-};
+use oben_models::{Message, MessageContent, MessagePart, MessageRole};
 
 // ── Mime type constants using concat! to avoid Rust 2.0 /ident parse issues ──
 
@@ -92,7 +90,10 @@ pub fn path_to_image_message(path: &str, prompt_text: &str) -> Option<(Message, 
     let message = if prompt_text.trim().is_empty() {
         Message {
             role: MessageRole::User,
-            content: MessageContent::Image { url: data_url, detail: None },
+            content: MessageContent::Image {
+                url: data_url,
+                detail: None,
+            },
             id: None,
             tool_call_ids: Vec::new(),
             tool_calls: None,
@@ -102,7 +103,10 @@ pub fn path_to_image_message(path: &str, prompt_text: &str) -> Option<(Message, 
             role: MessageRole::User,
             content: MessageContent::Parts(vec![
                 MessagePart::Text(prompt_text.to_string()),
-                MessagePart::Image { url: data_url, detail: None },
+                MessagePart::Image {
+                    url: data_url,
+                    detail: None,
+                },
             ]),
             id: None,
             tool_call_ids: Vec::new(),
@@ -166,7 +170,8 @@ mod tests {
     fn test_path_to_image_message_with_prompt() {
         let path = std::env::temp_dir().join("oben_test_image.png");
         let mut file = std::fs::File::create(&path).unwrap();
-        file.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        file.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+            .unwrap();
         drop(file);
 
         let prompt = "分析下这个图片";

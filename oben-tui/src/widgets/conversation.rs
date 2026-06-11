@@ -6,9 +6,7 @@
 //! Block whose title shows the role label and icon.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{
-    Block, BorderType, Borders, Paragraph, ScrollbarState,
-};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, ScrollbarState};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use unicode_width::UnicodeWidthChar;
@@ -188,10 +186,7 @@ impl ConversationWidget {
         let rel_ex = (ex as usize).saturating_sub(body_area_x);
 
         // Ensure min/max order for x
-        let (x0_start, x1_start) = (
-            std::cmp::min(rel_sx, rel_ex),
-            std::cmp::max(rel_sx, rel_ex),
-        );
+        let (x0_start, x1_start) = (std::cmp::min(rel_sx, rel_ex), std::cmp::max(rel_sx, rel_ex));
 
         // body_to_flat body_start_offset = msg_area.y = content_y - 1.
         let body_start_offset = content_y.saturating_sub(1);
@@ -213,10 +208,12 @@ impl ConversationWidget {
         for (i, &(by, bh)) in visible_ranges.iter().enumerate() {
             tracing::debug!(
                 "[selection/get_text]   visible_range[{}] body_y={} body_h={}",
-                i, by, bh
+                i,
+                by,
+                bh
             );
         }
-        
+
         for row in row_start..=row_end {
             // Skip rows outside all visible body areas.
             let in_visible_body = visible_ranges.iter().any(|&(body_y, body_h)| {
@@ -270,9 +267,10 @@ impl ConversationWidget {
             let x0 = x0_start.min(body_w);
             let x1 = x1_start.min(body_w).max(x0 + 1);
 
-            let sel: String = chars.iter()
-                .filter(|(p,_)| *p >= x0 && *p < x1)
-                .map(|(_,ch)| *ch)
+            let sel: String = chars
+                .iter()
+                .filter(|(p, _)| *p >= x0 && *p < x1)
+                .map(|(_, ch)| *ch)
                 .collect();
 
             tracing::debug!(
@@ -282,7 +280,9 @@ impl ConversationWidget {
             );
 
             if !sel.is_empty() {
-                if !result.is_empty() { result.push('\n'); }
+                if !result.is_empty() {
+                    result.push('\n');
+                }
                 result.push_str(&sel);
             }
         }
@@ -359,7 +359,9 @@ impl ConversationWidget {
             for (i, &(by, bh)) in visible_ranges.iter().enumerate() {
                 tracing::debug!(
                     "[selection/render_sel]   visible_range[{}] body_y={} body_h={}",
-                    i, by, bh
+                    i,
+                    by,
+                    bh
                 );
             }
 
@@ -378,7 +380,9 @@ impl ConversationWidget {
                 }
 
                 // Same formula as get_selected_text
-                let abs_body = (row as usize).saturating_sub(body_start_offset).saturating_add(scroll_pos_val);
+                let abs_body = (row as usize)
+                    .saturating_sub(body_start_offset)
+                    .saturating_add(scroll_pos_val);
 
                 // Look up flat line for this body line.
                 // body_to_flat structure: [...wrapped_lines..., padding, None(sep), next_block...]
@@ -509,7 +513,12 @@ impl ConversationWidget {
                             && c.area_w == area.width
                             && c.was_streaming == is_streaming;
                         if hit {
-                            tracing::trace!("cached_layout HIT entries={} h={} w={}", c.entry_count, c.area_h, c.area_w);
+                            tracing::trace!(
+                                "cached_layout HIT entries={} h={} w={}",
+                                c.entry_count,
+                                c.area_h,
+                                c.area_w
+                            );
                         }
                         hit
                     }),
@@ -526,9 +535,14 @@ impl ConversationWidget {
                     if let Some(ref c) = guard.as_ref() {
                         block_heights = c.heights.clone();
                         for (i, entry) in entries.iter().enumerate() {
-                            let bt = if entry.is_tool_result { BlockType::ToolResult } else { BlockType::Message(&entry.role) };
+                            let bt = if entry.is_tool_result {
+                                BlockType::ToolResult
+                            } else {
+                                BlockType::Message(&entry.role)
+                            };
                             let (r_start, r_end) = c.entry_ranges[i];
-                            let wrapped: Vec<Line<'static>> = c.flat_lines[r_start..r_end].iter().cloned().collect();
+                            let wrapped: Vec<Line<'static>> =
+                                c.flat_lines[r_start..r_end].iter().cloned().collect();
                             layout_entries.push((i, bt, wrapped));
                         }
                     }
@@ -544,7 +558,11 @@ impl ConversationWidget {
                         .iter()
                         .map(|sl| sl.content.clone())
                         .collect();
-                    let bt = if entry.is_tool_result { BlockType::ToolResult } else { BlockType::Message(&entry.role) };
+                    let bt = if entry.is_tool_result {
+                        BlockType::ToolResult
+                    } else {
+                        BlockType::Message(&entry.role)
+                    };
                     let wrap_w = if matches!(bt, BlockType::ToolResult) {
                         inner_width.saturating_sub(4)
                     } else {
@@ -558,30 +576,33 @@ impl ConversationWidget {
                 }
             }
 
-                    // Update cache
-                    let ch = layout::calc_total_height(&block_heights);
-                    let entry_ranges: Vec<(usize, usize)> = {
-                        let mut ranges = Vec::with_capacity(layout_entries.len());
-                        let mut acc = 0usize;
-                        for (_, _, wl) in &layout_entries {
-                            let end = acc + wl.len();
-                            ranges.push((acc, end));
-                            acc = end;
-                        }
-                        ranges
-                    };
-                    if let Ok(mut guard) = state.cached_layout.lock() {
-                        *guard = Some(CachedLayout {
-                            entry_count,
-                            area_h: area.height,
-                            area_w: area.width,
-                            was_streaming: is_streaming,
-                            heights: block_heights.clone(),
-                            entry_ranges,
-                            flat_lines: layout_entries.iter().flat_map(|(_, _, wl)| wl.iter().cloned()).collect(),
-                        });
-                    }
-                    (layout_entries, block_heights, ch)
+            // Update cache
+            let ch = layout::calc_total_height(&block_heights);
+            let entry_ranges: Vec<(usize, usize)> = {
+                let mut ranges = Vec::with_capacity(layout_entries.len());
+                let mut acc = 0usize;
+                for (_, _, wl) in &layout_entries {
+                    let end = acc + wl.len();
+                    ranges.push((acc, end));
+                    acc = end;
+                }
+                ranges
+            };
+            if let Ok(mut guard) = state.cached_layout.lock() {
+                *guard = Some(CachedLayout {
+                    entry_count,
+                    area_h: area.height,
+                    area_w: area.width,
+                    was_streaming: is_streaming,
+                    heights: block_heights.clone(),
+                    entry_ranges,
+                    flat_lines: layout_entries
+                        .iter()
+                        .flat_map(|(_, _, wl)| wl.iter().cloned())
+                        .collect(),
+                });
+            }
+            (layout_entries, block_heights, ch)
         };
 
         // Cache the full flat wrapped lines for selection/render alignment.
@@ -638,7 +659,9 @@ impl ConversationWidget {
             if let Some(ref ts) = state.turn_state_ref {
                 if let Ok(ts) = ts.lock() {
                     if !ts.streaming_text.is_empty() {
-                        let raw = ts.streaming_text.trim_start_matches(|c: char| c.is_whitespace());
+                        let raw = ts
+                            .streaming_text
+                            .trim_start_matches(|c: char| c.is_whitespace());
                         let stream_lines: Vec<Line<'static>> = raw
                             .lines()
                             .map(|l| {
@@ -660,9 +683,9 @@ impl ConversationWidget {
                         } else {
                             wrapped.len()
                         };
-                        let stream_height = stream_body_height as u16 + layout::BODY_HEIGHT_ADJUSTER;
+                        let stream_height =
+                            stream_body_height as u16 + layout::BODY_HEIGHT_ADJUSTER;
                         Some((stream_lines, wrapped, stream_body_height, stream_height))
-
                     } else {
                         None
                     }
@@ -741,7 +764,8 @@ impl ConversationWidget {
             // Build the block (borders + title)
             let block = if is_tool_result {
                 let indent = layout::TOOL_INDENT;
-                let _box_width = (msg_area.width as usize).saturating_sub((indent * 2) as usize) as u16;
+                let _box_width =
+                    (msg_area.width as usize).saturating_sub((indent * 2) as usize) as u16;
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(palette.muted))
@@ -763,7 +787,11 @@ impl ConversationWidget {
             // Track body rendering area per block from actual block.inner() — correctly
             // accounts for title+BODERS for all block types. Used by render_selection and
             // get_selected_text to filter terminal rows to visible body lines only.
-            state.visible_body_ranges.lock().unwrap().push((body_area.y, body_area.height));
+            state
+                .visible_body_ranges
+                .lock()
+                .unwrap()
+                .push((body_area.y, body_area.height));
 
             // Calculate per-block scroll offset for clipping wrapped lines
             // content_start is the body-line index where this block starts in the global scroll view
@@ -779,7 +807,10 @@ impl ConversationWidget {
 
             tracing::debug!(
                 "[layout] body_area.x={} block_rect.x={} msg_area.x={} area.x={}",
-                body_area.x, block_rect.x, msg_area.left(), area.x
+                body_area.x,
+                block_rect.x,
+                msg_area.left(),
+                area.x
             );
             if block_rect.height > layout::BODY_HEIGHT_ADJUSTER && !wrapped.is_empty() {
                 let body_lines: Vec<Line> = wrapped
@@ -834,7 +865,9 @@ impl ConversationWidget {
             if !stream_lines.is_empty() && stream_height > 0 {
                 // Calculate available space below the last entry.
                 // This prevents the stream block from overlapping the message above.
-                let available_height = msg_area.height.saturating_sub(last_entry_vp_bottom.saturating_add(1));
+                let available_height = msg_area
+                    .height
+                    .saturating_sub(last_entry_vp_bottom.saturating_add(1));
                 // Clamp the block rect to available space + any overflow that gets clipped.
                 // The content is anchored to the BOTTOM of this rect via Paragraph scroll.
                 let block_height = if total_height as u16 > view_height {
@@ -852,24 +885,19 @@ impl ConversationWidget {
                 );
                 let block = Block::default()
                     .borders(Borders::ALL)
-                    .border_style(
-                        Style::default()
-                            .fg(role_color)
-                            .add_modifier(Modifier::BOLD),
-                    )
+                    .border_style(Style::default().fg(role_color).add_modifier(Modifier::BOLD))
                     .title(Line::from(vec![
                         Span::raw(role_info.icon),
                         Span::styled(
                             role_info.label,
-                            Style::default()
-                                .fg(role_color)
-                                .add_modifier(Modifier::BOLD),
+                            Style::default().fg(role_color).add_modifier(Modifier::BOLD),
                         ),
                     ]));
                 let body_area = block.inner(block_area);
 
                 // The stream block starts at: (total_height - stream_height).
-                let stream_block_start = (total_height as usize).saturating_sub(stream_height as usize);
+                let stream_block_start =
+                    (total_height as usize).saturating_sub(stream_height as usize);
 
                 // Calculate line_offset so content is anchored to the BOTTOM of the viewport.
                 // Always use inner_height (viewport height), NOT body_area.height, because
@@ -897,9 +925,7 @@ impl ConversationWidget {
                                 .join("")
                         })
                         .collect();
-                    tracing::debug!(
-                        "[stream_render] tail_lines: {:?}", tail_lines
-                    );
+                    tracing::debug!("[stream_render] tail_lines: {:?}", tail_lines);
                     let mut para = Paragraph::new(stream_lines.clone());
                     if line_offset > 0 {
                         para = para.scroll((line_offset as u16, 0));
@@ -921,7 +947,9 @@ impl ConversationWidget {
         let prev_scroll_pos = scroll_pos;
         let mut scroll_pos = 0usize;
         let scrollable_range = (total_height as i64 - inner_height as i64).max(0) as usize;
-        let prev_scrollable_range = state.prev_scrollable_range.swap(scrollable_range, Ordering::SeqCst);
+        let prev_scrollable_range = state
+            .prev_scrollable_range
+            .swap(scrollable_range, Ordering::SeqCst);
         let vp_bottom = prev_scroll_pos.saturating_add(inner_height as usize);
         let lines_from_bottom = (total_height as usize).saturating_sub(vp_bottom);
 
@@ -953,17 +981,20 @@ impl ConversationWidget {
 
         tracing::debug!(
             "[scroll_phase3] initialized scroll_pos={} vp_bottom={} lines_from_bottom={}",
-            scroll_pos, scroll_pos.saturating_add(inner_height as usize),
-            (total_height as usize).saturating_sub(scroll_pos.saturating_add(inner_height as usize))
+            scroll_pos,
+            scroll_pos.saturating_add(inner_height as usize),
+            (total_height as usize)
+                .saturating_sub(scroll_pos.saturating_add(inner_height as usize))
         );
 
         // Apply accumulated scroll delta (mouse wheel)
         if offset != 0 && !state.scroll_to_bottom.load(Ordering::SeqCst) {
-            scroll_pos = ((scroll_pos as i64 + offset as i64).max(0) as usize)
-                .min(scrollable_range);
+            scroll_pos =
+                ((scroll_pos as i64 + offset as i64).max(0) as usize).min(scrollable_range);
             tracing::debug!(
                 "[scroll_phase3] after_offset: scroll_pos={} vp_bottom={}",
-                scroll_pos, scroll_pos.saturating_add(inner_height as usize)
+                scroll_pos,
+                scroll_pos.saturating_add(inner_height as usize)
             );
         }
 
@@ -979,7 +1010,8 @@ impl ConversationWidget {
 
         tracing::info!(
             "[scroll_update] AFTER: final_pos={} new_vp_bottom={} scroll_to_bottom={}",
-            final_pos, final_pos.saturating_add(inner_height as usize),
+            final_pos,
+            final_pos.saturating_add(inner_height as usize),
             state.scroll_to_bottom.load(Ordering::SeqCst)
         );
 
@@ -1260,12 +1292,12 @@ mod tests {
         state.turn_state_ref = Some(Arc::new(StdMutex::new(turn)));
         state.stream_info.lock().unwrap().clear();
 
-            // Verify that a new TurnState is initialized empty
-            let state_guard = state.turn_state_ref.as_ref().map(|g| g.lock().unwrap());
-            if let Some(guard) = state_guard {
-                assert_eq!(guard.streaming_text, "");
-                assert!(guard.active_tools.is_empty());
-            }
+        // Verify that a new TurnState is initialized empty
+        let state_guard = state.turn_state_ref.as_ref().map(|g| g.lock().unwrap());
+        if let Some(guard) = state_guard {
+            assert_eq!(guard.streaming_text, "");
+            assert!(guard.active_tools.is_empty());
+        }
     }
 
     /// Given: 3 message entries with known heights
@@ -1287,15 +1319,15 @@ mod tests {
         let total_height: u16 = 125;
         let view_height: u16 = 59;
         let stream_height: u16 = 4;
-        
+
         let overflows = total_height > view_height;
-        
+
         let stream_y_overflow = if overflows {
             view_height.saturating_sub(stream_height)
         } else {
             0
         };
-        
+
         assert!(overflows);
         assert_eq!(stream_y_overflow, 55); // 59 - 4
     }
@@ -1309,15 +1341,15 @@ mod tests {
         let view_height: u16 = 59;
         let stream_height: u16 = 4;
         let last_entry_vp_bottom: u16 = 3;
-        
+
         let fits = total_height <= view_height;
-        
+
         let stream_y = if fits {
             last_entry_vp_bottom.saturating_add(1)
         } else {
             view_height.saturating_sub(stream_height)
         };
-        
+
         assert!(fits);
         assert_eq!(stream_y, 4);
     }
@@ -1328,7 +1360,7 @@ mod tests {
     #[test]
     fn test_scroll_to_bottom_auto_scroll_on_content_growth() {
         let state = ConversationState::new();
-        
+
         // Verify initial state
         assert!(state.scroll_to_bottom.load(Ordering::SeqCst));
         assert_eq!(state.scroll_pos.load(Ordering::SeqCst), 0);
