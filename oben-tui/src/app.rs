@@ -20,8 +20,8 @@ use crate::event::EventBus;
 use crate::history;
 use oben_agent::callbacks::relay::CallbacksRelay;
 use oben_agent::callbacks::WithRelay;
+use oben_agent::delegate::{build_spawn_fn_wrapper, SubagentSpawner};
 use oben_agent::{Agent, AgentCallbacks, AgentConfig};
-use oben_agent::delegate::{SubagentSpawner, build_spawn_fn_wrapper};
 use oben_config::AppConfig;
 use oben_tools::delegate::DelegateTool;
 use oben_tools::registry::SpawnFn;
@@ -79,6 +79,10 @@ pub struct App {
     /// Timestamp after which the current toast should expire.
     /// Used because ratatui-toaster has no built-in auto-dismiss.
     pub toast_expires_at: Option<std::time::Instant>,
+    /// Set to true by event handlers and toast expiry check.
+    /// Cleared by draw_ui after rendering. When false, the 32ms timer
+    /// skips the terminal.draw() call entirely during idle.
+    pub needs_redraw: bool,
 }
 
 impl App {
@@ -358,9 +362,7 @@ impl App {
             status: String::new(),
             config,
             agent: None,
-            interrupt_state: Arc::from(
-                oben_agent::interrupt::InterruptState::new(),
-            ),
+            interrupt_state: Arc::from(oben_agent::interrupt::InterruptState::new()),
             turn_message_count: 0,
             turn_handle: None,
             session_id: None,
@@ -374,6 +376,7 @@ impl App {
             reasoning_enabled: false,
             toast_engine,
             toast_expires_at: None,
+            needs_redraw: true,
         })
     }
 
@@ -451,7 +454,8 @@ impl App {
                 }))
             },
             ..Default::default()
-        }.with_relay(Arc::new(callbacks_relay));
+        }
+        .with_relay(Arc::new(callbacks_relay));
 
         // Register delegate tool. Use a cloned (separate allocation) ToolRegistry for the
         // closure — self.tools stays unique so Arc::get_mut succeeds.
@@ -693,7 +697,11 @@ impl App {
                 }
             },
             KeyAction::ChatInput(text) => {
-                tracing::info!("[app] KeyAction::ChatInput: text.len={}, text='{}'", text.len(), text);
+                tracing::info!(
+                    "[app] KeyAction::ChatInput: text.len={}, text='{}'",
+                    text.len(),
+                    text
+                );
                 if let Some(tx) = &self.input_tx {
                     let _ = tx.send(crate::TuiEvent::ChatInput(text));
                 } else {

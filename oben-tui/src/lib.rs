@@ -21,12 +21,12 @@ use crossterm::event::{
     MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, size,
+    disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
 use oben_models::{Message, MessageContent, MessagePart};
-use panels::PanelId;
 use panels::splash::SplashPanel;
+use panels::PanelId;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
@@ -98,7 +98,9 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     {
         let term_h = terminal.size().unwrap().height;
         let mut a = arc_app.lock().await;
-        if let Some(splash) = a.panels.get_mut(&PanelId::Splash)
+        if let Some(splash) = a
+            .panels
+            .get_mut(&PanelId::Splash)
             .and_then(|p| p.downcast_mut::<SplashPanel>())
         {
             splash.set_min_duration(term_h);
@@ -107,7 +109,8 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
 
     // --- SPLASH LOOP ---
     // Use oneshot channel so init and draw don't contend for the app mutex.
-    let (init_done_tx, mut init_done_rx) = tokio::sync::oneshot::channel::<Result<(), anyhow::Error>>();
+    let (init_done_tx, mut init_done_rx) =
+        tokio::sync::oneshot::channel::<Result<(), anyhow::Error>>();
 
     {
         let init_arc_app = Arc::clone(&arc_app);
@@ -127,30 +130,42 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         {
             let a = arc_app.lock().await;
             if let Some(splash) = a.panels.get(&PanelId::Splash) {
-                terminal.draw(|frame| {
-                    splash.draw(frame, frame.area());
-                }).ok();
+                terminal
+                    .draw(|frame| {
+                        splash.draw(frame, frame.area());
+                    })
+                    .ok();
             }
         }
 
         // Check init result via oneshot (no app lock needed)
         if let Ok(result) = init_done_rx.try_recv() {
             if let Err(e) = result {
-                if let Some(splash) = arc_app.lock().await
-                    .panels.get_mut(&PanelId::Splash)
+                if let Some(splash) = arc_app
+                    .lock()
+                    .await
+                    .panels
+                    .get_mut(&PanelId::Splash)
                     .and_then(|p| p.downcast_mut::<SplashPanel>())
                 {
                     splash.set_error(e.to_string());
                 }
             } else {
-                arc_app.lock().await.init_active_panel(session_name).await.ok();
+                arc_app
+                    .lock()
+                    .await
+                    .init_active_panel(session_name)
+                    .await
+                    .ok();
             }
         }
 
         // Break once full fall cycle elapsed
         {
             let a = arc_app.lock().await;
-            if let Some(splash) = a.panels.get(&PanelId::Splash)
+            if let Some(splash) = a
+                .panels
+                .get(&PanelId::Splash)
                 .and_then(|p| p.downcast_ref::<SplashPanel>())
             {
                 if splash.remaining_min_display() == Duration::ZERO {
@@ -163,8 +178,11 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     }
 
     // Post-loop: check if init failed and enter error splash
-    if arc_app.lock().await
-        .panels.get(&PanelId::Splash)
+    if arc_app
+        .lock()
+        .await
+        .panels
+        .get(&PanelId::Splash)
         .and_then(|p| p.downcast_ref::<SplashPanel>())
         .map(|s| s.error.is_some())
         .unwrap_or(false)
@@ -228,28 +246,32 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
 
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
 
-    terminal.draw(|frame| draw_ui(frame, &mut app))?;
+    // Initial draw — needs_redraw starts as true from App::new()
+    if app.needs_redraw {
+        terminal.draw(|frame| draw_ui(frame, &mut app))?;
+    }
     loop {
         if !app.running {
             break;
         }
-        let mut redraw = false;
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(32)) => {
-                // Check and hide expired toasts
+                // Check and hide expired toasts.
                 if let Some(expiry) = app.toast_expires_at {
                     if std::time::Instant::now() >= expiry {
                         app.toast_engine.hide_toast();
                         app.toast_expires_at = None;
+                        app.needs_redraw = true;
                     }
                 }
-                // Always draw on timer — even when not streaming, we need to
-                // render state changes from events (auto-drain ChatInput, etc.).
-                // Previously the `is_streaming` check caused a race: after a turn
-                // completes, done_rx sets streaming=false, then the timer skips
-                // drawing until the next ChatInput event arrives, leaving the
-                // viewport blank for that window.
-                let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
+                // During streaming, set needs_redraw so the 32ms timer paints
+                // live updates without relying on user events.  During idle
+                // (no turn active, nothing marked dirty) skip the draw entirely
+                // — this eliminates the ~300 draws/sec from mouse Moved events.
+                let is_streaming = app.get_chat().map(|c| c.streaming).unwrap_or(false);
+                if is_streaming {
+                    app.needs_redraw = true;
+                }
             }
             maybe_completion = done_rx.recv() => {
                 tracing::info!("[done_rx] recv returned");
@@ -280,6 +302,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             chat.input.streaming = false;
                             chat.update_from_messages(&messages, completion.session_name);
                             tracing::info!("[done_rx] chat.update_from_messages done, streaming={}", chat.streaming);
+                            app.needs_redraw = true;
                         }
                     } else {
                         app.status = "Turn completed with errors".into();
@@ -288,13 +311,9 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             chat.streaming = false;
                             chat.input.streaming = false;
                             chat.update_from_turn_state(&eb_state.lock().unwrap());
+                            app.needs_redraw = true;
                         }
                     }
-                    // NOTE: Do NOT set redraw=true here. The unconditional draw at
-                    // line 469 would fire BEFORE the auto-drain ChatInput is
-                    // processed, showing stale state (empty viewport). The 32ms
-                    // timer now always draws, so it will draw the correct state
-                    // after ChatInput is queued and processed.
                 }
             }
             event = event_rx.recv() => {
@@ -302,9 +321,18 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     Some(TuiEvent::Key(key)) => {
                 tracing::info!("[event_loop] Key event: code={:?} modifiers={:?}", key.code, key.modifiers);
                 app.handle_key(key).await;
-                redraw = true;
+                app.needs_redraw = true;
             }
-                    Some(TuiEvent::Mouse(mouse_event)) => {
+            Some(TuiEvent::Mouse(mouse_event)) => {
+                        // Check for expired toasts on mouse move so UI updates
+                        // promptly when a toast expires during cursor hover.
+                        if let Some(expiry) = app.toast_expires_at {
+                            if std::time::Instant::now() >= expiry {
+                                app.toast_engine.hide_toast();
+                                app.toast_expires_at = None;
+                                app.needs_redraw = true;
+                            }
+                        }
                         let (term_w, term_h) = size().unwrap_or((80, 24));
                         let body_area = Rect::new(0, 1, term_w, term_h.saturating_sub(2));
                         match mouse_event.kind {
@@ -345,23 +373,42 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                 }
                                 consumed += pw + 1;
                             }
+                            app.needs_redraw = true;
                             continue;
                         }
                         let current_panel = app.active_panel;
                         if let Some(panel) = app.panels.get_mut(&current_panel) {
-                            if let Some(text) = panel.handle_mouse(body_area, &mouse_event) {
-                                tracing::debug!("[lib] handle_mouse returned text, about to show toast");
-                                let lines = text.lines().count();
-                                let msg = if lines == 1 {
-                                    "Copied selection.".to_string()
-                                } else {
-                                    format!("Copied {} lines.", lines)
-                                };
-                                app.show_toast(msg, ratatui_toaster::ToastType::Success);
-                            } else {
-                                tracing::debug!("[lib] handle_mouse returned None for event={:?}", mouse_event.kind);
+                            match mouse_event.kind {
+                                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                                    // Scroll changes visible content — redraw immediately.
+                                    app.needs_redraw = true;
+                                }
+                                _ => {
+                                    if let Some(text) = panel.handle_mouse(body_area, &mouse_event) {
+                                        // Copy to clipboard
+                                        tracing::debug!("[lib] handle_mouse returned text, about to show toast");
+                                        let lines = text.lines().count();
+                                        let msg = if lines == 1 {
+                                            "Copied selection.".to_string()
+                                        } else {
+                                            format!("Copied {} lines.", lines)
+                                        };
+                                        app.show_toast(msg, ratatui_toaster::ToastType::Success);
+                                        app.needs_redraw = true;
+                                    } else {
+                                        tracing::debug!("[lib] handle_mouse returned None for event={:?}", mouse_event.kind);
+                                    }
+                                    // Selection drag needs redraw so visible_body_ranges gets updated
+                                    // and render_selection can draw the highlight correctly.
+                                    if let Some(chat) = app.get_chat() {
+                                        let selecting = chat.message_state.selection_start.is_some()
+                                            && chat.message_state.selection_end.is_some();
+                                        if selecting {
+                                            app.needs_redraw = true;
+                                        }
+                                    }
+                                }
                             }
-                            redraw = true;
                         }
                     }
                     Some(TuiEvent::ChatInput(input)) => {
@@ -369,10 +416,10 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         tracing::debug!("[event_loop] ChatInput event received, input.len()={}", input.len());
                         handle_chat_input(&mut app, input, &done_tx).await;
                         tracing::debug!("[event_loop] ChatInput processed in {:?}", start.elapsed());
-                        redraw = true;
+                        app.needs_redraw = true;
                     }
                     Some(TuiEvent::Resize(_w, _h)) => {
-                        redraw = true;
+                        app.needs_redraw = true;
                     }
                     Some(TuiEvent::CompactSession) => {
                         if let Some(agent_arc) = &app.agent {
@@ -423,7 +470,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                 ToastType::Warning,
                             );
                         }
-                        redraw = true;
+                        app.needs_redraw = true;
                     }
                     Some(TuiEvent::Interrupt) => {
                         tracing::info!("[interrupt] received, turn_handle={}", app.turn_handle.is_some());
@@ -463,7 +510,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             chat.input.streaming = false;
                         }
                         app.event_bus.on_turn_completed("interrupted");
-                        redraw = true;
+                        app.needs_redraw = true;
                     }
                     Some(TuiEvent::Steer(text)) => {
                         // Inject a mid-run message into the next tool result.
@@ -505,14 +552,14 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                 chat.input.pending_steer_count += 1;
                             }
                         }
-                        redraw = true;
+                        app.needs_redraw = true;
                     }
                     None => break,
                 }
             }
         }
 
-        if redraw {
+        if app.needs_redraw {
             let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
         }
     }
@@ -540,9 +587,11 @@ async fn enter_error_splash(arc_app: Arc<tokio::sync::Mutex<App>>) -> ! {
         {
             let a = arc_app.lock().await;
             if let Some(splash) = a.panels.get(&PanelId::Splash) {
-                terminal.draw(|frame| {
-                    splash.draw(frame, frame.area());
-                }).ok();
+                terminal
+                    .draw(|frame| {
+                        splash.draw(frame, frame.area());
+                    })
+                    .ok();
             }
         }
 
@@ -551,7 +600,9 @@ async fn enter_error_splash(arc_app: Arc<tokio::sync::Mutex<App>>) -> ! {
         if crossterm::event::poll(Duration::from_millis(32)).unwrap_or(false) {
             if let Ok(event) = crossterm::event::read() {
                 if let crossterm::event::Event::Key(key) = event {
-                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         drop(terminal);
                         io::stdout().execute(LeaveAlternateScreen).ok();
                         io::stdout().execute(DisableMouseCapture).ok();
@@ -570,14 +621,13 @@ fn build_image_message(input: &str) -> oben_models::Message {
     // 1. Collect local image paths (tokens that start with `/` and end with an
     // image extension, e.g. `/Users/foo/photo.png`).
     let known_exts = [
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".tiff",
-        ".tif", ".ico", ".avif",
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".tiff", ".tif", ".ico", ".avif",
     ];
-    
+
     let tokens: Vec<&str> = input.split_whitespace().collect();
     let mut image_tokens: Vec<String> = Vec::new();
     let mut text_tokens: Vec<&str> = Vec::new();
-    
+
     for token in tokens {
         let is_image = known_exts
             .iter()
@@ -587,12 +637,13 @@ fn build_image_message(input: &str) -> oben_models::Message {
             if let Some((msg, _)) = image::path_to_image_message(token, "") {
                 let url = match &msg.content {
                     MessageContent::Image { url, .. } => url.clone(),
-                    MessageContent::Parts(parts) => {
-                        parts.iter().find_map(|p| match p {
+                    MessageContent::Parts(parts) => parts
+                        .iter()
+                        .find_map(|p| match p {
                             MessagePart::Image { url, .. } => Some(url.clone()),
                             _ => None,
-                        }).unwrap_or_else(|| String::new())
-                    }
+                        })
+                        .unwrap_or_else(|| String::new()),
                     _ => String::new(),
                 };
                 if !url.is_empty() {
@@ -603,12 +654,12 @@ fn build_image_message(input: &str) -> oben_models::Message {
             text_tokens.push(token);
         }
     }
-    
+
     if !image_tokens.is_empty() {
         // Mix of text and/or images — collect any non-image text
         let text: String = text_tokens.join(" ");
         let text_trimmed = text.trim();
-        
+
         if text_trimmed.is_empty() && image_tokens.len() == 1 {
             // Just one image, no surrounding text — use Image variant
             return Message {
@@ -622,7 +673,7 @@ fn build_image_message(input: &str) -> oben_models::Message {
                 tool_calls: None,
             };
         }
-        
+
         // Build Parts: text (if any) followed by images
         let mut parts: Vec<MessagePart> = Vec::new();
         if !text_trimmed.is_empty() {
@@ -631,7 +682,7 @@ fn build_image_message(input: &str) -> oben_models::Message {
         for url in image_tokens {
             parts.push(MessagePart::Image { url, detail: None });
         }
-        
+
         return Message {
             role: oben_models::MessageRole::User,
             content: MessageContent::Parts(parts),
@@ -642,20 +693,17 @@ fn build_image_message(input: &str) -> oben_models::Message {
     }
 
     // 2. Check for image URLs (http/https)
-    static IMAGE_URL_RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| {
-            // Match http/https URLs ending with image extensions.
-            // We deliberately do not include quotes or angle brackets in the
-            // negated set — URLs never contain them, and keeping them out
-            // avoids Rust raw-string escaping issues.
-            Regex::new(r"https?://[^\s'(),]+(?:\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff?|ico|avif))([^\s'()]*)?").unwrap()
-        });
+    static IMAGE_URL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        // Match http/https URLs ending with image extensions.
+        // We deliberately do not include quotes or angle brackets in the
+        // negated set — URLs never contain them, and keeping them out
+        // avoids Rust raw-string escaping issues.
+        Regex::new(r"https?://[^\s'(),]+(?:\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff?|ico|avif))([^\s'()]*)?").unwrap()
+    });
 
     let urls: Vec<(usize, String)> = IMAGE_URL_RE
         .captures_iter(input)
-        .filter_map(|cap| {
-            cap.get(0).map(|m| (m.start(), m.as_str().to_string()))
-        })
+        .filter_map(|cap| cap.get(0).map(|m| (m.start(), m.as_str().to_string())))
         .collect();
 
     if urls.is_empty() {
@@ -675,7 +723,26 @@ fn build_image_message(input: &str) -> oben_models::Message {
             while i < input.len() {
                 let ch = input[i..].chars().next().unwrap();
                 i += ch.len_utf8();
-                if !ch.is_ascii_alphanumeric() && !matches!(ch, '.' | '/' | '?' | '=' | '&' | '%' | '-' | '_' | '~' | '#' | '+' | ',' | ';' | ':' | '@' | '!') {
+                if !ch.is_ascii_alphanumeric()
+                    && !matches!(
+                        ch,
+                        '.' | '/'
+                            | '?'
+                            | '='
+                            | '&'
+                            | '%'
+                            | '-'
+                            | '_'
+                            | '~'
+                            | '#'
+                            | '+'
+                            | ','
+                            | ';'
+                            | ':'
+                            | '@'
+                            | '!'
+                    )
+                {
                     break;
                 }
             }
@@ -730,13 +797,14 @@ fn build_image_message(input: &str) -> oben_models::Message {
 /// Parse input text and return (text_without_images, image_urls).
 fn parse_input_for_images(input: &str) -> (String, Vec<(String, Option<String>)>) {
     use regex::Regex;
-    let re = Regex::new(r"https?://[^\s'(),]+(?:\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff?|ico|avif))([^\s'()]*)?").unwrap();
+    let re = Regex::new(
+        r"https?://[^\s'(),]+(?:\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff?|ico|avif))([^\s'()]*)?",
+    )
+    .unwrap();
 
     let urls: Vec<(String, Option<String>)> = re
         .captures_iter(input)
-        .filter_map(|cap| {
-            cap.get(0).map(|m| (m.as_str().to_string(), None))
-        })
+        .filter_map(|cap| cap.get(0).map(|m| (m.as_str().to_string(), None)))
         .collect();
 
     let text = re.replace_all(input, "").trim().to_string();
@@ -781,7 +849,9 @@ async fn handle_chat_input(
             chat.streaming = true;
             chat.input.streaming = true;
             chat.message_state.turn_state_ref = Some(eb_state);
-            chat.message_state.scroll_to_bottom.store(true, Ordering::SeqCst);
+            chat.message_state
+                .scroll_to_bottom
+                .store(true, Ordering::SeqCst);
             chat.append_user_message(&input);
             tracing::info!(
                 "handle_chat_input: appended user message to chat, msg_count={}",
@@ -841,13 +911,24 @@ async fn handle_chat_input(
                 );
 
                 let result = if has_images {
-                    tracing::info!("spawned_turn_task: sending image message via turn_with_message");
+                    tracing::info!(
+                        "spawned_turn_task: sending image message via turn_with_message"
+                    );
                     guard
-                        .turn_with_message(input_msg, Some(delta_callback), Some(Arc::clone(&interrupt_clone)))
+                        .turn_with_message(
+                            input_msg,
+                            Some(delta_callback),
+                            Some(Arc::clone(&interrupt_clone)),
+                        )
                         .await
                 } else {
                     guard
-                        .turn(&input_clone, false, Some(delta_callback), Some(Arc::clone(&interrupt_clone)))
+                        .turn(
+                            &input_clone,
+                            false,
+                            Some(delta_callback),
+                            Some(Arc::clone(&interrupt_clone)),
+                        )
                         .await
                 };
                 let sid = guard.active_session_name().await.map(|s| s.clone());
@@ -909,6 +990,7 @@ async fn handle_chat_input(
 }
 
 fn draw_ui(frame: &mut Frame, app: &mut App) {
+    app.needs_redraw = false;
     let area = frame.area();
     let layout = Layouts::new(area);
 
@@ -918,24 +1000,6 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     if let Some(chat) = app.get_chat_mut() {
         chat.set_turn_state_ref(Arc::clone(&eb_state));
         chat.update_from_turn_state(&eb_state.lock().unwrap());
-    }
-
-    // Collect ChatPanel streaming state (after injecting ref)
-    let chat_panel_info = app
-        .get_chat()
-        .map(|cp| format!("streaming={}", cp.streaming))
-        .unwrap_or("no_chat_panel".to_string());
-    if let Some(chat) = app.get_chat() {
-        let msg_count = chat.message_state.message_entries.lock().map(|e| e.len()).unwrap_or(0);
-        let streaming = chat.message_state.turn_state_ref.as_ref().map(|ts| {
-            ts.lock().map(|t| t.streaming_text.len()).unwrap_or(0)
-        }).unwrap_or(0);
-        tracing::debug!(
-            "[draw_ui] chat_panel={} msg_entries={} streaming_text_len={}",
-            chat_panel_info, msg_count, streaming
-        );
-    } else {
-        tracing::debug!("[draw_ui] chat_panel={}", chat_panel_info);
     }
 
     let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);
@@ -1040,7 +1104,8 @@ mod tests {
 
     fn write_test_image(path: &std::path::Path) {
         let mut file = std::fs::File::create(path).unwrap();
-        file.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        file.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+            .unwrap();
     }
 
     #[test]
@@ -1066,12 +1131,19 @@ mod tests {
         file2.write_all(&[0xFF, 0xD8, 0xFF, 0xE0]).unwrap();
         drop(file2);
 
-        let combined = format!("{} 分析 {}", path1.to_string_lossy(), path2.to_string_lossy());
+        let combined = format!(
+            "{} 分析 {}",
+            path1.to_string_lossy(),
+            path2.to_string_lossy()
+        );
         let msg = build_image_message(&combined);
-        
+
         // Should produce a Parts message with both images
         if let MessageContent::Parts(parts) = msg.content {
-            let image_count = parts.iter().filter(|p| matches!(p, MessagePart::Image { .. })).count();
+            let image_count = parts
+                .iter()
+                .filter(|p| matches!(p, MessagePart::Image { .. }))
+                .count();
             assert_eq!(image_count, 2, "expected 2 image parts");
             // First part should be text (the Chinese phrase)
             if let MessagePart::Text(t) = &parts[0] {
@@ -1098,7 +1170,10 @@ mod tests {
         let msg = build_image_message(&combined);
 
         if let MessageContent::Parts(parts) = msg.content {
-            let image_count = parts.iter().filter(|p| matches!(p, MessagePart::Image { .. })).count();
+            let image_count = parts
+                .iter()
+                .filter(|p| matches!(p, MessagePart::Image { .. }))
+                .count();
             assert_eq!(image_count, 2, "expected 2 image parts with no text");
         } else {
             panic!("expected Parts variant for multi-image");
