@@ -30,7 +30,6 @@
 /// // Now calling callbacks triggers relay subscribers too
 /// callbacks.call_tool_progress("shell", "ls");
 /// ```
-
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -307,7 +306,8 @@ impl AgentCallbacks {
     /// Call tool complete callback.
     pub fn call_tool_complete(&self, tool_name: &str, args_json: &str, result: &str) {
         if let Some(ref relay) = self.relay {
-            let formatted = relay_impl::CallbacksRelay::format_tool_complete(tool_name, args_json, result);
+            let formatted =
+                relay_impl::CallbacksRelay::format_tool_complete(tool_name, args_json, result);
             relay.tool_complete.notify(&formatted);
         }
         if let Some(cb) = &self.tool_complete {
@@ -339,7 +339,10 @@ impl AgentCallbacks {
     /// Call clarify callback — returns user answer or empty string.
     pub fn call_clarify(&self, question: &str, choices: &[String]) -> String {
         if let Some(ref relay) = self.relay {
-            relay.clarify.notify(&format!("[clarify] question: {question}, choices: {:?}", choices));
+            relay.clarify.notify(&format!(
+                "[clarify] question: {question}, choices: {:?}",
+                choices
+            ));
         }
         if let Some(cb) = &self.clarify {
             cb(question, choices)
@@ -372,7 +375,9 @@ impl AgentCallbacks {
     /// Call interim assistant callback.
     pub fn call_interim_assistant(&self, text: &str) {
         if let Some(ref relay) = self.relay {
-            relay.interim_assistant.notify(&format!("[interim_assistant] {text}"));
+            relay
+                .interim_assistant
+                .notify(&format!("[interim_assistant] {text}"));
         }
         if let Some(cb) = &self.interim_assistant {
             cb(text);
@@ -382,7 +387,9 @@ impl AgentCallbacks {
     /// Call tool gen callback.
     pub fn call_tool_gen(&self, tool_name: &str, call_id: &str) {
         if let Some(ref relay) = self.relay {
-            relay.tool_gen.notify(&format!("[tool_gen] {tool_name} {call_id}"));
+            relay
+                .tool_gen
+                .notify(&format!("[tool_gen] {tool_name} {call_id}"));
         }
         if let Some(cb) = &self.tool_gen {
             cb(tool_name, call_id);
@@ -464,12 +471,13 @@ mod tests {
         let received = std::sync::Arc::new(std::sync::Mutex::new(None));
         let received_clone = received.clone();
 
-        callbacks_relay.tool_progress.subscribe(move |msg: &String| {
-            *received_clone.lock().unwrap() = Some(msg.clone());
-        });
+        callbacks_relay
+            .tool_progress
+            .subscribe(move |msg: &String| {
+                *received_clone.lock().unwrap() = Some(msg.clone());
+            });
 
-        let cb = AgentCallbacks::default()
-            .with_relay(Arc::new(callbacks_relay));
+        let cb = AgentCallbacks::default().with_relay(Arc::new(callbacks_relay));
 
         cb.call_tool_progress("shell", "ls");
 
@@ -487,16 +495,19 @@ mod tests {
         let direct_invoked = std::sync::Arc::new(std::sync::Mutex::new(false));
         let di = direct_invoked.clone();
 
-        callbacks_relay.tool_progress.subscribe(move |msg: &String| {
-            rc.lock().unwrap().push(msg.clone());
-        });
+        callbacks_relay
+            .tool_progress
+            .subscribe(move |msg: &String| {
+                rc.lock().unwrap().push(msg.clone());
+            });
 
         let cb = AgentCallbacks {
             tool_progress: Some(Box::new(move |_n: &str, _p: &str| {
                 *di.lock().unwrap() = true;
             })),
             ..Default::default()
-        }.with_relay(Arc::new(callbacks_relay));
+        }
+        .with_relay(Arc::new(callbacks_relay));
 
         cb.call_tool_progress("shell", "ls");
 

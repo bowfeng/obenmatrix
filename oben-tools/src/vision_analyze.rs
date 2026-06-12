@@ -38,11 +38,21 @@ fn is_safe_url(url: &str) -> bool {
     if parts.len() == 4 {
         let first = parts[0].parse::<u8>().unwrap_or(0);
         let second = parts[1].parse::<u8>().unwrap_or(0);
-        if first == 10 { return false; }
-        if first == 172 && second >= 16 && second <= 31 { return false; }
-        if first == 192 && second == 168 { return false; }
-        if first == 127 { return false; }
-        if first == 169 && second == 254 { return false; }
+        if first == 10 {
+            return false;
+        }
+        if first == 172 && second >= 16 && second <= 31 {
+            return false;
+        }
+        if first == 192 && second == 168 {
+            return false;
+        }
+        if first == 127 {
+            return false;
+        }
+        if first == 169 && second == 254 {
+            return false;
+        }
     }
     true
 }
@@ -170,10 +180,7 @@ async fn analyze_with_openai(
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         let preview: String = body.chars().take(200).collect();
-        return Err(format!(
-            "API error {} ({}): {}",
-            status, model, preview
-        ));
+        return Err(format!("API error {} ({}): {}", status, model, preview));
     }
 
     let parsed: OpenAIResponse = resp
@@ -245,10 +252,7 @@ async fn analyze_with_anthropic(
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         let preview: String = body.chars().take(200).collect();
-        return Err(format!(
-            "API error {} ({}): {}",
-            status, model, preview
-        ));
+        return Err(format!("API error {} ({}): {}", status, model, preview));
     }
 
     let parsed: AnthropicResponse = resp
@@ -267,17 +271,14 @@ async fn analyze_with_anthropic(
 }
 
 /// Analyze image from data URL (base64 payload).
-async fn analyze_from_data_url(
-    data_url: &str,
-    prompt: &str,
-) -> Result<String, String> {
-    let (mime, b64_data) = parse_data_url(data_url)
-        .ok_or_else(|| "Invalid data URL format".to_string())?;
-    
+async fn analyze_from_data_url(data_url: &str, prompt: &str) -> Result<String, String> {
+    let (mime, b64_data) =
+        parse_data_url(data_url).ok_or_else(|| "Invalid data URL format".to_string())?;
+
     let image_data = base64::engine::general_purpose::STANDARD
         .decode(&b64_data)
         .map_err(|e| format!("Failed to decode base64 data: {}", e))?;
-    
+
     if image_data.is_empty() {
         return Err("Image data is empty".to_string());
     }
@@ -308,23 +309,32 @@ async fn analyze_from_data_url(
                 "claude-sonnet-4-20250514".to_string()
             };
             analyze_with_anthropic(
-                &image_data, &mime, prompt, &api_key, &anth_model, max_tokens
-            ).await
+                &image_data,
+                &mime,
+                prompt,
+                &api_key,
+                &anth_model,
+                max_tokens,
+            )
+            .await
         }
         _ => {
             analyze_with_openai(
-                &image_data, &mime, prompt,
-                vision.base_url.as_deref(), &api_key, model, max_tokens
-            ).await
+                &image_data,
+                &mime,
+                prompt,
+                vision.base_url.as_deref(),
+                &api_key,
+                model,
+                max_tokens,
+            )
+            .await
         }
     }
 }
 
 /// Analyze image using configured vision API.
-async fn analyze_image(
-    image_url: &str,
-    prompt: &str,
-) -> Result<String, String> {
+async fn analyze_image(image_url: &str, prompt: &str) -> Result<String, String> {
     // Handle data URLs directly (base64 encoded images)
     if is_data_url(image_url) {
         return analyze_from_data_url(image_url, prompt).await;
@@ -359,15 +369,27 @@ async fn analyze_image(
                 "claude-sonnet-4-20250514".to_string()
             };
             analyze_with_anthropic(
-                &image_data, &mime, prompt, &api_key, &anth_model, max_tokens
-            ).await
+                &image_data,
+                &mime,
+                prompt,
+                &api_key,
+                &anth_model,
+                max_tokens,
+            )
+            .await
         }
         _ => {
             // Default: OpenAI-compatible API
             analyze_with_openai(
-                &image_data, &mime, prompt,
-                vision.base_url.as_deref(), &api_key, model, max_tokens
-            ).await
+                &image_data,
+                &mime,
+                prompt,
+                vision.base_url.as_deref(),
+                &api_key,
+                model,
+                max_tokens,
+            )
+            .await
         }
     }
 }
@@ -442,7 +464,9 @@ fn make_vision_analyze_handler() -> ToolHandler {
                 return Ok(ToolResult {
                     call_id,
                     output: String::new(),
-                    error: Some("Blocked: URL targets a private or internal network address".to_string()),
+                    error: Some(
+                        "Blocked: URL targets a private or internal network address".to_string(),
+                    ),
                 });
             }
 
@@ -491,8 +515,8 @@ pub fn register(registry: &mut super::registry::ToolRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use oben_models::ToolParameters;
+    use serde_json::json;
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
@@ -579,7 +603,11 @@ mod tests {
             )
             .await;
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Missing required 'image_url'"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Missing required 'image_url'"));
     }
 
     #[tokio::test]
@@ -614,8 +642,14 @@ mod tests {
         assert!(result.error.is_some());
         let error_msg = result.error.as_ref().unwrap();
         // Error may be about missing key OR download failure (if network blocks example.com)
-        assert!(error_msg.contains("API key") || error_msg.contains("API error") || error_msg.contains("download") || error_msg.contains("HTTP"),
-            "Expected API key error or download error, got: {}", error_msg);
+        assert!(
+            error_msg.contains("API key")
+                || error_msg.contains("API error")
+                || error_msg.contains("download")
+                || error_msg.contains("HTTP"),
+            "Expected API key error or download error, got: {}",
+            error_msg
+        );
     }
 
     #[test]
@@ -624,11 +658,11 @@ mod tests {
         // MIME should be "image/png" (normalized)
         assert_eq!(mime, "image/png");
         assert_eq!(b64, "iVBORw0KGgo=");
-        
+
         let (mime, b64) = parse_data_url("data:image/jpeg;base64,/9j/4AAQ").unwrap();
         assert_eq!(mime, "image/jpeg");
         assert_eq!(b64, "/9j/4AAQ");
-        
+
         assert!(parse_data_url("https://example.com/test.jpg").is_none());
         assert!(parse_data_url("data:text/plain,hello").is_none());
     }
@@ -646,7 +680,8 @@ mod tests {
         let registry = make_registry();
         let tools = registry.list_tools();
         // Find vision_analyze tool
-        let vision_tool = tools.iter()
+        let vision_tool = tools
+            .iter()
             .find(|t| t.name == "vision_analyze")
             .expect("vision_analyze should be in registry");
         // Check parameters are present (not empty)
@@ -654,8 +689,14 @@ mod tests {
             ToolParameters::Flat(params) => {
                 assert!(!params.is_empty(), "vision_analyze should have parameters");
                 let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-                assert!(param_names.contains(&"image_url"), "Should have image_url parameter");
-                assert!(param_names.contains(&"prompt"), "Should have prompt parameter");
+                assert!(
+                    param_names.contains(&"image_url"),
+                    "Should have image_url parameter"
+                );
+                assert!(
+                    param_names.contains(&"prompt"),
+                    "Should have prompt parameter"
+                );
                 // image_url should be required
                 let image_param = params.iter().find(|p| p.name == "image_url").unwrap();
                 assert!(image_param.required, "image_url should be required");

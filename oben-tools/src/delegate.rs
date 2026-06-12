@@ -14,12 +14,11 @@
 /// - The delegate tool holds a `SpawnFn` closure
 /// - The delegate tool takes `task_name` + `goal` (single) or `tasks` (batch)
 /// - Returns subagent result(s) as tool output JSON
-
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
 use serde_json::Value;
+use tokio::sync::Semaphore;
 
 use crate::registry::{SpawnFn, Tool, ToolRegistry};
 use oben_models::{Tool as ToolDef, ToolResult};
@@ -186,30 +185,46 @@ impl DelegateTool {
         role: &str,
         depth: usize,
     ) -> String {
-        info!("delegate: spawn single child parent_session_id={} depth={role} goal={}", parent_id, goal);
-        let start = std::time::Instant::now();
-        let join_handle = (self.spawn_fn)(
-            parent_id.to_string(),
-            goal.to_string(),
-            depth,
-            role,
+        info!(
+            "delegate: spawn single child parent_session_id={} depth={role} goal={}",
+            parent_id, goal
         );
+        let start = std::time::Instant::now();
+        let join_handle = (self.spawn_fn)(parent_id.to_string(), goal.to_string(), depth, role);
 
         match join_handle.await {
             Ok(Ok(sr)) => {
-                info!("delegate: single task completed in {:0.2}s task_index={} status={}", start.elapsed().as_secs_f64(), sr.depth, sr.status);
+                info!(
+                    "delegate: single task completed in {:0.2}s task_index={} status={}",
+                    start.elapsed().as_secs_f64(),
+                    sr.depth,
+                    sr.status
+                );
                 if let Ok(json) = serde_json::to_string_pretty(&sr) {
                     return json;
                 }
-                warn!("delegate: single failed to serialize result in {:0.2}s", start.elapsed().as_secs_f64());
+                warn!(
+                    "delegate: single failed to serialize result in {:0.2}s",
+                    start.elapsed().as_secs_f64()
+                );
                 format!("Result serialized: {:?}", sr.status)
             }
             Ok(Err(e)) => {
-                warn!("delegate: single task failed in {:0.2}s child_session_id={}: {}", start.elapsed().as_secs_f64(), "unknown", e);
+                warn!(
+                    "delegate: single task failed in {:0.2}s child_session_id={}: {}",
+                    start.elapsed().as_secs_f64(),
+                    "unknown",
+                    e
+                );
                 return format!("Subagent execution failed: {e}");
             }
             Err(e) => {
-                warn!("delegate: single task panicked in {:0.2}s parent_session_id={}: {}", start.elapsed().as_secs_f64(), parent_id, e);
+                warn!(
+                    "delegate: single task panicked in {:0.2}s parent_session_id={}: {}",
+                    start.elapsed().as_secs_f64(),
+                    parent_id,
+                    e
+                );
                 return format!("Subagent task panicked: {e}");
             }
         }
@@ -246,7 +261,11 @@ impl DelegateTool {
                             .get("role")
                             .and_then(|v| v.as_str())
                             .unwrap_or(&top_level_role);
-                        debug!("delegate: batch task[{i}] valid goal={}, role={}", log_short(g, 100), task_role);
+                        debug!(
+                            "delegate: batch task[{i}] valid goal={}, role={}",
+                            log_short(g, 100),
+                            task_role
+                        );
                         valid_tasks.push(TaskSpec {
                             index: i,
                             goal: g.to_string(),
@@ -254,11 +273,11 @@ impl DelegateTool {
                         });
                     }
                     _ => {
-                            let task_num = i + 1;
-                            warn!("delegate: batch task[{i}] missing or empty goal");
-                            error_results.push(DelegateTaskResult {
-                                task_index: i,
-                                label: format!("Task {task_num}"),
+                        let task_num = i + 1;
+                        warn!("delegate: batch task[{i}] missing or empty goal");
+                        error_results.push(DelegateTaskResult {
+                            task_index: i,
+                            label: format!("Task {task_num}"),
                             status: "error".into(),
                             summary: String::new(),
                             error: Some("Task is missing or empty 'goal'".into()),
@@ -296,7 +315,12 @@ impl DelegateTool {
         let mut handles: Vec<(usize, tokio::task::JoinHandle<DelegateTaskResult>)> =
             Vec::with_capacity(valid_tasks.len());
 
-        info!("delegate: batch spawning {} valid tasks, {} parse errors, max_concurrent={}", valid_tasks.len(), error_results.len(), self.max_concurrent_tasks);
+        info!(
+            "delegate: batch spawning {} valid tasks, {} parse errors, max_concurrent={}",
+            valid_tasks.len(),
+            error_results.len(),
+            self.max_concurrent_tasks
+        );
 
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent_tasks));
 
@@ -310,19 +334,18 @@ impl DelegateTool {
             let idx = spec.index;
             let permit = semaphore.clone();
 
-            info!("delegate: batch spawning task[{idx}] label={label} role={role} depth={depth}", label=task_label, role=task_role);
+            info!(
+                "delegate: batch spawning task[{idx}] label={label} role={role} depth={depth}",
+                label = task_label,
+                role = task_role
+            );
             let goal_short = log_short(&goal, 80);
             debug!("delegate: batch task[{idx}] goal={}", goal_short);
 
             let handle = tokio::spawn(async move {
                 let _permit = permit.acquire().await.unwrap();
                 debug!("delegate: batch task[{idx}] spawned label={}", task_label);
-                let join_handle = (spawn_fn)(
-                    parent_id.clone(),
-                    goal,
-                    depth,
-                    &task_role,
-                );
+                let join_handle = (spawn_fn)(parent_id.clone(), goal, depth, &task_role);
 
                 match join_handle.await {
                     Ok(Ok(sr)) => DelegateTaskResult {
@@ -443,10 +466,18 @@ impl Tool for DelegateTool {
             .map(|a| !a.is_empty())
             .unwrap_or(false);
 
-        debug!("delegate: validate has_goal={} has_tasks={}", has_goal, has_tasks);
+        debug!(
+            "delegate: validate has_goal={} has_tasks={}",
+            has_goal, has_tasks
+        );
         if has_goal {
             if let Some(g) = args.get("goal").and_then(|v| v.as_str()) {
-                debug!("delegate: validate goal={} context={} role={}", g, args.get("context").and_then(|v| v.as_str()).unwrap_or(""), args.get("role").and_then(|v| v.as_str()).unwrap_or(""));
+                debug!(
+                    "delegate: validate goal={} context={} role={}",
+                    g,
+                    args.get("context").and_then(|v| v.as_str()).unwrap_or(""),
+                    args.get("role").and_then(|v| v.as_str()).unwrap_or("")
+                );
             }
         }
         if has_tasks {
@@ -465,9 +496,7 @@ impl Tool for DelegateTool {
             let tasks = args
                 .get("tasks")
                 .and_then(|v| v.as_array())
-                .ok_or_else(|| anyhow::anyhow!(
-                    "tasks must be a JSON array of task objects"
-                ))?;
+                .ok_or_else(|| anyhow::anyhow!("tasks must be a JSON array of task objects"))?;
 
             for (i, task) in tasks.iter().enumerate() {
                 let task_obj = task
@@ -513,7 +542,13 @@ impl Tool for DelegateTool {
             .to_string();
 
         if let Some(n) = args.get("tasks").and_then(|v| v.as_array()) {
-            info!("delegate: batch mode START, {} tasks, parent_session_id={} role={} depth={}", n.len(), parent_id, top_level_role, base_depth);
+            info!(
+                "delegate: batch mode START, {} tasks, parent_session_id={} role={} depth={}",
+                n.len(),
+                parent_id,
+                top_level_role,
+                base_depth
+            );
             self.execute_batch(&parent_id, top_level_role, base_depth, n, &call_id)
                 .await
         } else {
@@ -522,22 +557,23 @@ impl Tool for DelegateTool {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            let context = args
-                .get("context")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let context = args.get("context").and_then(|v| v.as_str()).unwrap_or("");
             let goal_short = log_short(&goal, 100);
-            info!("delegate: single mode START, parent_session_id={} goal={} role={} depth={}", parent_id, goal_short, top_level_role, base_depth);
-            let result = self.execute_single(
-                &parent_id,
-                &goal,
-                context,
-                &top_level_role,
-                base_depth,
-            ).await;
+            info!(
+                "delegate: single mode START, parent_session_id={} goal={} role={} depth={}",
+                parent_id, goal_short, top_level_role, base_depth
+            );
+            let result = self
+                .execute_single(&parent_id, &goal, context, &top_level_role, base_depth)
+                .await;
 
             let _output_short = log_short(&result, 200);
-            info!("delegate: single mode COMPLETE, parent_session_id={} result_len={} goal={}", parent_id, result.len(), goal_short);
+            info!(
+                "delegate: single mode COMPLETE, parent_session_id={} result_len={} goal={}",
+                parent_id,
+                result.len(),
+                goal_short
+            );
 
             ToolResult {
                 call_id,
@@ -563,9 +599,7 @@ impl Tool for DelegateTool {
 pub fn register(registry: &mut ToolRegistry) {
     // Placeholder registration — the real handler is set by the parent tool.
     let spawn_fn: SpawnFn = Arc::new(|_parent_id, _goal, _depth, _role| {
-        tokio::spawn(async {
-            Err(anyhow::anyhow!("delegate_task not yet configured"))
-        })
+        tokio::spawn(async { Err(anyhow::anyhow!("delegate_task not yet configured")) })
     });
     let tool = DelegateTool::new(spawn_fn, 3);
     registry.register_with_def(tool, tool_def());
@@ -635,7 +669,10 @@ async fn test_validate_neither_goal_nor_tasks() {
     let args = serde_json::json!({"context": "extra info"});
     let result = tool.validate(&args);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Provide either 'goal'"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Provide either 'goal'"));
 }
 
 /// Given: Batch with task missing goal
@@ -820,7 +857,11 @@ async fn test_execute_batch_mixed_valid_invalid() {
     assert_eq!(parsed.len(), 2);
     assert_eq!(parsed[0].status, "completed");
     assert_eq!(parsed[1].status, "error");
-    assert!(parsed[1].error.as_ref().unwrap().contains("missing or empty 'goal'"));
+    assert!(parsed[1]
+        .error
+        .as_ref()
+        .unwrap()
+        .contains("missing or empty 'goal'"));
 }
 
 /// Given: Batch with tasks that have non-object entries
@@ -895,4 +936,3 @@ fn test_tool_def_mentions_batch_mode() {
     assert!(def.description.contains("Batch"));
     assert!(def.description.contains("goal"));
 }
-

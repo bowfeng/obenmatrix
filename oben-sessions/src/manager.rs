@@ -66,6 +66,43 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_error TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
+
+-- Goals — independent entities, not scoped to sessions.
+-- A goal can be owned by one session and referenced by multiple sessions
+-- via session_goal_refs. Plan state is stored as JSON on the goal itself.
+CREATE TABLE IF NOT EXISTS goals (
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending, active, done, failed
+    owner_session TEXT,                      -- session that created this goal
+    max_turns INTEGER DEFAULT 20,
+    turns_used INTEGER DEFAULT 0,
+    last_verdict TEXT,                       -- last judge verdict
+    last_reason TEXT,                        -- last judge reason
+    paused_reason TEXT,                      -- why paused (if paused)
+    consecutive_parse_failures INTEGER DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+-- Goal plan nodes — tree structure stored as JSON in the plan field.
+-- This is a denormalized version for status tracking/search.
+CREATE TABLE IF NOT EXISTS goal_nodes (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending, in_progress, done, failed
+    completion_message TEXT,
+    created_at REAL NOT NULL
+);
+
+-- Session-goal references — a session can participate in multiple goals.
+CREATE TABLE IF NOT EXISTS session_goal_refs (
+    session_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+    assigned_at REAL,
+    PRIMARY KEY (session_id, goal_id)
+);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -1495,6 +1532,201 @@ impl SessionDB {
         })
     }
 
+    // ── Goals CRUD — independent entities, not scoped to sessions ────────
+
+    /// Check if a goal exists.
+    pub fn goal_exists(&self, goal_id: &str) -> Result<bool> {
+        self.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM goals WHERE id = ?",
+                params![goal_id],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
+    }
+
+    /// Create a new goal.
+    ///
+    /// `owner_session` is the session that created the goal (can be None).
+    pub fn create_goal(
+        &self,
+        goal_id: &str,
+        text: &str,
+        max_turns: usize,
+        owner_session: Option<&str>,
+    ) -> Result<()> {
+        let now = now_ts();
+        self.with_conn_mut(|conn| {
+            conn.execute(
+                "INSERT INTO goals (id, text, status, owner_session, max_turns, turns_used, created_at, updated_at) \
+                 VALUES (?, ?, 'pending', ?, ?, 0, ?, ?)",
+                params![goal_id, text, owner_session, max_turns, now, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Get goal by ID.
+    ///
+    /// Returns (text, status, max_turns, turns_used, paused_reason).
+    pub fn get_goal(
+        &self,
+        goal_id: &str,
+    ) -> Result<Option<(String, String, usize, usize, Option<String>)>> {
+        use rusqlite::OptionalExtension;
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT text, status, max_turns, turns_used, paused_reason FROM goals WHERE id = ?",
+                params![goal_id],
+                |row| {
+                    let text: String = row.get(0)?;
+                    let status: String = row.get(1)?;
+                    let max_turns: usize = row.get(2)?;
+                    let turns_used: usize = row.get(3)?;
+                    let paused_reason: Option<String> = row.get(4)?;
+                    Ok((text, status, max_turns, turns_used, paused_reason))
+                },
+            )
+            .optional()
+            .map_err(|e| anyhow::anyhow!(e))
+        })
+    }
+
+    /// Update goal status and turns.
+    pub fn update_goal(
+        &self,
+        goal_id: &str,
+        status: &str,
+        turns_used: usize,
+        verdict: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE goals SET status = ?, turns_used = ?, last_verdict = ?, last_reason = ?, updated_at = ? WHERE id = ?",
+                params![status, turns_used, verdict, reason, now_ts(), goal_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Pause a goal with a reason.
+    pub fn pause_goal(&self, goal_id: &str, reason: &str) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE goals SET status = 'paused', paused_reason = ?, updated_at = ? WHERE id = ?",
+                params![reason, now_ts(), goal_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Resume a goal.
+    pub fn resume_goal(&self, goal_id: &str, reset_budget: bool) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            if reset_budget {
+                conn.execute(
+                    "UPDATE goals SET status = 'active', turns_used = 0, paused_reason = NULL, updated_at = ? WHERE id = ?",
+                    params![now_ts(), goal_id],
+                )?;
+            } else {
+                conn.execute(
+                    "UPDATE goals SET status = 'active', paused_reason = NULL, updated_at = ? WHERE id = ?",
+                    params![now_ts(), goal_id],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Fail (mark done) a goal.
+    pub fn complete_goal(&self, goal_id: &str) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE goals SET status = 'done', updated_at = ? WHERE id = ?",
+                params![now_ts(), goal_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Delete a goal. Cascades to goal_nodes.
+    pub fn delete_goal(&self, goal_id: &str) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            conn.execute("DELETE FROM goals WHERE id = ?", params![goal_id])?;
+            Ok(())
+        })
+    }
+
+    /// List goals by status (for a given session or all).
+    pub fn list_goals(
+        &self,
+        status: Option<&str>,
+    ) -> Result<Vec<(String, String, Option<String>)>> {
+        self.with_conn(|conn| {
+            let sql = match status {
+                Some(_s) => "SELECT id, text, owner_session FROM goals WHERE status = ? ORDER BY created_at DESC",
+                None => "SELECT id, text, owner_session FROM goals ORDER BY created_at DESC",
+            };
+            let mut stmt = conn.prepare(sql)?;
+            let rows: Vec<(String, String, Option<String>)> = match status {
+                Some(s) => stmt.query_map(params![s], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?.filter_map(|r| r.ok()).collect(),
+                None => stmt.query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?.filter_map(|r| r.ok()).collect(),
+            };
+            Ok(rows)
+        })
+    }
+
+    // ── Goal Nodes CRUD (lightweight status tracking) ─────────────────────
+
+    /// Add a plan node to a goal.
+    pub fn create_goal_node(&self, goal_id: &str, title: &str) -> Result<i64> {
+        let now = now_ts() as f64;
+        self.with_conn_mut(|conn| {
+            conn.execute(
+                "INSERT INTO goal_nodes (goal_id, title, status, created_at) VALUES (?, ?, 'pending', ?)",
+                params![goal_id, title, now],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// Get all node titles for a goal.
+    pub fn list_goal_nodes(&self, goal_id: &str) -> Result<Vec<(String, String)>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT title, status FROM goal_nodes WHERE goal_id = ? ORDER BY row_id",
+            )?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map(params![goal_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+    }
+
+    /// Update a node's status and completion message.
+    pub fn update_goal_node(
+        &self,
+        goal_id: &str,
+        title: &str,
+        status: &str,
+        msg: &str,
+    ) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE goal_nodes SET status = ?, completion_message = ? WHERE goal_id = ? AND title = ?",
+                params![status, msg, goal_id, title],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn close(&self) -> Result<()> {
         let mut lock = self.conn.lock().unwrap();
         if let Some(conn) = lock.take() {
@@ -1625,6 +1857,14 @@ impl SessionManager {
     /// Return current state.
     pub fn state(&self) -> &SessionState {
         &self.state
+    }
+
+    /// Expose the underlying `SessionDB` for direct access.
+    ///
+    /// Used externally by modules like `oben-goals` that need
+    /// to persist data alongside session storage.
+    pub fn db(&self) -> &SessionDB {
+        &self.db
     }
 
     /// Set the parent_session_id for a session (DB + in-memory).
@@ -2519,7 +2759,10 @@ impl SessionManager {
     /// pass to a child `SessionManager` or `SessionDB` directly.
     ///
     /// Returns an error if there is no active session.
-    pub fn spawn_session_for_subagent(&mut self, name: impl Into<String>) -> Result<SpawnedSession> {
+    pub fn spawn_session_for_subagent(
+        &mut self,
+        name: impl Into<String>,
+    ) -> Result<SpawnedSession> {
         let parent_id = self.active_session_id.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "No active session to spawn child from \
@@ -3097,7 +3340,6 @@ mod tests {
         );
     }
 
-
     /// ChildSessionGuard creates a child session.
     ///
     /// Given: a manager with an active session
@@ -3115,7 +3357,11 @@ mod tests {
         assert_eq!(spawned.parent_session_id, parent_id);
 
         // Parent's active_session_id is NOT changed
-        assert_eq!(mgr.active_session_id(), Some(parent_id), "parent should remain active");
+        assert_eq!(
+            mgr.active_session_id(),
+            Some(parent_id),
+            "parent should remain active"
+        );
     }
 
     /// spawn_session_for_subagent persists parent_session_id to the DB.
@@ -3152,5 +3398,260 @@ mod tests {
             }
             Ok(_) => panic!("expected Err"),
         }
+    }
+
+    /// Create a goal in the DB.
+    ///
+    /// Given: a session manager with an active session
+    /// When: create_goal is called with a goal ID, text, and max turns
+    /// Then: the goal record is persisted with correct fields
+    #[test]
+    fn test_create_goal_persists_in_db() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("test-session");
+        let sid = mgr.active_session_id().unwrap();
+
+        let goal_id = "goal-create-test".to_string();
+        mgr.db
+            .create_goal(&goal_id, "Write a web scraper", 10, Some(&sid))
+            .unwrap();
+
+        let row = mgr.db.get_goal(&goal_id).unwrap().unwrap();
+        assert_eq!(row.0, "Write a web scraper");
+        assert_eq!(row.1, "pending");
+        assert_eq!(row.2, 10);
+        assert_eq!(row.3, 0);
+    }
+
+    /// Update a goal's status and turns.
+    ///
+    /// Given: a goal created in the DB
+    /// When: update_goal is called with new status and turns
+    /// Then: the goal record reflects the updates
+    #[test]
+    fn test_update_goal_changes_status_and_turns() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("test-session");
+        let sid = mgr.active_session_id().unwrap();
+
+        let goal_id = "goal-update-test";
+        mgr.db
+            .create_goal(goal_id, "Build an API", 20, Some(&sid))
+            .unwrap();
+
+        mgr.db
+            .update_goal(
+                goal_id,
+                "active",
+                3,
+                Some("continue"),
+                Some("3 nodes remaining"),
+            )
+            .unwrap();
+
+        let row = mgr.db.get_goal(goal_id).unwrap().unwrap();
+        assert_eq!(row.1, "active");
+        assert_eq!(row.3, 3);
+    }
+
+    /// Pause a goal and verify it's persisted.
+    ///
+    /// Given: an active goal
+    /// When: pause_goal is called with a reason
+    /// Then: the goal status becomes 'paused' and paused_reason is set
+    #[test]
+    fn test_pause_goal_persists_reason() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("test-session");
+        let sid = mgr.active_session_id().unwrap();
+
+        let goal_id = "goal-pause-test";
+        mgr.db
+            .create_goal(goal_id, "Scrape product pages", 10, Some(&sid))
+            .unwrap();
+        mgr.db
+            .update_goal(goal_id, "active", 5, None, None)
+            .unwrap();
+
+        mgr.db
+            .pause_goal(goal_id, "budget low, will resume")
+            .unwrap();
+
+        let row = mgr.db.get_goal(goal_id).unwrap().unwrap();
+        assert_eq!(row.1, "paused");
+        assert_eq!(row.4, Some("budget low, will resume".to_string()));
+    }
+
+    /// Resume a goal, with budget reset.
+    ///
+    /// Given: a paused goal with turns_used = 8
+    /// When: resume_goal is called with reset_budget = true
+    /// Then: status becomes 'active' and turns_used resets to 0
+    #[test]
+    fn test_resume_goal_resets_budget() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("test-session");
+        let sid = mgr.active_session_id().unwrap();
+
+        let goal_id = "goal-resume-test";
+        mgr.db
+            .create_goal(goal_id, "Analyze dataset", 20, Some(&sid))
+            .unwrap();
+        mgr.db
+            .update_goal(goal_id, "active", 8, None, None)
+            .unwrap();
+        mgr.db.pause_goal(goal_id, "paused for later").unwrap();
+
+        mgr.db.resume_goal(goal_id, true).unwrap();
+
+        let row = mgr.db.get_goal(goal_id).unwrap().unwrap();
+        assert_eq!(row.1, "active");
+        assert_eq!(row.3, 0);
+        assert!(row.4.is_none());
+    }
+
+    /// Delete a goal (cascades to goal_nodes).
+    ///
+    /// Given: a goal with nodes in goal_nodes table
+    /// When: delete_goal is called
+    /// Then: the goal and its nodes are removed
+    #[test]
+    fn test_delete_goal_removes_goal_and_nodes() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("test-session");
+        let sid = mgr.active_session_id().unwrap();
+
+        let goal_id = "goal-delete-test";
+        mgr.db
+            .create_goal(goal_id, "Delete me", 10, Some(&sid))
+            .unwrap();
+        mgr.db.create_goal_node(goal_id, "First step").unwrap();
+        mgr.db.create_goal_node(goal_id, "Second step").unwrap();
+
+        assert_eq!(mgr.db.list_goal_nodes(goal_id).unwrap().len(), 2);
+
+        mgr.db.delete_goal(goal_id).unwrap();
+
+        assert!(mgr.db.get_goal(goal_id).unwrap().is_none());
+        assert_eq!(mgr.db.list_goal_nodes(goal_id).unwrap().len(), 0);
+    }
+
+    /// List goals with optional status filter.
+    ///
+    /// Given: multiple goals with different statuses
+    /// When: list_goals is called with a status filter
+    /// Then: only matching goals are returned
+    #[test]
+    fn test_list_goals_filters_by_status() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("test-session");
+        let sid = mgr.active_session_id().unwrap();
+
+        mgr.db
+            .create_goal("goal-a", "Goal A", 10, Some(&sid))
+            .unwrap();
+        mgr.db
+            .create_goal("goal-b", "Goal B", 20, Some(&sid))
+            .unwrap();
+        mgr.db
+            .update_goal("goal-a", "active", 0, None, None)
+            .unwrap();
+
+        let all = mgr.db.list_goals(None).unwrap();
+        assert_eq!(all.len(), 2);
+
+        let active = mgr.db.list_goals(Some("active")).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].0, "goal-a");
+    }
+
+    /// Create goal and nodes, then list nodes.
+    ///
+    /// Given: a goal with multiple plan nodes
+    /// When: list_goal_nodes is called
+    /// Then: all nodes are returned in insertion order
+    #[test]
+    fn test_goal_node_lifecycle() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("test-session");
+        let sid = mgr.active_session_id().unwrap();
+
+        let goal_id = "goal-nodes-test";
+        mgr.db
+            .create_goal(goal_id, "Multi-step plan", 10, Some(&sid))
+            .unwrap();
+
+        mgr.db.create_goal_node(goal_id, "Step 1").unwrap();
+        mgr.db.create_goal_node(goal_id, "Step 2").unwrap();
+        mgr.db.create_goal_node(goal_id, "Step 3").unwrap();
+
+        let nodes = mgr.db.list_goal_nodes(goal_id).unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].0, "Step 1");
+        assert_eq!(nodes[1].0, "Step 2");
+        assert_eq!(nodes[2].1, "pending");
+    }
+
+    /// Update a goal node's status.
+    ///
+    /// Given: a goal with a pending node
+    /// When: update_goal_node is called with new status
+    /// Then: the node's status changes accordingly
+    #[test]
+    fn test_update_goal_node() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("test-session");
+        let sid = mgr.active_session_id().unwrap();
+
+        let goal_id = "goal-node-update-test";
+        mgr.db
+            .create_goal(goal_id, "Update node test", 10, Some(&sid))
+            .unwrap();
+
+        // We need to know the row_id; create_node returns it but we can't get it back via list_goal_nodes
+        // Instead test the update by creating a node and then modifying it
+        let mgr_ref = &mgr.db;
+
+        {
+            mgr_ref.with_conn_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO goal_nodes (goal_id, title, status, created_at) VALUES (?, ?, 'pending', ?)",
+                    params![goal_id, "Node A", now_ts() as f64],
+                )?;
+                Ok(())
+            }).unwrap();
+        }
+
+        mgr.db
+            .update_goal_node(goal_id, "Node A", "done", "Completed successfully")
+            .unwrap();
+
+        let nodes = mgr.db.list_goal_nodes(goal_id).unwrap();
+        assert_eq!(nodes[0].0, "Node A");
+        assert_eq!(nodes[0].1, "done");
+    }
+
+    /// create_goal with no owner_session sets owner to NULL.
+    ///
+    /// Given: a session manager
+    /// When: create_goal is called without owner_session
+    /// Then: the goal is created with NULL owner_session
+    #[test]
+    fn test_create_goal_without_owner() {
+        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        mgr.create_session("test-session");
+        let _sid = mgr.active_session_id().unwrap();
+
+        let goal_id = "goal-no-owner-test";
+        mgr.db
+            .create_goal(goal_id, "Unowned goal", 5, None)
+            .unwrap();
+
+        let row = mgr.db.get_goal(goal_id).unwrap().unwrap();
+        assert_eq!(row.0, "Unowned goal");
+        assert!(row.2 == 5, "max_turns should be 5");
+
+        let all = mgr.db.list_goals(None).unwrap();
+        assert!(all.iter().any(|g| g.0 == goal_id));
     }
 }

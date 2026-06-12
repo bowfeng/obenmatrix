@@ -11,6 +11,7 @@ oben-tools = { path = "../oben-tools" }
 oben-transport = { path = "../oben-transport" }
 oben-skills = { path = "../oben-skills" }
 oben-sessions = { path = "../oben-sessions" }
+oben-goals = { path = "../oben-goals" }
 
 anyhow.workspace = true
 async-trait.workspace = true

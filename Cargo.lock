@@ -1995,6 +1995,7 @@ dependencies = [
  "futures",
  "itertools 0.14.0",
  "oben-config",
+ "oben-goals",
  "oben-models",
  "oben-sessions",
  "oben-skills",
@@ -2023,6 +2024,7 @@ dependencies = [
  "oben-config",
  "oben-cron",
  "oben-gateway",
+ "oben-goals",
  "oben-models",
  "oben-sessions",
  "oben-skills",
@@ -2030,11 +2032,13 @@ dependencies = [
  "oben-transport",
  "oben-tui",
  "oben-utils",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -2112,9 +2116,8 @@ name = "oben-goals"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "chrono",
- "oben-agent",
+ "oben-models",
  "serde",
  "serde_json",
  "tempfile",

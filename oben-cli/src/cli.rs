@@ -68,6 +68,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<CronCommand>,
     },
+    /// Manage goals
+    Goals {
+        #[command(subcommand)]
+        action: Option<GoalCommand>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -159,5 +164,46 @@ pub enum SessionsCommand {
         /// Session ID or name (optional, defaults to active session)
         #[arg(short, long)]
         session: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum GoalCommand {
+    /// Create a new goal
+    Start {
+        /// The goal statement
+        goal: String,
+        /// Maximum turns before auto-pause (default: 20)
+        #[arg(long)]
+        max_turns: Option<usize>,
+    },
+    /// List goals by status
+    List {
+        /// Filter by status: active, done, paused, failed
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Show goal status
+    Status {
+        /// Goal ID
+        goal_id: String,
+    },
+    /// Pause a goal
+    Pause {
+        /// Goal ID or "active" to pause the current active goal
+        id: String,
+    },
+    /// Resume a paused goal
+    Resume {
+        /// Goal ID or "active" to resume the current active goal
+        id: String,
+        /// Reset the turn budget counter
+        #[arg(long)]
+        reset: bool,
+    },
+    /// Clear (delete) a goal
+    Clear {
+        /// Goal ID or "active" to clear the current active goal
+        id: String,
     },
 }

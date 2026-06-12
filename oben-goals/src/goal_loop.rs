@@ -10,10 +10,9 @@ pub use goal_state::{GoalState, GoalStatus};
 
 use anyhow::Result;
 
-use std::path::Path;
-
 use tracing::{info, warn};
 
+use crate::goal_store::GoalStore;
 use crate::{
     judge::JudgeVerdict,
     plan_parser::{parse_node_complete, parse_plan_from_markdown},
@@ -25,8 +24,6 @@ use crate::{
 pub struct GoalLoopConfig {
     /// Maximum number of turns before auto-pause.
     pub max_turns: usize,
-    /// Where to persist goal and plan state.
-    pub state_dir: std::path::PathBuf,
     /// System prompt to prepend to each node's instructions.
     pub system_prompt: Option<String>,
     /// Whether to save state after each turn.
@@ -37,7 +34,6 @@ impl Default for GoalLoopConfig {
     fn default() -> Self {
         Self {
             max_turns: 20,
-            state_dir: std::env::current_dir().unwrap_or_default(),
             system_prompt: None,
             auto_save: true,
         }
@@ -69,19 +65,18 @@ pub struct LoopIteration {
 /// 7. Repeats until done, budget exhausted, or auto-pause
 pub async fn run_goal_loop<F, Fut>(
     goal: &str,
+    goal_id: &str,
     config: &GoalLoopConfig,
+    store: &dyn GoalStore,
     mut execute_node: F,
 ) -> Result<(PlanState, GoalState)>
 where
     F: FnMut(&str) -> Fut,
     Fut: std::future::Future<Output = Result<String>> + Send,
 {
-    let state_path = config.state_dir.join("goal_state.json");
-    let plan_path = config.state_dir.join("plan.json");
-
-    // Load existing state if available, otherwise create new
-    let mut plan = load_or_create_plan(&plan_path, goal);
-    let mut goal_state = load_or_create_goal_state(&state_path, goal, config.max_turns);
+    // Load existing state from store — errors if files do not exist
+    let mut plan = store.load_plan(goal_id)?;
+    let mut goal_state = store.load_goal_state(goal_id)?;
 
     info!("Starting goal loop: {}", goal);
     info!("{}", goal_state.status_line());
@@ -157,10 +152,10 @@ where
 
         info!("Turn complete: {:?}", iteration);
 
-        // Persist state
+        // Persist state via store
         if config.auto_save {
-            save_state(&plan_path, &plan)?;
-            save_state(&state_path, &goal_state)?;
+            store.save_goal_state(goal_id, &goal_state)?;
+            store.save_plan(goal_id, &plan)?;
         }
 
         // Check if judge says done
@@ -170,10 +165,10 @@ where
         }
     }
 
-    // Final save
+    // Final save via store
     if config.auto_save {
-        save_state(&plan_path, &plan)?;
-        save_state(&state_path, &goal_state)?;
+        store.save_goal_state(goal_id, &goal_state)?;
+        store.save_plan(goal_id, &plan)?;
     }
 
     info!("Goal loop finished: {}", goal_state.status_line());
@@ -295,47 +290,6 @@ async fn call_judge(_goal: &str, plan: &PlanState) -> Result<JudgeVerdict> {
     Ok(JudgeVerdict::Continue(
         "Plan still has pending nodes".to_string(),
     ))
-}
-
-/// Load an existing plan from disk or create a new one.
-fn load_or_create_plan(path: &Path, goal: &str) -> PlanState {
-    if let Ok(plan) = PlanState::load_from_file(path) {
-        info!("Loaded existing plan with {} nodes", plan.nodes.len());
-        plan
-    } else {
-        info!("Creating new plan for goal: {}", goal);
-        PlanState::new(goal)
-    }
-}
-
-/// Load existing goal state or create a new one.
-fn load_or_create_goal_state(path: &Path, goal: &str, _max_turns: usize) -> GoalState {
-    if let Ok(state) = GoalState::load_from_file(path) {
-        info!("Loaded existing goal state: {}", state.status_line());
-        state
-    } else {
-        GoalState::new_active(goal)
-    }
-}
-
-/// Save state to disk.
-fn save_state<T: serde::Serialize>(path: &Path, state: &T) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    state.save_to_file(path)?;
-    Ok(())
-}
-
-/// Extension trait to handle save_to_file for any serializable type.
-trait SaveToDisk {
-    fn save_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()>;
-}
-
-impl<T: serde::Serialize> SaveToDisk for T {
-    fn save_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)
-    }
 }
 
 #[cfg(test)]
@@ -509,45 +463,6 @@ mod tests {
         } else {
             JudgeVerdict::Continue("Plan still has pending nodes".to_string())
         }
-    }
-
-    #[test]
-    fn test_load_or_create_plan_creates_new() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("plan.json");
-
-        let plan = load_or_create_plan(&path, "new goal");
-        assert_eq!(plan.goal, "new goal");
-        assert!(plan.nodes.is_empty());
-    }
-
-    #[test]
-    fn test_load_or_create_plan_loads_existing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("plan.json");
-
-        // Save a plan first
-        let original = PlanState::new("existing goal");
-        original.save_to_file(&path).unwrap();
-
-        let loaded = load_or_create_plan(&path, "new goal");
-        assert_eq!(loaded.goal, "existing goal");
-    }
-
-    #[test]
-    fn test_save_and_load_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-
-        let mut goal = GoalState::new_active("test goal");
-        goal.record_turn();
-        goal.record_verdict(&JudgeVerdict::Continue("working".to_string()));
-        goal.save_to_file(&path).unwrap();
-
-        let loaded: GoalState =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(loaded.goal, "test goal");
-        assert_eq!(loaded.turns_used, 1);
     }
 
     #[test]

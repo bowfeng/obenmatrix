@@ -38,7 +38,10 @@ pub struct BlockedToolFilter {
 impl BlockedToolFilter {
     /// Creates a new filter. When `blocked` is empty, every call passes
     /// through to the underlying registry with no overhead.
-    pub fn new(registry: Arc<ToolRegistry>, blocked: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn new(
+        registry: Arc<ToolRegistry>,
+        blocked: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         Self {
             registry,
             blocked: blocked.into_iter().map(Into::into).collect(),
@@ -50,11 +53,7 @@ impl BlockedToolFilter {
     /// - If the tool name is in the blocklist, returns a `ToolResult` with
     ///   `error` set immediately.
     /// - Otherwise, dispatches to the underlying registry.
-    pub async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &Value,
-    ) -> ToolResult {
+    pub async fn execute(&self, tool_name: &str, arguments: &Value) -> ToolResult {
         if self.blocked.contains(tool_name) {
             warn!("Tool '{}' is blocked", tool_name);
             return ToolResult {
@@ -64,7 +63,10 @@ impl BlockedToolFilter {
                     .unwrap_or("")
                     .to_string(),
                 output: String::new(),
-                error: Some(format!("Tool '{}' is not available to subagents", tool_name)),
+                error: Some(format!(
+                    "Tool '{}' is not available to subagents",
+                    tool_name
+                )),
             };
         }
 
@@ -169,10 +171,7 @@ mod tests {
 
         // read_file is not blocked, handler returns Ok (no error)
         let result = filter
-            .execute(
-                "read_file",
-                &Value::String("read_file".to_string()),
-            )
+            .execute("read_file", &Value::String("read_file".to_string()))
             .await;
         assert!(result.error.is_none());
     }
@@ -183,24 +182,17 @@ mod tests {
     #[tokio::test]
     async fn test_single_blocked_tool_returns_error() {
         let registry = make_registry();
-        let filter =
-            BlockedToolFilter::new(registry.clone(), ["memory".to_string()]);
+        let filter = BlockedToolFilter::new(registry.clone(), ["memory".to_string()]);
 
         // Blocked tool — returns error
         let result = filter
-            .execute(
-                "memory",
-                &Value::String("memory".to_string()),
-            )
+            .execute("memory", &Value::String("memory".to_string()))
             .await;
         assert!(result.error.as_ref().unwrap().contains("not available"));
 
         // Non-blocked tool — passes through (success)
         let result = filter
-            .execute(
-                "read_file",
-                &Value::String("read_file".to_string()),
-            )
+            .execute("read_file", &Value::String("read_file".to_string()))
             .await;
         assert!(result.error.is_none());
     }
@@ -213,17 +205,11 @@ mod tests {
         let registry = make_registry();
         let filter = BlockedToolFilter::new(
             registry,
-            [
-                "memory".to_string(),
-                "delegate_task".to_string(),
-            ],
+            ["memory".to_string(), "delegate_task".to_string()],
         );
 
         assert!(filter
-            .execute(
-                "memory",
-                &Value::String("test".into()),
-            )
+            .execute("memory", &Value::String("test".into()),)
             .await
             .error
             .as_ref()
@@ -231,10 +217,7 @@ mod tests {
             .contains("not available"));
 
         assert!(filter
-            .execute(
-                "delegate_task",
-                &Value::String("test".into()),
-            )
+            .execute("delegate_task", &Value::String("test".into()),)
             .await
             .error
             .as_ref()
@@ -243,10 +226,7 @@ mod tests {
 
         // read_file is not blocked
         let result = filter
-            .execute(
-                "read_file",
-                &Value::String("test".into()),
-            )
+            .execute("read_file", &Value::String("test".into()))
             .await;
         assert!(result.error.is_none());
     }
@@ -278,13 +258,8 @@ mod tests {
         let filter = BlockedToolFilter::new(registry, ["memory".to_string()]);
 
         let result = filter
-            .execute(
-                "nonexistent",
-                &Value::String("test".into()),
-            )
+            .execute("nonexistent", &Value::String("test".into()))
             .await;
-        assert!(
-            result.error.as_ref().unwrap().contains("Unknown tool")
-        );
+        assert!(result.error.as_ref().unwrap().contains("Unknown tool"));
     }
 }

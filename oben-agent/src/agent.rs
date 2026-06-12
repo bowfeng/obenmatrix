@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 
 use anyhow::Result;
 
-pub(crate) fn generate_session_name() -> String {
+pub fn generate_session_name() -> String {
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     let r = rand::random::<u64>() % 1_000_000;
     format!("{}-{:06}", ts, r)
@@ -127,7 +127,9 @@ impl Agent {
         struct TestTransport;
         #[::async_trait::async_trait]
         impl TransportProvider for TestTransport {
-            fn name(&self) -> &str { "test" }
+            fn name(&self) -> &str {
+                "test"
+            }
             async fn chat(
                 &self,
                 _messages: &[Message],
@@ -627,7 +629,10 @@ impl Agent {
 
     /// Load a session's messages into the in-memory cache (for refresh_list).
     pub async fn load_session_messages(&mut self, session_id: &str) -> Result<()> {
-        self.session_manager.lock().await.ensure_session_loaded(session_id)?;
+        self.session_manager
+            .lock()
+            .await
+            .ensure_session_loaded(session_id)?;
         Ok(())
     }
 
@@ -696,7 +701,7 @@ impl Agent {
         let sm = Arc::clone(&self.session_manager);
         let _result = ConversationLoop::run_loop(
             &mut self.context_engine,
-            &self.transport,
+            Arc::clone(&self.transport),
             &self.tools,
             &mut *sm.lock().await,
             &mut self.call_mode,

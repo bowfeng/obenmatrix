@@ -356,7 +356,9 @@ fn extract_turn_content(trajectory: &Value, start: usize, end: usize) -> String 
                     let tail_start = 3000 - 500;
                     let tail: String = s.chars().skip(tail_start).take(500).collect();
                     format!("{}\n...[truncated]...\n{}", head, tail)
-                } else { s };
+                } else {
+                    s
+                };
                 Some(format!("[Turn {} - {}]:\n{}", i, role, s))
             })
             .collect::<Vec<_>>()

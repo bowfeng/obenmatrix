@@ -52,7 +52,11 @@ pub type ToolHandler =
 ///
 /// Creates a child session in the shared database, then spawns a child agent.
 /// Returns a `JoinHandle` for the child's async execution.
-pub type SpawnFn = Arc<dyn Fn(String, String, usize, &str) -> tokio::task::JoinHandle<Result<SubagentResult>> + Send + Sync>;
+pub type SpawnFn = Arc<
+    dyn Fn(String, String, usize, &str) -> tokio::task::JoinHandle<Result<SubagentResult>>
+        + Send
+        + Sync,
+>;
 
 /// Result of executing a child agent delegation run.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -88,10 +92,7 @@ pub trait SelfRegisteringTool {
     fn register_self(registry: &mut ToolRegistry) {
         let tool = Self::tool();
         let handler = Self::handler();
-        let adapter = Box::new(SelfRegisteringToolAdapter::new(
-            tool.clone(),
-            handler,
-        ));
+        let adapter = Box::new(SelfRegisteringToolAdapter::new(tool.clone(), handler));
         registry.register_with_def(adapter, tool);
     }
 }
@@ -100,6 +101,15 @@ pub trait SelfRegisteringTool {
 pub(crate) struct SelfRegisteringToolAdapter {
     tool_def: oben_models::Tool,
     handler: ToolHandler,
+}
+
+impl Clone for SelfRegisteringToolAdapter {
+    fn clone(&self) -> Self {
+        Self {
+            tool_def: self.tool_def.clone(),
+            handler: Arc::clone(&self.handler),
+        }
+    }
 }
 
 impl SelfRegisteringToolAdapter {

@@ -17,8 +17,9 @@ use anyhow::Result;
 use oben_models::{
     provider_kind_to_transport,
     providers::{ProviderConfig, TransportProvider, TransportResponse},
-    CallMode, Message, ProviderKind, Tool,
+    CallMode, Message, MessageRole, ProviderKind, Tool,
 };
+use serde_json;
 
 use super::{
     anthropic_messages::AnthropicMessagesTransport, chat_completions::ChatCompletionsTransport,
@@ -173,6 +174,7 @@ impl TransportProvider for Transport {
     }
 
     async fn chat(&self, messages: &[Message], mode: &CallMode) -> Result<TransportResponse> {
+        log_messages_debug("chat", messages, mode, self.name());
         match self {
             Transport::OpenAIChat { transport } => transport.chat(messages, mode).await,
             Transport::Anthropic { transport } => transport.chat(messages, mode).await,
@@ -185,6 +187,7 @@ impl TransportProvider for Transport {
         mode: &CallMode,
         delta_callback: oben_models::StreamDeltaCallback,
     ) -> Result<TransportResponse> {
+        log_messages_debug("stream_chat", messages, mode, self.name());
         match self {
             Transport::OpenAIChat { transport } => {
                 transport.stream_chat(messages, mode, delta_callback).await
@@ -221,6 +224,53 @@ impl Transport {
             Transport::Anthropic { transport } => transport.find_model(model_id).await,
         }
     }
+}
+
+fn log_messages_debug(
+    call_type: &str,
+    messages: &[Message],
+    mode: &CallMode,
+    transport_name: &str,
+) {
+    let mut parts = Vec::with_capacity(messages.len() + 1);
+    parts.push(format!(
+        "  [{}] transport={}, mode={:?}",
+        call_type,
+        transport_name,
+        mode
+    ));
+
+    for (i, msg) in messages.iter().enumerate() {
+        let text = match &msg.content {
+            oben_models::MessageContent::Text(t) => t.clone(),
+            oben_models::MessageContent::Parts(ps) => ps
+                .iter()
+                .filter_map(|p| match p {
+                    oben_models::MessagePart::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            oben_models::MessageContent::Image { url, .. } => format!("[IMG] url={}", url.chars().take(64).collect::<String>()),
+        };
+        let text = if text.len() > 200 {
+            format!("{}...", text.chars().take(200).collect::<String>())
+        } else {
+            text
+        };
+        let role_str = match msg.role {
+            MessageRole::System => "system",
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::Tool => "tool",
+        };
+        parts.push(format!(
+            "\n    [{}] role={} text_len={} text=({})",
+            i, role_str, text.len(), text
+        ));
+    }
+
+    tracing::debug!("{}", parts.join(""));
 }
 
 // -- Tests --

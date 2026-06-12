@@ -254,14 +254,17 @@ impl MemoryStore {
                 .map(|&i| current_entries[i].as_str())
                 .collect();
             if unique_texts.len() > 1 {
-                let previews: Vec<String> = matches.iter().map(|&i| {
-                    let entry = &current_entries[i];
-                    let char_count = entry.chars().count();
-                    let limit = char_count.min(80);
-                    let truncated: String = entry.chars().take(limit).collect();
-                    let ellipsis = if char_count > 80 { "..." } else { "" };
-                    format!("{}{}", truncated, ellipsis)
-                }).collect();
+                let previews: Vec<String> = matches
+                    .iter()
+                    .map(|&i| {
+                        let entry = &current_entries[i];
+                        let char_count = entry.chars().count();
+                        let limit = char_count.min(80);
+                        let truncated: String = entry.chars().take(limit).collect();
+                        let ellipsis = if char_count > 80 { "..." } else { "" };
+                        format!("{}{}", truncated, ellipsis)
+                    })
+                    .collect();
                 return MemoryResult::ambiguous(old_text, previews);
             }
         }
@@ -317,14 +320,17 @@ impl MemoryStore {
                 .map(|&i| current_entries[i].as_str())
                 .collect();
             if unique_texts.len() > 1 {
-                let previews: Vec<String> = matches.iter().map(|&i| {
-                    let entry = &current_entries[i];
-                    let char_count = entry.chars().count();
-                    let limit = char_count.min(80);
-                    let truncated: String = entry.chars().take(limit).collect();
-                    let ellipsis = if char_count > 80 { "..." } else { "" };
-                    format!("{}{}", truncated, ellipsis)
-                }).collect();
+                let previews: Vec<String> = matches
+                    .iter()
+                    .map(|&i| {
+                        let entry = &current_entries[i];
+                        let char_count = entry.chars().count();
+                        let limit = char_count.min(80);
+                        let truncated: String = entry.chars().take(limit).collect();
+                        let ellipsis = if char_count > 80 { "..." } else { "" };
+                        format!("{}{}", truncated, ellipsis)
+                    })
+                    .collect();
                 return MemoryResult::ambiguous(old_text, previews);
             }
         }

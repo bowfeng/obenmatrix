@@ -55,7 +55,9 @@ pub fn init_panic_hook() {
     let _default = std::panic::take_hook();
     let log_path = {
         let guard = LOG_PATH.lock().unwrap();
-        guard.clone().unwrap_or_else(|| "/tmp/panic.log".to_string())
+        guard
+            .clone()
+            .unwrap_or_else(|| "/tmp/panic.log".to_string())
     };
     std::panic::set_hook(Box::new(move |info: &std::panic::PanicHookInfo<'_>| {
         // Suppress default panic output so the TUI doesn't see garbled text.
@@ -80,7 +82,13 @@ pub fn init_panic_hook() {
             .append(true)
             .create(true)
             .open(&log_path)
-            .unwrap_or_else(|_| std::fs::OpenOptions::new().append(true).create(true).open("/tmp/panic.log").unwrap());
+            .unwrap_or_else(|_| {
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("/tmp/panic.log")
+                    .unwrap()
+            });
 
         let _ = writeln!(file, "=== PANIC at {} ===\n{}", location, message);
         let _ = file.write_all(format!("\nBacktrace:\n{}\n", backtrace).as_bytes());

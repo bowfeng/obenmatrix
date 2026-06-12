@@ -12,16 +12,12 @@ serde_json.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-tokio = { workspace = true, optional = true }
-async-trait = { workspace = true, optional = true }
-oben-agent = { path = "../oben-agent", optional = true }
+oben-models = { path = "../oben-models" }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true
 tokio.workspace = true
-async-trait.workspace = true
 
 [features]
 default = []
-# Enables full async goal loop with LLM transport integration
-full = ["tokio", "async-trait", "oben-agent"]

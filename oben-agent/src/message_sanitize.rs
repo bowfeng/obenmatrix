@@ -79,7 +79,9 @@ pub fn is_thinking_only_assistant(msg: &Message) -> bool {
 fn user_message_has_image(msg: &Message) -> bool {
     match &msg.content {
         MessageContent::Image { .. } => true,
-        MessageContent::Parts(parts) => parts.iter().any(|p| matches!(p, MessagePart::Image { .. })),
+        MessageContent::Parts(parts) => {
+            parts.iter().any(|p| matches!(p, MessagePart::Image { .. }))
+        }
         MessageContent::Text(_) => false,
     }
 }
@@ -284,7 +286,6 @@ mod tests {
 
     #[test]
     fn test_merge_preserves_image_messages() {
-
         let img_msg = Message {
             role: MessageRole::User,
             content: MessageContent::Image {
@@ -303,7 +304,9 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content.to_text(), "Hello");
-        assert!(matches!(messages[1].content, MessageContent::Image { ref url, .. } if url == "data:image/png;base64,abc123"));
+        assert!(
+            matches!(messages[1].content, MessageContent::Image { ref url, .. } if url == "data:image/png;base64,abc123")
+        );
     }
 
     #[test]
@@ -333,7 +336,9 @@ mod tests {
         // text_msg preserved as-is
         assert!(matches!(messages[0].content, MessageContent::Text(ref t) if t == "先看这张"));
         // parts_msg preserved with image intact
-        assert!(matches!(messages[1].content, MessageContent::Parts(ref parts) if parts.len() == 2 && matches!(&parts[1], MessagePart::Image { .. })));
+        assert!(
+            matches!(messages[1].content, MessageContent::Parts(ref parts) if parts.len() == 2 && matches!(&parts[1], MessagePart::Image { .. }))
+        );
         // text_msg2 preserved as-is
         assert!(matches!(messages[2].content, MessageContent::Text(ref t) if t == "再看那张"));
     }
@@ -352,18 +357,16 @@ mod tests {
             tool_calls: None,
         };
 
-        let mut messages = vec![
-            make_user("previous"),
-            make_assistant("hello"),
-            img_msg,
-        ];
+        let mut messages = vec![make_user("previous"), make_assistant("hello"), img_msg];
 
         sanitize_messages(&mut messages);
 
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].content.to_text(), "previous");
         assert_eq!(messages[1].content.to_text(), "hello");
-        assert!(matches!(messages[2].content, MessageContent::Image { ref url, .. } if url == "data:image/png;base64,abc123"));
+        assert!(
+            matches!(messages[2].content, MessageContent::Image { ref url, .. } if url == "data:image/png;base64,abc123")
+        );
     }
 
     #[test]
@@ -393,19 +396,19 @@ mod tests {
 
         // "prev1" and "prev2" should be merged in history
         assert_eq!(messages.len(), 3);
-        assert!(matches!(messages[0].content, MessageContent::Text(ref t) if t.contains("prev1") && t.contains("prev2")));
+        assert!(
+            matches!(messages[0].content, MessageContent::Text(ref t) if t.contains("prev1") && t.contains("prev2"))
+        );
         assert_eq!(messages[1].content.to_text(), "hi");
         // Latest user message preserved with image content intact
-        assert!(matches!(messages[2].content, MessageContent::Parts(ref parts) if parts.len() == 2 && matches!(&parts[1], MessagePart::Image { .. })));
+        assert!(
+            matches!(messages[2].content, MessageContent::Parts(ref parts) if parts.len() == 2 && matches!(&parts[1], MessagePart::Image { .. }))
+        );
     }
 
     #[test]
     fn test_sanitize_merging_history_user_messages() {
-        let mut messages = vec![
-            make_user("hi"),
-            make_user("there"),
-            make_user("world"),
-        ];
+        let mut messages = vec![make_user("hi"), make_user("there"), make_user("world")];
 
         sanitize_messages(&mut messages);
 
@@ -414,7 +417,9 @@ mod tests {
         // merge history → user("hi\n\nthere")
         // result → [user("hi\n\nthere"), user("world")]
         assert_eq!(messages.len(), 2);
-        assert!(matches!(messages[0].content, MessageContent::Text(ref t) if t.contains("hi") && t.contains("there")));
+        assert!(
+            matches!(messages[0].content, MessageContent::Text(ref t) if t.contains("hi") && t.contains("there"))
+        );
         assert_eq!(messages[1].content.to_text(), "world");
     }
 
@@ -441,7 +446,9 @@ mod tests {
         // Image should be first
         assert!(matches!(messages[0].content, MessageContent::Image { .. }));
         // text_msg1 and text_msg2 should be merged
-        assert!(matches!(messages[1].content, MessageContent::Text(ref t) if t.contains("先") && t.contains("后")));
+        assert!(
+            matches!(messages[1].content, MessageContent::Text(ref t) if t.contains("先") && t.contains("后"))
+        );
     }
 
     #[test]

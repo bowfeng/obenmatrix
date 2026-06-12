@@ -621,14 +621,37 @@ where
     match mode {
         CallMode::Fresh(_) => {
             let mut req = (**template).clone();
-            // Set system prompt in request
-            req["system"] = json!(system_prompt);
-            // Replace messages array
+            // Set system prompt in request — extract from input messages if present,
+            // otherwise use the parameter (which may be empty when system is pre-baked
+            // into the template, so we only override when non-empty).
+            let mut has_system = false;
             let json_messages: Vec<serde_json::Value> = messages
                 .iter()
-                .filter(|m| m.role != MessageRole::System) // System is in top-level field
+                .inspect(|m| {
+                    if m.role == MessageRole::System {
+                        has_system = true;
+                    }
+                })
+                .filter(|m| m.role != MessageRole::System)
                 .map(message_to_anthropic_json)
                 .collect();
+
+            if has_system {
+                // Extract system from input messages for Anthropic format
+                let system_msgs: Vec<String> = messages
+                    .iter()
+                    .filter(|m| m.role == MessageRole::System)
+                    .filter_map(|m| m.content.to_text_ref())
+                    .map(|s| s.to_string())
+                    .collect();
+                req["system"] = json!(system_msgs.join("\n"));
+            } else if !system_prompt.is_empty() {
+                // Use parameter when provided (template has system, but chat()
+                // overwrites it with "" — restore it from parameter).
+                req["system"] = json!(system_prompt);
+            }
+            // Template's system field is kept as-is when no system in input
+            // and parameter is empty (system is pre-baked in template).
 
             let arr = req["messages"].as_array_mut().unwrap();
             arr.reserve(json_messages.len());
@@ -646,7 +669,9 @@ where
         CallMode::Incremental(_) => {
             let entry = cached.entry(session_id.clone()).or_insert_with(|| {
                 let mut req = (**template).clone();
-                req["system"] = json!(system_prompt);
+                if !system_prompt.is_empty() {
+                    req["system"] = json!(system_prompt);
+                }
                 AnthropicCachedRequest {
                     request: req,
                     msg_count: 0,

@@ -54,9 +54,7 @@ impl TransportProvider for MockTransport {
 
 /// ── Helpers ────────────────────────────────────────────────────────────
 
-fn make_spawner(
-    transport: Arc<MockTransport>,
-) -> (SubagentSpawner, Arc<ToolRegistry>) {
+fn make_spawner(transport: Arc<MockTransport>) -> (SubagentSpawner, Arc<ToolRegistry>) {
     let tools = Arc::new(ToolRegistry::new());
 
     // SubagentSpawner needs Arc<dyn TransportProvider> — MockTransport is Send + Sync
@@ -68,7 +66,7 @@ fn make_spawner(
             threshold_percent: 0.75,
             ..Default::default()
         },
-        5,  // max_iterations
+        5,   // max_iterations
         100, // max_messages
         3,   // max_spawn_depth
     );
@@ -136,7 +134,10 @@ async fn test_validate_neither_goal_nor_tasks() {
     let args = serde_json::json!({"context": "extra info"});
     let result = tool.validate(&args);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Provide either 'goal'"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Provide either 'goal'"));
 }
 
 /// Given: Batch with task missing goal
@@ -344,7 +345,11 @@ async fn test_execute_batch_mixed_valid_invalid() {
     assert_eq!(parsed.len(), 2);
     assert_eq!(parsed[0].status, "completed");
     assert_eq!(parsed[1].status, "error");
-    assert!(parsed[1].error.as_ref().unwrap().contains("missing or empty 'goal'"));
+    assert!(parsed[1]
+        .error
+        .as_ref()
+        .unwrap()
+        .contains("missing or empty 'goal'"));
 }
 
 /// Given: Batch with tasks that have non-object entries
@@ -363,7 +368,7 @@ async fn test_execute_batch_non_object_entries() {
                 depth,
                 ..Default::default()
             };
-        tokio::spawn(async move { Ok::<_, anyhow::Error>(sr) })
+            tokio::spawn(async move { Ok::<_, anyhow::Error>(sr) })
         }),
         5,
     );
@@ -390,7 +395,12 @@ async fn test_execute_batch_non_object_entries() {
 #[tokio::test]
 async fn test_validate_empty_tasks_array() {
     let spawn: SpawnFn = Arc::new(move |_p, _g, _d, _r| {
-        tokio::spawn(async move { Ok(SubagentResult { status: "completed".into(), ..Default::default() }) })
+        tokio::spawn(async move {
+            Ok(SubagentResult {
+                status: "completed".into(),
+                ..Default::default()
+            })
+        })
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"tasks": []});
@@ -572,26 +582,21 @@ async fn test_max_spawn_depth_respected() {
 /// Then: All complete and return results
 #[tokio::test]
 async fn test_spawn_multiple_children_concurrent() {
-    let spawn = Arc::new(move |_pid: String, goal: String, depth: usize, role: &str| {
-        let sr = SubagentResult {
-            status: "completed".into(),
-            session_id: format!("child-{}", goal.chars().take(4).collect::<String>()),
-            depth,
-            role: Some(role.to_string()),
-            ..Default::default()
-        };
-        tokio::spawn(async move { Ok::<_, anyhow::Error>(sr) })
-    });
+    let spawn = Arc::new(
+        move |_pid: String, goal: String, depth: usize, role: &str| {
+            let sr = SubagentResult {
+                status: "completed".into(),
+                session_id: format!("child-{}", goal.chars().take(4).collect::<String>()),
+                depth,
+                role: Some(role.to_string()),
+                ..Default::default()
+            };
+            tokio::spawn(async move { Ok::<_, anyhow::Error>(sr) })
+        },
+    );
 
     let handles: Vec<_> = (0..3)
-        .map(|i| {
-            spawn(
-                "parent-1".into(),
-                format!("task {}", i),
-                0,
-                "leaf",
-            )
-        })
+        .map(|i| spawn("parent-1".into(), format!("task {}", i), 0, "leaf"))
         .collect();
 
     let results: Vec<_> = futures::future::join_all(handles)

@@ -8,7 +8,8 @@ use crate::callbacks::AgentCallbacks;
 use crate::context::ContextEngine;
 use crate::fallback::FallbackChain;
 use crate::interrupt::SharedInterrupt;
-use crate::nudge::{build_nudge_prompt, should_trigger_nudge, NudgeConfig};
+use crate::nudge::NudgeConfig;
+use crate::post_turn_hook::PostTurnHook;
 use crate::retry::RetryConfig;
 use crate::turn_executor::{TurnConfig, TurnExecutor};
 use oben_models::{CallMode, Message, SessionManagerExt, StreamDeltaCallback, TransportProvider};
@@ -142,27 +143,24 @@ impl ConversationLoop {
         .await
     }
 
-    /// Run the interactive chat loop.
+    /// Internal loop — shared turn pipeline with post-turn hook evaluation.
     ///
-    /// After each turn, checks the nudge trigger. If triggered, injects a
-    /// memory/skill review prompt and runs one small turn to let the model
-    /// decide if memory should be updated — mirroring Hermes'
-    /// `_spawn_background_review` pipeline.
-    pub async fn run_loop(
+    /// `hooks` is the list of post-turn hooks to evaluate after each user turn.
+    /// `run_loop` calls this with a single `NudgePostTurnHook`; higher-level
+    /// code can pass additional hooks (goal continuation, etc.)
+    pub async fn run_loop_impl(
         context_engine: &mut dyn ContextEngine,
-        transport: &dyn TransportProvider,
+        transport: Arc<dyn TransportProvider + Send + Sync>,
         tools: &Arc<oben_tools::ToolRegistry>,
         session_manager: &mut SessionManager,
         call_mode: &mut Option<CallMode>,
         stream: bool,
         callbacks: ChatCallbacks,
-        nudge_config: &NudgeConfig,
+        hooks: &mut [Box<dyn crate::post_turn_hook::PostTurnHook>],
     ) -> Result<()> {
-        let mut turns_since_nudge: usize = 0;
-        let mut is_resumed_session = true; // first turn is always "resume" from empty state
+        let mut is_resumed_session = true;
 
         loop {
-            // Clear resume flag after the first turn.
             if is_resumed_session {
                 is_resumed_session = false;
             }
@@ -214,16 +212,15 @@ impl ConversationLoop {
                 None
             };
 
-            // Save on ALL exit paths — success, error, or early return.
-            // Without this, `execute_turn` errors would lose the user's
-            // message (it's in the in-memory session but never persisted).
+            // --- Turn execution with error-path persistence ---
             //
             // `execute_turn` takes `&mut session_manager` across the await,
-            // preventing a second mutable borrow. We break the borrow chain
-            // by extracting error info before calling save().
+            // preventing a second mutable borrow. We extract the result and
+            // then call save() separately. Without this, errors would lose
+            // the user's message (in memory but never persisted).
             let response = Self::execute_turn(
                 context_engine,
-                transport,
+                &*transport,
                 tools,
                 session_manager,
                 &sid,
@@ -237,92 +234,98 @@ impl ConversationLoop {
                 Ok(resp) => Some(resp),
                 Err(e) => {
                     let err_str = format!("Turn error: {}", e);
-                    // Drop e to end borrow chain, then save.
                     std::mem::drop(e);
                     let _ = session_manager.incremental_save(None);
                     return Err(anyhow::anyhow!(err_str));
                 }
             };
-            // Save after the match — execute_turn's borrow has ended.
             let _ = session_manager.incremental_save(None);
+
             if let Some(resp) = response_text {
                 if !stream {
-                    // Non-streaming: print the full response.
                     (callbacks.print_info)(&format!("\n{}", resp));
                 }
-                // In streaming mode, text was already printed via delta callback.
                 (callbacks.print_flush)();
             }
 
-            // ── Nudge check ─────────────────────────────────────────────
-            if !nudge_config.enabled() {
-                continue;
-            }
+            // --- Post-turn hooks ---
+            let msg_count = session_manager
+                .active_session()
+                .map_or(0, |s| s.messages.len());
+            let mut turns_since: usize = 0;
 
-            // Check if the active session has memory tool calls (proxy for
-            // "memory tools are available").
-            let has_memory_tools = session_manager.active_session().map_or(false, |s| {
-                s.messages
-                    .iter()
-                    .any(|m| m.tool_calls.as_ref().map_or(false, |c| !c.is_empty()))
-            });
-
-            if should_trigger_nudge(
-                turns_since_nudge,
-                nudge_config.memory_nudge_interval,
-                has_memory_tools,
-                is_resumed_session,
-            ) {
-                turns_since_nudge = 0;
-
-                let prompt =
-                    build_nudge_prompt(nudge_config.memory_enabled(), nudge_config.skill_enabled());
-                let review_msg = Message::user(&prompt);
-
+            for hook in hooks.iter_mut() {
+                if !hook.should_trigger(msg_count, turns_since) {
+                    turns_since += 1;
+                    if is_resumed_session {
+                        turns_since = 0; // skip first turn nudge
+                    }
+                    continue;
+                }
+                turns_since = 0;
+                tracing::debug!("Post-turn hook '{}' triggered", hook.id());
+                let turn_msg = hook.prepare_turn();
                 let budget = IterationBudget::new(16);
                 let turn_options = crate::conversation::TurnOptions {
-                    retry_config: crate::retry::RetryConfig::default(),
+                    retry_config: RetryConfig::default(),
                     budget: Some(budget),
                     interrupt: None,
-                    callbacks: None, // suppress callbacks during review
+                    callbacks: None,
                     fallback: None,
                 };
-
                 match Self::execute_turn_with_options(
                     context_engine,
-                    transport,
+                    &*transport,
                     tools,
                     session_manager,
                     &sid,
-                    review_msg,
+                    turn_msg,
                     &call_mode_val,
                     None,
                     turn_options,
                 )
                 .await
                 {
-                    Ok(review_text) => {
-                        let text_lower = review_text.to_lowercase();
-                        let is_noop = text_lower.contains("nothing to")
-                            || text_lower.contains("nothing worth")
-                            || text_lower.contains("no changes needed");
-
-                        if is_noop {
-                            (callbacks.print_info)("💾 Nudge: nothing worth saving this session.");
-                        } else {
-                            (callbacks.print_info)("💾 Nudge: checked memory — may have updated.");
-                        }
-                        (callbacks.print_flush)();
-                    }
-                    Err(e) => {
-                        tracing::info!("Nudge review failed (non-fatal): {}", e);
-                    }
+                    Ok(resp) => hook.handle_result(&resp),
+                    Err(_) => hook.handle_error(),
                 }
-            } else {
-                turns_since_nudge += 1;
             }
         }
 
         Ok(())
+    }
+
+    /// Run the interactive chat loop.
+    ///
+    /// After each turn, checks the nudge trigger. If triggered, injects a
+    /// memory/skill review prompt and runs one small turn to let the model
+    /// decide if memory should be updated — mirroring Hermes'
+    /// `_spawn_background_review` pipeline.
+    ///
+    pub async fn run_loop(
+        context_engine: &mut dyn ContextEngine,
+        transport: Arc<dyn TransportProvider + Send + Sync>,
+        tools: &Arc<oben_tools::ToolRegistry>,
+        session_manager: &mut SessionManager,
+        call_mode: &mut Option<CallMode>,
+        stream: bool,
+        callbacks: ChatCallbacks,
+        nudge_config: &NudgeConfig,
+    ) -> Result<()> {
+        let mut hooks: Vec<Box<dyn PostTurnHook>> = vec![Box::new(
+            crate::post_turn_hook::NudgePostTurnHook::new(nudge_config.clone()),
+        )];
+
+        Self::run_loop_impl(
+            context_engine,
+            transport,
+            tools,
+            session_manager,
+            call_mode,
+            stream,
+            callbacks,
+            &mut hooks,
+        )
+        .await
     }
 }

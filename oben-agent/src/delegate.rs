@@ -11,7 +11,6 @@
 ///   - Fresh `Box<dyn ContextEngine>`
 /// - Runs the child agent via `ConversationLoop`
 /// - Returns `SubagentResult` with summary, metadata
-
 use std::sync::Arc;
 
 use tracing::{debug, info, warn};
@@ -61,12 +60,7 @@ pub enum SubagentStatus {
 
 impl SubagentResult {
     /// Create a success result.
-    pub fn success(
-        summary: String,
-        api_calls: u32,
-        duration: f64,
-        model: Option<String>,
-    ) -> Self {
+    pub fn success(summary: String, api_calls: u32, duration: f64, model: Option<String>) -> Self {
         Self {
             status: SubagentStatus::Completed,
             summary: summary.chars().take(500).collect(),
@@ -250,22 +244,17 @@ impl SubagentSpawner {
                     ));
                 }
                 if let Err(e) = mgmt.switch_session(&child_session_id_clone) {
-                    return Err(anyhow::anyhow!(
-                        "Failed to switch to child session: {e}"
-                    ));
+                    return Err(anyhow::anyhow!("Failed to switch to child session: {e}"));
                 }
                 if let Err(e) = mgmt.load(Some(&child_session_id_clone)) {
-                    return Err(anyhow::anyhow!(
-                        "Failed to load child session: {e}"
-                    ));
+                    return Err(anyhow::anyhow!("Failed to load child session: {e}"));
                 }
             }
 
             // Create child ContextEngine
-            let mut context_engine =
-                Box::new(crate::compact_context::CompactContextEngine::with_config(
-                    context_config.clone(),
-                )) as Box<dyn ContextEngine>;
+            let mut context_engine = Box::new(
+                crate::compact_context::CompactContextEngine::with_config(context_config.clone()),
+            ) as Box<dyn ContextEngine>;
             context_engine.on_session_start(
                 &child_session_id_clone,
                 &format!("delegate:{}", model_name),
@@ -287,7 +276,8 @@ impl SubagentSpawner {
                 max_messages,
                 fallback_models: vec![],
                 callbacks: crate::callbacks::AgentCallbacks::default(),
-                concurrent_dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
+                concurrent_dispatch_config:
+                    crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
                 nudge_config: None,
             })
             .await;
@@ -300,7 +290,8 @@ impl SubagentSpawner {
             };
 
             // Execute the child's turn with the goal as the first message input
-            let result = child_agent.turn(&goal, false, None, Some(Arc::clone(&interrupt_state)))
+            let result = child_agent
+                .turn(&goal, false, None, Some(Arc::clone(&interrupt_state)))
                 .await;
 
             let (summary, api_calls) = match result {
@@ -308,9 +299,7 @@ impl SubagentSpawner {
                     let _duration = start.elapsed().as_secs_f64();
                     (text, 0)
                 }
-                Err(e) => {
-                    (format!("Subagent error: {e}"), 0)
-                }
+                Err(e) => (format!("Subagent error: {e}"), 0),
             };
 
             Ok(SubagentResult::success(
@@ -453,181 +442,239 @@ pub fn build_spawn_fn_wrapper(
     let max_messages = spawner.max_messages;
     let max_spawn_depth = spawner.max_spawn_depth;
 
-    Arc::new(move |parent_session_id: String, goal: String, depth: usize, role: &str| {
-        info!("delegate: spawn_fn_wrapper parent_session_id={} depth={} role={}", parent_session_id, depth, role);
-        debug!("delegate: spawn_fn_wrapper goal={}", &goal.chars().take(100).collect::<String>());
-
-        let transport = Arc::clone(&transport);
-        let tools = Arc::clone(&tools);
-        let context_config = context_config.clone();
-        let max_iterations = max_iterations;
-        let max_messages = max_messages;
-        let max_spawn_depth = max_spawn_depth;
-
-        // Build child toolset: exclude delegate_task if depth >= max_spawn_depth
-        let child_tool_registry = build_child_toolset(&tools, depth, max_spawn_depth);
-
-        // Build child system prompt with orchestrator guidance if needed
-        let child_system_prompt = build_child_system_prompt(
-            &parent_system_prompt,
-            depth,
-            max_spawn_depth,
-            role,
-            &goal,
-        );
-
-        let parent_session_id_clone = parent_session_id.clone();
-        let goal_clone = goal.clone();
-        let role_clone = role.to_string();
-
-        info!("delegate: spawning child parent_session_id={} depth={} role={}", parent_session_id_clone, depth, role_clone);
-        let goal_short: String = goal_clone.chars().take(80).collect();
-        debug!("delegate: child goal starts with: {}", goal_short);
-
-        tokio::spawn(async move {
-            let start = std::time::Instant::now();
-
-            // Create child session in shared DB using a temporary SessionManager
-            info!("delegate: init_child_session_for_creation parent_session_id={}", parent_session_id_clone);
-            let temp_sm = oben_sessions::SessionManager::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create child session manager: {e}"));
-            let spawned = match temp_sm {
-                Ok(mut sm) => {
-                    if let Err(e) = sm.init() {
-                        warn!("delegate: child init DB failed in {:0.2}s parent_session_id={}: {}", start.elapsed().as_secs_f64(), parent_session_id_clone, e);
-                        return Err(anyhow::anyhow!("Failed to initialize child session DB: {e}"));
-                    }
-                    // Create child session directly to avoid spawn_session_for_subagent
-                    // requiring an active parent session (it only needs active_session_id).
-                    let child = sm.create_session(&goal_clone);
-                    let child_id = child.id.clone();
-                    // Set parent reference in both DB and in-memory session metadata
-                    if let Err(e) = sm.set_parent_session_id_for_child(&child_id, &parent_session_id_clone) {
-                        return Err(anyhow::anyhow!("Failed to set parent session ID: {e}"));
-                    }
-                    if let Some(s) = sm.active_session_mut() {
-                        s.metadata.parent_session_id = Some(parent_session_id_clone.clone());
-                    }
-                    Ok(SpawnedSession { session_id: child_id, parent_session_id: parent_session_id_clone.clone() })
-                }
-                Err(e) => Err(e),
-            };
-            let spawned = match spawned {
-                Ok(sp) => sp,
-                Err(e) => {
-                    warn!("delegate: child session creation FAILED in {:0.2}s parent_session_id={}: {}", start.elapsed().as_secs_f64(), parent_session_id_clone, e);
-                    return Err(e);
-                }
-            };
-            let child_session_id = spawned.session_id;
-
-            // Create child SessionManager
-            info!("delegate: init_child_session_manager child_session_id={}", child_session_id);
-            let sm = oben_sessions::SessionManager::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create child session manager: {e}"));
-
-            let sm = match sm {
-                Ok(sm) => sm,
-                Err(e) => {
-                    warn!("delegate: child agent FAILED in {:0.2}s child_session_id={}: {}", start.elapsed().as_secs_f64(), child_session_id, e);
-                    return Err(e);
-                }
-            };
-            let child_sm: Arc<std::sync::Mutex<oben_sessions::SessionManager>> =
-                Arc::new(std::sync::Mutex::new(sm));
-
-            // Initialize and switch to child session
-            {
-                let mut mgmt = child_sm.lock().unwrap();
-                info!("delegate: init_child_db child_session_id={}", child_session_id);
-                if let Err(e) = mgmt.init() {
-                    warn!("delegate: child init DB failed in {:0.2}s child_session_id={}: {}", start.elapsed().as_secs_f64(), child_session_id, e);
-                    return Err(anyhow::anyhow!("Failed to initialize child session DB: {e}"));
-                }
-                if let Err(e) = mgmt.switch_session(&child_session_id) {
-                    warn!("delegate: child switch session failed in {:0.2}s child_session_id={}: {}", start.elapsed().as_secs_f64(), child_session_id, e);
-                    return Err(anyhow::anyhow!("Failed to switch to child session: {e}"));
-                }
-                if let Err(e) = mgmt.load(Some(&child_session_id)) {
-                    warn!("delegate: child load session failed in {:0.2}s child_session_id={}: {}", start.elapsed().as_secs_f64(), child_session_id, e);
-                    return Err(anyhow::anyhow!("Failed to load child session: {e}"));
-                }
-            }
-            info!("delegate: child DB and session initialized in {:0.2}s child_session_id={}", start.elapsed().as_secs_f64(), child_session_id);
-
-            // Create child ContextEngine
-            info!("delegate: init_child_context_engine child_session_id={}", child_session_id);
-            let mut context_engine =
-                Box::new(crate::compact_context::CompactContextEngine::with_config(
-                    context_config.clone(),
-                )) as Box<dyn crate::context::ContextEngine>;
-            context_engine.on_session_start(
-                &child_session_id,
-                &format!("delegate:{}", transport.name()),
-                None,
+    Arc::new(
+        move |parent_session_id: String, goal: String, depth: usize, role: &str| {
+            info!(
+                "delegate: spawn_fn_wrapper parent_session_id={} depth={} role={}",
+                parent_session_id, depth, role
+            );
+            debug!(
+                "delegate: spawn_fn_wrapper goal={}",
+                &goal.chars().take(100).collect::<String>()
             );
 
-            // Create interrupt state for the child
-            let interrupt_state = Arc::new(InterruptState::new());
+            let transport = Arc::clone(&transport);
+            let tools = Arc::clone(&tools);
+            let context_config = context_config.clone();
+            let max_iterations = max_iterations;
+            let max_messages = max_messages;
+            let max_spawn_depth = max_spawn_depth;
 
-            // Build child agent with the child's toolset
-            info!("delegate: build_child_agent child_session_id={} depth={} role={} max_iterations={}", child_session_id, depth, role_clone, max_iterations);
-            let mut child_agent = crate::agent::Agent::new(crate::agent::AgentConfig {
-                system_prompt: child_system_prompt,
-                transport: Arc::clone(&transport),
-                tools: child_tool_registry,
-                skills_dirs: vec![],
-                context_config: context_config.clone(),
-                max_iterations,
-                max_messages,
-                fallback_models: vec![],
-                callbacks: crate::callbacks::AgentCallbacks::default(),
-                concurrent_dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
-                nudge_config: None,
-            })
-            .await
-            .map_err(|e| {
-                warn!("delegate: build_child_agent FAILED in {:0.2}s child_session_id={}: {}", start.elapsed().as_secs_f64(), child_session_id, e);
-                anyhow::anyhow!("Failed to create child agent: {e}")
-            })?;
+            // Build child toolset: exclude delegate_task if depth >= max_spawn_depth
+            let child_tool_registry = build_child_toolset(&tools, depth, max_spawn_depth);
 
-            // Execute the child's turn with the goal
-            info!("delegate: child_agent_turn START child_session_id={} depth={}", child_session_id, depth);
-            let result = child_agent
-                .turn(&goal_clone, false, None, Some(Arc::clone(&interrupt_state)))
-                .await;
-
-            let duration = start.elapsed().as_secs_f64();
-            let (summary, _api_calls) = match result {
-                Ok(text) => {
-                    let len = text.len();
-                    let summary_short: String = text.chars().take(80).collect();
-                    info!("delegate: child_agent_turn SUCCESS in {:0.2}s child_session_id={} len={} depth={}", duration, child_session_id, len, depth);
-                    debug!("delegate: child result preview: {}", summary_short);
-                    (text, 0u32)
-                }
-                Err(e) => {
-                    warn!("delegate: child_agent_turn FAILED in {:0.2}s child_session_id={}: {}", duration, child_session_id, e);
-                    (format!("Subagent error: {e}"), 0)
-                }
-            };
-
-            let _can_delegate = depth < max_spawn_depth && role_clone == "orchestrator";
-
-            Ok(oben_tools::registry::SubagentResult {
-                status: "completed".into(),
-                summary: summary.chars().take(500).collect(),
-                api_calls: _api_calls,
-                duration_seconds: 0.0,
-                model: Some(transport.name().to_owned()),
-                session_id: child_session_id,
-                parent_session_id: parent_session_id_clone,
-                role: Some(role_clone.clone()),
+            // Build child system prompt with orchestrator guidance if needed
+            let child_system_prompt = build_child_system_prompt(
+                &parent_system_prompt,
                 depth,
-                exit_reason: None,
+                max_spawn_depth,
+                role,
+                &goal,
+            );
+
+            let parent_session_id_clone = parent_session_id.clone();
+            let goal_clone = goal.clone();
+            let role_clone = role.to_string();
+
+            info!(
+                "delegate: spawning child parent_session_id={} depth={} role={}",
+                parent_session_id_clone, depth, role_clone
+            );
+            let goal_short: String = goal_clone.chars().take(80).collect();
+            debug!("delegate: child goal starts with: {}", goal_short);
+
+            tokio::spawn(async move {
+                let start = std::time::Instant::now();
+
+                // Create child session in shared DB using a temporary SessionManager
+                info!(
+                    "delegate: init_child_session_for_creation parent_session_id={}",
+                    parent_session_id_clone
+                );
+                let temp_sm = oben_sessions::SessionManager::new()
+                    .map_err(|e| anyhow::anyhow!("Failed to create child session manager: {e}"));
+                let spawned = match temp_sm {
+                    Ok(mut sm) => {
+                        if let Err(e) = sm.init() {
+                            warn!("delegate: child init DB failed in {:0.2}s parent_session_id={}: {}", start.elapsed().as_secs_f64(), parent_session_id_clone, e);
+                            return Err(anyhow::anyhow!(
+                                "Failed to initialize child session DB: {e}"
+                            ));
+                        }
+                        // Create child session directly to avoid spawn_session_for_subagent
+                        // requiring an active parent session (it only needs active_session_id).
+                        let child = sm.create_session(&goal_clone);
+                        let child_id = child.id.clone();
+                        // Set parent reference in both DB and in-memory session metadata
+                        if let Err(e) =
+                            sm.set_parent_session_id_for_child(&child_id, &parent_session_id_clone)
+                        {
+                            return Err(anyhow::anyhow!("Failed to set parent session ID: {e}"));
+                        }
+                        if let Some(s) = sm.active_session_mut() {
+                            s.metadata.parent_session_id = Some(parent_session_id_clone.clone());
+                        }
+                        Ok(SpawnedSession {
+                            session_id: child_id,
+                            parent_session_id: parent_session_id_clone.clone(),
+                        })
+                    }
+                    Err(e) => Err(e),
+                };
+                let spawned = match spawned {
+                    Ok(sp) => sp,
+                    Err(e) => {
+                        warn!("delegate: child session creation FAILED in {:0.2}s parent_session_id={}: {}", start.elapsed().as_secs_f64(), parent_session_id_clone, e);
+                        return Err(e);
+                    }
+                };
+                let child_session_id = spawned.session_id;
+
+                // Create child SessionManager
+                info!(
+                    "delegate: init_child_session_manager child_session_id={}",
+                    child_session_id
+                );
+                let sm = oben_sessions::SessionManager::new()
+                    .map_err(|e| anyhow::anyhow!("Failed to create child session manager: {e}"));
+
+                let sm = match sm {
+                    Ok(sm) => sm,
+                    Err(e) => {
+                        warn!(
+                            "delegate: child agent FAILED in {:0.2}s child_session_id={}: {}",
+                            start.elapsed().as_secs_f64(),
+                            child_session_id,
+                            e
+                        );
+                        return Err(e);
+                    }
+                };
+                let child_sm: Arc<std::sync::Mutex<oben_sessions::SessionManager>> =
+                    Arc::new(std::sync::Mutex::new(sm));
+
+                // Initialize and switch to child session
+                {
+                    let mut mgmt = child_sm.lock().unwrap();
+                    info!(
+                        "delegate: init_child_db child_session_id={}",
+                        child_session_id
+                    );
+                    if let Err(e) = mgmt.init() {
+                        warn!(
+                            "delegate: child init DB failed in {:0.2}s child_session_id={}: {}",
+                            start.elapsed().as_secs_f64(),
+                            child_session_id,
+                            e
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Failed to initialize child session DB: {e}"
+                        ));
+                    }
+                    if let Err(e) = mgmt.switch_session(&child_session_id) {
+                        warn!("delegate: child switch session failed in {:0.2}s child_session_id={}: {}", start.elapsed().as_secs_f64(), child_session_id, e);
+                        return Err(anyhow::anyhow!("Failed to switch to child session: {e}"));
+                    }
+                    if let Err(e) = mgmt.load(Some(&child_session_id)) {
+                        warn!("delegate: child load session failed in {:0.2}s child_session_id={}: {}", start.elapsed().as_secs_f64(), child_session_id, e);
+                        return Err(anyhow::anyhow!("Failed to load child session: {e}"));
+                    }
+                }
+                info!(
+                    "delegate: child DB and session initialized in {:0.2}s child_session_id={}",
+                    start.elapsed().as_secs_f64(),
+                    child_session_id
+                );
+
+                // Create child ContextEngine
+                info!(
+                    "delegate: init_child_context_engine child_session_id={}",
+                    child_session_id
+                );
+                let mut context_engine =
+                    Box::new(crate::compact_context::CompactContextEngine::with_config(
+                        context_config.clone(),
+                    )) as Box<dyn crate::context::ContextEngine>;
+                context_engine.on_session_start(
+                    &child_session_id,
+                    &format!("delegate:{}", transport.name()),
+                    None,
+                );
+
+                // Create interrupt state for the child
+                let interrupt_state = Arc::new(InterruptState::new());
+
+                // Build child agent with the child's toolset
+                info!("delegate: build_child_agent child_session_id={} depth={} role={} max_iterations={}", child_session_id, depth, role_clone, max_iterations);
+                let mut child_agent = crate::agent::Agent::new(crate::agent::AgentConfig {
+                    system_prompt: child_system_prompt,
+                    transport: Arc::clone(&transport),
+                    tools: child_tool_registry,
+                    skills_dirs: vec![],
+                    context_config: context_config.clone(),
+                    max_iterations,
+                    max_messages,
+                    fallback_models: vec![],
+                    callbacks: crate::callbacks::AgentCallbacks::default(),
+                    concurrent_dispatch_config:
+                        crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
+                    nudge_config: None,
+                })
+                .await
+                .map_err(|e| {
+                    warn!(
+                        "delegate: build_child_agent FAILED in {:0.2}s child_session_id={}: {}",
+                        start.elapsed().as_secs_f64(),
+                        child_session_id,
+                        e
+                    );
+                    anyhow::anyhow!("Failed to create child agent: {e}")
+                })?;
+
+                // Execute the child's turn with the goal
+                info!(
+                    "delegate: child_agent_turn START child_session_id={} depth={}",
+                    child_session_id, depth
+                );
+                let result = child_agent
+                    .turn(&goal_clone, false, None, Some(Arc::clone(&interrupt_state)))
+                    .await;
+
+                let duration = start.elapsed().as_secs_f64();
+                let (summary, _api_calls) = match result {
+                    Ok(text) => {
+                        let len = text.len();
+                        let summary_short: String = text.chars().take(80).collect();
+                        info!("delegate: child_agent_turn SUCCESS in {:0.2}s child_session_id={} len={} depth={}", duration, child_session_id, len, depth);
+                        debug!("delegate: child result preview: {}", summary_short);
+                        (text, 0u32)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "delegate: child_agent_turn FAILED in {:0.2}s child_session_id={}: {}",
+                            duration, child_session_id, e
+                        );
+                        (format!("Subagent error: {e}"), 0)
+                    }
+                };
+
+                let _can_delegate = depth < max_spawn_depth && role_clone == "orchestrator";
+
+                Ok(oben_tools::registry::SubagentResult {
+                    status: "completed".into(),
+                    summary: summary.chars().take(500).collect(),
+                    api_calls: _api_calls,
+                    duration_seconds: 0.0,
+                    model: Some(transport.name().to_owned()),
+                    session_id: child_session_id,
+                    parent_session_id: parent_session_id_clone,
+                    role: Some(role_clone.clone()),
+                    depth,
+                    exit_reason: None,
+                })
             })
-        })
-    })
+        },
+    )
 }
 
 impl From<SubagentResult> for oben_tools::registry::SubagentResult {

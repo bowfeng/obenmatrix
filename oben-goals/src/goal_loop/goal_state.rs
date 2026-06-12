@@ -132,6 +132,17 @@ impl GoalState {
         self.paused_reason = Some(reason.into());
     }
 
+    /// Resume a paused goal.
+    ///
+    /// If `reset_budget` is true, resets `turns_used` to 0.
+    pub fn resume(&mut self, reset_budget: bool) {
+        if reset_budget {
+            self.turns_used = 0;
+        }
+        self.status = GoalStatus::Active;
+        self.paused_reason = None;
+    }
+
     /// Clear the goal.
     pub fn clear(&mut self) {
         self.status = GoalStatus::Cleared;

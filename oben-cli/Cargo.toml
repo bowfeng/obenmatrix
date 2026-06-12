@@ -20,6 +20,7 @@ oben-utils = { path = "../oben-utils" }
 oben-gateway = { path = "../oben-gateway" }
 oben-tui = { path = "../oben-tui" }
 oben-cron = { path = "../oben-cron" }
+oben-goals = { path = "../oben-goals" }
 
 clap = { workspace = true, features = ["derive"] }
 anyhow = { workspace = true }
@@ -27,5 +28,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 chrono = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 serde_json = { workspace = true }
+serde = { workspace = true }
 serde_yaml = { workspace = true }

@@ -22,23 +22,23 @@ fn mask_data_urls(json_str: &str) -> String {
     while let Some(pos) = remaining.windows(11).position(|w| w == DATA_IMG) {
         let before = unsafe { std::str::from_utf8_unchecked(&remaining[..pos]) };
         result.push_str(before);
-        
+
         let content = &remaining[pos + 11..];
         let mut total = 0usize;
         let mut i = 0;
         while i < content.len() {
-            if content[i] == 0x22 && (i == 0 || content[i-1] != 0x5C) {
+            if content[i] == 0x22 && (i == 0 || content[i - 1] != 0x5C) {
                 break;
             } else {
                 i += 1;
                 total += 1;
             }
         }
-        
+
         result.push_str(&format!("data:image/[data URL {} bytes]", total));
         remaining = &content[i + 1..];
     }
-    
+
     result.push_str(unsafe { std::str::from_utf8_unchecked(remaining) });
     result
 }
@@ -192,14 +192,26 @@ fn message_to_json(m: &Message) -> serde_json::Value {
 
 /// Build JSON for all messages (fresh call). Returns Vec in place.
 fn build_all_messages_json(messages: &[Message]) -> Vec<serde_json::Value> {
-    messages.iter().map(message_to_json).collect()
+    // Filter out system messages from the array — they are baked into the
+    // template's messages[0] by `build_request_template`.  The caller
+    // (e.g. `goal_start`) may accidentally include a system message in the
+    // input Vec; including it alongside the template's system message causes
+    // API errors like "System message must be at the beginning.".
+    messages
+        .iter()
+        .filter(|m| m.role != MessageRole::System)
+        .map(message_to_json)
+        .collect()
 }
 
 /// Push new messages into an existing JSON array (incremental extend).
 /// Returns the number of messages added.
 fn extend_messages_json(arr: &mut Vec<serde_json::Value>, messages: &[Message], from: usize) {
     for msg in &messages[from..] {
-        arr.push(message_to_json(msg));
+        // Filter out system messages — same as build_all_messages_json
+        if msg.role != MessageRole::System {
+            arr.push(message_to_json(msg));
+        }
     }
 }
 
@@ -232,6 +244,9 @@ where
             let mut req = (**template).clone();
             let mut json_messages = build_all_messages_json(messages);
 
+            // Track non-system message count for incremental extend comparison.
+            let non_sys_count = json_messages.len();
+
             let arr = req["messages"].as_array_mut().unwrap();
             // Pre-allocate capacity to avoid reallocations.
             arr.reserve(json_messages.len() + 1); // pre-allocate to avoid reallocations including system prompt
@@ -242,7 +257,7 @@ where
                 sid,
                 CachedRequest {
                     request: req,
-                    msg_count: messages.len(),
+                    msg_count: non_sys_count,
                 },
             );
             f(&cached[&session_id].request)
@@ -258,21 +273,42 @@ where
             });
             let cached_count = entry.msg_count;
 
-            if messages.len() <= cached_count {
+            // Count non-system messages in current input (same as what
+            // build_all_messages_json would produce).
+            let non_sys_count = messages.iter().filter(|m| m.role != MessageRole::System).count();
+
+            if non_sys_count <= cached_count {
                 // Messages haven't grown — content was edited or removed.
-                // Rebuild entirely: clear old messages and push new ones.
+                // Rebuild entirely: clear all and rebuild from scratch.
                 let mut json_messages = build_all_messages_json(messages);
+                // Extract system content before clearing
+                let sys_content = entry.request["messages"]
+                    .as_array()
+                    .unwrap()
+                    .first()
+                    .and_then(|m| m.get("content").and_then(|c| c.as_str()))
+                    .map(|s| s.to_string());
                 let arr = entry.request["messages"].as_array_mut().unwrap();
                 arr.clear();
+                if let Some(s) = sys_content {
+                    arr.push(json!({"role": "system", "content": s}));
+                }
                 let len = json_messages.len();
-                arr.reserve(len + 1); // pre-allocate to avoid reallocations including system prompt
+                arr.reserve(len + 1);
                 arr.append(&mut json_messages);
-                entry.msg_count = messages.len();
+                entry.msg_count = non_sys_count;
             } else {
                 // Messages grew — extend existing array in-place.
                 let arr = entry.request["messages"].as_array_mut().unwrap();
-                extend_messages_json(arr, messages, cached_count);
-                entry.msg_count = messages.len();
+                // cached_count is the previous non-system count.
+                // Count non-system messages in the previous slice to find
+                // the raw index where new messages start.
+                let added_non_sys = non_sys_count - cached_count;
+                // Starting index: skip (total - added_non_sys) messages from front
+                // which is the same as total - added_non_sys from the back.
+                let start_idx = messages.len() - added_non_sys;
+                extend_messages_json(arr, messages, start_idx);
+                entry.msg_count = non_sys_count;
             }
 
             f(&entry.request)
@@ -934,10 +970,10 @@ mod tests {
     #[test]
     fn test_resolve_request_fresh() {
         let session_id = String::from("test-session");
-        let messages = vec![Message::system("be helpful"), Message::user("hello")];
+        let messages = vec![Message::user("hello")];
         let template = std::sync::Arc::new(json!({
             "model": "test-model",
-            "messages": serde_json::Value::Array(vec![]),
+            "messages": serde_json::Value::Array(vec![json!({"role": "system", "content": "be helpful"})]),
             "temperature": 0.7,
             "max_tokens": 8192,
         }));
@@ -949,15 +985,17 @@ mod tests {
             &oben_models::CallMode::Fresh(session_id.clone()),
             &template,
             |req| {
-                assert_eq!(req["messages"].as_array().unwrap().len(), 2);
-                assert_eq!(req["messages"][0]["role"], "system");
+                let arr = req["messages"].as_array().unwrap();
+                assert_eq!(arr.len(), 2);
+                assert_eq!(arr[0]["role"], "system");
+                assert_eq!(arr[1]["content"], "hello");
                 assert_eq!(req["model"], "test-model");
-                (2, req["model"].clone())
+                (1, req["model"].clone())
             },
         );
-        assert_eq!(json_len, 2);
+        assert_eq!(json_len, 1); // user message only (system is in template)
         assert_eq!(model, "test-model");
-        assert_eq!(cached[&session_id].msg_count, 2);
+        assert_eq!(cached[&session_id].msg_count, 1);
     }
 
     #[test]
@@ -965,14 +1003,14 @@ mod tests {
         let session_id = String::from("test-session");
         let template = std::sync::Arc::new(json!({
             "model": "test-model",
-            "messages": serde_json::Value::Array(vec![]),
+            "messages": serde_json::Value::Array(vec![json!({"role": "system", "content": "be helpful"})]),
             "temperature": 0.7,
             "max_tokens": 8192,
         }));
         let mut cached = std::collections::HashMap::new();
 
-        // Fresh: 2 messages
-        let messages = vec![Message::system("be helpful"), Message::user("hello")];
+        // Fresh: 1 user message
+        let messages = vec![Message::user("hello")];
         resolve_request(
             &mut cached,
             &messages,
@@ -981,17 +1019,20 @@ mod tests {
             |_| (),
         );
 
-        // Incremental: add 1 more
+        // Incremental: add 2 more
         let mut messages = messages.clone();
         messages.push(Message::assistant("hi there"));
+        messages.push(Message::user("follow up"));
         resolve_request(
             &mut cached,
             &messages,
             &oben_models::CallMode::Incremental(session_id.clone()),
             &template,
             |req| {
-                assert_eq!(req["messages"].as_array().unwrap().len(), 3);
-                assert_eq!(req["messages"][2]["role"], "assistant");
+                let arr = req["messages"].as_array().unwrap();
+                assert_eq!(arr.len(), 4); // system + 3 messages
+                assert_eq!(arr[0]["role"], "system");
+                assert_eq!(arr[3]["content"], "follow up");
             },
         );
         assert_eq!(cached[&session_id].msg_count, 3);
@@ -1002,15 +1043,14 @@ mod tests {
         let session_id = String::from("test-session");
         let template = std::sync::Arc::new(json!({
             "model": "test-model",
-            "messages": serde_json::Value::Array(vec![]),
+            "messages": serde_json::Value::Array(vec![json!({"role": "system", "content": "be helpful"})]),
             "temperature": 0.7,
             "max_tokens": 8192,
         }));
         let mut cached = std::collections::HashMap::new();
 
-        // Fresh: 3 messages
+        // Fresh: 2 messages (system in template + user)
         let messages = vec![
-            Message::system("sys"),
             Message::user("hello"),
             Message::assistant("hi"),
         ];
@@ -1034,7 +1074,7 @@ mod tests {
                 assert_eq!(req["messages"].as_array().unwrap().len(), 2);
             },
         );
-        assert_eq!(cached[&session_id].msg_count, 2);
+        assert_eq!(cached[&session_id].msg_count, 1);
     }
 
     #[test]
@@ -1042,14 +1082,14 @@ mod tests {
         let session_id = String::from("test-session");
         let template = std::sync::Arc::new(json!({
             "model": "test-model",
-            "messages": serde_json::Value::Array(vec![]),
+            "messages": serde_json::Value::Array(vec![json!({"role": "system", "content": "be helpful"})]),
             "temperature": 0.7,
             "max_tokens": 8192,
         }));
         let mut cached = std::collections::HashMap::new();
 
-        // Fresh: 2 messages
-        let messages = vec![Message::system("sys"), Message::user("hello")];
+        // Fresh: 1 message
+        let messages = vec![Message::user("hello")];
         resolve_request(
             &mut cached,
             &messages,
@@ -1059,8 +1099,7 @@ mod tests {
         );
 
         // Incremental: same count but content changed — should reset
-        let mut messages = messages.clone();
-        messages[1] = Message::user("changed");
+        let messages = vec![Message::user("changed")];
         resolve_request(
             &mut cached,
             &messages,
@@ -1071,20 +1110,20 @@ mod tests {
                 assert_eq!(req["messages"][1]["content"], "changed");
             },
         );
-        assert_eq!(cached[&session_id].msg_count, 2);
+        assert_eq!(cached[&session_id].msg_count, 1);
     }
 
     #[test]
     fn test_per_session_isolation() {
         let template = std::sync::Arc::new(json!({
             "model": "test-model",
-            "messages": serde_json::Value::Array(vec![]),
+            "messages": serde_json::Value::Array(vec![json!({"role": "system", "content": "default-system"})]),
             "temperature": 0.7,
             "max_tokens": 8192,
         }));
         let mut cached = std::collections::HashMap::new();
 
-        let messages_a = vec![Message::system("sys-a"), Message::user("hello-a")];
+        let messages_a = vec![Message::user("hello-a")];
         resolve_request(
             &mut cached,
             &messages_a,
@@ -1093,7 +1132,7 @@ mod tests {
             |_| (),
         );
 
-        let messages_b = vec![Message::system("sys-b"), Message::user("hello-b")];
+        let messages_b = vec![Message::user("hello-b")];
         resolve_request(
             &mut cached,
             &messages_b,
@@ -1102,15 +1141,16 @@ mod tests {
             |_| (),
         );
 
-        assert_eq!(cached["session-a"].msg_count, 2);
-        assert_eq!(cached["session-b"].msg_count, 2);
+        assert_eq!(cached["session-a"].msg_count, 1);
+        assert_eq!(cached["session-b"].msg_count, 1);
+        // Both sessions share the same template system
         assert_eq!(
             cached["session-a"].request["messages"][0]["content"],
-            "sys-a"
+            "default-system"
         );
         assert_eq!(
             cached["session-b"].request["messages"][0]["content"],
-            "sys-b"
+            "default-system"
         );
     }
 
@@ -1119,14 +1159,14 @@ mod tests {
         let session_id = String::from("test-session");
         let template = std::sync::Arc::new(json!({
             "model": "test-model",
-            "messages": serde_json::Value::Array(vec![]),
+            "messages": serde_json::Value::Array(vec![json!({"role": "system", "content": "be helpful"})]),
             "temperature": 0.7,
             "max_tokens": 8192,
         }));
         let mut cached = std::collections::HashMap::new();
 
-        // Fresh: 2 messages
-        let messages = vec![Message::system("sys"), Message::user("hello")];
+        // Fresh: 2 non-system messages (system is in template)
+        let messages = vec![Message::user("hello"), Message::assistant("hey")];
         resolve_request(
             &mut cached,
             &messages,
@@ -1136,11 +1176,8 @@ mod tests {
         );
 
         // Incremental: extend in-place by 1
-        let messages2 = vec![
-            Message::system("sys"),
-            Message::user("hello"),
-            Message::assistant("hi"),
-        ];
+        let mut messages2 = messages.clone();
+        messages2.push(Message::user("follow up"));
         resolve_request(
             &mut cached,
             &messages2,
@@ -1148,12 +1185,10 @@ mod tests {
             &template,
             |req| {
                 let arr = req["messages"].as_array().unwrap();
-                assert_eq!(arr.len(), 3);
-                // The first 2 messages should be the exact same Value objects
-                // (in-place extend, not a rebuild)
+                assert_eq!(arr.len(), 4); // system + 3 user/assistant
                 assert_eq!(arr[0]["role"], "system");
-                assert_eq!(arr[1]["role"], "user");
                 assert_eq!(arr[2]["role"], "assistant");
+                assert_eq!(arr[3]["role"], "user");
             },
         );
     }

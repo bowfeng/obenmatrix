@@ -427,8 +427,9 @@ impl TurnExecutor {
                     // When the model returns a fully empty response after tool
                     // results, it has gone silent. Inject a system hint and retry,
                     // bounded to prevent infinite loops (up to 2 extra attempts).
-                    let is_response_empty =
-                        text.trim().is_empty() && tool_calls.is_empty() && response.tokens_used.unwrap_or(0) > 0;
+                    let is_response_empty = text.trim().is_empty()
+                        && tool_calls.is_empty()
+                        && response.tokens_used.unwrap_or(0) > 0;
                     if is_response_empty {
                         consecutive_empty_responses += 1;
                         let hint = "Your previous response was completely empty and will be skipped. Please summarize what you learned from the tool results above, or use a tool call if you need more information.";
@@ -439,7 +440,13 @@ impl TurnExecutor {
                                 consecutive_empty_responses
                             );
                             if let Some(cb) = &config.callbacks {
-                                cb.call_status("info", &format!("empty_response_recovery: attempt={}", consecutive_empty_responses));
+                                cb.call_status(
+                                    "info",
+                                    &format!(
+                                        "empty_response_recovery: attempt={}",
+                                        consecutive_empty_responses
+                                    ),
+                                );
                             }
                             session.messages.push(Message::system(hint.to_string()));
                             continue;
@@ -503,8 +510,9 @@ impl TurnExecutor {
                             // Inject parent_session_id into delegate task calls
                             if c.tool_name == "delegate_task" {
                                 if let Some(obj) = args.as_object_mut() {
-                                    obj.entry("parent_session_id")
-                                        .or_insert_with(|| serde_json::Value::String(parent_session_id.clone()));
+                                    obj.entry("parent_session_id").or_insert_with(|| {
+                                        serde_json::Value::String(parent_session_id.clone())
+                                    });
                                 }
                             }
                             PendingToolCall {
@@ -535,7 +543,7 @@ impl TurnExecutor {
                     // Store results and notify callbacks
                     for (i, result) in results.iter().enumerate() {
                         let tool_call_id = &pending_calls[i].call_id;
-                        
+
                         // Skip completely empty results unless it was a steer message.
                         // A result with an error is not empty — the error message
                         // is critical feedback for the LLM to understand what went wrong.
@@ -543,7 +551,7 @@ impl TurnExecutor {
                         if result.output.is_empty() && !is_steer && result.error.is_none() {
                             continue;
                         }
-                        
+
                         let msg = if !result.output.is_empty() {
                             Message::tool_result(tool_call_id, &result.output)
                         } else if let Some(ref err) = result.error {
@@ -643,7 +651,11 @@ mod tests {
     /// tool result on the second consecutive empty response.
     #[test]
     fn test_empty_response_heuristic() {
-        fn mk(text: &str, tool_calls: Vec<oben_models::TransportToolCall>, tokens: Option<usize>) -> oben_models::TransportResponse {
+        fn mk(
+            text: &str,
+            tool_calls: Vec<oben_models::TransportToolCall>,
+            tokens: Option<usize>,
+        ) -> oben_models::TransportResponse {
             oben_models::TransportResponse {
                 text: text.to_string(),
                 tool_calls,
@@ -653,31 +665,51 @@ mod tests {
 
         // Non-empty response with tokens → NOT empty
         let resp = mk("Hello", vec![], Some(100));
-        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
+        let is_empty = resp.text.trim().is_empty()
+            && resp.tool_calls.is_empty()
+            && resp.tokens_used.unwrap_or(0) > 0;
         assert!(!is_empty, "Normal response should not be flagged as empty");
 
         // Empty text, no tool calls, but tokens > 0 → IS empty
         let resp = mk("", vec![], Some(100));
-        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
+        let is_empty = resp.text.trim().is_empty()
+            && resp.tool_calls.is_empty()
+            && resp.tokens_used.unwrap_or(0) > 0;
         assert!(is_empty, "Empty response with tokens should be flagged");
 
         // Zero/None tokens → model produced nothing (likely error), NOT empty-flagged
         let resp = mk("", vec![], None);
-        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
-        assert!(!is_empty, "Response with no tokens should not be flagged (likely error)");
+        let is_empty = resp.text.trim().is_empty()
+            && resp.tool_calls.is_empty()
+            && resp.tokens_used.unwrap_or(0) > 0;
+        assert!(
+            !is_empty,
+            "Response with no tokens should not be flagged (likely error)"
+        );
 
         // Response with tool calls → not empty (even if text is blank)
-        let resp = mk("", vec![oben_models::TransportToolCall {
-            id: "tc1".into(),
-            tool_name: "terminal".into(),
-            arguments: serde_json::json!({"command": "ls"}),
-        }], Some(100));
-        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
-        assert!(!is_empty, "Response with tool calls should not be flagged as empty");
+        let resp = mk(
+            "",
+            vec![oben_models::TransportToolCall {
+                id: "tc1".into(),
+                tool_name: "terminal".into(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }],
+            Some(100),
+        );
+        let is_empty = resp.text.trim().is_empty()
+            && resp.tool_calls.is_empty()
+            && resp.tokens_used.unwrap_or(0) > 0;
+        assert!(
+            !is_empty,
+            "Response with tool calls should not be flagged as empty"
+        );
 
         // Whitespace-only text with tokens → empty
         let resp = mk("   \n  ", vec![], Some(50));
-        let is_empty = resp.text.trim().is_empty() && resp.tool_calls.is_empty() && resp.tokens_used.unwrap_or(0) > 0;
+        let is_empty = resp.text.trim().is_empty()
+            && resp.tool_calls.is_empty()
+            && resp.tokens_used.unwrap_or(0) > 0;
         assert!(is_empty, "Whitespace-only text should be flagged as empty");
     }
 }
