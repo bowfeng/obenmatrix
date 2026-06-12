@@ -14,15 +14,22 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["json", "stream", "multipart", "blocking"] }
 async-trait.workspace = true
 regex.workspace = true
 futures.workspace = true
 scraper = "0.18"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+hound = "3.5"        # For WAV audio loading (used by whisper-rs)
+whisper-rs = { version = "0.16", optional = true, default-features = false }
+msedge-tts = { version = "0.4", features = ["tokio-runtime"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "macros"] }
 tempfile = "3"
 html2text = "0.16"
+
+[features]
+default = ["stt-whisper-rs"]
+stt-whisper-rs = ["dep:whisper-rs", "whisper-rs/default"]

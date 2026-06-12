@@ -16,6 +16,8 @@ pub mod skill;
 pub mod terminal;
 pub mod todo;
 pub mod toolset_filter;
+pub mod stt;
+pub mod tts;
 pub mod vision_analyze;
 pub mod web;
 pub mod web_extract;
@@ -54,4 +56,6 @@ pub static ALL_TOOLS: &[fn(&mut ToolRegistry)] = &[
     skill::register,
     computer_use::ComputerUseTool::register_self,
     delegate::register,
+    tts::TtsTool::register_self,
+    stt::SttTool::register_self,
 ];

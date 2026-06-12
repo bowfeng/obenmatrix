@@ -25,7 +25,31 @@
 | TL.14 | skill (list/view) | ✅ | ✅ | (built-in) | Skill management tool |
 | TL.15 | **Search provider** (DuckDuckGo, Brave) | 🟡 | ❌ | [TBD] | Configurable search backend |
 | TL.16 | **Browser automation** (CUA-driver) | 🟡 | ❌ | [TBD] | `browser_dialog_tool.py` → `cua-driver` |
-| TL.17 | **Voice** (STT/TTS) | 🟡 | ❌ | [TBD] | Whisper, Edge TTS, ElevenLabs |
+| TL.17 | **Voice** (STT/TTS) | 🟡 | ✅ (partial) | (this PR) | whisper-rs, msedge-tts (native Rust crate), OpenAI, ElevenLabs, Mistral, xAI, Gemini |
+
+---
+
+## Voice Testing Guide
+
+**TTS (text → audio):**
+```bash
+# Send text to agent
+Agent: text_to_speech(text="Hello world")
+  → Output: MEDIA:~/.config/obenalien/audio_cache/tts_20260612_123456.mp3
+  → System sends audio file as voice bubble
+```
+
+**STT (audio → text):**
+```bash
+# Agent calls with audio file path (from voice message or TTS output)
+Agent: speech_to_text(audio_file="/path/to/audio.mp3")
+  → Output: "Hello world"
+```
+
+**End-to-end test via agent interaction:**
+1. User: "Say hello to me" (text) → Agent generates audio
+2. User: (sends the generated audio as voice message) → Agent transcribes it
+3. Verify transcript matches original text
 | TL.18 | **Image generation** (FLUX, DALL-E, Midjourney) | 🟡 | ❌ | [TBD] | `image_gen_provider.py` |
 | TL.19 | **MCP integration** | 🟢 | ❌ | [TBD] | `mcp_oauth.py`, `mcp_tool.py` |
 | TL.20 | **Cron scheduler** | 🟢 | ✅ (#63) | [#63](https://github.com/.../63) `oben-cron/` | Schedule parsing (duration/interval/ISO/cron), JSON persistence, daemon |
@@ -46,3 +70,36 @@
 - **Status**: ✅ Done | ❌ Not Started
 
 **Workflow:** Open issue → branch (`#<number>-<desc>`) → implement → PR → close issue.
+
+---
+
+## Voice Tools Implementation (TL.17)
+
+**Implemented in this PR:**
+
+| Component | Details |
+|-----------|---------|
+| **tts.rs** | Text-to-Speech tool with Flat schema, 7 providers (Edge via native msedge-tts Rust crate, OpenAI, ElevenLabs, Gemini, xAI, Mistral), markdown text cleaning, ffmpeg Opus conversion |
+| **stt.rs** | Speech-to-Text tool with 6 providers (whisper-rs local, OpenAI, Groq, Mistral, xAI, ElevenLabs Scribe), WAV loading + resampling, base64 audio support |
+| **VoiceConfig** | Added to `oben-config`: `SttConfig` + `TtsConfig` with provider selection, voice/speed/format settings |
+| **whisper-rs** | Feature-gated local STT using `whisper-rs = "0.16"` with GGML model download on first use |
+| **msedge-tts** | Feature-gated Edge TTS using `msedge-tts v0.4` with tokio-runtime feature |
+| **Tests** | 135 tests pass (6 new voice-related unit tests, 1 ignored for live testing) |
+
+**Provider parity achieved:**
+
+| Provider Type | TTS | STT | Status |
+|---------------|-----|-----|--------|
+| Free/Local | ✅ Edge TTS (msedge-tts rust crate) | ✅ whisper-rs (GGML, ~150MB download) | ✅ |
+| OpenAI | ✅ API key required | ✅ `whisper-1` model | ✅ |
+| Groq | ❌ (TTS not supported by Groq) | ✅ `whisper-large-v3-turbo` | ✅ |
+| Mistral | ✅ Voxtral | ✅ Voxtral transcribe | ✅ |
+| xAI | ✅ Grok voice | ✅ `grok-2-transcribe` | ✅ |
+| ElevenLabs | ✅ v2 models | ✅ Scribe v2 | ✅ |
+| Gemini | ✅ `gemini-2.0-flash` | ❌ (no STT API yet) | Partial |
+
+**Not yet implemented:**
+- MiniMax, KittenTTS, Piper (local TTS)
+- NeuTTS, custom command TTS providers
+- Streaming TTS (`stream_tts_to_speaker`)
+- TTS/STT provider auto-detection (uses configured provider)

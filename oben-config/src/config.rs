@@ -22,6 +22,7 @@ pub struct AppConfig {
     pub gateway: Option<GatewayConfig>,
     pub display: DisplayConfig,
     pub context: ContextConfig,
+    pub voice: VoiceConfig,
     pub providers: Vec<ProviderConfig>,
     pub custom_providers: Vec<String>,
     pub vision: VisionConfig,
@@ -57,6 +58,161 @@ impl Default for VisionConfig {
             api_key: None,
             model: None,
             max_tokens: Some(1024),
+        }
+    }
+}
+
+/// Configuration for voice (STT + TTS) tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceConfig {
+    /// STT (speech-to-text) configuration.
+    pub stt: SttConfig,
+    /// TTS (text-to-speech) configuration.
+    pub tts: TtsConfig,
+}
+
+/// STT provider selection.
+/// Returns the default provider name ("whisper-rs").
+fn default_stt_provider() -> String {
+    String::from("whisper-rs")
+}
+
+/// STT configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SttConfig {
+    /// Provider: "whisper-rs" (local GGML), "openai", "groq", "mistral", "xai", "elevenlabs".
+    #[serde(default = "default_stt_provider")]
+    pub provider: String,
+    /// Model name (provider-specific). Defaults vary by provider.
+    pub model: Option<String>,
+    /// Language override (ISO 639-1 code, e.g. "en", "zh", "de"). Auto-detect if None.
+    pub language: Option<String>,
+    // Provider-specific sub-configs
+    /// OpenAI-compatible STT config (used as base URL for OpenAI/Groq/Mistral/xAI/ElevenLabs).
+    #[serde(flatten)]
+    pub openai_like: OpenAiAudioConfig,
+    /// Whisper local model path (relative to HOME or absolute).
+    /// If None, uses the default "base" model downloaded from official source.
+    pub model_path: Option<String>,
+}
+
+/// OpenAI-compatible audio API configuration.
+/// All OpenAI-compatible providers (OpenAI itself, Groq, Mistral, xAI, ElevenLabs)
+/// share the same `/v1/audio/transcriptions` API shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenAiAudioConfig {
+    /// Base URL for the transcription API. Defaults to "https://api.openai.com/v1".
+    pub base_url: Option<String>,
+}
+
+fn default_openai_audio_base_url() -> String {
+    "https://api.openai.com/v1".to_string()
+}
+
+impl Default for OpenAiAudioConfig {
+    fn default() -> Self {
+        Self {
+            base_url: Some(default_openai_audio_base_url()),
+        }
+    }
+}
+
+impl Default for SttConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_stt_provider(),
+            model: None,
+            language: None,
+            openai_like: OpenAiAudioConfig::default(),
+            model_path: None,
+        }
+    }
+}
+
+/// TTS provider selection.
+/// Returns the default provider name ("edge").
+fn default_tts_provider() -> String {
+    String::from("edge")
+}
+
+/// TTS configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TtsConfig {
+    /// Provider: "edge" (default, free), "openai", "elevenlabs", "gemini", "xai", "mistral".
+    #[serde(default = "default_tts_provider")]
+    pub provider: String,
+    /// Voice name/ID for the provider.
+    pub voice: Option<String>,
+    /// Speed multiplier (e.g. 1.0 = normal, 0.5 = slow, 2.0 = fast).
+    pub speed: Option<f64>,
+    /// Output format: .mp3 (default), .ogg (Telegram voice bubbles), .wav.
+    #[serde(default = "default_output_format")]
+    pub output_format: String,
+    /// Base URL for OpenAI-compatible providers (OpenAI, xAI). Not used by Edge/Mistral/ElevenLabs/Gemini.
+    pub base_url: Option<String>,
+    /// Model name for OpenAI provider.
+    pub model: Option<String>,
+    /// Custom command TTS configuration for local engines (Piper, KittenTTS, etc.).
+    #[serde(default)]
+    pub command: Option<CommandTtsConfig>,
+}
+
+fn default_output_format() -> String {
+    "mp3".to_string()
+}
+
+/// Custom command TTS configuration for local engines (Piper, KittenTTS, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CommandTtsConfig {
+    /// Shell command template. Hermes writes text to a temp file and runs:
+    ///   {command} with {input_path}, {text_path}, {output_path}, {format} placeholders.
+    pub command: String,
+    /// Output format: mp3, wav, ogg, flac.
+    #[serde(default = "default_cmd_tts_format")]
+    pub output_format: String,
+    /// If true, output is treated as voice-compatible (for Telegram voice bubbles).
+    #[serde(default)]
+    pub voice_compatible: bool,
+}
+
+fn default_cmd_tts_format() -> String {
+    "mp3".to_string()
+}
+
+impl Default for CommandTtsConfig {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            output_format: default_cmd_tts_format(),
+            voice_compatible: false,
+        }
+    }
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_tts_provider(),
+            voice: None,
+            speed: None,
+            output_format: default_output_format(),
+            base_url: None,          // Providers use their own defaults
+            model: None,             // Providers use their own defaults
+            command: None,
+        }
+    }
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            stt: SttConfig::default(),
+            tts: TtsConfig::default(),
         }
     }
 }
@@ -201,6 +357,7 @@ impl Default for AppConfig {
             providers: Vec::new(),
             custom_providers: Vec::new(),
             vision: VisionConfig::default(),
+            voice: VoiceConfig::default(),
         }
     }
 }
