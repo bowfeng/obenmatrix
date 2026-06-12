@@ -6,11 +6,17 @@
 use anyhow::Result;
 use std::io::Write;
 use tracing::info;
+use uuid::Uuid;
 
-use crate::cli::{Cli, Commands, ConfigCommand, CronCommand, ModelsCommand, SessionsCommand};
+use crate::cli::{
+    Cli, Commands, ConfigCommand, CronCommand, GoalCommand, ModelsCommand, SessionsCommand,
+};
 use clap::Parser;
 use oben_cron::{CronJob, CronStore};
-use oben_models::{Session, SessionStore};
+use oben_goals::{GoalStore, JsonGoalStore};
+use oben_models::{Session, SessionStore, TransportProvider};
+use oben_sessions::SessionManager;
+use std::sync::Arc;
 
 /// In-memory session store - no SQLite, no persistence, just a single
 /// session holding a `Vec<Message>`. Perfect for one-shot CLI commands.
@@ -105,6 +111,15 @@ pub async fn run_cli() -> Result<()> {
             Some(CronCommand::Start) => cron_start(),
             Some(CronCommand::Info) => cron_info(),
         },
+        Commands::Goals { action } => match action {
+            None => goal_list(None),
+            Some(GoalCommand::Start { goal, max_turns }) => goal_start(&goal, max_turns).await,
+            Some(GoalCommand::List { status }) => goal_list(status.as_deref()),
+            Some(GoalCommand::Status { goal_id }) => goal_status(&goal_id),
+            Some(GoalCommand::Pause { id }) => goal_pause(&id).await,
+            Some(GoalCommand::Resume { id, reset }) => goal_resume(&id, reset).await,
+            Some(GoalCommand::Clear { id }) => goal_clear(&id).await,
+        },
     }
 }
 
@@ -174,7 +189,11 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         skills_dirs: vec![],
         max_iterations: config.max_iterations.unwrap_or(50),
         max_messages: config.context.max_messages.unwrap_or(100),
-        context_config: oben_agent::CompactCofig::default(),
+        context_config: oben_agent::compact::CompactCofig {
+            context_length: config.context.context_length,
+            threshold_percent: config.context.threshold_percent,
+            ..oben_agent::compact::CompactCofig::default()
+        },
         fallback_models: vec![],
         callbacks: oben_agent::AgentCallbacks::default(),
         concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
@@ -521,6 +540,318 @@ fn create_transport(
     )
 }
 
+// ── Goals ──────────────────────────────────────────────────────────────────
+
+/// Get a default JsonGoalStore instance.
+fn goal_store() -> Result<oben_goals::JsonGoalStore> {
+    oben_goals::JsonGoalStore::default_store()
+}
+
+async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
+    let goal_id = format!(
+        "goal-{}-{}",
+        chrono::Utc::now().timestamp_millis(),
+        Uuid::new_v4().as_simple()
+    );
+    let store = goal_store()?;
+
+    // Create goal record
+    store.create_goal(&goal_id, goal, max_turns.unwrap_or(20), None)?;
+
+    // Decomposer: call LLM to break goal into plan nodes.
+    // This mirrors `create_plan_from_goal()` but executed synchronously so the CLI
+    // blocks until the plan is created and printed before the background loop starts.
+    let config = oben_config::AppConfig::load()?;
+
+    let mut tools = oben_tools::ToolRegistry::new();
+    oben_tools::discover_builtin_tools(&mut tools);
+    let tool_defs = collect_tool_defs(&tools);
+
+    let system_prompt = oben_config::defaults::default_system_prompt();
+    // Decomposer doesn't need tools — just LLM JSON generation
+    let decomposer_transport = std::sync::Arc::new(oben_transport::Transport::from_config(
+        &config.model,
+        system_prompt.clone(),
+    ));
+    let transport = oben_transport::Transport::from_config_with_tools_via_registry(
+        &config.model,
+        &system_prompt,
+        &tool_defs,
+    );
+
+    let plan_prompt = format!(
+        "You are a planner. Break the following goal into a step-by-step plan.\n\n\
+         Return ONLY a JSON array. No prose, no explanation, no markdown.\n\
+         Each item must have:\n\
+         {{\"title\": \"step name\", \"description\": \"what to do\", \"sub_tasks\": []}}\n\n\
+         Rules:\n\
+         - Each top-level item is a self-contained task\n\
+         - sub_tasks is an array of nested task strings (may be empty)\n\
+         - Keep tasks specific and actionable\n\n\
+         Goal: {}",
+        goal
+    );
+
+    let plan_messages = vec![oben_models::Message::system(&system_prompt), oben_models::Message::user(&plan_prompt)];
+
+    let plan_llm_result = decomposer_transport
+        .chat(&plan_messages, &oben_models::CallMode::Fresh(goal_id.clone()))
+        .await?;
+
+    let json_text = plan_llm_result.text.trim();
+    // Strip markdown code fences if present
+    let json_text = json_text.strip_prefix("```json").unwrap_or(json_text);
+    let json_text = json_text.strip_prefix("```").unwrap_or(json_text);
+    let json_text = json_text.strip_suffix("```").unwrap_or(json_text).trim();
+
+    if json_text.is_empty() {
+        anyhow::bail!(
+            "LLM returned empty response. Try again. Full response len: {}",
+            plan_llm_result.text.len()
+        );
+    }
+
+    tracing::info!("Plan LLM response (len={}):\n{}", json_text.len(), json_text);
+
+    let parsed_nodes: Vec<oben_goals::PlanNode> =
+        match serde_json::from_str::<Vec<serde_json::Value>>(json_text) {
+            Ok(items) => {
+                let mut nodes = Vec::new();
+                for item in items {
+                    let title = item
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Untitled")
+                        .to_string();
+                    let mut node = oben_goals::PlanNode::new(&title);
+                    if let Some(sub_tasks) = item.get("sub_tasks") {
+                        if let Some(arr) = sub_tasks.as_array() {
+                            for sub in arr {
+                                let sub_title = if sub.is_string() {
+                                    sub.as_str().unwrap_or("").to_string()
+                                } else if sub.is_object() {
+                                    sub.get("title")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Untitled")
+                                        .to_string()
+                                } else {
+                                    continue;
+                                };
+                                node.push_sub_node(oben_goals::PlanNode::new(&sub_title));
+                            }
+                        }
+                    }
+                    nodes.push(node);
+                }
+                println!("  Plan created: {} nodes", nodes.len());
+                nodes
+            }
+            Err(e) => anyhow::bail!("Failed to parse plan from LLM: {}", e),
+        };
+
+    // Build plan and save via store
+    let mut plan = oben_goals::PlanState::new(goal);
+    for node in parsed_nodes {
+        plan.add_node(node);
+    }
+    store.save_plan(&goal_id, &plan)?;
+
+    // Save initial goal state to disk
+    use oben_goals::GoalState;
+    let initial_state = GoalState {
+        goal: goal.to_string(),
+        status: oben_goals::GoalStatus::Active,
+        turns_used: 0,
+        max_turns: max_turns.unwrap_or(20),
+        created_at: chrono::Utc::now(),
+        last_turn_at: None,
+        last_verdict: None,
+        last_reason: None,
+        paused_reason: None,
+        consecutive_parse_failures: 0,
+    };
+    store.save_goal_state(&goal_id, &initial_state)?;
+
+    println!("Goal created: {} (id: {})", goal, goal_id);
+    println!("  Status: Active");
+    println!("  Max turns: {}", max_turns.unwrap_or(20));
+    println!("");
+
+    let mut tools = oben_tools::ToolRegistry::new();
+    oben_tools::discover_builtin_tools(&mut tools);
+    let sp = oben_config::defaults::default_system_prompt();
+    let transport =
+          oben_transport::Transport::from_config_with_tools_via_registry(&config.model, &sp, &tool_defs);
+
+    let max_iterations = config.max_iterations.unwrap_or(50);
+    let max_messages = config.context.max_messages.unwrap_or(100);
+
+    let loop_config =   oben_goals::GoalLoopConfig {
+        max_turns: max_turns.unwrap_or(20),
+        system_prompt: Some(sp.clone()),
+        auto_save: true,
+    };
+
+    let result =   oben_goals::goal_loop::run_goal_loop(
+        goal,
+        &goal_id,
+        &loop_config,
+        &store,
+        move |prompt| {
+            let transport = transport.clone();
+            let tools = tools.clone();
+            let sp = sp.clone();
+            let max_iterations = max_iterations;
+            let max_messages = max_messages;
+            let prompt_owned = prompt.to_string();
+            async move {
+                let mut goal_agent =   oben_agent::Agent::new(oben_agent::AgentConfig {
+                    system_prompt: sp,
+                    transport: transport.clone(),
+                    tools: std::sync::Arc::new(tools),
+                    skills_dirs: vec![],
+                    max_iterations,
+                    max_messages,
+                    context_config: oben_agent::compact::CompactCofig {
+                        context_length: config.context.context_length,
+                        threshold_percent: config.context.threshold_percent,
+                        ..oben_agent::compact::CompactCofig::default()
+                    },
+                    fallback_models: vec![],
+                    callbacks: oben_agent::AgentCallbacks::default(),
+                    concurrent_dispatch_config:
+                          oben_agent::ConcurrentDispatchConfig::default(),
+                    nudge_config: None,
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+                goal_agent
+                    .turn_with_message(
+                        oben_models::Message::user(&prompt_owned),
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            }
+        },
+    )
+    .await;
+
+    match result {
+        Ok((_plan, gs)) => {
+            println!("");
+            let status_str = match gs.status {
+                oben_goals::GoalStatus::Active => "active",
+                oben_goals::GoalStatus::Done => "done",
+                oben_goals::GoalStatus::Paused => "paused",
+                oben_goals::GoalStatus::Cleared => "cleared",
+            };
+            println!("Goal '{}' completed. Status: {}", goal, status_str);
+            println!("  Turns: {}/{}", gs.turns_used, gs.max_turns);
+            if let Some(ref reason) = gs.paused_reason {
+                println!("  Paused: {}", reason);
+            }
+        }
+        Err(e) => eprintln!("Goal '{}' failed: {}", goal, e),
+    }
+
+    Ok(())
+}
+
+fn goal_list(status: Option<&str>) -> Result<()> {
+    let store = goal_store()?;
+    let goals = store.list_goals(status)?;
+
+    if goals.is_empty() {
+        println!("No goals found.");
+    } else {
+        println!("Goals ({}):\n", goals.len());
+        for g in goals {
+            let owner_str = g.owner.as_deref().map(|s| &s[..8]).unwrap_or("-");
+            println!("  ID: {} | Owner: {} | Goal: {}", g.id, owner_str, g.text);
+        }
+    }
+    Ok(())
+}
+
+fn goal_status(goal_id: &str) -> Result<()> {
+    let store = goal_store()?;
+
+    match store.get_goal(goal_id)? {
+        Some((text, status, max_turns, turns_used, paused_reason)) => {
+            println!("Goal: {}", text);
+            println!("  ID: {}", goal_id);
+            println!("  Status: {}", status);
+            println!("  Turns: {}/{}", turns_used, max_turns);
+            if let Some(ref reason) = paused_reason {
+                println!("  Paused: {}", reason);
+            }
+        }
+        None => {
+            println!("Goal '{}' not found.", goal_id);
+            println!("Use `oben goals list` to see available goals.");
+        }
+    }
+    Ok(())
+}
+
+async fn goal_pause(id: &str) -> Result<()> {
+    let store = goal_store()?;
+    let goal_id = resolve_if_active(&store, id)?;
+    if store.get_goal(&goal_id)?.is_some() {
+        store.pause_goal(&goal_id, "user-paused")?;
+        println!("Goal paused: {}", goal_id);
+    } else {
+        anyhow::bail!(
+            "Goal not found: {}. Run `oben goals start` to create one.",
+            goal_id
+        );
+    }
+    Ok(())
+}
+
+async fn goal_resume(id: &str, reset: bool) -> Result<()> {
+    let store = goal_store()?;
+    let goal_id = resolve_if_active(&store, id)?;
+    if store.get_goal(&goal_id)?.is_some() {
+        store.resume_goal(&goal_id, reset)?;
+        println!("Goal resumed: {} (budget reset: {})", goal_id, reset);
+    } else {
+        anyhow::bail!("Paused goal not found: {}.", goal_id);
+    }
+    Ok(())
+}
+
+async fn goal_clear(id: &str) -> Result<()> {
+    let store = goal_store()?;
+    let goal_id = resolve_if_active(&store, id)?;
+    if store.get_goal(&goal_id)?.is_some() {
+        store.delete_goal(&goal_id)?;
+        println!("Goal cleared: {}", goal_id);
+    } else {
+        anyhow::bail!("Goal not found: {}.", goal_id);
+    }
+    Ok(())
+}
+
+/// Resolve "active" to the most recent active goal from store, otherwise use the id as-is.
+fn resolve_if_active(store: &oben_goals::JsonGoalStore, id: &str) -> Result<String> {
+    if id == "active" {
+        let goal_id = store
+            .list_goals(Some("active"))?
+            .into_iter()
+            .next()
+            .map(|g| g.id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("No active goal found. Run `oben goals start` first.")
+            })?;
+        Ok(goal_id)
+    } else {
+        Ok(id.to_string())
+    }
+}
 // ── Cron ───────────────────────────────────────────────────────────────────
 
 fn cron_store() -> std::sync::Arc<CronStore> {

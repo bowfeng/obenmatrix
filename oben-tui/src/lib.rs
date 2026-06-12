@@ -380,7 +380,10 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         if let Some(panel) = app.panels.get_mut(&current_panel) {
                             match mouse_event.kind {
                                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                                    // Scroll changes visible content — redraw immediately.
+                                    // Forward scroll events to the panel so it can update
+                                    // its scroll state (chat.rs::handle_mouse toggles
+                                    // scroll_to_bottom and adjusts user_scroll_offset).
+                                    let _ = panel.handle_mouse(body_area, &mouse_event);
                                     app.needs_redraw = true;
                                 }
                                 _ => {
