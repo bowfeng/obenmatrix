@@ -8,44 +8,10 @@ use crate::callbacks::AgentCallbacks;
 use crate::context::ContextEngine;
 use crate::fallback::FallbackChain;
 use crate::interrupt::SharedInterrupt;
-use crate::nudge::NudgeConfig;
 use crate::post_turn_hook::PostTurnHook;
 use crate::retry::RetryConfig;
 use crate::turn_executor::{TurnConfig, TurnExecutor};
 use oben_models::{CallMode, Message, SessionManager, StreamDeltaCallback, TransportProvider};
-
-/// Callbacks for interactive_chat — abstracts I/O for CLI/TUI.
-#[derive(Clone)]
-pub struct ChatCallbacks {
-    pub print_info: fn(&str),
-    pub print_prompt: fn(),
-    pub print_flush: fn(),
-    pub read_input: fn() -> Option<String>,
-    pub print_newline: fn(),
-    pub should_exit: fn(&str) -> bool,
-}
-
-impl ChatCallbacks {
-    pub fn for_cli() -> Self {
-        Self {
-            print_info: |msg: &str| tracing::info!("{}", msg),
-            print_prompt: || tracing::trace!("> "),
-            print_flush: || {
-                let _ = std::io::stdout().flush();
-            },
-            read_input: || {
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_ok() {
-                    Some(input.trim().to_string())
-                } else {
-                    Some(String::new())
-                }
-            },
-            print_newline: || tracing::info!("\n"),
-            should_exit: |input: &str| input == "quit" || input == "exit",
-        }
-    }
-}
 
 /// Configuration for a turn execution in ConversationLoop.
 pub struct TurnOptions {
@@ -154,7 +120,7 @@ impl ConversationLoop {
         session_manager: &mut dyn SessionManager,
         call_mode: &mut Option<CallMode>,
         stream: bool,
-        callbacks: ChatCallbacks,
+        callbacks: &AgentCallbacks,
         hooks: &mut [Box<dyn crate::post_turn_hook::PostTurnHook>],
     ) -> Result<()> {
         let mut is_resumed_session = true;
@@ -164,15 +130,31 @@ impl ConversationLoop {
                 is_resumed_session = false;
             }
 
-            (callbacks.print_prompt)();
-            (callbacks.print_flush)();
+            // Print a newline before the prompt so the next response
+            // doesn't attach to the text
+            // if let Some(ref cb) = callbacks.print_newline {
+            //     cb();
+            // }
 
-            let input = match (callbacks.read_input)() {
-                Some(line) if !line.trim().is_empty() => line.trim().to_string(),
-                _ => continue,
+            if let Some(ref cb) = callbacks.print_prompt {
+                cb();
+            }
+            if let Some(ref cb) = callbacks.print_flush {
+                cb();
+            }
+
+            let input = match callbacks.read_input.as_ref().and_then(|f| f()) {
+                Some(line) if line.trim().is_empty() => {
+                    return Err(anyhow::anyhow!("No more input available"));
+                }
+                Some(line) => line.trim().to_string(),
+                None => {
+                    return Err(anyhow::anyhow!("stdin closed"));
+                }
             };
 
-            if (callbacks.should_exit)(&input) {
+            let should_exit_flag = callbacks.should_exit.as_ref().map(|f| f(&input)).unwrap_or(false);
+            if should_exit_flag {
                 break;
             }
 
@@ -201,10 +183,9 @@ impl ConversationLoop {
             let input_msg = Message::user(&input);
 
             let delta_cb = if stream {
-                let cb = callbacks.clone();
                 let f: StreamDeltaCallback = Box::new(move |text: &str| {
                     let _ = write!(std::io::stdout(), "{}", text);
-                    (cb.print_flush)();
+                    let _ = std::io::stdout().flush();
                 });
                 Some(f)
             } else {
@@ -242,9 +223,24 @@ impl ConversationLoop {
 
             if let Some(resp) = response_text {
                 if !stream {
-                    (callbacks.print_info)(&format!("\n{}", resp));
+                    if let Some(ref cb) = callbacks.print_info {
+                        cb(&format!("{}", resp));
+                    }
+                } else {
+                    // Stream mode: text already written via delta_cb without trailing newline
+                    if let Some(ref cb) = callbacks.print_newline {
+                        cb();
+                    }
                 }
-                (callbacks.print_flush)();
+                if let Some(ref cb) = callbacks.print_flush {
+                    cb();
+                }
+            }
+
+            // Print a newline after each response so the next prompt
+            // doesn't attach to the LLM output
+            if let Some(ref cb) = callbacks.print_newline {
+                cb();
             }
 
             // --- Post-turn hooks ---
@@ -296,11 +292,13 @@ impl ConversationLoop {
 
     /// Run the interactive chat loop.
     ///
-    /// After each turn, checks the nudge trigger. If triggered, injects a
-    /// memory/skill review prompt and runs one small turn to let the model
-    /// decide if memory should be updated — mirroring Hermes'
-    /// `_spawn_background_review` pipeline.
+    /// After each turn, evaluates `hooks` for potential action. Each hook is
+    /// responsible for its own trigger logic (e.g. `NudgePostTurnHook` checks
+    /// turn count thresholds). If triggered, it runs a bounded review turn
+    /// to let the model decide.
     ///
+    /// The hook list is built once at the `Agent` level from config, making
+    /// it configurable via `config.yaml` without editing source.
     pub async fn run_loop(
         context_engine: &mut dyn ContextEngine,
         transport: Arc<dyn TransportProvider + Send + Sync>,
@@ -308,13 +306,9 @@ impl ConversationLoop {
         session_manager: &mut dyn SessionManager,
         call_mode: &mut Option<CallMode>,
         stream: bool,
-        callbacks: ChatCallbacks,
-        nudge_config: &NudgeConfig,
+        callbacks: &AgentCallbacks,
+        hooks: &mut [Box<dyn PostTurnHook>],
     ) -> Result<()> {
-        let mut hooks: Vec<Box<dyn PostTurnHook>> = vec![Box::new(
-            crate::post_turn_hook::NudgePostTurnHook::new(nudge_config.clone()),
-        )];
-
         Self::run_loop_impl(
             context_engine,
             transport,
@@ -323,7 +317,7 @@ impl ConversationLoop {
             call_mode,
             stream,
             callbacks,
-            &mut hooks,
+            hooks,
         )
         .await
     }

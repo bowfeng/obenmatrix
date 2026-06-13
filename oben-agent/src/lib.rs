@@ -23,6 +23,7 @@ pub mod conversation;
 pub mod delegate;
 pub mod error_classifier;
 pub mod fallback;
+pub mod hooks;
 pub mod interrupt;
 pub mod message_sanitize;
 pub mod nudge;
@@ -45,6 +46,9 @@ pub use conversation::*;
 #[allow(ambiguous_glob_reexports)]
 pub use error_classifier::*;
 pub use fallback::*;
+pub use hooks::*;
+#[allow(ambiguous_glob_reexports)]
+pub use post_turn_hook::*;
 pub use interrupt::*;
 pub use message_sanitize::*;
 pub use nudge::NudgeConfig;

@@ -278,8 +278,8 @@ impl SubagentSpawner {
                 callbacks: crate::callbacks::AgentCallbacks::default(),
                 concurrent_dispatch_config:
                     crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
-                nudge_config: None,
                 session_store: oben_models::SessionStoreKind::Database,
+                hooks_config: oben_config::HooksConfig::default(),
             })
             .await;
 
@@ -617,10 +617,10 @@ pub fn build_spawn_fn_wrapper(
                     max_messages,
                     fallback_models: vec![],
                     callbacks: crate::callbacks::AgentCallbacks::default(),
-                    concurrent_dispatch_config:
+                     concurrent_dispatch_config:
                         crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
-                    nudge_config: None,
                     session_store: oben_models::SessionStoreKind::Database,
+                    hooks_config: oben_config::HooksConfig::default(),
                 })
                 .await
                 .map_err(|e| {

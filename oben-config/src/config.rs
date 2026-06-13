@@ -31,6 +31,23 @@ pub struct AppConfig {
     /// Session storage backend: "database" (default) or "memory".
     #[serde(default)]
     pub session_store: SessionStoreKind,
+    /// Retry behavior for API calls.
+    #[serde(default)]
+    pub retry: RetryConfig,
+    /// Concurrency settings for tool dispatch and compaction.
+    #[serde(default)]
+    pub concurrency: ConcurrencyConfig,
+    /// Post-turn hook settings.
+    #[serde(default)]
+    pub hooks: HooksConfig,
+    /// Fallback model chain.
+    pub fallback_models: Vec<FallbackConfig>,
+    /// Agent personality and behavior.
+    #[serde(default)]
+    pub agent: AgentConfig,
+    /// Event routing configuration for the callback relay.
+    #[serde(default)]
+    pub events: EventsConfig,
 }
 
 /// Configuration for vision/image analysis.
@@ -243,6 +260,13 @@ impl Default for ToolsConfig {
 pub struct SkillsConfig {
     pub enabled: Vec<String>,
     pub auto_use: Vec<String>,
+    /// Skill directories to scan (default: ["skills"]).
+    #[serde(default = "default_skills_dirs")]
+    pub dirs: Vec<String>,
+}
+
+fn default_skills_dirs() -> Vec<String> {
+    vec!["skills".to_string()]
 }
 
 impl Default for SkillsConfig {
@@ -250,6 +274,7 @@ impl Default for SkillsConfig {
         Self {
             enabled: vec![],
             auto_use: vec![],
+            dirs: default_skills_dirs(),
         }
     }
 }
@@ -300,6 +325,15 @@ pub struct ContextConfig {
     /// Token threshold as percentage of context_length for compaction (default: 0.75 = 75%).
     #[serde(default = "default_threshold_percent")]
     pub threshold_percent: f64,
+    /// Project context file names to discover (walk to git root for first entry).
+    pub files: Vec<String>,
+    /// Max chars to read from context files.
+    #[serde(default = "default_context_max_chars")]
+    pub max_chars: usize,
+}
+
+fn default_context_max_chars() -> usize {
+    20_000
 }
 
 fn default_compression() -> String {
@@ -321,11 +355,194 @@ impl Default for ContextConfig {
             compression: "summary".to_string(),
             context_length: default_context_length(),
             threshold_percent: default_threshold_percent(),
+            files: vec![".obenalien.md".to_string(), "OBEN.md".to_string(), "AGENTS.md".to_string(), "CLAUDE.md".to_string(), ".cursorrules".to_string()],
+            max_chars: default_context_max_chars(),
         }
     }
 }
 
-impl ContextConfig {}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetryConfig {
+    #[serde(default = "default_retry_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_retry_base_delay_ms")]
+    pub base_delay_ms: u64,
+    #[serde(default = "default_retry_max_delay_ms")]
+    pub max_delay_ms: u64,
+    #[serde(default = "default_retry_jitter_factor")]
+    pub jitter_factor: f64,
+    pub retryable_codes: Vec<u16>,
+}
+
+fn default_retry_max_retries() -> u32 {
+    3
+}
+
+fn default_retry_base_delay_ms() -> u64 {
+    500
+}
+
+fn default_retry_max_delay_ms() -> u64 {
+    60_000
+}
+
+fn default_retry_jitter_factor() -> f64 {
+    0.5
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_retry_max_retries(),
+            base_delay_ms: default_retry_base_delay_ms(),
+            max_delay_ms: default_retry_max_delay_ms(),
+            jitter_factor: default_retry_jitter_factor(),
+            retryable_codes: vec![429, 500, 502, 503, 504],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConcurrencyConfig {
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: usize,
+    #[serde(default)]
+    pub serial_only_tools: Vec<String>,
+    pub destructive_tools: Vec<String>,
+}
+
+fn default_max_concurrency() -> usize {
+    8
+}
+
+impl Default for ConcurrencyConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrency: default_max_concurrency(),
+            serial_only_tools: vec![],
+            destructive_tools: vec![
+                "write_file".to_string(),
+                "patch".to_string(),
+                "create_dir".to_string(),
+                "delete_file".to_string(),
+                "shell".to_string(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HooksConfig {
+    /// Hook types enabled for this agent (e.g. ["nudge"]).
+    /// Each type must have a corresponding entry in `configs`.
+    #[serde(default = "default_hooks_enabled")]
+    pub enabled: Vec<String>,
+    /// Per-hook-type configuration keyed by hook type name.
+    #[serde(default)]
+    pub configs: std::collections::BTreeMap<String, serde_yaml::Value>,
+}
+
+fn default_hooks_enabled() -> Vec<String> {
+    vec!["nudge".to_string()]
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(
+            "nudge".to_string(),
+            serde_yaml::Value::Mapping(Default::default()),
+        );
+        Self {
+            enabled: default_hooks_enabled(),
+            configs: map,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackConfig {
+    pub provider: String,
+    pub model: String,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_discipline: Option<String>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            identity: None,
+            execution_discipline: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventsConfig {
+    #[serde(default)]
+    pub tool_events: EventFilters,
+    #[serde(default)]
+    pub thought_events: EventFilters,
+    #[serde(default)]
+    pub status_events: EventFilters,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventFilters {
+    #[serde(default = "default_true")]
+    pub progress: bool,
+    #[serde(default = "default_true")]
+    pub start_complete: bool,
+    #[serde(default = "default_true")]
+    pub thinking: bool,
+    #[serde(default = "default_true")]
+    pub reasoning: bool,
+    #[serde(default = "default_true")]
+    pub lifecycle: bool,
+    #[serde(default = "default_true")]
+    pub fallback: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for EventFilters {
+    fn default() -> Self {
+        Self {
+            progress: true,
+            start_complete: true,
+            thinking: true,
+            reasoning: true,
+            lifecycle: true,
+            fallback: true,
+        }
+    }
+}
+
+impl Default for EventsConfig {
+    fn default() -> Self {
+        Self {
+            tool_events: EventFilters::default(),
+            thought_events: EventFilters::default(),
+            status_events: EventFilters::default(),
+        }
+    }
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -346,6 +563,7 @@ impl Default for AppConfig {
             skills: SkillsConfig {
                 enabled: vec![],
                 auto_use: vec![],
+                dirs: default_skills_dirs(),
             },
             gateway: None,
             display: DisplayConfig {
@@ -358,12 +576,20 @@ impl Default for AppConfig {
                 compression: "summary".to_string(),
                 context_length: 128_000,
                 threshold_percent: 0.75,
+                files: vec![".obenalien.md".to_string(), "OBEN.md".to_string(), "AGENTS.md".to_string(), "CLAUDE.md".to_string(), ".cursorrules".to_string()],
+                max_chars: default_context_max_chars(),
             },
             providers: Vec::new(),
             custom_providers: Vec::new(),
             vision: VisionConfig::default(),
             voice: VoiceConfig::default(),
             session_store: SessionStoreKind::Database,
+            retry: RetryConfig::default(),
+            concurrency: ConcurrencyConfig::default(),
+            hooks: HooksConfig::default(),
+            fallback_models: Vec::new(),
+            agent: AgentConfig::default(),
+            events: EventsConfig::default(),
         }
     }
 }
