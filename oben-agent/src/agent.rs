@@ -31,11 +31,12 @@ use oben_models::{CallMode, Message, StreamDeltaCallback};
 use oben_sessions::{SessionManager, SessionStore};
 
 use crate::callbacks::AgentCallbacks;
-use crate::conversation::{ChatCallbacks, ConversationLoop};
+use crate::conversation::ConversationLoop;
 use crate::fallback::FallbackChain;
+use crate::hooks::HookFactory;
 use crate::interrupt::InterruptState;
-use crate::nudge::NudgeConfig;
 use crate::system_prompt_cache::SystemPromptCache;
+use crate::PostTurnHook;
 
 /// Configuration for building an `Agent`.
 pub struct AgentConfig {
@@ -59,11 +60,80 @@ pub struct AgentConfig {
     pub callbacks: AgentCallbacks,
     /// Concurrent dispatch configuration.
     pub concurrent_dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
-    /// Nudge / background memory review config (tier-2).
-    /// Set `memory_nudge_interval` to 0 to disable.
-    pub nudge_config: Option<NudgeConfig>,
-        /// Session storage backend (e.g., "database" or "memory").
-        pub session_store: oben_models::SessionStoreKind,
+    /// Session storage backend (e.g., "database" or "memory").
+    pub session_store: oben_models::SessionStoreKind,
+    /// Hooks configuration for extensible post-turn behavior.
+    pub hooks_config: oben_config::HooksConfig,
+}
+
+/// Builder for `AgentConfig` from `AppConfig`.
+///
+/// Maps config values to runtime types, providing a single entry point that
+/// replaces the manual `AgentConfig { ..., retry_config: RetryConfig::default(), ... }`
+/// boilerplate at every call site.
+impl AgentConfig {
+    /// Build an `AgentConfig` from `AppConfig` and runtime resources.
+    ///
+    /// **Parameters:**
+    /// - `app_config` — the full application config
+    /// - `system_prompt` — the assembled system prompt (identity + tool guidance + context)
+    /// - `max_iterations` — max iterations per turn
+    /// - `max_messages` — max messages in context
+    /// - `skills_dirs` — directories to scan for skills
+    /// - `transport` — LLM transport provider
+    /// - `tools` — tool registry
+    /// - `callbacks` — agent callbacks for platform integration
+    pub fn from_app_config(
+        app_config: &oben_config::AppConfig,
+        system_prompt: String,
+        max_iterations: usize,
+        max_messages: usize,
+        skills_dirs: Vec<std::path::PathBuf>,
+        transport: std::sync::Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
+        tools: std::sync::Arc<oben_tools::ToolRegistry>,
+        callbacks: AgentCallbacks,
+    ) -> Self {
+        // Derive context config from app_config
+        let context_config = crate::compact::CompactCofig {
+            context_length: app_config.context.context_length,
+            threshold_percent: app_config.context.threshold_percent,
+            ..crate::compact::CompactCofig::default()
+        };
+
+        // Derive fallback models from app_config
+        let fallback_models: Vec<crate::fallback::FallbackConfig> = app_config
+            .fallback_models
+            .iter()
+            .map(|fb| crate::fallback::FallbackConfig {
+                provider: fb.provider.clone(),
+                model: fb.model.clone(),
+                api_key: fb.api_key.clone(),
+                base_url: fb.base_url.clone(),
+            })
+            .collect();
+
+        // Derive concurrent dispatch config from app_config
+        let concurrent_dispatch_config = crate::concurrent_dispatch::ConcurrentDispatchConfig {
+            max_concurrency: app_config.concurrency.max_concurrency,
+            serial_only_tools: app_config.concurrency.serial_only_tools.clone(),
+            destructive_tools: app_config.concurrency.destructive_tools.clone(),
+        };
+
+        Self {
+            system_prompt,
+            transport,
+            tools,
+            max_iterations,
+            max_messages,
+            skills_dirs,
+            context_config,
+            fallback_models,
+            callbacks,
+            concurrent_dispatch_config,
+            session_store: app_config.session_store.clone(),
+            hooks_config: app_config.hooks.clone(),
+        }
+    }
 }
 
 /// An interactive agent — owns all resources, delegates to ConversationLoop.
@@ -88,8 +158,8 @@ pub struct Agent {
     prompt_cache: SystemPromptCache,
     /// Concurrent dispatch config.
     dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
-    /// Nudge / background memory review config.
-    nudge_config: NudgeConfig,
+    /// Hooks configuration for extensible post-turn behavior.
+    hooks_config: oben_config::HooksConfig,
 }
 
 impl Agent {
@@ -110,7 +180,7 @@ impl Agent {
             callbacks: config.callbacks,
             prompt_cache: SystemPromptCache::new(),
             dispatch_config: config.concurrent_dispatch_config,
-            nudge_config: config.nudge_config.unwrap_or_default(),
+            hooks_config: config.hooks_config,
         };
         // Initialize the prompt cache with the initial system prompt.
         // The cache will be updated on each compaction/session change.
@@ -172,7 +242,7 @@ impl Agent {
             callbacks: AgentCallbacks::default(),
             prompt_cache: SystemPromptCache::new(),
             dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
-            nudge_config: NudgeConfig::default(),
+            hooks_config: oben_config::HooksConfig::default(),
         }
     }
 
@@ -665,7 +735,7 @@ impl Agent {
         &mut self,
         stream: bool,
         continue_with: Option<&str>,
-        callbacks: ChatCallbacks,
+        callbacks: &AgentCallbacks,
     ) -> Result<()> {
         let sm = Arc::clone(&self.session_manager);
         if let Some(key) = continue_with {
@@ -681,26 +751,39 @@ impl Agent {
             let name = self.continue_session(&resolved).await?;
             if let Some(s) = sm.lock().await.active_session() {
                 let count = s.messages.len();
-                (callbacks.print_info)(&format!(
-                    "Continuing session: {} ({} messages)\n",
-                    name, count
-                ));
+                if let Some(ref cb) = callbacks.print_info {
+                    cb(&format!(
+                        "Continuing session: {} ({} messages)\n",
+                        name, count
+                    ));
+                }
                 print_session_messages(&s.messages, 10);
-                (callbacks.print_info)("");
+                if let Some(ref cb) = callbacks.print_info {
+                    cb("");
+                }
             }
         } else if let Some(name) = self.loaded_session_name().await {
             if let Some(s) = sm.lock().await.active_session() {
-                (callbacks.print_info)(&format!(
-                    "Session: {} ({} messages)\n",
-                    name,
-                    s.messages.len()
-                ));
+                if let Some(ref cb) = callbacks.print_info {
+                    cb(&format!(
+                        "Session: {} ({} messages)\n",
+                        name,
+                        s.messages.len()
+                    ));
+                }
             }
         }
-        (callbacks.print_info)("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
-        (callbacks.print_flush)();
+        if let Some(ref cb) = callbacks.print_info {
+            cb("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
+        }
+        if let Some(ref cb) = callbacks.print_flush {
+            cb();
+        }
 
         let sm = Arc::clone(&self.session_manager);
+        // Build hooks from config via HookFactory — future hooks added in one place.
+        let mut hooks: Vec<Box<dyn PostTurnHook>> = HookFactory::build_hooks(&self.hooks_config);
+
         let _result = ConversationLoop::run_loop(
             &mut self.context_engine,
             Arc::clone(&self.transport),
@@ -709,7 +792,7 @@ impl Agent {
             &mut self.call_mode,
             stream,
             callbacks,
-            &self.nudge_config,
+            &mut hooks,
         )
         .await;
         _result

@@ -480,24 +480,16 @@ impl App {
             ));
         }
 
-        let agent_config = AgentConfig {
-            system_prompt: assembled.prompt,
+        let agent_config = AgentConfig::from_app_config(
+            &self.config,
+            assembled.prompt,
+            self.config.max_iterations.unwrap_or(50),
+            self.config.context.max_messages.unwrap_or(100),
+            vec![],
             transport,
-            tools: Arc::clone(&self.tools),
-            skills_dirs: vec![],
-            max_iterations: self.config.max_iterations.unwrap_or(50),
-            max_messages: self.config.context.max_messages.unwrap_or(100),
-            context_config: oben_agent::compact::CompactCofig {
-                context_length: self.config.context.context_length,
-                threshold_percent: self.config.context.threshold_percent,
-                ..oben_agent::compact::CompactCofig::default()
-            },
-            fallback_models: vec![],
+            Arc::clone(&self.tools),
             callbacks,
-            concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
-            nudge_config: None,
-            session_store: self.config.session_store.clone(),
-        };
+        );
 
         self.agent = Some(Arc::new(tokio::sync::Mutex::new(
             Agent::new(agent_config).await?,
@@ -755,6 +747,12 @@ impl App {
             custom_providers: self.config.custom_providers.clone(),
             vision: self.config.vision.clone(),
             session_store: self.config.session_store.clone(),
+            retry: self.config.retry.clone(),
+            concurrency: self.config.concurrency.clone(),
+            hooks: self.config.hooks.clone(),
+            fallback_models: self.config.fallback_models.clone(),
+            agent: self.config.agent.clone(),
+            events: self.config.events.clone(),
         });
         self.panels.insert(PanelId::Setup, Box::new(panel));
     }

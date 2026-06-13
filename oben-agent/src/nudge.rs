@@ -11,7 +11,7 @@
 // ── Config ──────────────────────────────────────────────────────────────────
 
 /// Configuration for nudge triggers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NudgeConfig {
     /// How many user turns to wait before triggering a memory review.
     /// Set to `0` to disable.

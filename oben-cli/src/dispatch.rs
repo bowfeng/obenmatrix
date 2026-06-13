@@ -14,9 +14,8 @@ use crate::cli::{
 use clap::Parser;
 use oben_cron::{CronJob, CronStore};
 use oben_goals::{GoalStore, JsonGoalStore};
-use oben_models::{Session, TransportProvider};
+use oben_models::TransportProvider;
 use oben_sessions::DBSessionManager;
-use std::sync::Arc;
 
 /// Entry point: parse CLI args and dispatch to the appropriate handler.
 pub async fn run_cli() -> Result<()> {
@@ -91,7 +90,9 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
     let tool_names: Vec<String> = tools.list_tools().iter().map(|t| t.name.clone()).collect();
 
     let identity = oben_config::defaults::default_system_prompt();
-    let skills_dirs = vec![std::path::PathBuf::from("skills")];
+    let skills_dirs: Vec<std::path::PathBuf> = config.skills.dirs.iter()
+        .map(|d| std::path::PathBuf::from(d))
+        .collect();
     let context_cwd = std::env::current_dir().ok();
 
     let volatile =
@@ -105,29 +106,47 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         Some(&volatile),
     );
 
-    let mut chat = oben_agent::Agent::new(oben_agent::AgentConfig {
-        system_prompt: assembled.prompt.clone(),
-        transport: create_transport(&config, &assembled.prompt, &tools),
-        tools: std::sync::Arc::new(tools),
-        skills_dirs,
-        max_iterations: config.max_iterations.unwrap_or(50),
-        max_messages: config.context.max_messages.unwrap_or(100),
-        context_config: oben_agent::compact::CompactCofig {
-            context_length: config.context.context_length,
-            threshold_percent: config.context.threshold_percent,
-            ..oben_agent::compact::CompactCofig::default()
-        },
-        fallback_models: vec![],
-        callbacks: oben_agent::AgentCallbacks::default(),
-        concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
-        nudge_config: None,
-        session_store: config.session_store,
-    })
-    .await?;
+    let max_iterations = config.max_iterations.unwrap_or(50);
+    let max_messages = config.context.max_messages.unwrap_or(100);
 
-    let callbacks = oben_agent::ChatCallbacks::for_cli();
-    chat.interactive_chat(stream, continue_with, callbacks)
+    let transport = create_transport(&config, &assembled.prompt, &tools);
+    let tools = std::sync::Arc::new(tools);
+
+    let mut chat = oben_agent::Agent::new(oben_agent::AgentConfig::from_app_config(
+        &config,
+        assembled.prompt.clone(),
+        max_iterations,
+        max_messages,
+        skills_dirs,
+        transport,
+        tools,
+        oben_agent::AgentCallbacks::default(),
+    )    ).await?;
+
+    let callbacks = create_cli_callbacks();
+    chat.interactive_chat(stream, continue_with, &callbacks)
         .await
+}
+
+fn create_cli_callbacks() -> oben_agent::AgentCallbacks {
+    use std::io::{self, Write};
+    oben_agent::AgentCallbacks {
+        print_prompt: Some(Box::new(|| print!("> "))),
+        print_flush: Some(Box::new(|| { let _ = std::io::stdout().flush(); })),
+        print_info: Some(Box::new(|msg: &str| print!("{}
+", msg))),
+        print_newline: Some(Box::new(|| println!())),
+        read_input: Some(Box::new(|| {
+            let mut input = String::new();
+            if io::stdin().read_line(&mut input).is_ok() {
+                Some(input.trim().to_string())
+            } else {
+                Some(String::new())
+            }
+        })),
+        should_exit: Some(Box::new(|input: &str| input == "quit" || input == "exit")),
+        ..Default::default()
+    }
 }
 
 async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
@@ -138,26 +157,25 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
 
     let system_prompt = oben_config::defaults::default_system_prompt();
     let transport = create_transport(&config, &system_prompt, &tools);
+    let tools = std::sync::Arc::new(tools);
 
-    let mut agent = oben_agent::Agent::new(oben_agent::AgentConfig {
-        system_prompt: system_prompt,
+    let max_iterations = config.max_iterations.unwrap_or(50);
+    let max_messages = config.context.max_messages.unwrap_or(100);
+
+    let skills_dirs: Vec<std::path::PathBuf> = config.skills.dirs.iter()
+        .map(|d| std::path::PathBuf::from(d))
+        .collect();
+
+    let mut agent = oben_agent::Agent::new(oben_agent::AgentConfig::from_app_config(
+        &config,
+        system_prompt,
+        max_iterations,
+        max_messages,
+        skills_dirs,
         transport,
-        tools: std::sync::Arc::new(tools),
-        skills_dirs: vec![],
-        max_iterations: config.max_iterations.unwrap_or(50),
-        max_messages: config.context.max_messages.unwrap_or(100),
-        context_config: oben_agent::compact::CompactCofig {
-            context_length: config.context.context_length,
-            threshold_percent: config.context.threshold_percent,
-            ..oben_agent::compact::CompactCofig::default()
-        },
-        fallback_models: vec![],
-        callbacks: oben_agent::AgentCallbacks::default(),
-        concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
-        nudge_config: None,
-        session_store: config.session_store,
-    })
-    .await?;
+        tools,
+        oben_agent::AgentCallbacks::default(),
+    )).await?;
 
     let response = agent
         .turn(
@@ -531,7 +549,8 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
         &config.model,
         system_prompt.clone(),
     ));
-    let transport = oben_transport::Transport::from_config_with_tools_via_registry(
+    // transport is used later in the closure when creating goal_agent
+    let _transport = oben_transport::Transport::from_config_with_tools_via_registry(
         &config.model,
         &system_prompt,
         &tool_defs,
@@ -637,6 +656,7 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
 
     let mut tools = oben_tools::ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut tools);
+    let tools = std::sync::Arc::new(tools);
     let sp = oben_config::defaults::default_system_prompt();
     let transport =
           oben_transport::Transport::from_config_with_tools_via_registry(&config.model, &sp, &tool_defs);
@@ -662,26 +682,21 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
             let max_iterations = max_iterations;
             let max_messages = max_messages;
             let prompt_owned = prompt.to_string();
+            let config = config.clone();
             async move {
-                let mut goal_agent =   oben_agent::Agent::new(oben_agent::AgentConfig {
-                    system_prompt: sp,
-                    transport: transport.clone(),
-                    tools: std::sync::Arc::new(tools),
-                    skills_dirs: vec![],
+                let skills_dirs: Vec<std::path::PathBuf> = config.skills.dirs.iter()
+                    .map(|d| std::path::PathBuf::from(d))
+                    .collect();
+                let mut goal_agent =   oben_agent::Agent::new(oben_agent::AgentConfig::from_app_config(
+                    &config,
+                    sp,
                     max_iterations,
                     max_messages,
-                    context_config: oben_agent::compact::CompactCofig {
-                        context_length: config.context.context_length,
-                        threshold_percent: config.context.threshold_percent,
-                        ..oben_agent::compact::CompactCofig::default()
-                    },
-                    fallback_models: vec![],
-                    callbacks: oben_agent::AgentCallbacks::default(),
-                    concurrent_dispatch_config:
-                          oben_agent::ConcurrentDispatchConfig::default(),
-                    nudge_config: None,
-                    session_store: config.session_store,
-                })
+                    skills_dirs,
+                    transport,
+                    tools,
+                    oben_agent::AgentCallbacks::default(),
+                ))
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 

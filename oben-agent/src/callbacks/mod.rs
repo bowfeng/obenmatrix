@@ -1,10 +1,10 @@
-/// Rich callback system for platform integration.
+/// Agent events — output channel for platform integration.
 ///
 /// Mirrors Hermes' 11+ callback parameters consolidated into a single struct.
 /// All callbacks are `Option<Box<dyn Fn(...) + Send + Sync>>`.
 ///
 /// Note: `AgentCallbacks` is NOT `Clone` because `Box<dyn Fn>` doesn't impl `Clone`.
-/// This is by design - callers create the callbacks once and pass by reference.
+/// This is by design - callers create the events once and pass by reference.
 ///
 /// ## Relay Integration
 ///
@@ -24,11 +24,11 @@
 /// });
 ///
 /// // AgentCallbacks gets the relay
-/// let mut callbacks = AgentCallbacks::default();
-/// callbacks.with_relay(relay);
+/// let mut events = AgentCallbacks::default();
+/// events.with_relay(relay);
 ///
-/// // Now calling callbacks triggers relay subscribers too
-/// callbacks.call_tool_progress("shell", "ls");
+/// // Now calling events triggers relay subscribers too
+/// events.call_tool_progress("shell", "ls");
 /// ```
 use std::sync::Arc;
 
@@ -260,6 +260,18 @@ pub struct AgentCallbacks {
     pub status: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
     /// Verbose print — always visible even during streaming
     pub vprint: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    /// Prompt output (e.g. "> ")
+    pub print_prompt: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Print flushed
+    pub print_flush: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Print info line
+    pub print_info: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    /// Read stdin input
+    pub read_input: Option<Box<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// Print newline
+    pub print_newline: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Exit decision (given user input)
+    pub should_exit: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
     /// Optional relay for parent<→>child event forwarding.
     ///
     /// When set, all callback invocations are forwarded through the relay
