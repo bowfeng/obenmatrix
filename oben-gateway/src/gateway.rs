@@ -1,7 +1,7 @@
 /// Gateway — manages platform connections and routes messages to the agent.
 /// Maps to `gateway/gateway.py` in Hermes.
 use anyhow::Result;
-use oben_sessions::SessionManager;
+use oben_sessions::DBSessionManager;
 use oben_tools::ToolRegistry;
 use tracing::info;
 
@@ -9,12 +9,12 @@ use crate::platform::IncomingMessage;
 
 /// The gateway process — listens on multiple platforms and routes to the agent.
 pub struct Gateway {
-    session_manager: SessionManager,
+    session_manager: DBSessionManager,
     tools: ToolRegistry,
 }
 
 impl Gateway {
-    pub fn new(session_manager: SessionManager, tools: ToolRegistry) -> Self {
+    pub fn new(session_manager: DBSessionManager, tools: ToolRegistry) -> Self {
         Self {
             session_manager,
             tools,
@@ -48,7 +48,7 @@ impl Gateway {
         }
     }
 
-    pub fn session_manager(&self) -> &SessionManager {
+    pub fn session_manager(&self) -> &DBSessionManager {
         &self.session_manager
     }
 
@@ -65,7 +65,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_message_echo() {
         let gateway = Gateway::new(
-            SessionManager::new().unwrap(),
+            DBSessionManager::new().unwrap(),
             oben_tools::ToolRegistry::new(),
         );
         let msg = IncomingMessage {
@@ -82,7 +82,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_message_short_content() {
         let gateway = Gateway::new(
-            SessionManager::new().unwrap(),
+            DBSessionManager::new().unwrap(),
             oben_tools::ToolRegistry::new(),
         );
         let msg = IncomingMessage {
@@ -99,7 +99,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_message_long_content_preview() {
         let gateway = Gateway::new(
-            SessionManager::new().unwrap(),
+            DBSessionManager::new().unwrap(),
             oben_tools::ToolRegistry::new(),
         );
         let long_content = "a".repeat(50);
@@ -118,7 +118,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_message_empty_content() {
         let gateway = Gateway::new(
-            SessionManager::new().unwrap(),
+            DBSessionManager::new().unwrap(),
             oben_tools::ToolRegistry::new(),
         );
         let msg = IncomingMessage {

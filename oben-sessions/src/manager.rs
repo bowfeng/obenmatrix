@@ -3,7 +3,7 @@ use rusqlite::{params, types::Value, Connection, OptionalExtension};
 use tracing::info;
 
 use oben_models::{
-    Message, MessageRole, Session, SessionManagerExt, SessionMetadata, SessionSource, SessionStore,
+    Message, MessageRole, Session, SessionManager, SessionMetadata, SessionSource,
 };
 
 fn now_ts() -> f64 {
@@ -1823,24 +1823,24 @@ pub enum SessionState {
 }
 
 /// In-memory session cache with SQLite persistence via SessionDB.
-pub struct SessionManager {
+pub struct DBSessionManager {
     db: SessionDB,
     sessions: std::collections::HashMap<String, Session>,
     active_session_id: Option<String>,
     state: SessionState,
 }
 
-impl SessionManager {
+impl DBSessionManager {
     pub fn new() -> Result<Self> {
         let db_dir = dirs::home_dir()
             .map(|d| d.join(".obenalien").join("memory"))
             .unwrap_or_else(|| std::path::PathBuf::from("~/.obenalien"));
-        let db_path = db_dir.join("state.db");
+        let db_path = db_dir.join("sessions.db");
         Self::new_with_db_path(db_path)
     }
 
     pub fn new_with_path(storage_path: std::path::PathBuf) -> Result<Self> {
-        let db_path = storage_path.join("state.db");
+        let db_path = storage_path.join("sessions.db");
         Self::new_with_db_path(db_path)
     }
 
@@ -2632,52 +2632,52 @@ impl SessionManager {
     }
 }
 
-// ── SessionManagerExt impl for SessionManager ───────────────────────────
-// Uses `SessionManager::method(self)` to call inherent methods without
+// ── SessionManager impl for DBSessionManager ───────────────────────────
+// Uses `Self::method(self)` to call inherent methods without
 // ambiguity — avoids infinite recursion vs `self.method()`.
 
-impl SessionManagerExt for SessionManager {
+impl SessionManager for DBSessionManager {
     fn init(&mut self) -> Result<()> {
-        SessionManager::init(self)
+        Self::init(self)
     }
     fn get_or_create_session(&mut self, name: &str) -> &mut Session {
-        SessionManager::get_or_create_session(self, name)
+        Self::get_or_create_session(self, name)
     }
     fn create_session(&mut self, name: &str) -> &mut Session {
-        SessionManager::create_session(self, name)
+        Self::create_session(self, name)
     }
     fn switch_session(&mut self, key: &str) -> Result<&mut Session, anyhow::Error> {
-        SessionManager::switch_session(self, key)
+        Self::switch_session(self, key)
     }
     fn reset_current_session(&mut self) -> Result<()> {
-        SessionManager::reset_current_session(self)
+        Self::reset_current_session(self)
     }
     fn reset_session(&mut self, key: &str) -> Result<()> {
-        SessionManager::reset_session(self, key)
+        Self::reset_session(self, key)
     }
     fn suspend_session(&mut self, key: &str) -> bool {
-        SessionManager::suspend_session(self, key)
+        Self::suspend_session(self, key)
     }
     fn mark_resume_pending(&mut self, key: &str, reason: &str) -> bool {
-        SessionManager::mark_resume_pending(self, key, reason)
+        Self::mark_resume_pending(self, key, reason)
     }
     fn clear_resume_pending(&mut self, key: &str) -> bool {
-        SessionManager::clear_resume_pending(self, key)
+        Self::clear_resume_pending(self, key)
     }
     fn list_sessions(&self, active_minutes: Option<u64>) -> Vec<oben_models::SessionListEntry> {
-        SessionManager::list_sessions(self, active_minutes)
+        Self::list_sessions(self, active_minutes)
     }
     fn delete_session(&mut self, key: &str) -> Result<()> {
-        SessionManager::remove_session(self, key)
+        Self::remove_session(self, key)
     }
     fn prune_sessions(&mut self, max_age_days: i64) -> usize {
-        SessionManager::prune_sessions(self, max_age_days)
+        Self::prune_sessions(self, max_age_days)
     }
     fn save_session(&mut self, session_id: Option<&str>) -> Result<()> {
-        SessionManager::incremental_save(self, session_id)
+        Self::incremental_save(self, session_id)
     }
     fn active_session_id(&self) -> Option<String> {
-        SessionManager::active_session_id(self)
+        Self::active_session_id(self)
     }
     fn update_token_tracking(
         &mut self,
@@ -2687,7 +2687,7 @@ impl SessionManagerExt for SessionManager {
         total_tokens: usize,
         estimated_cost_usd: f64,
     ) {
-        SessionManager::update_token_tracking(
+        Self::update_token_tracking(
             self,
             session_id,
             input_tokens,
@@ -2697,35 +2697,48 @@ impl SessionManagerExt for SessionManager {
         )
     }
     fn split_after_compression(&mut self, parent_id: &str) -> Result<Session, anyhow::Error> {
-        SessionManager::split_after_compression(self, parent_id)
+        Self::split_after_compression(self, parent_id)
     }
     fn active_session_mut(&mut self) -> Option<&mut Session> {
-        SessionManager::active_session_mut(self)
+        Self::active_session_mut(self)
     }
     fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
-        SessionManager::session_mut(self, session_id)
+        Self::session_mut(self, session_id)
     }
     fn session(&self, session_id: &str) -> Option<&Session> {
-        SessionManager::session(self, session_id)
+        Self::session(self, session_id)
     }
-    fn save_compacted(&mut self, session_id: &str, messages: &[Message]) -> Result<()> {
-        SessionManager::save_compacted(self, session_id, messages)
+    fn save_compacted(&mut self, session_id: &str, messages: &[Message]) -> Result<(), anyhow::Error> {
+        Self::save_compacted(self, session_id, messages)
+    }
+    fn active_session(&self) -> Option<&Session> {
+        self.active_session()
+    }
+    fn incremental_save(&mut self, session_id: Option<&str>) -> Result<(), anyhow::Error> {
+        Self::incremental_save(self, session_id)
+    }
+    fn new_session(&mut self, name: &str) -> Result<&mut Session, anyhow::Error> {
+        Ok(Self::new_session(self, name))
+    }
+    fn find_key(&self, key: &str) -> Option<String> {
+        Self::find_key(self, key)
+    }
+    fn list_sessions_full(&self) -> Vec<Session> {
+        Self::list_sessions_full(self)
+    }
+    fn get_session_messages(&self, session_id: &str) -> Result<Vec<crate::Message>, anyhow::Error> {
+        Self::get_session_messages(self, session_id)
+    }
+    fn ensure_session_loaded(&mut self, session_id: &str) -> Result<(), anyhow::Error> {
+        Self::ensure_session_loaded(self, session_id)
+    }
+    fn close(&mut self) -> Result<(), anyhow::Error> {
+        Self::close(self)
     }
 }
 
-// ── SessionStore impl ───────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────
 
-impl SessionStore for SessionManager {
-    #[inline]
-    fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
-        self.sessions.get_mut(session_id)
-    }
-
-    #[inline]
-    fn session(&self, session_id: &str) -> Option<&Session> {
-        self.sessions.get(session_id)
-    }
-}
 
 pub struct SwitchResult {
     pub session_id: String,
@@ -2749,7 +2762,7 @@ pub struct SpawnedSession {
     pub parent_session_id: String,
 }
 
-impl SessionManager {
+impl DBSessionManager {
     /// Create a new session for a subagent delegate run.
     ///
     /// Sets `parent_session_id` on the session in the database so lineage
@@ -2802,7 +2815,7 @@ mod tests {
     #[test]
     fn test_manager_creates_session() {
         let path = make_test_dir();
-        let mut mgr = SessionManager::new_with_path(path).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(path).unwrap();
         let session = mgr.new_session("test-session");
         assert_eq!(session.name, "test-session");
         assert!(!session.id.is_empty());
@@ -2812,7 +2825,7 @@ mod tests {
     #[test]
     fn test_manager_list_sessions() {
         let path = make_test_dir();
-        let mut mgr = SessionManager::new_with_path(path).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(path).unwrap();
         mgr.new_session("s1");
         mgr.new_session("s2");
         assert_eq!(mgr.list_sessions_ref().len(), 2);
@@ -2821,7 +2834,7 @@ mod tests {
     #[test]
     fn test_manager_get_or_create_reuses_existing() {
         let path = make_test_dir();
-        let mut mgr = SessionManager::new_with_path(path).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(path).unwrap();
         let s1 = mgr.get_or_create_session("my-session");
         s1.add_message(Message::user("first"));
         let s2 = mgr.get_or_create_session("my-session");
@@ -2832,7 +2845,7 @@ mod tests {
     #[test]
     fn test_save_and_load_roundtrip() {
         let path = make_test_dir();
-        let mut mgr = SessionManager::new_with_path(path.clone()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(path.clone()).unwrap();
         let session = mgr.new_session("persist-test");
         let sid = session.id.clone();
         session.add_message(Message::user("hello"));
@@ -2840,7 +2853,7 @@ mod tests {
         let count = mgr.session_count();
         mgr.incremental_save(None).unwrap();
         // Test metadata-only load (no messages)
-        let mut mgr3 = SessionManager::new_with_path(path.clone()).unwrap();
+        let mut mgr3 = DBSessionManager::new_with_path(path.clone()).unwrap();
         mgr3.load(None).unwrap();
         assert_eq!(mgr3.session_count(), count);
         let meta_loaded = mgr3.active_session().unwrap();
@@ -2856,7 +2869,7 @@ mod tests {
             "metadata message_count should be 2"
         );
         // Test full roundtrip with messages
-        let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
+        let mut mgr2 = DBSessionManager::new_with_path(path.clone()).unwrap();
         mgr2.load(Some(&sid)).unwrap();
         assert_eq!(mgr2.session_count(), count);
         let loaded = mgr2.active_session().unwrap();
@@ -2867,7 +2880,7 @@ mod tests {
     #[test]
     fn test_switch_session() {
         let path = make_test_dir();
-        let mut mgr = SessionManager::new_with_path(path).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(path).unwrap();
         let s1 = mgr.new_session("s1");
         s1.add_message(Message::user("msg in s1"));
         let s1_id = s1.id.clone();
@@ -2883,7 +2896,7 @@ mod tests {
     #[test]
     fn test_switch_to_nonexistent_session_fails() {
         let path = make_test_dir();
-        let mut mgr = SessionManager::new_with_path(path).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(path).unwrap();
         let err = mgr.switch_session("nonexistent-id").unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
@@ -2891,9 +2904,9 @@ mod tests {
     #[test]
     fn test_load_empty_directory() {
         let path = make_test_dir();
-        let mut mgr = SessionManager::new_with_path(path.clone()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(path.clone()).unwrap();
         mgr.incremental_save(None).unwrap();
-        let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
+        let mut mgr2 = DBSessionManager::new_with_path(path.clone()).unwrap();
         mgr2.load(None).unwrap();
         assert_eq!(mgr2.session_count(), 0);
     }
@@ -2902,7 +2915,7 @@ mod tests {
     fn test_save_load_messages_persisted() {
         // SQLite persists all messages to DB — verified by round-trip load
         let path = make_test_dir();
-        let mut mgr = SessionManager::new_with_path(path.clone()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(path.clone()).unwrap();
         let session = mgr.new_session("persist-test");
         let sid = session.id.clone();
         session.add_message(Message::user("msg1"));
@@ -2910,7 +2923,7 @@ mod tests {
         session.add_message(Message::user("msg3"));
         session.add_message(Message::assistant("msg4"));
         mgr.incremental_save(None).unwrap();
-        let mut mgr2 = SessionManager::new_with_path(path.clone()).unwrap();
+        let mut mgr2 = DBSessionManager::new_with_path(path.clone()).unwrap();
         // load(None) loads metadata only (no messages), use load(Some) for message roundtrip
         mgr2.load(Some(&sid)).unwrap();
         let loaded = mgr2.active_session().unwrap();
@@ -2919,7 +2932,7 @@ mod tests {
 
     #[test]
     fn test_manager_delete() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.new_session("to-delete");
         assert_eq!(mgr.list().len(), 1);
         let id = mgr.list()[0].id.clone();
@@ -2933,7 +2946,7 @@ mod tests {
         // (not UUID), because remove_session passed the name directly
         // to db.delete_session() and HashMap::remove() which both
         // expect the UUID primary key.
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.new_session("delete-by-name");
         assert_eq!(mgr.list().len(), 1);
         mgr.remove_session("delete-by-name").unwrap();
@@ -2946,7 +2959,7 @@ mod tests {
 
     #[test]
     fn test_db_create_and_get_session() {
-        let path = make_db_dir().join("state.db");
+        let path = make_db_dir().join("sessions.db");
         let db = SessionDB::new(&path).unwrap();
         let session = db.get_or_create_session("test-session").unwrap();
         assert_eq!(session.name, "test-session");
@@ -3020,7 +3033,7 @@ mod tests {
     /// then: parent session has end_reason="compression" and ended_at set
     #[test]
     fn test_split_after_compression_creates_child_session() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         let parent_id = {
             let parent = mgr.new_session("test-chat");
             parent.add_message(Message::user("hello"));
@@ -3055,7 +3068,7 @@ mod tests {
     /// then: child session has parent_session_id = parent_id
     #[test]
     fn test_split_after_compression_sets_parent_session_id() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         let parent_id = {
             let parent = mgr.new_session("test-chat-2");
             parent.add_message(Message::user("hello"));
@@ -3081,7 +3094,7 @@ mod tests {
     /// then: child title is "chat-12345 (2)"
     #[test]
     fn test_split_after_compression_auto_numbers_title() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         let parent_id = {
             let parent = mgr.new_session("chat-12345");
             parent.id.clone()
@@ -3106,7 +3119,7 @@ mod tests {
     /// then: returned session is the child with correct title
     #[test]
     fn test_split_after_compression_returns_child() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         let parent_id = {
             let parent = mgr.new_session("split-test");
             parent.add_message(Message::user("msg1"));
@@ -3209,7 +3222,7 @@ mod tests {
     /// then: in-memory metadata.title and DB title are both updated
     #[test]
     fn test_set_title_updates_memory_and_db() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         let session = mgr.create_session("old-session-name");
         session.metadata.title = Some("old-title".to_string());
         let sid = session.id.clone();
@@ -3233,7 +3246,7 @@ mod tests {
     /// then: error is returned
     #[test]
     fn test_set_title_unique_constraint() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("first-session-name");
         mgr.create_session("second-session-name");
 
@@ -3275,7 +3288,7 @@ mod tests {
     /// then: DB contains exactly those 5 messages (old 20 deleted), not 25 (20+5)
     #[test]
     fn test_save_compacted_replaces_db_messages() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         let session = mgr.new_session("compaction-test");
         let sid = session.id.clone();
 
@@ -3347,7 +3360,7 @@ mod tests {
     /// Then: the guard holds the child session and parent_id
     #[test]
     fn test_spawn_subagent_session_leaves_parent_active() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.init().unwrap();
         let _parent = mgr.create_session("parent");
         let parent_id = mgr.active_session_id().unwrap();
@@ -3367,7 +3380,7 @@ mod tests {
     /// spawn_session_for_subagent persists parent_session_id to the DB.
     #[test]
     fn test_spawn_subagent_session_sets_parent_id_in_db() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.init().unwrap();
         let _parent = mgr.create_session("parent");
         let parent_id = mgr.active_session_id().unwrap();
@@ -3386,7 +3399,7 @@ mod tests {
     /// spawn_session_for_subagent fails when there is no active session.
     #[test]
     fn test_spawn_no_active_session_fails() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.init().unwrap();
         match mgr.spawn_session_for_subagent("unexpected") {
             Err(ref e) => {
@@ -3407,7 +3420,7 @@ mod tests {
     /// Then: the goal record is persisted with correct fields
     #[test]
     fn test_create_goal_persists_in_db() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("test-session");
         let sid = mgr.active_session_id().unwrap();
 
@@ -3430,7 +3443,7 @@ mod tests {
     /// Then: the goal record reflects the updates
     #[test]
     fn test_update_goal_changes_status_and_turns() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("test-session");
         let sid = mgr.active_session_id().unwrap();
 
@@ -3461,7 +3474,7 @@ mod tests {
     /// Then: the goal status becomes 'paused' and paused_reason is set
     #[test]
     fn test_pause_goal_persists_reason() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("test-session");
         let sid = mgr.active_session_id().unwrap();
 
@@ -3489,7 +3502,7 @@ mod tests {
     /// Then: status becomes 'active' and turns_used resets to 0
     #[test]
     fn test_resume_goal_resets_budget() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("test-session");
         let sid = mgr.active_session_id().unwrap();
 
@@ -3517,7 +3530,7 @@ mod tests {
     /// Then: the goal and its nodes are removed
     #[test]
     fn test_delete_goal_removes_goal_and_nodes() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("test-session");
         let sid = mgr.active_session_id().unwrap();
 
@@ -3543,7 +3556,7 @@ mod tests {
     /// Then: only matching goals are returned
     #[test]
     fn test_list_goals_filters_by_status() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("test-session");
         let sid = mgr.active_session_id().unwrap();
 
@@ -3572,7 +3585,7 @@ mod tests {
     /// Then: all nodes are returned in insertion order
     #[test]
     fn test_goal_node_lifecycle() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("test-session");
         let sid = mgr.active_session_id().unwrap();
 
@@ -3599,7 +3612,7 @@ mod tests {
     /// Then: the node's status changes accordingly
     #[test]
     fn test_update_goal_node() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("test-session");
         let sid = mgr.active_session_id().unwrap();
 
@@ -3638,7 +3651,7 @@ mod tests {
     /// Then: the goal is created with NULL owner_session
     #[test]
     fn test_create_goal_without_owner() {
-        let mut mgr = SessionManager::new_with_path(make_test_dir()).unwrap();
+        let mut mgr = DBSessionManager::new_with_path(make_test_dir()).unwrap();
         mgr.create_session("test-session");
         let _sid = mgr.active_session_id().unwrap();
 

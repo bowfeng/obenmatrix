@@ -10,8 +10,8 @@ use std::sync::Arc;
 use oben_agent::compact_context::CompactContextEngine;
 use oben_agent::context::ContextEngine;
 use oben_agent::turn_executor::TurnExecutor;
-use oben_models::{CallMode, Message, SessionManagerExt, TransportProvider};
-use oben_sessions::SessionManager;
+use oben_models::{CallMode, Message, TransportProvider};
+use oben_sessions::DBSessionManager;
 use tempfile::TempDir;
 
 fn make_test_dir() -> TempDir {
@@ -55,7 +55,7 @@ impl TransportProvider for MockTransport {
 }
 
 /// Create a session with some messages.
-fn create_session_with_messages(mgr: &mut SessionManager, name: &str, msg_count: usize) -> String {
+fn create_session_with_messages(mgr: &mut DBSessionManager, name: &str, msg_count: usize) -> String {
     let session = mgr.new_session(name);
     for i in 0..msg_count {
         let msg = if i % 2 == 0 {
@@ -81,7 +81,7 @@ fn test_reset_deletes_active_session() {
     let test_dir = make_test_dir();
     let db_path = test_dir.path().join("reset-delete");
 
-    let mut mgr = SessionManager::new_with_path(db_path).unwrap();
+    let mut mgr = DBSessionManager::new_with_path(db_path).unwrap();
     let session_id = create_session_with_messages(&mut mgr, "chat-clear-test", 10);
 
     // Verify session exists and is active
@@ -109,7 +109,7 @@ fn test_reset_then_create_new_session() {
     let test_dir = make_test_dir();
     let db_path = test_dir.path().join("reset-create-new");
 
-    let mut mgr = SessionManager::new_with_path(db_path).unwrap();
+    let mut mgr = DBSessionManager::new_with_path(db_path).unwrap();
 
     // Create a session to simulate having had a conversation
     let old_id = create_session_with_messages(&mut mgr, "old-chat", 5);
@@ -151,7 +151,7 @@ fn test_reset_is_idempotent() {
     let test_dir = make_test_dir();
     let db_path = test_dir.path().join("reset-idempotent");
 
-    let mut mgr = SessionManager::new_with_path(db_path).unwrap();
+    let mut mgr = DBSessionManager::new_with_path(db_path).unwrap();
 
     // Create a session first
     let _sid = create_session_with_messages(&mut mgr, "idempotent-test", 3);
@@ -182,7 +182,7 @@ fn test_reset_removes_session_from_database() {
     let test_dir = make_test_dir();
     let db_path = test_dir.path().join("reset-db");
 
-    let mut mgr = SessionManager::new_with_path(db_path.clone()).unwrap();
+    let mut mgr = DBSessionManager::new_with_path(db_path.clone()).unwrap();
 
     // Create a session and save it
     let session_id = create_session_with_messages(&mut mgr, "db-test", 5);
@@ -193,7 +193,7 @@ fn test_reset_removes_session_from_database() {
     // Verify it's in the DB by reloading
     mgr.close().unwrap();
 
-    let mut mgr2 = SessionManager::new_with_path(db_path.clone()).unwrap();
+    let mut mgr2 = DBSessionManager::new_with_path(db_path.clone()).unwrap();
     mgr2.init().unwrap();
 
     assert_eq!(mgr2.session_count(), 1);
@@ -205,7 +205,7 @@ fn test_reset_removes_session_from_database() {
     // Reload and verify it's gone
     mgr2.close().unwrap();
 
-    let mut mgr3 = SessionManager::new_with_path(db_path).unwrap();
+    let mut mgr3 = DBSessionManager::new_with_path(db_path).unwrap();
     mgr3.init().unwrap();
 
     assert_eq!(mgr3.session_count(), 0);
@@ -223,7 +223,7 @@ fn test_agent_reset_clears_session() {
     let test_dir = make_test_dir();
     let db_path = test_dir.path().join("agent-reset");
 
-    let mut mgr = SessionManager::new_with_path(db_path).unwrap();
+    let mut mgr = DBSessionManager::new_with_path(db_path).unwrap();
     let session_id = create_session_with_messages(&mut mgr, "agent-reset-test", 5);
 
     // Verify session exists

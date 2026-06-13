@@ -230,9 +230,9 @@ impl SubagentSpawner {
             let model_name = transport.name().to_owned();
 
             // Create child SessionManager
-            let sm = oben_sessions::SessionManager::new()
+            let sm = oben_sessions::DBSessionManager::new()
                 .map_err(|e| anyhow::anyhow!("Failed to create child session manager: {e}"))?;
-            let child_sm: Arc<std::sync::Mutex<oben_sessions::SessionManager>> =
+            let child_sm: Arc<std::sync::Mutex<oben_sessions::DBSessionManager>> =
                 Arc::new(std::sync::Mutex::new(sm));
 
             // Initialize and switch to child session
@@ -279,6 +279,7 @@ impl SubagentSpawner {
                 concurrent_dispatch_config:
                     crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
                 nudge_config: None,
+                session_store: oben_models::SessionStoreKind::Database,
             })
             .await;
 
@@ -491,7 +492,7 @@ pub fn build_spawn_fn_wrapper(
                     "delegate: init_child_session_for_creation parent_session_id={}",
                     parent_session_id_clone
                 );
-                let temp_sm = oben_sessions::SessionManager::new()
+                let temp_sm = oben_sessions::DBSessionManager::new()
                     .map_err(|e| anyhow::anyhow!("Failed to create child session manager: {e}"));
                 let spawned = match temp_sm {
                     Ok(mut sm) => {
@@ -535,7 +536,7 @@ pub fn build_spawn_fn_wrapper(
                     "delegate: init_child_session_manager child_session_id={}",
                     child_session_id
                 );
-                let sm = oben_sessions::SessionManager::new()
+                let sm = oben_sessions::DBSessionManager::new()
                     .map_err(|e| anyhow::anyhow!("Failed to create child session manager: {e}"));
 
                 let sm = match sm {
@@ -550,7 +551,7 @@ pub fn build_spawn_fn_wrapper(
                         return Err(e);
                     }
                 };
-                let child_sm: Arc<std::sync::Mutex<oben_sessions::SessionManager>> =
+                let child_sm: Arc<std::sync::Mutex<oben_sessions::DBSessionManager>> =
                     Arc::new(std::sync::Mutex::new(sm));
 
                 // Initialize and switch to child session
@@ -619,6 +620,7 @@ pub fn build_spawn_fn_wrapper(
                     concurrent_dispatch_config:
                         crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
                     nudge_config: None,
+                    session_store: oben_models::SessionStoreKind::Database,
                 })
                 .await
                 .map_err(|e| {

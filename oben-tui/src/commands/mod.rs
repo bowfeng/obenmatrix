@@ -85,7 +85,7 @@ async fn rename_inner(
     Ok(old_title)
 }
 
-fn get_session_display_name(sm: &oben_sessions::SessionManager) -> String {
+fn get_session_display_name(sm: &oben_sessions::DBSessionManager) -> String {
     sm.active_session()
         .map(|s| s.metadata.title.as_deref().unwrap_or(&s.name).to_string())
         .unwrap_or_else(|| "unnamed".to_string())

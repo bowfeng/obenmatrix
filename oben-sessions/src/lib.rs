@@ -13,11 +13,20 @@
 //!   Maps to `agent/memory_provider.py` + `agent/memory_manager.py`.
 
 pub mod manager;
+pub mod mem_session;
 pub mod memory_provider;
 pub mod search;
+pub mod session_store;
 pub mod skill_curation;
 
 pub use manager::*;
-pub use oben_models::SessionStore;
+pub use mem_session::MemSessionManager;
 pub use search::*;
+pub use session_store::*;
 pub use skill_curation::*;
+
+// Re-export core session types so crates using `oben-sessions` don't have to depend on `oben-models`
+pub use oben_models::Session;
+pub use oben_models::SessionManager;
+pub use oben_models::SessionListEntry;
+pub use oben_models::Message;
