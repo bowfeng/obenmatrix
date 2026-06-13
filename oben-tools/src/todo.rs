@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
@@ -120,36 +120,15 @@ impl TodoStore {
 // ---------------------------------------------------------------------------
 
 fn make_todo_tool() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "action".into(),
-            description: "Action: add, complete, remove, list.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "title".into(),
-            description: "Task title (required for 'add').".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "id".into(),
-            description: "Task ID (required for 'complete' and 'remove').".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "priority".into(),
-            description: "Priority: low, medium, high, critical (default: medium).".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "todo".into(),
         description: "Manage TODO tasks. Actions: add (new task), complete (mark done), remove (delete), list (show all).".into(),
-        parameters: ToolParameters::Flat(params),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("action", "Action: add, complete, remove, list.", "string"),
+            ToolParameter::optional("title", "Task title (required for 'add').", "string"),
+            ToolParameter::optional("id", "Task ID (required for 'complete' and 'remove').", "string"),
+            ToolParameter::optional("priority", "Priority: low, medium, high, critical (default: medium).", "string"),
+        ]),
     }
 }
 
@@ -158,6 +137,7 @@ fn make_todo_tool() -> ToolMeta {
 // ---------------------------------------------------------------------------
 
 /// Extract todo action from args; returns (action, call_id, remaining args).
+#[allow(dead_code)]
 fn extract_action(args: &Value) -> anyhow::Result<(String, String, &Value)> {
     let call_id = args
         .get("call_id")
@@ -175,8 +155,9 @@ fn extract_action(args: &Value) -> anyhow::Result<(String, String, &Value)> {
 }
 
 /// Handle todo actions (add, complete, remove, list).
-async fn execute_todo(args: &Value) -> anyhow::Result<ToolResult> {
-    let (action, call_id, _args) = extract_action(args)?;
+async fn execute_todo<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let call_id = call.call_id.clone();
+    let action = call.required_str("action")?.to_string();
 
     let store = {
         let lock = STORE.lock().unwrap();
@@ -185,14 +166,8 @@ async fn execute_todo(args: &Value) -> anyhow::Result<ToolResult> {
 
     match action.as_str() {
         "add" => {
-            let title = args
-                .get("title")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("'title' is required for 'add'"))?;
-            let priority = args
-                .get("priority")
-                .and_then(|v| v.as_str())
-                .unwrap_or("medium");
+            let title = call.required_str("title")?;
+            let priority = call.optional_str("priority").unwrap_or("medium");
             if !["low", "medium", "high", "critical"].contains(&priority) {
                 return Ok(ToolResult {
                     call_id,
@@ -206,20 +181,14 @@ async fn execute_todo(args: &Value) -> anyhow::Result<ToolResult> {
             Ok(add_task(&store, call_id, title, priority))
         }
         "complete" => {
-            let id_str = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("'id' is required for 'complete'"))?;
+            let id_str = call.required_str("id")?;
             let id: u64 = id_str
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid task ID '{}'.", id_str))?;
             Ok(complete_task(&store, call_id, id))
         }
         "remove" => {
-            let id_str = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("'id' is required for 'remove'"))?;
+            let id_str = call.required_str("id")?;
             let id: u64 = id_str
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid task ID '{}'.", id_str))?;
@@ -339,13 +308,9 @@ impl Tool for TodoTool {
     fn description(&self) -> &str {
         "Manage TODO tasks"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_todo(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_todo(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -373,7 +338,6 @@ pub fn register(registry: &mut ToolRegistry) {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::env;
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
@@ -421,7 +385,7 @@ mod tests {
             .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Missing 'action'"));
+        assert!(result.error.as_ref().unwrap().contains("Missing required argument: 'action'"));
     }
 
     #[tokio::test]

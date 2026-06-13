@@ -1,6 +1,4 @@
-use serde_json::Value;
-
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
@@ -8,51 +6,29 @@ use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 // ---------------------------------------------------------------------------
 
 fn make_search_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "query".into(),
-            description: "Search query".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "max_results".into(),
-            description: "Maximum number of results".into(),
-            parameter_type: "number".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "web_search".into(),
         description: "Search the web for information".into(),
-        parameters: ToolParameters::Flat(params),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("query", "Search query", "string"),
+            ToolParameter::optional("max_results", "Maximum number of results", "number"),
+        ]),
     }
-}
-
-// ---------------------------------------------------------------------------
+}// ---------------------------------------------------------------------------
 // Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct WebSearchTool;
 
 /// Placeholder handler — requires search provider configuration.
-async fn execute_web_search(args: &Value) -> anyhow::Result<ToolResult> {
-    let query = args
-        .get("query")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
+async fn execute_web_search<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let query = call
+        .required_str("query")?;
 
-    let _max_results = args
-        .get("max_results")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(5);
+    let _max_results = call.optional_u64("max_results", 5);
 
     Ok(ToolResult {
-        call_id: args
-            .get("call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        call_id: call.call_id.clone(),
         output: format!(
             "Web search for '{}': (placeholder - configure search provider in config)",
             query
@@ -69,13 +45,9 @@ impl Tool for WebSearchTool {
     fn description(&self) -> &str {
         "Search the web for information"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_web_search(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_web_search(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })

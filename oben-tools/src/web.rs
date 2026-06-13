@@ -1,6 +1,4 @@
-use serde_json::Value;
-
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
@@ -8,31 +6,23 @@ use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 // ---------------------------------------------------------------------------
 
 fn make_http_get_tool_def() -> ToolMeta {
-    let params = vec![ToolParameter {
-        name: "url".into(),
-        description: "URL to fetch".into(),
-        parameter_type: "string".into(),
-        required: true,
-    }];
     ToolMeta {
         name: "http_get".into(),
-        description: "Make an HTTP GET request".into(),
-        parameters: ToolParameters::Flat(params),
+        description: "Fetch a web page or API response".into(),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("url", "The URL to fetch", "string"),
+        ]),
     }
-}
-
-// ---------------------------------------------------------------------------
+}// ---------------------------------------------------------------------------
 // Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct HttpGetTool;
 
 /// Execute a raw HTTP GET request and return status, headers, and body.
-async fn execute_http_get(args: &Value) -> anyhow::Result<ToolResult> {
-    let url = args
-        .get("url")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'url' argument"))?;
+async fn execute_http_get<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let url = call
+        .required_str("url")?;
 
     let client = reqwest::Client::new();
     let response = client
@@ -60,11 +50,7 @@ async fn execute_http_get(args: &Value) -> anyhow::Result<ToolResult> {
     };
 
     Ok(ToolResult {
-        call_id: args
-            .get("call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        call_id: call.call_id.clone(),
         output: format!(
             "Status: {}\nHeaders: {}\nBody:\n{}",
             status,
@@ -87,13 +73,9 @@ impl Tool for HttpGetTool {
     fn description(&self) -> &str {
         "Make an HTTP GET request"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_http_get(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_http_get(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })

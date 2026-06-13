@@ -1,13 +1,12 @@
 use std::sync::{LazyLock, Mutex};
 use regex::RegexSet;
-use serde_json::Value;
 /// Memory tool — persistent curated memory with file persistence.
 ///
 /// Implements `Tool` trait directly.
 use std::fs;
 use std::path::Path;
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
@@ -499,42 +498,16 @@ impl MemoryStore {
 // ---------------------------------------------------------------------------
 
 fn make_memory_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "action".into(),
-            description: "Action to perform: 'add', 'replace', 'remove', or 'read'.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "target".into(),
-            description: "Memory store: 'memory' (personal notes) or 'user' (user profile).".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "content".into(),
-            description: "Entry content. Required for 'add' and 'replace'.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "old_text".into(),
-            description: "Short unique substring identifying the entry to replace or remove.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "query".into(),
-            description: "For 'read' action: 'all' to return all entries, or a keyword to filter entries by substring match.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "memory".into(),
         description: "Save durable information to persistent memory that survives across sessions. MEMORY.md (agent notes) and USER.md (user profile). Actions: add, replace, remove, read.".into(),
-        parameters: ToolParameters::Flat(params),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("action", "Action to perform: 'add', 'replace', 'remove', or 'read'.", "string"),
+            ToolParameter::required("target", "Memory store: 'memory' (personal notes) or 'user' (user profile).", "string"),
+            ToolParameter::optional("content", "Entry content. Required for 'add' and 'replace'.", "string"),
+            ToolParameter::optional("old_text", "Short unique substring identifying the entry to replace or remove.", "string"),
+            ToolParameter::optional("query", "For 'read' action: 'all' to return all entries, or a keyword to filter entries by substring match.", "string"),
+        ]),
     }
 }
 
@@ -551,26 +524,14 @@ static STORE: LazyLock<Mutex<MemoryStore>> = LazyLock::new(|| {
 pub struct MemoryTool;
 
 /// Execute memory management actions (add, replace, remove, read).
-async fn execute_memory(args: &Value) -> anyhow::Result<ToolResult> {
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+async fn execute_memory(call: &ToolCall<'_>) -> anyhow::Result<ToolResult> {
+    let action = call.required_str("action")?;
 
-    let action = args
-        .get("action")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'action' argument"))?;
-
-    let target = args
-        .get("target")
-        .and_then(|v| v.as_str())
-        .unwrap_or("memory");
+    let target = call.optional_str_with_default("target", "memory");
 
     if target != "memory" && target != "user" {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!(
                 "Invalid target '{}'. Use 'memory' or 'user'.",
@@ -582,42 +543,24 @@ async fn execute_memory(args: &Value) -> anyhow::Result<ToolResult> {
     let mut store_mut = STORE.lock().unwrap();
     match action {
         "add" => {
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Content is required for 'add' action."))?;
+            let content = call.required_str("content")?;
             Ok(store_mut.add_entry(target, content))
         }
         "replace" => {
-            let old_text =
-                args.get("old_text")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("old_text is required for 'replace' action.")
-                    })?;
-            let content =
-                args.get("content")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("content is required for 'replace' action.")
-                    })?;
+            let old_text = call.required_str("old_text")?;
+            let content = call.required_str("content")?;
             Ok(store_mut.replace_entry(target, old_text, content))
         }
         "remove" => {
-            let old_text =
-                args.get("old_text")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("old_text is required for 'remove' action.")
-                    })?;
+            let old_text = call.required_str("old_text")?;
             Ok(store_mut.remove_entry(target, old_text))
         }
         "read" => {
-            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("all");
+            let query = call.optional_str("query").unwrap_or("all");
             Ok(store_mut.get_entries(target, Some(query)))
         }
         _ => Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!(
                 "Unknown action '{}'. Use: add, replace, remove, read",
@@ -635,13 +578,9 @@ impl Tool for MemoryTool {
     fn description(&self) -> &str {
         "Save durable information to persistent memory"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_memory(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_memory(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -670,8 +609,6 @@ pub fn register(registry: &mut ToolRegistry) {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::env;
-    use tempfile::TempDir;
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
@@ -895,7 +832,7 @@ mod tests {
             .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Missing 'action'"));
+        assert!(result.error.as_ref().unwrap().contains("Missing required argument: 'action'"));
     }
 
     #[tokio::test]
@@ -936,7 +873,7 @@ mod tests {
             .error
             .as_ref()
             .unwrap()
-            .contains("Content is required"));
+            .contains("Missing required argument: 'content'"));
     }
 
     #[tokio::test]

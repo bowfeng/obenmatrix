@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
@@ -66,47 +65,24 @@ struct OSVEvent {
 // ---------------------------------------------------------------------------
 
 fn make_osv_check_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "package_name".into(),
-            description: "Name of the package to check.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "version".into(),
-            description: "Version to check (e.g., '1.2.3'). Uses latest if not specified.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "osv_check".into(),
-        description: "Check packages for known security vulnerabilities using OSV.dev. Supports PyPI, npm, and GitHub ecosystems.".into(),
-        parameters: ToolParameters::Flat(params),
+        description: "Check for vulnerabilities in third-party dependencies using the OSV (Open Source Vulnerabilities) database".into(),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("package_name", "The dependency name, such as `express`, `requests`, or `serde_json`", "string"),
+            ToolParameter::required("ecosystem", "The package ecosystem. One of: `npm`, `pypi`, `crates.io`", "string"),
+        ]),
     }
-}
-
-// ---------------------------------------------------------------------------
+}// ---------------------------------------------------------------------------
 // Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct OSVCheckTool;
 
 /// Check packages for known vulnerabilities against the OSV.dev API.
-async fn execute_osv_check(args: &Value) -> anyhow::Result<ToolResult> {
-    let package_name = args
-        .get("package_name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'package_name' argument"))?;
-
-    let version = args.get("version").and_then(|v| v.as_str()).unwrap_or("");
-
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+async fn execute_osv_check<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let package_name = call.required_str("package_name")?;
+    let version = call.optional_str("version").unwrap_or("");
 
     // Determine ecosystem
     let ecosystem = if package_name.starts_with("@") || package_name.contains("/") {
@@ -133,7 +109,7 @@ async fn execute_osv_check(args: &Value) -> anyhow::Result<ToolResult> {
         Ok(r) => r,
         Err(e) => {
             return Ok(ToolResult {
-                call_id,
+                call_id: call.call_id.clone(),
                 output: format!("OSV API error: {}", e),
                 error: Some(format!("Failed to query OSV API: {}", e)),
             });
@@ -144,7 +120,7 @@ async fn execute_osv_check(args: &Value) -> anyhow::Result<ToolResult> {
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: format!("OSV API returned {}: {}", status, body),
             error: Some(format!("OSV API error: {}", status)),
         });
@@ -165,7 +141,7 @@ async fn execute_osv_check(args: &Value) -> anyhow::Result<ToolResult> {
 
     if vulns.is_empty() {
         output.push_str("✅ No known vulnerabilities found.\n");
-        return Ok(ToolResult { call_id, output, error: None });
+        return Ok(ToolResult { call_id: call.call_id.clone(), output, error: None });
     }
 
     output.push_str(&format!(
@@ -190,7 +166,7 @@ async fn execute_osv_check(args: &Value) -> anyhow::Result<ToolResult> {
         output.push('\n');
     }
 
-    Ok(ToolResult { call_id, output, error: None })
+    Ok(ToolResult { call_id: call.call_id.clone(), output, error: None })
 }
 
 #[async_trait::async_trait]
@@ -201,13 +177,9 @@ impl Tool for OSVCheckTool {
     fn description(&self) -> &str {
         "Check packages for known security vulnerabilities"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_osv_check(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_osv_check(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -233,7 +205,6 @@ pub fn register(registry: &mut ToolRegistry) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
 
     fn make_registry() -> super::super::registry::ToolRegistry {
@@ -259,11 +230,11 @@ mod tests {
             .error
             .as_ref()
             .unwrap()
-            .contains("Missing 'package_name'"));
+            .contains("Missing required argument: 'package_name'"));
     }
 
     #[tokio::test]
-    async fn checks_pyPI_package() {
+    async fn checks_py_pi_package() {
         let registry = make_registry();
         let result = registry
             .execute(

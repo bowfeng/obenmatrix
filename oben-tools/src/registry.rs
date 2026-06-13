@@ -24,12 +24,92 @@ use tracing::{info, warn};
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn validate(&self, _args: &Value) -> Result<()> {
+    fn validate(&self, _call: &ToolCall) -> Result<()> {
         Ok(())
     }
-    async fn execute(&self, args: &Value) -> ToolResult;
+    async fn execute(&self, call: &ToolCall) -> ToolResult;
     /// Clone this tool into a new Box<dyn Tool>.
     fn clone_tool(&self) -> Box<dyn Tool>;
+}
+
+// ---------------------------------------------------------------------------
+// ToolCall — extracted from raw args at the registry seam
+// ---------------------------------------------------------------------------
+
+/// Wrapper around raw tool call arguments with ergonomic accessors.
+///
+/// Created by the registry from the raw JSON input. Provides safe,
+/// consistent extraction of call_id and strongly-typed field accessors
+/// that every tool can use.
+pub struct ToolCall<'a> {
+    /// The call_id from the LLM response, used for correlation.
+    pub call_id: String,
+    /// The raw argument object reference.
+    pub args: &'a Value,
+}
+
+impl<'a> ToolCall<'a> {
+    pub fn new(_tool_name: &'a str, args: &'a Value) -> Self {
+        let call_id = args
+            .get("call_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        Self { call_id, args }
+    }
+
+    pub fn call_id(&self) -> &str {
+        &self.call_id
+    }
+
+    /// Get a required string argument, returning an error message if missing.
+    pub fn required_str(&self, key: &str) -> Result<&'a str> {
+        self.args
+            .get(key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing required argument: '{}'", key))
+    }
+
+    /// Get an optional string argument.
+    pub fn optional_str(&self, key: &str) -> Option<&'a str> {
+        self.args.get(key).and_then(|v| v.as_str())
+    }
+
+    /// Get an optional string argument with a default value.
+    pub fn optional_str_with_default(&self, key: &str, default: &'a str) -> &'a str {
+        self.optional_str(key).unwrap_or(default)
+    }
+
+    /// Get an optional bool argument.
+    pub fn optional_bool(&self, key: &str) -> Option<bool> {
+        self.args.get(key).and_then(|v| v.as_bool())
+    }
+
+    /// Get an optional u64 argument with a default fallback.
+    pub fn optional_u64(&self, key: &str, default: u64) -> u64 {
+        self.args
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default)
+    }
+
+    /// Get an optional array argument.
+    pub fn optional_array(&self, key: &str) -> Option<&'a Vec<Value>> {
+        self.args.get(key).and_then(|v| v.as_array())
+    }
+
+    /// Get a nested object argument.
+    pub fn optional_object(&self, key: &str) -> Option<&'a serde_json::Map<String, Value>> {
+        self.args.get(key).and_then(|v| v.as_object())
+    }
+
+    /// Get an optional string from a nested object key.
+    pub fn nested_str(&self, parent: &str, key: &str) -> Option<&'a str> {
+        self.args
+            .get(parent)?
+            .get(key)?
+            .as_str()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -132,21 +212,18 @@ impl ToolRegistry {
 
     pub async fn execute(&self, tool_name: &str, arguments: &Value) -> ToolResult {
         info!("Executing tool: {} with args...", tool_name);
+        let call = ToolCall::new(tool_name, arguments);
         match self.tools.get(tool_name) {
             Some(tool) => {
-                if let Err(e) = tool.validate(arguments) {
+                if let Err(e) = tool.validate(&call) {
                     warn!("Tool {} validation failed: {}", tool_name, e);
                     return ToolResult {
-                        call_id: arguments
-                            .get("call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
+                        call_id: call.call_id.clone(),
                         output: String::new(),
                         error: Some(format!("Validation: {}", e)),
                     };
                 }
-                let result = tool.execute(arguments).await;
+                let result = tool.execute(&call).await;
                 if result.error.is_none() {
                     info!("Tool {} succeeded", tool_name);
                 } else {
@@ -157,11 +234,7 @@ impl ToolRegistry {
             None => {
                 warn!("Unknown tool: {}", tool_name);
                 ToolResult {
-                    call_id: arguments
-                        .get("call_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
+                    call_id: call.call_id.clone(),
                     output: String::new(),
                     error: Some(format!("Unknown tool: {}", tool_name)),
                 }
@@ -238,13 +311,12 @@ mod tests {
     impl Tool for EchoTool {
         fn name(&self) -> &str { "echo-test" }
         fn description(&self) -> &str { "Test echo" }
-        async fn execute(&self, args: &Value) -> ToolResult {
-            let msg = args
-                .get("message")
-                .and_then(|v| v.as_str())
+        async fn execute(&self, call: &ToolCall) -> ToolResult {
+            let msg = call
+                .optional_str("message")
                 .unwrap_or("no-msg");
             ToolResult {
-                call_id: "t1".into(),
+                call_id: call.call_id.clone(),
                 output: format!("echo: {}", msg),
                 error: None,
             }
@@ -257,9 +329,9 @@ mod tests {
     impl Tool for FailTool {
         fn name(&self) -> &str { "fail-test" }
         fn description(&self) -> &str { "Test fail" }
-        async fn execute(&self, _args: &Value) -> ToolResult {
+        async fn execute(&self, call: &ToolCall) -> ToolResult {
             ToolResult {
-                call_id: "t2".into(),
+                call_id: call.call_id.clone(),
                 output: String::new(),
                 error: Some("boom".into()),
             }
@@ -272,16 +344,16 @@ mod tests {
     impl Tool for ValidatingTool {
         fn name(&self) -> &str { "val-tool" }
         fn description(&self) -> &str { "Validates args" }
-        fn validate(&self, args: &Value) -> Result<()> {
-            if args.get("block").and_then(|v| v.as_bool()) == Some(true) {
+        fn validate(&self, call: &ToolCall) -> Result<()> {
+            if call.optional_bool("block") == Some(true) {
                 Err(anyhow::anyhow!("Blocked by validation"))
             } else {
                 Ok(())
             }
         }
-        async fn execute(&self, _args: &Value) -> ToolResult {
+        async fn execute(&self, call: &ToolCall) -> ToolResult {
             ToolResult {
-                call_id: "".into(),
+                call_id: call.call_id.clone(),
                 output: "ok".into(),
                 error: None,
             }

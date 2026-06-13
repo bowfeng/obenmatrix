@@ -1,8 +1,7 @@
-use serde_json::Value;
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 use oben_utils::path_security::is_path_safe;
 
@@ -375,42 +374,16 @@ fn shell_escape_inner(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn make_search_files_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "query".into(),
-            description: "Search query — file name pattern for name search, or text pattern for content search.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "path".into(),
-            description: "Root path to search in. Defaults to current directory.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "limit".into(),
-            description: "Maximum number of results to return. Default is 50.".into(),
-            parameter_type: "number".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "type".into(),
-            description: "Search type: 'name' for file name matching, 'content' for file content matching (grep-like). Default is 'content'.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "glob".into(),
-            description: "Optional glob pattern to filter file types (e.g., '*.rs', '*.py', '*.{js,ts}').".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "search_files".into(),
         description: "Search for files by name or content. Uses ripgrep for fast parallel search. Defaults to content search (grep-like). Set type='name' for file name glob matching.".into(),
-        parameters: ToolParameters::Flat(params),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("query", "Search query — file name pattern for name search, or text pattern for content search.", "string"),
+            ToolParameter::optional("path", "Root path to search in. Defaults to current directory.", "string"),
+            ToolParameter::optional("limit", "Maximum number of results to return. Default is 50.", "number"),
+            ToolParameter::optional("type", "Search type: 'name' for file name matching, 'content' for file content matching (grep-like). Default is 'content'.", "string"),
+            ToolParameter::optional("glob", "Optional glob pattern to filter file types (e.g., '*.rs', '*.py', '*.{js,ts}').", "string"),
+        ]),
     }
 }
 
@@ -421,28 +394,17 @@ fn make_search_files_tool_def() -> ToolMeta {
 pub struct SearchFilesTool;
 
 /// Execute a file search by name or content.
-async fn execute_search_files(args: &Value) -> anyhow::Result<ToolResult> {
-    let query = args
-        .get("query")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
-
-    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
-    let search_type = args
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("content");
-    let glob = args.get("glob").and_then(|v| v.as_str());
+async fn execute_search_files<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let query = call.required_str("query")?;
+    let path = call.optional_str("path").unwrap_or(".");
+    let limit = call.optional_u64("limit", 50);
+    let search_type = call.optional_str_with_default("type", "content");
+    let glob = call.optional_str("glob");
 
     // Safety check: dangerous query patterns
     if is_dangerous_query(query) {
         return Ok(ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(
                 "Invalid query: search terms must be alphanumeric strings".to_string(),
@@ -453,26 +415,16 @@ async fn execute_search_files(args: &Value) -> anyhow::Result<ToolResult> {
     // Safety check: unsafe path
     if !is_path_safe(std::path::Path::new(path)) {
         return Ok(ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some("Unsafe search path".to_string()),
         });
     }
 
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
     if search_type == "name" {
-        search_by_name(&query, path, limit as usize, &call_id).await
+        search_by_name(&query, path, limit as usize, call.call_id()).await
     } else {
-        search_by_content(&query, path, limit as usize, glob, &call_id).await
+        search_by_content(&query, path, limit as usize, glob, call.call_id()).await
     }
 }
 
@@ -484,13 +436,9 @@ impl Tool for SearchFilesTool {
     fn description(&self) -> &str {
         "Search for files by name or content"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_search_files(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_search_files(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })

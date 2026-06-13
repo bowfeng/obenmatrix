@@ -1,8 +1,7 @@
 use reqwest::Client;
 use scraper::{Html, Selector};
-use serde_json::Value;
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
@@ -191,55 +190,29 @@ fn extract_page(html: &str) -> (String, String) {
 // ---------------------------------------------------------------------------
 
 fn make_web_extract_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "url".into(),
-            description: "URL of the page to extract content from.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "format".into(),
-            description: "Output format: 'text' (default) or 'markdown'. Default is 'text'.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "web_extract".into(),
-        description: "Extract readable content from web pages. Fetches HTML and converts to plain text. Includes SSRF protection to block private/internal URLs.".into(),
-        parameters: ToolParameters::Flat(params),
+        description: "Fetches a web page and extracts text or structured data from it".into(),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("url", "The URL of the web page to extract", "string"),
+            ToolParameter::optional("extract_type", "Type of extraction: `all`, `text`, `links`, etc. (default: all)", "string"),
+        ]),
     }
-}
-
-// ---------------------------------------------------------------------------
+}// ---------------------------------------------------------------------------
 // Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct WebExtractTool;
 
 /// Extract readable content from a web page URL.
-async fn execute_web_extract(args: &Value) -> anyhow::Result<ToolResult> {
-    let url = args
-        .get("url")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'url' argument"))?;
-
-    let format_type = args
-        .get("format")
-        .and_then(|v| v.as_str())
-        .unwrap_or("text");
-
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+async fn execute_web_extract<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let url = call.required_str("url")?;
+    let format_type = call.optional_str_with_default("format", "text");
 
     // SSRF protection
     if !is_safe_url(url) {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(
                 "Blocked: URL targets a private or internal network address".to_string(),
@@ -257,7 +230,7 @@ async fn execute_web_extract(args: &Value) -> anyhow::Result<ToolResult> {
         Ok(r) => r,
         Err(e) => {
             return Ok(ToolResult {
-                call_id,
+                call_id: call.call_id.clone(),
                 output: String::new(),
                 error: Some(format!("Failed to fetch {}: {}", url, e)),
             });
@@ -267,7 +240,7 @@ async fn execute_web_extract(args: &Value) -> anyhow::Result<ToolResult> {
     let status = response.status();
     if !status.is_success() {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!("HTTP {} fetching {}", status, url)),
         });
@@ -277,7 +250,7 @@ async fn execute_web_extract(args: &Value) -> anyhow::Result<ToolResult> {
         Ok(h) => h,
         Err(e) => {
             return Ok(ToolResult {
-                call_id,
+                call_id: call.call_id.clone(),
                 output: String::new(),
                 error: Some(format!("Failed to read response: {}", e)),
             });
@@ -287,7 +260,7 @@ async fn execute_web_extract(args: &Value) -> anyhow::Result<ToolResult> {
     let (title, content) = extract_page(&html);
 
     Ok(ToolResult {
-        call_id,
+        call_id: call.call_id.clone(),
         output: if format_type == "markdown" {
             let stripped_html: String = content
                 .chars()
@@ -323,13 +296,9 @@ impl Tool for WebExtractTool {
     fn description(&self) -> &str {
         "Extract readable content from web pages"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_web_extract(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_web_extract(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -497,7 +466,7 @@ mod tests {
             .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Missing 'url'"));
+        assert!(result.error.as_ref().unwrap().contains("Missing required argument: 'url'"));
     }
 
     #[tokio::test]

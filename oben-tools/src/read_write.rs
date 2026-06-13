@@ -1,10 +1,9 @@
-use serde_json::Value;
 /// File read/write tools.
 ///
 /// Implements `Tool` trait directly.
 use std::path::PathBuf;
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 use oben_utils::path_security::is_path_safe;
 
@@ -13,34 +12,23 @@ use oben_utils::path_security::is_path_safe;
 // ===========================================================================
 
 fn make_read_file_tool_def() -> ToolMeta {
-    let params = vec![ToolParameter {
-        name: "path".into(),
-        description: "Path to the file".into(),
-        parameter_type: "string".into(),
-        required: true,
-    }];
     ToolMeta {
         name: "read_file".into(),
         description: "Read the contents of a file".into(),
-        parameters: ToolParameters::Flat(params),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("path", "Path to the file", "string"),
+        ]),
     }
 }
 
 pub struct ReadFileTool;
 
-async fn execute_read_file(args: &Value) -> anyhow::Result<ToolResult> {
-    let path = args
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+async fn execute_read_file<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let path = call.required_str("path")?;
 
     if !is_path_safe(std::path::Path::new(path)) {
         return Ok(ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some("Unsafe file path".to_string()),
         });
@@ -50,7 +38,7 @@ async fn execute_read_file(args: &Value) -> anyhow::Result<ToolResult> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path, e))?;
 
-    let content = if content.len() > 100_000 {
+    let content = if content.chars().count() > 100_000 {
         let truncated: String = content.chars().take(100_000).collect();
         format!(
             "{}... (truncated, {} chars total)",
@@ -62,11 +50,7 @@ async fn execute_read_file(args: &Value) -> anyhow::Result<ToolResult> {
     };
 
     Ok(ToolResult {
-        call_id: args
-            .get("call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        call_id: call.call_id.clone(),
         output: content,
         error: None,
     })
@@ -80,13 +64,9 @@ impl Tool for ReadFileTool {
     fn description(&self) -> &str {
         "Read the contents of a file"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_read_file(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_read_file(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -101,47 +81,25 @@ impl Tool for ReadFileTool {
 // ===========================================================================
 
 fn make_write_file_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "path".into(),
-            description: "Path to write to".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "content".into(),
-            description: "Content to write".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-    ];
     ToolMeta {
         name: "write_file".into(),
         description: "Write content to a file".into(),
-        parameters: ToolParameters::Flat(params),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("path", "Path to write to", "string"),
+            ToolParameter::required("content", "Content to write", "string"),
+        ]),
     }
 }
 
 pub struct WriteFileTool;
 
-async fn execute_write_file(args: &Value) -> anyhow::Result<ToolResult> {
-    let path = args
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
-
-    let content = args
-        .get("content")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
+async fn execute_write_file<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let path = call.required_str("path")?;
+    let content = call.required_str("content")?;
 
     if !is_path_safe(std::path::Path::new(path)) {
         return Ok(ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some("Unsafe file path".to_string()),
         });
@@ -157,11 +115,7 @@ async fn execute_write_file(args: &Value) -> anyhow::Result<ToolResult> {
     tokio::fs::write(path, content).await?;
 
     Ok(ToolResult {
-        call_id: args
-            .get("call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        call_id: call.call_id.clone(),
         output: format!("Wrote {} chars to {}", written_chars, path),
         error: None,
     })
@@ -175,13 +129,9 @@ impl Tool for WriteFileTool {
     fn description(&self) -> &str {
         "Write content to a file"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_write_file(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_write_file(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })

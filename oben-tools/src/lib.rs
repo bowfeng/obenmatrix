@@ -19,6 +19,7 @@ pub mod toolset_filter;
 pub mod stt;
 pub mod tts;
 pub mod vision_analyze;
+pub mod voice;
 pub mod web;
 pub mod web_extract;
 

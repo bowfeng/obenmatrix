@@ -1,7 +1,6 @@
-use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 /// Execution output
@@ -32,26 +31,13 @@ async fn execute_python(code_file: &std::path::Path) -> Result<ExecutionOutput, 
 // ---------------------------------------------------------------------------
 
 fn make_code_execution_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "code".into(),
-            description: "The Python code to execute.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "timeout".into(),
-            description: "Maximum execution time in seconds (default: 30).".into(),
-            parameter_type: "number".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "code_execution".into(),
-        description:
-            "Execute Python code in a sandboxed environment. Returns stdout, stderr, and exit code."
-                .into(),
-        parameters: ToolParameters::Flat(params),
+        description: "Execute Python code in a sandboxed environment. Returns stdout, stderr, and exit code.".into(),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("code", "The Python code to execute.", "string"),
+            ToolParameter::optional("timeout", "Maximum execution time in seconds (default: 30).", "number"),
+        ]),
     }
 }
 
@@ -62,19 +48,9 @@ fn make_code_execution_tool_def() -> ToolMeta {
 pub struct CodeExecutionTool;
 
 /// Execute Python code in a sandboxed environment with security checks.
-async fn execute_code(args: &Value) -> anyhow::Result<ToolResult> {
-    let code = args
-        .get("code")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'code' argument"))?;
-
-    let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
-
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+async fn execute_code<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let code = call.required_str("code")?;
+    let timeout_secs = call.optional_u64("timeout", 30);
 
     // Security check: block dangerous operations.
     let safe_code: String = code.chars().filter(|c| !c.is_ascii_whitespace()).collect();
@@ -99,7 +75,7 @@ async fn execute_code(args: &Value) -> anyhow::Result<ToolResult> {
     for pattern in &dangerous_patterns {
         if safe_code.contains(pattern) {
             return Ok(ToolResult {
-                call_id,
+                call_id: call.call_id.clone(),
                 output: String::new(),
                 error: Some(format!(
                     "Security check: code contains disallowed pattern '{}'.",
@@ -122,7 +98,7 @@ async fn execute_code(args: &Value) -> anyhow::Result<ToolResult> {
     ));
     if let Err(e) = std::fs::write(&code_file, code) {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!("Failed to write code file: {}", e)),
         });
@@ -139,7 +115,7 @@ async fn execute_code(args: &Value) -> anyhow::Result<ToolResult> {
         Err(_) => {
             let _ = std::fs::remove_file(&code_file);
             return Ok(ToolResult {
-                call_id,
+                call_id: call.call_id.clone(),
                 output: String::new(),
                 error: Some(format!(
                     "Execution timed out after {} seconds.",
@@ -153,7 +129,7 @@ async fn execute_code(args: &Value) -> anyhow::Result<ToolResult> {
 
     match output {
         Ok(exec_output) => Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: format!(
                 "Exit code: {}\n\nStdout:\n{}\n\nStderr:\n{}",
                 exec_output.exit_code, exec_output.stdout, exec_output.stderr
@@ -165,7 +141,7 @@ async fn execute_code(args: &Value) -> anyhow::Result<ToolResult> {
             },
         }),
         Err(e) => Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!("Execution failed: {}", e)),
         }),
@@ -180,13 +156,9 @@ impl Tool for CodeExecutionTool {
     fn description(&self) -> &str {
         "Execute Python code in a sandboxed environment"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_code(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_code(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -291,7 +263,7 @@ mod tests {
             .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Missing 'code'"));
+        assert!(result.error.as_ref().unwrap().contains("Missing required argument: 'code'"));
     }
 
     #[tokio::test]
