@@ -12,11 +12,8 @@ use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 // ---------------------------------------------------------------------------
 
 fn get_skills_dir() -> std::path::PathBuf {
-    // Use the same directory structure as hermes-agent
     if let Ok(home) = std::env::var("HOME") {
-        Path::new(&home).join(".config/obenalien/skills")
-    } else if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        Path::new(&xdg).join("obenalien/skills")
+        Path::new(&home).join(".obenalien").join("skills")
     } else {
         Path::new(".").join("skills")
     }

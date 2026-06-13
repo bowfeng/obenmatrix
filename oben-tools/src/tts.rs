@@ -13,7 +13,7 @@ fn make_tts_tool() -> ToolMeta {
         description: "Convert text to speech audio. Returns MEDIA: path for platform delivery. Supports Edge TTS (free, native Rust), OpenAI, ElevenLabs, Google Gemini, xAI, and Mistral.".into(),
         parameters: ToolParameters::Flat(vec![
             ToolParameter::required("text", "Text to convert to speech. Provider-specific character limits apply (OpenAI: 4096, xAI: 15000, etc.). Markdown is automatically stripped.", "string"),
-            ToolParameter::optional("output_path", "Optional custom file path. Defaults to ~/.config/obenalien/audio_cache/tts_<timestamp>.mp3", "string"),
+            ToolParameter::optional("output_path", "Optional custom file path. Defaults to ~/.obenalien/voice/audio_cache/tts_<timestamp>.mp3", "string"),
         ]),
     }
 }
