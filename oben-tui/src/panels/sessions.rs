@@ -69,7 +69,7 @@ impl SessionsPanel {
     /// Construct a SessionsPanel with a pre-configured SessionManager (test-only).
     #[allow(unused)]
     pub fn with_session_manager(
-        _sm: oben_sessions::SessionManager,
+        _sm: oben_sessions::DBSessionManager,
         _sessions: Vec<Session>,
     ) -> Self {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -663,7 +663,7 @@ impl SessionsPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oben_sessions::SessionManager;
+    use oben_sessions::DBSessionManager;
 
     fn make_test_dir() -> std::path::PathBuf {
         tempfile::tempdir().unwrap().path().join("sessions")
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn test_new_with_empty_sessions() {
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let panel = SessionsPanel::with_session_manager(sm, vec![]);
 
         // then: empty filtered list
@@ -683,7 +683,7 @@ mod tests {
     fn test_get_session_display() {
         // given: sessions in the panel
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let panel = SessionsPanel::with_session_manager(sm, vec![Session::new("test-session")]);
 
         // when: get session name & count
@@ -701,7 +701,7 @@ mod tests {
     fn test_apply_filter_no_query_returns_all() {
         // given: three sessions
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let mut panel = SessionsPanel::with_session_manager(
             sm,
             vec![
@@ -722,7 +722,7 @@ mod tests {
     fn test_apply_filter_matches_name() {
         // given: sessions with known names
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let mut panel = SessionsPanel::with_session_manager(
             sm,
             vec![
@@ -745,7 +745,7 @@ mod tests {
     fn test_apply_filter_matches_id() {
         // given: a session
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let session = Session::new("test");
         let mut panel = SessionsPanel::with_session_manager(sm, vec![session]);
 
@@ -761,7 +761,7 @@ mod tests {
     fn test_apply_filter_matches_title() {
         // given: session with title
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let mut session = Session::new("session-name");
         session.metadata.title = Some("My Test Title".to_string());
 
@@ -779,7 +779,7 @@ mod tests {
     fn test_apply_filter_is_case_insensitive() {
         // given: mixed-case names
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let mut panel = SessionsPanel::with_session_manager(
             sm,
             vec![Session::new("ALPHA"), Session::new("beta")],
@@ -797,7 +797,7 @@ mod tests {
     fn test_apply_filter_no_match_empty() {
         // given: sessions
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let mut panel = SessionsPanel::with_session_manager(sm, vec![Session::new("alpha")]);
 
         // when: search for nothing
@@ -812,7 +812,7 @@ mod tests {
     fn test_apply_filter_clamps_selected_to_filtered_len() {
         // given: filtered list
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let sessions = vec![
             Session::new("one"),
             Session::new("two"),
@@ -838,7 +838,7 @@ mod tests {
     fn test_get_session_returns_first_filtered() {
         // given: sessions
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let sessions = vec![Session::new("target"), Session::new("other")];
         let panel = SessionsPanel::with_session_manager(sm, sessions);
 
@@ -853,7 +853,7 @@ mod tests {
     fn test_get_session_empty_list() {
         // given: no sessions
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let panel = SessionsPanel::with_session_manager(sm, Vec::new());
 
         // when: get from empty
@@ -865,7 +865,7 @@ mod tests {
     fn test_get_session_id_returns_id() {
         // given: a session
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let session = Session::new("id-test");
         let panel = SessionsPanel::with_session_manager(sm, vec![session]);
 
@@ -883,7 +883,7 @@ mod tests {
     fn test_search_input_text() {
         // given: panel
         let dir = make_test_dir();
-        let sm = SessionManager::new_with_path(dir).unwrap();
+        let sm = DBSessionManager::new_with_path(dir).unwrap();
         let mut panel = SessionsPanel::with_session_manager(sm, Vec::new());
 
         // when: set search input
@@ -899,7 +899,7 @@ mod tests {
     fn test_create_and_list_via_panel_sm() {
         // given: empty SM
         let dir = make_test_dir();
-        let mut sm = SessionManager::new_with_path(dir).unwrap();
+        let mut sm = DBSessionManager::new_with_path(dir).unwrap();
 
         // when: create two sessions
         let _s1 = sm.new_session("session-a");
@@ -917,7 +917,7 @@ mod tests {
     fn test_switch_session_via_panel_sm() {
         // given: two sessions saved to SM
         let dir = make_test_dir();
-        let mut sm = SessionManager::new_with_path(dir).unwrap();
+        let mut sm = DBSessionManager::new_with_path(dir).unwrap();
         let _s1 = sm.new_session("target-session");
         let session_id = sm.list_sessions_full()[0].id.clone();
         let _s2 = sm.new_session("other-session");
@@ -934,7 +934,7 @@ mod tests {
     fn test_delete_session_via_panel_sm() {
         // given: two sessions
         let dir = make_test_dir();
-        let mut sm = SessionManager::new_with_path(dir).unwrap();
+        let mut sm = DBSessionManager::new_with_path(dir).unwrap();
         let _s1 = sm.new_session("delete-me");
         let session_id = sm.list_sessions_full()[0].id.clone();
         let _s2 = sm.new_session("keep-me");
@@ -953,7 +953,7 @@ mod tests {
     fn test_full_lifecycle() {
         // given: empty SM
         let dir = make_test_dir();
-        let mut sm = SessionManager::new_with_path(dir).unwrap();
+        let mut sm = DBSessionManager::new_with_path(dir).unwrap();
 
         // when: create → list → filter → switch → delete
         let _ = sm.new_session("lifecycle");

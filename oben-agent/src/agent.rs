@@ -28,7 +28,7 @@ pub fn generate_session_name() -> String {
     format!("{}-{:06}", ts, r)
 }
 use oben_models::{CallMode, Message, StreamDeltaCallback};
-use oben_sessions::SessionManager;
+use oben_sessions::{SessionManager, SessionStore};
 
 use crate::callbacks::AgentCallbacks;
 use crate::conversation::{ChatCallbacks, ConversationLoop};
@@ -62,6 +62,8 @@ pub struct AgentConfig {
     /// Nudge / background memory review config (tier-2).
     /// Set `memory_nudge_interval` to 0 to disable.
     pub nudge_config: Option<NudgeConfig>,
+        /// Session storage backend (e.g., "database" or "memory").
+        pub session_store: oben_models::SessionStoreKind,
 }
 
 /// An interactive agent — owns all resources, delegates to ConversationLoop.
@@ -75,7 +77,7 @@ pub struct Agent {
     /// Call mode — tracked per-session (Fresh on first turn, Incremental after).
     call_mode: Option<oben_models::CallMode>,
     /// Session manager — owns session lifecycle and persistence.
-    session_manager: Arc<Mutex<SessionManager>>,
+    session_manager: Arc<Mutex<SessionStore>>,
     /// Interrupt state — shared via Arc with ConversationLoop/TurnExecutor.
     interrupt_state: Arc<InterruptState>,
     /// Fallback model chain.
@@ -93,7 +95,7 @@ pub struct Agent {
 impl Agent {
     /// Create a new agent. Does NOT own a tokio runtime.
     pub async fn new(config: AgentConfig) -> Result<Self> {
-        let session_manager = Arc::new(Mutex::new(SessionManager::new()?));
+        let session_manager = Arc::new(Mutex::new(SessionStore::new(config.session_store)?));
 
         let mut agent = Self {
             transport: config.transport,
@@ -155,7 +157,7 @@ impl Agent {
             }
         }
 
-        let session_manager = Arc::new(Mutex::new(SessionManager::new().unwrap()));
+        let session_manager = Arc::new(Mutex::new(SessionStore::new(oben_models::SessionStoreKind::Memory).unwrap()));
         let transport = Arc::new(TestTransport) as Arc<dyn TransportProvider + Send + Sync>;
         let tools = Arc::new(oben_tools::ToolRegistry::new());
 
@@ -187,12 +189,12 @@ impl Agent {
     }
 
     /// Access the session manager for listing/saving outside the turn cycle.
-    pub fn session_manager(&self) -> Arc<Mutex<SessionManager>> {
+    pub fn session_manager(&self) -> Arc<Mutex<SessionStore>> {
         Arc::clone(&self.session_manager)
     }
 
     /// Mutably access the session manager (for admin ops: load, delete, new).
-    pub fn session_manager_mut(&mut self) -> Arc<Mutex<SessionManager>> {
+    pub fn session_manager_mut(&mut self) -> Arc<Mutex<SessionStore>> {
         Arc::clone(&self.session_manager)
     }
 
@@ -410,14 +412,14 @@ impl Agent {
                     Err(_) => sm
                         .lock()
                         .await
-                        .new_session(&generate_session_name())
+                        .new_session(&generate_session_name()).unwrap()
                         .id
                         .clone(),
                 },
                 None => sm
                     .lock()
                     .await
-                    .new_session(&generate_session_name())
+                    .new_session(&generate_session_name()).unwrap()
                     .id
                     .clone(),
             }
@@ -554,7 +556,7 @@ impl Agent {
         let new_id = sm
             .lock()
             .await
-            .new_session(&generate_session_name())
+            .new_session(&generate_session_name()).unwrap()
             .id
             .clone();
         // Reset call mode so next turn starts Fresh
@@ -638,7 +640,7 @@ impl Agent {
 
     /// Delete a session (wrapper for SessionsPanel).
     pub async fn delete_session(&mut self, session_id: &str) -> Result<()> {
-        self.session_manager.lock().await.delete(session_id)?;
+        self.session_manager.lock().await.delete_session(session_id)?;
         Ok(())
     }
 
@@ -773,7 +775,7 @@ impl Agent {
                 None => sm
                     .lock()
                     .await
-                    .new_session(&generate_session_name())
+                    .new_session(&generate_session_name()).unwrap()
                     .id
                     .clone(),
             };

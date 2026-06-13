@@ -14,53 +14,9 @@ use crate::cli::{
 use clap::Parser;
 use oben_cron::{CronJob, CronStore};
 use oben_goals::{GoalStore, JsonGoalStore};
-use oben_models::{Session, SessionStore, TransportProvider};
-use oben_sessions::SessionManager;
+use oben_models::{Session, TransportProvider};
+use oben_sessions::DBSessionManager;
 use std::sync::Arc;
-
-/// In-memory session store - no SQLite, no persistence, just a single
-/// session holding a `Vec<Message>`. Perfect for one-shot CLI commands.
-#[allow(dead_code)]
-struct MemorySessionStore {
-    session: Session,
-}
-
-impl MemorySessionStore {
-    #[allow(dead_code)]
-    fn new() -> Self {
-        let now = chrono::Utc::now();
-        Self {
-            session: Session {
-                id: format!("cli-{}", now.timestamp_millis()),
-                name: "cli-session".into(),
-                created_at: now,
-                updated_at: now,
-                messages: Vec::new(),
-                memory_context: None,
-                summary_chunks: Vec::new(),
-                persisted_message_count: 0,
-                metadata: Default::default(),
-            },
-        }
-    }
-}
-
-impl SessionStore for MemorySessionStore {
-    fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
-        if self.session.id == session_id {
-            Some(&mut self.session)
-        } else {
-            None
-        }
-    }
-    fn session(&self, session_id: &str) -> Option<&Session> {
-        if self.session.id == session_id {
-            Some(&self.session)
-        } else {
-            None
-        }
-    }
-}
 
 /// Entry point: parse CLI args and dispatch to the appropriate handler.
 pub async fn run_cli() -> Result<()> {
@@ -165,6 +121,7 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         callbacks: oben_agent::AgentCallbacks::default(),
         concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
         nudge_config: None,
+        session_store: config.session_store,
     })
     .await?;
 
@@ -198,6 +155,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         callbacks: oben_agent::AgentCallbacks::default(),
         concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
         nudge_config: None,
+        session_store: config.session_store,
     })
     .await?;
 
@@ -279,7 +237,7 @@ fn list_skills() -> Result<()> {
 // ── Sessions ────────────────────────────────────────────────────────────
 
 fn list_sessions() -> Result<()> {
-    let mut session_manager = oben_sessions::SessionManager::new()?;
+    let mut session_manager = oben_sessions::DBSessionManager::new()?;
     session_manager.init()?;
     let sessions = session_manager.list_sessions(None);
     if sessions.is_empty() {
@@ -305,7 +263,7 @@ fn list_sessions() -> Result<()> {
 
 async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str>) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
-    let mut sm = oben_sessions::SessionManager::new()?;
+    let mut sm = oben_sessions::DBSessionManager::new()?;
 
     let active_id = sm.active().map(|s| s.id.clone());
     let target: String = match session_key {
@@ -393,7 +351,7 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
 }
 
 fn run_delete_session(session_key: &str) -> Result<()> {
-    let mut sm = oben_sessions::SessionManager::new()?;
+    let mut sm = oben_sessions::DBSessionManager::new()?;
     sm.init()?;
     sm.delete(session_key)?;
     println!("Deleted session '{}'", session_key);
@@ -401,7 +359,7 @@ fn run_delete_session(session_key: &str) -> Result<()> {
 }
 
 fn dump_session(session_key: Option<&str>) -> Result<()> {
-    let mut sm = oben_sessions::SessionManager::new()?;
+    let mut sm = oben_sessions::DBSessionManager::new()?;
     sm.load(None)?;
 
     let active_id = sm.active().map(|s| s.id.clone());
@@ -722,6 +680,7 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
                     concurrent_dispatch_config:
                           oben_agent::ConcurrentDispatchConfig::default(),
                     nudge_config: None,
+                    session_store: config.session_store,
                 })
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;

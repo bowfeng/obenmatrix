@@ -12,8 +12,7 @@ use crate::nudge::NudgeConfig;
 use crate::post_turn_hook::PostTurnHook;
 use crate::retry::RetryConfig;
 use crate::turn_executor::{TurnConfig, TurnExecutor};
-use oben_models::{CallMode, Message, SessionManagerExt, StreamDeltaCallback, TransportProvider};
-use oben_sessions::SessionManager;
+use oben_models::{CallMode, Message, SessionManager, StreamDeltaCallback, TransportProvider};
 
 /// Callbacks for interactive_chat — abstracts I/O for CLI/TUI.
 #[derive(Clone)]
@@ -78,7 +77,7 @@ impl ConversationLoop {
         context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
-        session_manager: &mut dyn SessionManagerExt,
+        session_manager: &mut dyn SessionManager,
         session_id: &str,
         user_message: Message,
         call_mode: &CallMode,
@@ -123,7 +122,7 @@ impl ConversationLoop {
         context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
         tools: &std::sync::Arc<oben_tools::ToolRegistry>,
-        session_manager: &mut dyn SessionManagerExt,
+        session_manager: &mut dyn SessionManager,
         session_id: &str,
         user_message: Message,
         call_mode: &CallMode,
@@ -152,7 +151,7 @@ impl ConversationLoop {
         context_engine: &mut dyn ContextEngine,
         transport: Arc<dyn TransportProvider + Send + Sync>,
         tools: &Arc<oben_tools::ToolRegistry>,
-        session_manager: &mut SessionManager,
+        session_manager: &mut dyn SessionManager,
         call_mode: &mut Option<CallMode>,
         stream: bool,
         callbacks: ChatCallbacks,
@@ -306,7 +305,7 @@ impl ConversationLoop {
         context_engine: &mut dyn ContextEngine,
         transport: Arc<dyn TransportProvider + Send + Sync>,
         tools: &Arc<oben_tools::ToolRegistry>,
-        session_manager: &mut SessionManager,
+        session_manager: &mut dyn SessionManager,
         call_mode: &mut Option<CallMode>,
         stream: bool,
         callbacks: ChatCallbacks,

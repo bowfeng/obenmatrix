@@ -20,7 +20,7 @@ use crate::interrupt::SharedInterrupt;
 use crate::message_sanitize::sanitize_messages;
 use crate::retry::{retry_with_backoff, retryable_transient, RetryConfig};
 use crate::stream_processor;
-use oben_models::{Message, MessageRole, Session, SessionManagerExt, TransportProvider};
+use oben_models::{Message, MessageRole, Session, SessionManager, TransportProvider};
 
 // ---------------------------------------------------------------------------
 // TurnConfig — configuration for turn execution
@@ -91,7 +91,7 @@ impl TurnExecutor {
         context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
-        session_manager: &mut dyn SessionManagerExt,
+        session_manager: &mut dyn SessionManager,
         session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
@@ -126,7 +126,7 @@ impl TurnExecutor {
         context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
-        session_manager: &mut dyn SessionManagerExt,
+        session_manager: &mut dyn SessionManager,
         session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,

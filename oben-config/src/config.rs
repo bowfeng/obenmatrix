@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use oben_models::ProviderConfig;
 
+pub use oben_models::SessionStoreKind;
+
 /// All application settings, stored in ~/.config/obenalien/config.yaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -26,6 +28,9 @@ pub struct AppConfig {
     pub providers: Vec<ProviderConfig>,
     pub custom_providers: Vec<String>,
     pub vision: VisionConfig,
+    /// Session storage backend: "database" (default) or "memory".
+    #[serde(default)]
+    pub session_store: SessionStoreKind,
 }
 
 /// Configuration for vision/image analysis.
@@ -358,6 +363,7 @@ impl Default for AppConfig {
             custom_providers: Vec::new(),
             vision: VisionConfig::default(),
             voice: VoiceConfig::default(),
+            session_store: SessionStoreKind::Database,
         }
     }
 }
