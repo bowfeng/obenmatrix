@@ -1,10 +1,9 @@
-use serde_json::Value;
 /// Patch tool — fuzzy text replacement in files.
 ///
 /// Implements `Tool` trait directly.
 use std::path::Path;
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 use oben_utils::path_security::is_path_safe;
 
@@ -237,78 +236,33 @@ fn generate_diff(old_content: &str, new_content: &str, path: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn make_patch_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "path".into(),
-            description: "File path to patch.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "old_string".into(),
-            description: "Text to find (supports fuzzy matching).".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "new_string".into(),
-            description: "Replacement text.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "replace_all".into(),
-            description:
-                "If true, replace all occurrences (default: false, requires unique match).".into(),
-            parameter_type: "boolean".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "patch".into(),
         description: "Patch a file by replacing text with fuzzy matching. Supports whitespace, indentation, and Unicode variations. Returns diff and match details.".into(),
-        parameters: ToolParameters::Flat(params),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("path", "File path to patch.", "string"),
+            ToolParameter::required("old_string", "Text to find (supports fuzzy matching).", "string"),
+            ToolParameter::required("new_string", "Replacement text.", "string"),
+            ToolParameter::optional("replace_all", "If true, replace all occurrences (default: false, requires unique match).", "boolean"),
+        ]),
     }
-}
-
-// ---------------------------------------------------------------------------
+}// ---------------------------------------------------------------------------
 // Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct PatchTool;
 
 /// Patch a file by replacing text with fuzzy matching.
-async fn execute_patch(args: &Value) -> anyhow::Result<ToolResult> {
-    let path = args
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
-
-    let old_string = args
-        .get("old_string")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'old_string' argument"))?;
-
-    let new_string = args
-        .get("new_string")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'new_string' argument"))?;
-
-    let replace_all = args
-        .get("replace_all")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+async fn execute_patch<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let path = call.required_str("path")?;
+    let old_string = call.required_str("old_string")?;
+    let new_string = call.required_str("new_string")?;
+    let replace_all = call.optional_bool("replace_all").unwrap_or(false);
 
     // Safety check: path traversal
     if !is_path_safe(Path::new(path)) {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some("Unsafe file path".to_string()),
         });
@@ -317,7 +271,7 @@ async fn execute_patch(args: &Value) -> anyhow::Result<ToolResult> {
     // Safety check: empty old_string
     if old_string.trim().is_empty() {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some("old_string cannot be empty".to_string()),
         });
@@ -328,7 +282,7 @@ async fn execute_patch(args: &Value) -> anyhow::Result<ToolResult> {
         Ok(c) => c,
         Err(e) => {
             return Ok(ToolResult {
-                call_id,
+                call_id: call.call_id.clone(),
                 output: String::new(),
                 error: Some(format!("Failed to read {}: {}", path, e)),
             });
@@ -342,7 +296,7 @@ async fn execute_patch(args: &Value) -> anyhow::Result<ToolResult> {
 
     if match_count == 0 {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: format!("No match found for old_string in {} (strategy: {}). Try reading the file first to see exact content.", path, strategy),
             error: Some(format!("No match found in {} using strategy: {}", path, strategy)),
         });
@@ -351,7 +305,7 @@ async fn execute_patch(args: &Value) -> anyhow::Result<ToolResult> {
     // If not replace_all and multiple occurrences, error
     if !replace_all && content.matches(old_string).count() > 1 {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(
                 "Multiple occurrences found. Set replace_all=true to replace all."
@@ -369,12 +323,12 @@ async fn execute_patch(args: &Value) -> anyhow::Result<ToolResult> {
     // Write file
     match tokio::fs::write(path, &new_content).await {
         Ok(_) => Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: format!("Patch applied successfully.\n\n{}", diff),
             error: None,
         }),
         Err(e) => Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!("Failed to write file: {}", e)),
         }),
@@ -389,13 +343,9 @@ impl Tool for PatchTool {
     fn description(&self) -> &str {
         "Patch a file by replacing text with fuzzy matching"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_patch(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_patch(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })

@@ -62,6 +62,26 @@ impl ToolMeta {
     }
 }
 
+impl ToolParameter {
+    pub fn required(name: impl Into<String>, desc: impl Into<String>, ptype: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: desc.into(),
+            parameter_type: ptype.into(),
+            required: true,
+        }
+    }
+
+    pub fn optional(name: impl Into<String>, desc: impl Into<String>, ptype: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: desc.into(),
+            parameter_type: ptype.into(),
+            required: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolBuilder {
     name: String,

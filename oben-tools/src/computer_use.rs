@@ -15,7 +15,7 @@ use tracing::debug;
 
 use oben_models::{ToolMeta, ToolParameters, ToolResult};
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 
 // ===========================================================================
 // Schema
@@ -648,58 +648,56 @@ impl Tool for ComputerUseTool {
     fn description(&self) -> &str {
         "Drive the macOS desktop in the background"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        let call_id = args
-            .get("call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        let action = match args
-            .get("action")
-            .and_then(|v| v.as_str())
-        {
-            Some(a) => a.trim().to_lowercase(),
-            None => return ToolResult {
-                call_id,
-                output: String::new(),
-                error: Some("Missing required argument: action".to_string()),
-            },
-        };
-
-        let result = match action.as_str() {
-            "capture" => handle_capture(&args, call_id.clone()).await,
-            "click" | "double_click" | "right_click" | "middle_click" => {
-                handle_pointer(&args, &action, call_id.clone()).await
-            }
-            "drag" => handle_drag(&args, call_id.clone()).await,
-            "scroll" => handle_scroll(&args, call_id.clone()).await,
-            "type" => handle_type(&args, call_id.clone()).await,
-            "key" => handle_key(&args, call_id.clone()).await,
-            "set_value" => handle_set_value(&args, call_id.clone()).await,
-            "wait" => handle_wait(&args, call_id.clone()).await,
-            "list_apps" => handle_list_apps(call_id.clone()).await,
-            "focus_app" => handle_focus_app(&args, call_id.clone()).await,
-            _ => Ok(ToolResult {
-                call_id: call_id.clone(),
-                output: String::new(),
-                error: Some(format!("Unknown action: '{action}'")),
-            }),
-        };
-        
-        match result {
-            Ok(tr) => tr,
-            Err(e) => ToolResult {
-                call_id,
-                output: String::new(),
-                error: Some(e.to_string()),
-            },
-        }
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_computer_use(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
     }
     fn clone_tool(&self) -> Box<dyn Tool> {
         Box::new(Self)
     }
 }
+
+/// Execute computer automation actions (capture, click, drag, scroll, type, etc.).
+async fn execute_computer_use<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let action = call.required_str("action")?;
+    let call_id = call.call_id.clone();
+
+    let action_lower = action.trim().to_lowercase();
+
+    let result = match action_lower.as_str() {
+        "capture" => handle_capture(&call.args, call_id.clone()).await,
+        "click" | "double_click" | "right_click" | "middle_click" => {
+            handle_pointer(&call.args, &action_lower, call_id.clone()).await
+        }
+        "drag" => handle_drag(&call.args, call_id.clone()).await,
+        "scroll" => handle_scroll(&call.args, call_id.clone()).await,
+        "type" => handle_type(&call.args, call_id.clone()).await,
+        "key" => handle_key(&call.args, call_id.clone()).await,
+        "set_value" => handle_set_value(&call.args, call_id.clone()).await,
+        "wait" => handle_wait(&call.args, call_id.clone()).await,
+        "list_apps" => handle_list_apps(call_id.clone()).await,
+        "focus_app" => handle_focus_app(&call.args, call_id.clone()).await,
+        _ => Ok(ToolResult {
+            call_id: call_id.clone(),
+            output: String::new(),
+            error: Some(format!("Unknown action: '{action_lower}'")),
+        }),
+    };
+    
+    let tr = match result {
+        Ok(tr) => tr,
+        Err(e) => ToolResult {
+            call_id: call.call_id.clone(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        },
+    };
+    Ok(tr)
+}
+
 
 /// Register this module into the given registry.
 pub fn register(registry: &mut ToolRegistry) {

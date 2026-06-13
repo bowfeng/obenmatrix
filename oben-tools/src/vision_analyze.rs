@@ -1,9 +1,8 @@
 use base64::Engine;
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::Value;
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_config::config::AppConfig;
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
@@ -401,93 +400,62 @@ async fn analyze_image(image_url: &str, prompt: &str) -> Result<String, String> 
 // ---------------------------------------------------------------------------
 
 fn make_vision_analyze_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "image_url".into(),
-            description: "Image source: either a public HTTP/HTTPS URL or a base64 data URL (data:image/png;base64,...). The URL must point to an image that can be read. REQUIRED parameter — do not omit.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "prompt".into(),
-            description: "Question or prompt for the vision model (e.g. 'What is in this image?'). Default: 'Describe this image in detail'.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "vision_analyze".into(),
-        description: "Analyze images from URLs or base64 data URLs using vision AI (GPT-4o / Claude). Pass a public HTTP/HTTPS URL (downloads the image) OR a data:image/png;base64,... URL. Returns a detailed description or answer to your question.".into(),
-        parameters: ToolParameters::Flat(params),
+        description: "Analyze image or diagram files (PNG, JPG, SVG, JSON diff, etc.) to extract text, structure, charts, code blocks, and diagrams".into(),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("image_url", "The URL to an image file to analyze (HTTP URL or base64 data URL)", "string"),
+            ToolParameter::optional("prompt", "A specific question to answer about the content of the image. If not provided, defaults to an all-encompassing analysis.", "string"),
+        ]),
     }
-}
-
-// ---------------------------------------------------------------------------
+}// ---------------------------------------------------------------------------
 // Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct VisionAnalyzeTool;
 
-/// Analyze an image from a URL or data URL.
-async fn execute_vision(args: &Value) -> anyhow::Result<ToolResult> {
-    let prompt = args
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Describe this image in detail.");
-
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let image_url_str = args
-        .get("image_url")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing required 'image_url' argument. Provide either a public HTTP/HTTPS URL or a base64 data URL in format data:image/png;base64,..."))?;
+/// Analyze an image using configured vision API.
+async fn execute_vision<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let prompt = call.optional_str("prompt").unwrap_or("Describe this image in detail.");
+    let image_url = call.required_str("image_url")?;
 
     // Handle data URLs directly (base64 encoded images)
-    if is_data_url(image_url_str) {
-        match analyze_from_data_url(image_url_str, prompt).await {
-            Ok(analysis) => {
-                return Ok(ToolResult {
-                    call_id,
-                    output: analysis,
-                    error: None,
-                });
-            }
-            Err(e) => {
-                return Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(format!("Analysis failed: {}", e)),
-                });
-            }
+    if is_data_url(image_url) {
+        match analyze_from_data_url(image_url, prompt).await {
+            Ok(analysis) => Ok(ToolResult {
+                call_id: call.call_id.clone(),
+                output: analysis,
+                error: None,
+            }),
+            Err(e) => Ok(ToolResult {
+                call_id: call.call_id.clone(),
+                output: String::new(),
+                error: Some(format!("Analysis failed: {}", e)),
+            }),
         }
     }
-
     // SSRF protection (only for http/https URLs)
-    if !is_safe_url(image_url_str) {
-        return Ok(ToolResult {
-            call_id,
+    else if !is_safe_url(image_url) {
+        Ok(ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
-            error: Some(
-                "Blocked: URL targets a private or internal network address".to_string(),
-            ),
-        });
+            error: Some("Blocked: URL targets a private or internal network address".to_string()),
+        })
     }
-
-    match analyze_image(image_url_str, prompt).await {
-        Ok(analysis) => Ok(ToolResult {
-            call_id,
-            output: analysis,
-            error: None,
-        }),
-        Err(e) => Ok(ToolResult {
-            call_id,
-            output: String::new(),
-            error: Some(format!("Analysis failed: {}", e)),
-        }),
+    // Download and analyze
+    else {
+        match analyze_image(image_url, prompt).await {
+            Ok(analysis) => Ok(ToolResult {
+                call_id: call.call_id.clone(),
+                output: analysis,
+                error: None,
+            }),
+            Err(e) => Ok(ToolResult {
+                call_id: call.call_id.clone(),
+                output: String::new(),
+                error: Some(format!("Analysis failed: {}", e)),
+            }),
+        }
     }
 }
 
@@ -499,13 +467,9 @@ impl Tool for VisionAnalyzeTool {
     fn description(&self) -> &str {
         "Analyze images from URLs or base64 data URLs using vision AI"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_vision(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_vision(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -624,7 +588,7 @@ mod tests {
             .error
             .as_ref()
             .unwrap()
-            .contains("Missing required 'image_url'"));
+            .contains("Missing required argument: 'image_url'"));
     }
 
     #[tokio::test]

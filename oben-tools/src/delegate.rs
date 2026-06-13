@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
-use crate::registry::{SpawnFn, Tool, ToolRegistry};
+use crate::registry::{SpawnFn, Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta as ToolDef, ToolResult};
 use tracing::{debug, info, warn};
 
@@ -453,14 +453,14 @@ impl Tool for DelegateTool {
          a summary of the result."
     }
 
-    /// Validate args: must have either `goal` (single) or `tasks` (batch).
-    fn validate(&self, args: &Value) -> Result<(), anyhow::Error> {
-        let has_goal = args
+    /// Validate call.args: must have either `goal` (single) or `tasks` (batch).
+    fn validate(&self, call: &ToolCall) -> Result<(), anyhow::Error> {
+        let has_goal = call.args
             .get("goal")
             .and_then(|v| v.as_str())
             .map(|s| !s.is_empty())
             .unwrap_or(false);
-        let has_tasks = args
+        let has_tasks = call.args
             .get("tasks")
             .and_then(|v| v.as_array())
             .map(|a| !a.is_empty())
@@ -471,17 +471,17 @@ impl Tool for DelegateTool {
             has_goal, has_tasks
         );
         if has_goal {
-            if let Some(g) = args.get("goal").and_then(|v| v.as_str()) {
+            if let Some(g) = call.args.get("goal").and_then(|v| v.as_str()) {
                 debug!(
                     "delegate: validate goal={} context={} role={}",
                     g,
-                    args.get("context").and_then(|v| v.as_str()).unwrap_or(""),
-                    args.get("role").and_then(|v| v.as_str()).unwrap_or("")
+                    call.args.get("context").and_then(|v| v.as_str()).unwrap_or(""),
+                    call.args.get("role").and_then(|v| v.as_str()).unwrap_or("")
                 );
             }
         }
         if has_tasks {
-            if let Some(tasks) = args.get("tasks").and_then(|v| v.as_array()) {
+            if let Some(tasks) = call.args.get("tasks").and_then(|v| v.as_array()) {
                 debug!("delegate: validate {} tasks to process", tasks.len());
             }
         }
@@ -493,7 +493,7 @@ impl Tool for DelegateTool {
         }
 
         if has_tasks {
-            let tasks = args
+            let tasks = call.args
                 .get("tasks")
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| anyhow::anyhow!("tasks must be a JSON array of task objects"))?;
@@ -515,33 +515,38 @@ impl Tool for DelegateTool {
         Ok(())
     }
 
+    /// Execute delegate: spawn child agent(s) and await their results.
+    ///
+    /// Supports two modes:
+    /// - **Single**: one subagent spawned for the `goal`
+    /// - **Batch**: multiple subagents spawned concurrently for each `tasks` entry
     /// Execute the delegate: spawn child agent(s) and await their results.
     ///
     /// Supports two modes:
     /// - **Single**: one subagent spawned for the `goal`
     /// - **Batch**: multiple subagents spawned concurrently for each `tasks` entry
-    async fn execute(&self, args: &Value) -> ToolResult {
-        let parent_id = args
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        let parent_id = call.args
             .get("parent_session_id")
             .and_then(|v| v.as_str())
             .unwrap_or(&self.parent_session_id)
             .to_string();
-        let top_level_role = args
+        let top_level_role = call.args
             .get("role")
             .and_then(|v| v.as_str())
             .unwrap_or("leaf")
             .to_string();
-        let base_depth = args
+        let base_depth = call.args
             .get("agent_depth")
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
-        let call_id = args
+        let call_id = call.args
             .get("call_id")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
 
-        if let Some(n) = args.get("tasks").and_then(|v| v.as_array()) {
+        if let Some(n) = call.args.get("tasks").and_then(|v| v.as_array()) {
             info!(
                 "delegate: batch mode START, {} tasks, parent_session_id={} role={} depth={}",
                 n.len(),
@@ -552,12 +557,12 @@ impl Tool for DelegateTool {
             self.execute_batch(&parent_id, top_level_role, base_depth, n, &call_id)
                 .await
         } else {
-            let goal = args
+            let goal = call.args
                 .get("goal")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            let context = args.get("context").and_then(|v| v.as_str()).unwrap_or("");
+            let context = call.args.get("context").and_then(|v| v.as_str()).unwrap_or("");
             let goal_short = log_short(&goal, 100);
             info!(
                 "delegate: single mode START, parent_session_id={} goal={} role={} depth={}",
@@ -636,7 +641,8 @@ async fn test_validate_single_valid() {
     });
     let tool = DelegateTool::new(spawn, 3);
     let args = serde_json::json!({"goal": "research schema"});
-    assert!(tool.validate(&args).is_ok());
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    assert!(tool.validate(&call).is_ok());
 }
 
 /// Given: Valid batch args with tasks array
@@ -655,7 +661,8 @@ async fn test_validate_batch_valid() {
             {"goal": "task 2", "role": "orchestrator"}
         ]
     });
-    assert!(tool.validate(&args).is_ok());
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    assert!(tool.validate(&call).is_ok());
 }
 
 /// Given: Args with neither goal nor tasks
@@ -669,7 +676,8 @@ async fn test_validate_neither_goal_nor_tasks() {
     });
     let tool = DelegateTool::new(spawn, 3);
     let args = serde_json::json!({"context": "extra info"});
-    let result = tool.validate(&args);
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.validate(&call);
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -688,7 +696,8 @@ async fn test_validate_batch_missing_goal() {
     });
     let tool = DelegateTool::new(spawn, 3);
     let args = serde_json::json!({"tasks": [{"context": "no goal here"}]});
-    let result = tool.validate(&args);
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.validate(&call);
     assert!(result.is_err());
 }
 
@@ -703,7 +712,8 @@ async fn test_validate_batch_empty_goal() {
     });
     let tool = DelegateTool::new(spawn, 3);
     let args = serde_json::json!({"tasks": [{"goal": ""}]});
-    let result = tool.validate(&args);
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.validate(&call);
     assert!(result.is_err());
 }
 
@@ -718,7 +728,8 @@ async fn test_validate_batch_non_object_task() {
     });
     let tool = DelegateTool::new(spawn, 3);
     let args = serde_json::json!({"tasks": ["not-an-object"]});
-    let result = tool.validate(&args);
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.validate(&call);
     assert!(result.is_err());
 }
 
@@ -746,7 +757,8 @@ async fn test_execute_single_returns_result() {
         "parent_session_id": "parent-1",
         "call_id": "call-1"
     });
-    let result = tool.execute(&args).await;
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     assert!(result.error.is_none());
     let parsed: crate::registry::SubagentResult =
@@ -780,7 +792,8 @@ async fn test_execute_single_with_context() {
         "parent_session_id": "parent-2",
         "call_id": "call-2"
     });
-    let result = tool.execute(&args).await;
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     assert!(result.error.is_none());
     let parsed: crate::registry::SubagentResult =
@@ -813,7 +826,8 @@ async fn test_execute_batch_two_tasks() {
         "agent_depth": 0,
         "role": "leaf"
     });
-    let result = tool.execute(&args).await;
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     assert!(result.error.is_none());
     let parsed: Vec<DelegateTaskResult> =
@@ -851,7 +865,8 @@ async fn test_execute_batch_mixed_valid_invalid() {
         "call_id": "call-mixed",
         "agent_depth": 0
     });
-    let result = tool.execute(&args).await;
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     assert!(result.error.is_none());
     let parsed: Vec<DelegateTaskResult> =
@@ -885,7 +900,8 @@ async fn test_execute_batch_non_object_entries() {
         "call_id": "call-id",
         "agent_depth": 0
     });
-    let result = tool.execute(&args).await;
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     let parsed: Vec<DelegateTaskResult> =
         serde_json::from_str(&result.output).expect("output is valid JSON array");
@@ -907,7 +923,8 @@ async fn test_validate_empty_tasks_array() {
     });
     let tool = DelegateTool::new(spawn, 3);
     let args = serde_json::json!({"tasks": []});
-    let result = tool.validate(&args);
+    let call = crate::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.validate(&call);
     assert!(result.is_err());
 }
 

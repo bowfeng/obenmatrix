@@ -1,6 +1,4 @@
-use serde_json::Value;
-
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
@@ -8,24 +6,13 @@ use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 // ---------------------------------------------------------------------------
 
 fn make_clarify_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "question".into(),
-            description: "The question to ask the user for clarification.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "options".into(),
-            description: "Optional list of suggested options for the user to choose from.".into(),
-            parameter_type: "array".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "clarify".into(),
-        description: "Ask the user for clarification on an ambiguous task. Pauses execution until user responds.".into(),
-        parameters: ToolParameters::Flat(params),
+        description: "Ask a question to the user to clarify their intent".into(),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("question", "The question to ask the user for clarification.", "string"),
+            ToolParameter::optional("suggestions", "List of suggested responses for quick user selection", "array"),
+        ]),
     }
 }
 
@@ -36,23 +23,13 @@ fn make_clarify_tool_def() -> ToolMeta {
 pub struct ClarifyTool;
 
 /// Format a question with optional suggestions for user responses.
-async fn execute_clarify(args: &Value) -> anyhow::Result<ToolResult> {
-    let question = args
-        .get("question")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'question' argument"))?;
+async fn execute_clarify<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let question = call.required_str("question")?;
 
-    let options = args
-        .get("options")
-        .and_then(|v| v.as_array())
+    let options = call
+        .optional_array("options")
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
         .unwrap_or_default();
-
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
 
     let mut output = format!("❓ Question: {}\n", question);
     if !options.is_empty() {
@@ -63,7 +40,7 @@ async fn execute_clarify(args: &Value) -> anyhow::Result<ToolResult> {
     }
     output.push_str("\nWaiting for user response...");
 
-    Ok(ToolResult { call_id, output, error: None })
+    Ok(ToolResult { call_id: call.call_id.clone(), output, error: None })
 }
 
 #[async_trait::async_trait]
@@ -74,13 +51,9 @@ impl Tool for ClarifyTool {
     fn description(&self) -> &str {
         "Ask the user for clarification on an ambiguous task"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_clarify(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_clarify(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -102,7 +75,6 @@ pub fn register(registry: &mut ToolRegistry) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
 
     fn make_registry() -> super::super::registry::ToolRegistry {
@@ -166,6 +138,6 @@ mod tests {
             .error
             .as_ref()
             .unwrap()
-            .contains("Missing 'question'"));
+            .contains("Missing required argument: 'question'"));
     }
 }

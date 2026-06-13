@@ -1,11 +1,10 @@
-use serde_json::Value;
 /// Skill tool — view and list available skills.
 ///
 /// Implements `Tool` trait directly.
 use std::fs;
 use std::path::Path;
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
@@ -182,11 +181,8 @@ fn find_skills() -> Vec<SkillMeta> {
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-fn list_skills(args: &Value, call_id: String) -> ToolResult {
-    let category_filter = args
-        .get("category")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+fn list_skills(call: &ToolCall<'_>) -> ToolResult {
+    let category_filter = call.optional_str("category").map(|s| s.to_string());
 
     let skills = find_skills();
 
@@ -223,7 +219,7 @@ fn list_skills(args: &Value, call_id: String) -> ToolResult {
         output.push('\n');
 
         return ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output,
             error: None,
         };
@@ -254,7 +250,7 @@ fn list_skills(args: &Value, call_id: String) -> ToolResult {
     ));
 
     ToolResult {
-        call_id,
+        call_id: call.call_id.clone(),
         output,
         error: None,
     }
@@ -366,30 +362,14 @@ fn view_skill(name: &str, call_id: String) -> ToolResult {
 // ---------------------------------------------------------------------------
 
 fn make_skill_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "action".into(),
-            description: "Action: 'list' to show all skills, 'view' to view a skill's full content.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "name".into(),
-            description: "Skill name or path (e.g., 'coding' or '03-fine-tuning/axolotl'). Used with 'view' action.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "category".into(),
-            description: "Optional category filter when listing skills.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "skill".into(),
         description: "View and manage skills. Skills are reusable instructions for the agent. Actions: list (show all), view (display full content).".into(),
-        parameters: ToolParameters::Flat(params),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::required("action", "Action: 'list' to show all skills, 'view' to view a skill's full content.", "string"),
+            ToolParameter::optional("name", "Skill name or path (e.g., 'coding' or '03-fine-tuning/axolotl'). Used with 'view' action.", "string"),
+            ToolParameter::optional("category", "Optional category filter when listing skills.", "string"),
+        ]),
     }
 }
 
@@ -400,29 +380,17 @@ fn make_skill_tool_def() -> ToolMeta {
 pub struct SkillTool;
 
 /// Execute skill actions (list, view).
-async fn execute_skill(args: &Value) -> anyhow::Result<ToolResult> {
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let action = args
-        .get("action")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'action' argument. Use: list, view."))?;
+async fn execute_skill(call: &ToolCall<'_>) -> anyhow::Result<ToolResult> {
+    let action = call.required_str("action")?;
 
     match action {
-        "list" => Ok(list_skills(args, call_id)),
+        "list" => Ok(list_skills(call)),
         "view" => {
-            let name = args
-                .get("name")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("'name' is required for 'view' action."))?;
-            Ok(view_skill(name, call_id))
+            let name = call.required_str("name")?;
+            Ok(view_skill(name, call.call_id.clone()))
         }
         _ => Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!("Unknown action '{}'. Use: list, view.", action)),
         }),
@@ -437,13 +405,9 @@ impl Tool for SkillTool {
     fn description(&self) -> &str {
         "View and manage skills"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_skill(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_skill(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -493,6 +457,7 @@ mod tests {
         fs::write(&skill_file, frontmatter).ok();
     }
 
+    #[allow(dead_code)]
     fn cleanup_test_skills() {
         let skills_dir = get_skills_dir();
         if skills_dir.exists() {
@@ -583,7 +548,7 @@ mod tests {
             .await;
 
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Missing 'action'"));
+        assert!(result.error.as_ref().unwrap().contains("Missing required argument: 'action'"));
     }
 
     #[tokio::test]

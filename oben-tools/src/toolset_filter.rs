@@ -15,7 +15,7 @@ use oben_models::ToolResult;
 use serde_json::Value;
 use tracing::warn;
 
-use super::registry::ToolRegistry;
+use super::registry::{ToolCall, ToolRegistry};
 
 /// A filter that wraps a [ToolRegistry] and blocks specific tools from
 /// being executed.
@@ -78,7 +78,6 @@ impl BlockedToolFilter {
 mod tests {
     use super::*;
     use crate::registry::{Tool, ToolRegistry};
-    use oben_models::ToolMeta;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -92,7 +91,7 @@ mod tests {
         impl Tool for ReadFileTool {
             fn name(&self) -> &str { "read_file" }
             fn description(&self) -> &str { "Read a file" }
-            async fn execute(&self, _args: &Value) -> ToolResult {
+            async fn execute(&self, _call: &ToolCall) -> ToolResult {
                 ToolResult {
                     call_id: "1".into(),
                     output: "file contents".into(),
@@ -107,7 +106,7 @@ mod tests {
         impl Tool for MemoryTool {
             fn name(&self) -> &str { "memory" }
             fn description(&self) -> &str { "Read/write shared memory" }
-            async fn execute(&self, _args: &Value) -> ToolResult {
+            async fn execute(&self, _call: &ToolCall) -> ToolResult {
                 ToolResult {
                     call_id: "2".into(),
                     output: "memory content".into(),
@@ -122,7 +121,7 @@ mod tests {
         impl Tool for DelegateTool {
             fn name(&self) -> &str { "delegate_task" }
             fn description(&self) -> &str { "Delegate a subtask" }
-            async fn execute(&self, _args: &Value) -> ToolResult {
+            async fn execute(&self, _call: &ToolCall) -> ToolResult {
                 ToolResult {
                     call_id: "3".into(),
                     output: "delegated".into(),

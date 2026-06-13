@@ -10,13 +10,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use serde_json::Value;
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{Tool, ToolRegistry};
+use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_utils::path_security::is_path_safe;
 
 // ---------------------------------------------------------------------------
@@ -120,25 +119,16 @@ fn is_dangerous_command(cmd: &str) -> bool {
     false
 }
 
-async fn handle_run(args: &Value, call_id: String) -> anyhow::Result<ToolResult> {
-    let cmd = args
-        .get("command")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
-
-    let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
-
-    let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60);
-
-    let background = args
-        .get("background")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+async fn handle_run<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let cmd = call.required_str("command")?;
+    let cwd = call.optional_str_with_default("cwd", ".");
+    let timeout_secs: u64 = call.optional_u64("timeout", 60);
+    let background = call.optional_bool("background").unwrap_or(false);
 
     // Safety check: dangerous command
     if is_dangerous_command(cmd) {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!("Dangerous command blocked: {}", cmd)),
         });
@@ -147,16 +137,16 @@ async fn handle_run(args: &Value, call_id: String) -> anyhow::Result<ToolResult>
     // Safety check: unsafe path
     if !is_path_safe(std::path::Path::new(cwd)) {
         return Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some("Unsafe working directory path".to_string()),
         });
     }
 
     if background {
-        handle_background_task(cmd, cwd, &call_id).await
+        handle_background_task(cmd, cwd, &call.call_id).await
     } else {
-        handle_foreground(cmd, cwd, timeout_secs, &call_id).await
+        handle_foreground(cmd, cwd, timeout_secs, &call.call_id).await
     }
 }
 
@@ -302,11 +292,8 @@ fn format_output(stdout: &str, stderr: &str) -> String {
 // Background task management operations
 // ---------------------------------------------------------------------------
 
-async fn handle_task_status(args: &Value, call_id: String) -> anyhow::Result<ToolResult> {
-    let task_id = args
-        .get("task_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'task_id' argument"))?;
+async fn handle_task_status<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let task_id = call.required_str("task_id")?;
 
     let tasks = BACKGROUND_TASKS.lock().await;
 
@@ -318,24 +305,21 @@ async fn handle_task_status(args: &Value, call_id: String) -> anyhow::Result<Too
         };
 
         Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: format!("Task {}: {} (pid: {:?})", task_id, status_str, task.pid),
             error: None,
         })
     } else {
         Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!("Task '{}' not found", task_id)),
         })
     }
 }
 
-async fn handle_task_stop(args: &Value, call_id: String) -> anyhow::Result<ToolResult> {
-    let task_id = args
-        .get("task_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'task_id' argument"))?;
+async fn handle_task_stop<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let task_id = call.required_str("task_id")?;
 
     let mut tasks = BACKGROUND_TASKS.lock().await;
 
@@ -355,29 +339,23 @@ async fn handle_task_stop(args: &Value, call_id: String) -> anyhow::Result<ToolR
         tasks.remove(task_id);
 
         Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: format!("Task {} stopped", task_id),
             error: None,
         })
     } else {
         Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!("Task '{}' not found", task_id)),
         })
     }
 }
 
-async fn handle_task_output(args: &Value, call_id: String) -> anyhow::Result<ToolResult> {
-    let task_id = args
-        .get("task_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'task_id' argument"))?;
+async fn handle_task_output<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let task_id = call.required_str("task_id")?;
 
-    let _newest_only = args
-        .get("newest_only")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let _newest_only = call.optional_bool("newest_only").unwrap_or(false);
 
     let tasks = BACKGROUND_TASKS.lock().await;
 
@@ -396,13 +374,13 @@ async fn handle_task_output(args: &Value, call_id: String) -> anyhow::Result<Too
         };
 
         Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output,
             error: None,
         })
     } else {
         Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!("Task '{}' not found", task_id)),
         })
@@ -445,48 +423,17 @@ async fn handle_task_list(call_id: &str) -> anyhow::Result<ToolResult> {
 // ---------------------------------------------------------------------------
 
 fn make_terminal_tool_def() -> ToolMeta {
-    let params = vec![
-        ToolParameter {
-            name: "action".into(),
-            description: "Action to perform: execute (foreground command), run (background command), status (check task status), stop (kill background task), output (get background task output), list (list all background tasks)".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "command".into(),
-            description: "Shell command to execute".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "cwd".into(),
-            description: "Working directory to run the command in. Defaults to current directory.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "timeout".into(),
-            description: "Timeout in seconds for foreground execution. Default is 60 seconds.".into(),
-            parameter_type: "number".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "task_id".into(),
-            description: "Task ID for background operations (status, stop, output).".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "newest_only".into(),
-            description: "If true, only return new output since last read (for 'output' action).".into(),
-            parameter_type: "boolean".into(),
-            required: false,
-        },
-    ];
     ToolMeta {
         name: "terminal".into(),
         description: "Execute shell commands with foreground or background execution. Supports timeout, working directory, dangerous command blocking, and background task management (status/stop/output/list).".into(),
-        parameters: ToolParameters::Flat(params),
+        parameters: ToolParameters::Flat(vec![
+            ToolParameter::optional("action", "Action to perform: execute (foreground command), run (background command), status (check task status), stop (kill background task), output (get background task output), list (list all background tasks)", "string"),
+            ToolParameter::optional("command", "Shell command to execute", "string"),
+            ToolParameter::optional("cwd", "Working directory to run the command in. Defaults to current directory.", "string"),
+            ToolParameter::optional("timeout", "Timeout in seconds for foreground execution. Default is 60 seconds.", "number"),
+            ToolParameter::optional("task_id", "Task ID for background operations (status, stop, output).", "string"),
+            ToolParameter::optional("newest_only", "If true, only return new output since last read (for 'output' action).", "boolean"),
+        ]),
     }
 }
 
@@ -497,26 +444,17 @@ fn make_terminal_tool_def() -> ToolMeta {
 pub struct TerminalTool;
 
 /// Execute terminal actions (execute/run/status/stop/output/list).
-async fn execute_terminal(args: &Value) -> anyhow::Result<ToolResult> {
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let action = args
-        .get("action")
-        .and_then(|v| v.as_str())
-        .unwrap_or("execute");
+async fn execute_terminal<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {
+    let action = call.optional_str("action").unwrap_or("execute");
 
     match action {
-        "execute" | "run" => handle_run(args, call_id).await,
-        "status" => handle_task_status(args, call_id).await,
-        "stop" => handle_task_stop(args, call_id).await,
-        "output" => handle_task_output(args, call_id).await,
-        "list" => handle_task_list(&call_id).await,
+        "execute" | "run" => handle_run(call).await,
+        "status" => handle_task_status(call).await,
+        "stop" => handle_task_stop(call).await,
+        "output" => handle_task_output(call).await,
+        "list" => handle_task_list(&call.call_id).await,
         _ => Ok(ToolResult {
-            call_id,
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(format!(
                 "Unknown action: {}. Use: execute, run, status, stop, output, list",
@@ -534,13 +472,9 @@ impl Tool for TerminalTool {
     fn description(&self) -> &str {
         "Execute shell commands with foreground or background execution"
     }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        execute_terminal(args).await.unwrap_or_else(|e| ToolResult {
-            call_id: args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+    async fn execute(&self, call: &ToolCall) -> ToolResult {
+        execute_terminal(call).await.unwrap_or_else(|e| ToolResult {
+            call_id: call.call_id.clone(),
             output: String::new(),
             error: Some(e.to_string()),
         })
@@ -564,7 +498,6 @@ pub fn register(registry: &mut ToolRegistry) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
 
     fn make_registry_with_terminal() -> super::super::registry::ToolRegistry {
