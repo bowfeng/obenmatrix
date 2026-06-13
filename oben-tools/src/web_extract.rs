@@ -1,15 +1,9 @@
 use reqwest::Client;
 use scraper::{Html, Selector};
 use serde_json::Value;
-/// Web extract tool — extracts readable content from web pages.
-///
-/// Fetches HTML and converts to plain text/markdown using scraper.
-/// Includes SSRF protection to block private/internal URLs.
-use std::sync::Arc;
 
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
-
-use super::registry::{SelfRegisteringTool, ToolHandler};
+use super::registry::{Tool, ToolRegistry};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
 // SSRF protection — block private/internal URLs
@@ -192,7 +186,11 @@ fn extract_page(html: &str) -> (String, String) {
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-fn make_web_extract_tool() -> Tool {
+// ---------------------------------------------------------------------------
+// Tool definition
+// ---------------------------------------------------------------------------
+
+fn make_web_extract_tool_def() -> ToolMeta {
     let params = vec![
         ToolParameter {
             name: "url".into(),
@@ -207,137 +205,149 @@ fn make_web_extract_tool() -> Tool {
             required: false,
         },
     ];
-    Tool {
+    ToolMeta {
         name: "web_extract".into(),
         description: "Extract readable content from web pages. Fetches HTML and converts to plain text. Includes SSRF protection to block private/internal URLs.".into(),
         parameters: ToolParameters::Flat(params),
     }
 }
 
-fn make_web_extract_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let url = args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'url' argument"))?;
-
-            let format = args
-                .get("format")
-                .and_then(|v| v.as_str())
-                .unwrap_or("text");
-
-            let call_id = args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // SSRF protection
-            if !is_safe_url(url) {
-                return Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(
-                        "Blocked: URL targets a private or internal network address".to_string(),
-                    ),
-                });
-            }
-
-            // Fetch page
-            let client = Client::new();
-            let response = match client
-                .get(url)
-                .header("User-Agent", "ObenAgent/1.0 (web extract tool)")
-                .send()
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!("Failed to fetch {}: {}", url, e)),
-                    });
-                }
-            };
-
-            let status = response.status();
-
-            if !status.is_success() {
-                return Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(format!("HTTP {} fetching {}", status, url)),
-                });
-            }
-
-            let html = match response.text().await {
-                Ok(h) => h,
-                Err(e) => {
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!("Failed to read response: {}", e)),
-                    });
-                }
-            };
-
-            let (title, content) = extract_page(&html);
-
-            Ok(ToolResult {
-                call_id,
-                output: if format == "markdown" {
-                    // In markdown mode, attempt basic HTML-to-markdown conversion
-                    // by removing tags and normalizing whitespace
-                    let stripped_html: String = content
-                        .chars()
-                        .scan(false, |in_tag, c| match c {
-                            '<' => {
-                                *in_tag = true;
-                                None
-                            }
-                            '>' => {
-                                *in_tag = false;
-                                None
-                            }
-                            _ => Some(if *in_tag { ' ' } else { c }),
-                        })
-                        .collect();
-                    let body_content: String = stripped_html
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    format!("Title: {}\nURL: {}\n\n{}", title, url, body_content)
-                } else {
-                    format!("Title: {}\nURL: {}\n\n{}", title, url, content)
-                },
-                error: None,
-            })
-        })
-    })
-}
-
 // ---------------------------------------------------------------------------
-// Self-registration
+// Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct WebExtractTool;
 
-impl SelfRegisteringTool for WebExtractTool {
-    fn tool() -> Tool {
-        make_web_extract_tool()
+/// Extract readable content from a web page URL.
+async fn execute_web_extract(args: &Value) -> anyhow::Result<ToolResult> {
+    let url = args
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'url' argument"))?;
+
+    let format_type = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+
+    let call_id = args
+        .get("call_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // SSRF protection
+    if !is_safe_url(url) {
+        return Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(
+                "Blocked: URL targets a private or internal network address".to_string(),
+            ),
+        });
     }
 
-    fn handler() -> ToolHandler {
-        make_web_extract_handler()
+    let client = Client::new();
+    let response = match client
+        .get(url)
+        .header("User-Agent", "ObenAgent/1.0 (web extract tool)")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some(format!("Failed to fetch {}: {}", url, e)),
+            });
+        }
+    };
+
+    let status = response.status();
+    if !status.is_success() {
+        return Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(format!("HTTP {} fetching {}", status, url)),
+        });
+    }
+
+    let html = match response.text().await {
+        Ok(h) => h,
+        Err(e) => {
+            return Ok(ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some(format!("Failed to read response: {}", e)),
+            });
+        }
+    };
+
+    let (title, content) = extract_page(&html);
+
+    Ok(ToolResult {
+        call_id,
+        output: if format_type == "markdown" {
+            let stripped_html: String = content
+                .chars()
+                .scan(false, |in_tag, c| match c {
+                    '<' => {
+                        *in_tag = true;
+                        None
+                    }
+                    '>' => {
+                        *in_tag = false;
+                        None
+                    }
+                    _ => Some(if *in_tag { ' ' } else { c }),
+                })
+                .collect();
+            let body_content: String = stripped_html
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("Title: {}\nURL: {}\n\n{}", title, url, body_content)
+        } else {
+            format!("Title: {}\nURL: {}\n\n{}", title, url, content)
+        },
+        error: None,
+    })
+}
+
+#[async_trait::async_trait]
+impl Tool for WebExtractTool {
+    fn name(&self) -> &str {
+        "web_extract"
+    }
+    fn description(&self) -> &str {
+        "Extract readable content from web pages"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        execute_web_extract(args).await.unwrap_or_else(|e| ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
 /// Register this module into the given registry.
 /// Called automatically by `discover_builtin_tools`.
-pub fn register(registry: &mut super::registry::ToolRegistry) {
-    WebExtractTool::register_self(registry);
+pub fn register(registry: &mut ToolRegistry) {
+    let tool = Box::new(WebExtractTool);
+    registry.register_with_def(tool, make_web_extract_tool_def());
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +361,7 @@ mod tests {
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
-        WebExtractTool::register_self(&mut registry);
+        register(&mut registry);
         registry
     }
 

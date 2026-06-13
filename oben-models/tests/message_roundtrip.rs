@@ -1,4 +1,4 @@
-use oben_models::{Message, MessageContent, MessagePart, MessageRole, Tool, ToolCall, ToolResult};
+use oben_models::{Message, MessageContent, MessagePart, MessageRole, ToolMeta, ToolCall, ToolResult};
 
 // ─── Message serialization ──────────────────────────────────────────
 
@@ -167,12 +167,12 @@ fn tool_result_with_error_roundtrip_json() {
 
 #[test]
 fn tool_builder_flat_params_roundtrip() {
-    let tool = Tool::builder("shell", "Execute shell commands")
+    let tool = ToolMeta::builder("shell", "Execute shell commands")
         .param("command", "Shell command", "string", true)
         .param("cwd", "Working directory", "string", false)
         .build();
     let json = serde_json::to_string(&tool).unwrap();
-    let restored: Tool = serde_json::from_str(&json).unwrap();
+    let restored: ToolMeta = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.name, "shell");
     assert_eq!(restored.description, "Execute shell commands");
 }
@@ -186,10 +186,10 @@ fn tool_builder_json_schema_roundtrip() {
         },
         "required": ["url"]
     });
-    let tool = Tool::builder("http_get", "Fetch a URL")
+    let tool = ToolMeta::builder("http_get", "Fetch a URL")
         .json_schema(schema)
         .build();
     let json = serde_json::to_string(&tool).unwrap();
-    let restored: Tool = serde_json::from_str(&json).unwrap();
+    let restored: ToolMeta = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.name, "http_get");
 }

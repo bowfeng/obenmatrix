@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// A tool that the agent can call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tool {
+pub struct ToolMeta {
     pub name: String,
     pub description: String,
     pub parameters: ToolParameters,
@@ -51,7 +51,7 @@ pub struct ToolResult {
     pub error: Option<String>,
 }
 
-impl Tool {
+impl ToolMeta {
     pub fn builder(name: impl Into<String>, description: impl Into<String>) -> ToolBuilder {
         ToolBuilder {
             name: name.into(),
@@ -97,13 +97,13 @@ impl ToolBuilder {
         self
     }
 
-    pub fn build(self) -> Tool {
+    pub fn build(self) -> ToolMeta {
         let parameters = if let Some(schema) = self.schema {
             ToolParameters::JsonSchema { schema }
         } else {
             ToolParameters::Flat(self.flat_params)
         };
-        Tool {
+        ToolMeta {
             name: self.name,
             description: self.description,
             parameters,

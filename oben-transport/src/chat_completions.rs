@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use oben_models::{
-    Message, MessageRole, ReasoningEffort, Tool, TransportResponse, TransportToolCall,
+    Message, MessageRole, ReasoningEffort, ToolMeta, TransportResponse, TransportToolCall,
 };
 use serde_json::json;
 use tracing::debug;
@@ -54,7 +54,7 @@ fn swap_system_to_developer(model: &str) -> bool {
 
 /// Convert an `oben_models::Tool` into OpenAI API tool format:
 /// `{ "type": "function", "function": { "name": ..., "description": ..., "parameters": ... } }`
-fn tool_to_openai(tool: &Tool) -> serde_json::Value {
+fn tool_to_openai(tool: &ToolMeta) -> serde_json::Value {
     let parameters = match &tool.parameters {
         oben_models::ToolParameters::JsonSchema { schema } => schema.clone(),
         oben_models::ToolParameters::Flat(params) => {
@@ -576,7 +576,7 @@ impl ChatCompletionsTransport {
         api_key: impl Into<String>,
         model: impl Into<String>,
         system_prompt: impl Into<String>,
-        tools: Vec<Tool>,
+        tools: Vec<ToolMeta>,
     ) -> Self {
         let model: String = model.into();
         let base = BaseTransport::new(base_url, api_key, model.clone());
@@ -626,7 +626,7 @@ impl ChatCompletionsTransport {
     pub fn from_config_with_tools(
         config: &oben_models::ProviderConfig,
         system_prompt: impl Into<String>,
-        tools: Vec<Tool>,
+        tools: Vec<ToolMeta>,
     ) -> Self {
         let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();

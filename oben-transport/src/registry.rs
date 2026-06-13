@@ -85,7 +85,7 @@ fn discover_builtin_transports(reg: &mut TransportRegistry) {
     reg.register(
         "chat_completions",
         Box::new(|config: &ProviderConfig, system_prompt: &str| {
-            let tools: Vec<oben_models::Tool> = config
+            let tools: Vec<oben_models::ToolMeta> = config
                 .tools_json
                 .as_ref()
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -101,7 +101,7 @@ fn discover_builtin_transports(reg: &mut TransportRegistry) {
     reg.register(
         "anthropic_messages",
         Box::new(|config: &ProviderConfig, system_prompt: &str| {
-            let tools: Vec<oben_models::Tool> = config
+            let tools: Vec<oben_models::ToolMeta> = config
                 .tools_json
                 .as_ref()
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -124,7 +124,7 @@ fn discover_builtin_transports(reg: &mut TransportRegistry) {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string());
             let model = config.model.to_string();
-            let tools: Vec<oben_models::Tool> = config
+            let tools: Vec<oben_models::ToolMeta> = config
                 .tools_json
                 .as_ref()
                 .and_then(|v| serde_json::from_value(v.clone()).ok())

@@ -1,14 +1,13 @@
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 use serde_json::Value;
-/// Clarify tool — asks the user for clarification on ambiguous tasks.
-///
-/// Pauses execution and requests user input to resolve ambiguity.
-use std::sync::Arc;
 
-use super::registry::{SelfRegisteringTool, ToolHandler};
+use super::registry::{Tool, ToolRegistry};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
-/// Clarify tool definition
-fn make_clarify_tool() -> Tool {
+// ---------------------------------------------------------------------------
+// Tool definition
+// ---------------------------------------------------------------------------
+
+fn make_clarify_tool_def() -> ToolMeta {
     let params = vec![
         ToolParameter {
             name: "question".into(),
@@ -23,71 +22,82 @@ fn make_clarify_tool() -> Tool {
             required: false,
         },
     ];
-    Tool {
+    ToolMeta {
         name: "clarify".into(),
         description: "Ask the user for clarification on an ambiguous task. Pauses execution until user responds.".into(),
         parameters: ToolParameters::Flat(params),
     }
 }
 
-/// Clarify tool handler
-fn make_clarify_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let question = args
-                .get("question")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'question' argument"))?;
+// ---------------------------------------------------------------------------
+// Tool struct
+// ---------------------------------------------------------------------------
 
-            let options = args
-                .get("options")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-                .unwrap_or_default();
+pub struct ClarifyTool;
 
-            let call_id = args
+/// Format a question with optional suggestions for user responses.
+async fn execute_clarify(args: &Value) -> anyhow::Result<ToolResult> {
+    let question = args
+        .get("question")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'question' argument"))?;
+
+    let options = args
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    let call_id = args
+        .get("call_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let mut output = format!("❓ Question: {}\n", question);
+    if !options.is_empty() {
+        output.push_str("\nSuggested options:\n");
+        for (i, opt) in options.iter().enumerate() {
+            output.push_str(&format!("  {}. {}\n", i + 1, opt));
+        }
+    }
+    output.push_str("\nWaiting for user response...");
+
+    Ok(ToolResult { call_id, output, error: None })
+}
+
+#[async_trait::async_trait]
+impl Tool for ClarifyTool {
+    fn name(&self) -> &str {
+        "clarify"
+    }
+    fn description(&self) -> &str {
+        "Ask the user for clarification on an ambiguous task"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        execute_clarify(args).await.unwrap_or_else(|e| ToolResult {
+            call_id: args
                 .get("call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
-                .to_string();
-
-            // Format the question with options if provided
-            let mut output = format!("❓ Question: {}\n", question);
-            if !options.is_empty() {
-                output.push_str("\nSuggested options:\n");
-                for (i, opt) in options.iter().enumerate() {
-                    output.push_str(&format!("  {}. {}\n", i + 1, opt));
-                }
-            }
-
-            output.push_str("\nWaiting for user response...");
-
-            Ok(ToolResult {
-                call_id,
-                output,
-                error: None,
-            })
+                .to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
         })
-    })
-}
-
-/// Self-registration
-pub struct ClarifyTool;
-
-impl SelfRegisteringTool for ClarifyTool {
-    fn tool() -> Tool {
-        make_clarify_tool()
     }
-
-    fn handler() -> ToolHandler {
-        make_clarify_handler()
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
 
 /// Register this module into the given registry.
-/// Called automatically by `discover_builtin_tools`.
-pub fn register(registry: &mut super::registry::ToolRegistry) {
-    ClarifyTool::register_self(registry);
+pub fn register(registry: &mut ToolRegistry) {
+    let tool = Box::new(ClarifyTool);
+    registry.register_with_def(tool, make_clarify_tool_def());
 }
 
 #[cfg(test)]
@@ -97,7 +107,7 @@ mod tests {
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
-        ClarifyTool::register_self(&mut registry);
+        crate::clarify::register(&mut registry);
         registry
     }
 

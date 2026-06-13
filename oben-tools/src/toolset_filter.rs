@@ -77,11 +77,8 @@ impl BlockedToolFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // assert_eq! and assert_ne! are in the Rust prelude
-
-    use crate::registry::{SelfRegisteringTool, ToolHandler};
-    use oben_models::Tool;
+    use crate::registry::{Tool, ToolRegistry};
+    use oben_models::ToolMeta;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -91,68 +88,53 @@ mod tests {
         let mut registry = ToolRegistry::new();
 
         struct ReadFileTool;
-        impl SelfRegisteringTool for ReadFileTool {
-            fn tool() -> oben_models::Tool {
-                Tool::builder("read_file", "Read a file")
-                    .param("path", "File path", "string", true)
-                    .build()
+        #[async_trait::async_trait]
+        impl Tool for ReadFileTool {
+            fn name(&self) -> &str { "read_file" }
+            fn description(&self) -> &str { "Read a file" }
+            async fn execute(&self, _args: &Value) -> ToolResult {
+                ToolResult {
+                    call_id: "1".into(),
+                    output: "file contents".into(),
+                    error: None,
+                }
             }
-            fn handler() -> ToolHandler {
-                Arc::new(|_| {
-                    Box::pin(async move {
-                        Ok(ToolResult {
-                            call_id: "1".into(),
-                            output: "file contents".into(),
-                            error: None,
-                        })
-                    })
-                })
-            }
+            fn clone_tool(&self) -> Box<dyn Tool> { Box::new(Self) }
         }
 
         struct MemoryTool;
-        impl SelfRegisteringTool for MemoryTool {
-            fn tool() -> oben_models::Tool {
-                Tool::builder("memory", "Read/write shared memory")
-                    .param("action", "Action to perform", "string", true)
-                    .build()
+        #[async_trait::async_trait]
+        impl Tool for MemoryTool {
+            fn name(&self) -> &str { "memory" }
+            fn description(&self) -> &str { "Read/write shared memory" }
+            async fn execute(&self, _args: &Value) -> ToolResult {
+                ToolResult {
+                    call_id: "2".into(),
+                    output: "memory content".into(),
+                    error: None,
+                }
             }
-            fn handler() -> ToolHandler {
-                Arc::new(|_| {
-                    Box::pin(async move {
-                        Ok(ToolResult {
-                            call_id: "2".into(),
-                            output: "memory content".into(),
-                            error: None,
-                        })
-                    })
-                })
-            }
+            fn clone_tool(&self) -> Box<dyn Tool> { Box::new(Self) }
         }
 
         struct DelegateTool;
-        impl SelfRegisteringTool for DelegateTool {
-            fn tool() -> oben_models::Tool {
-                Tool::builder("delegate_task", "Delegate a subtask")
-                    .param("goal", "Task goal", "string", true)
-                    .build()
+        #[async_trait::async_trait]
+        impl Tool for DelegateTool {
+            fn name(&self) -> &str { "delegate_task" }
+            fn description(&self) -> &str { "Delegate a subtask" }
+            async fn execute(&self, _args: &Value) -> ToolResult {
+                ToolResult {
+                    call_id: "3".into(),
+                    output: "delegated".into(),
+                    error: None,
+                }
             }
-            fn handler() -> ToolHandler {
-                Arc::new(|_| {
-                    Box::pin(async move {
-                        Ok(ToolResult {
-                            call_id: "3".into(),
-                            output: "delegated".into(),
-                            error: None,
-                        })
-                    })
-                })
-            }
+            fn clone_tool(&self) -> Box<dyn Tool> { Box::new(Self) }
         }
 
-        ReadFileTool::register_self(&mut registry);
-        MemoryTool::register_self(&mut registry);
-        DelegateTool::register_self(&mut registry);
+        registry.register(Box::new(ReadFileTool));
+        registry.register(Box::new(MemoryTool));
+        registry.register(Box::new(DelegateTool));
 
         Arc::new(registry)
     }

@@ -7,16 +7,16 @@
 /// - Output truncation
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use serde_json::Value;
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{SelfRegisteringTool, ToolHandler, ToolRegistry};
+use super::registry::{Tool, ToolRegistry};
 use oben_utils::path_security::is_path_safe;
 
 // ---------------------------------------------------------------------------
@@ -118,89 +118,6 @@ fn is_dangerous_command(cmd: &str) -> bool {
     }
 
     false
-}
-
-// ---------------------------------------------------------------------------
-// Tool definitions
-// ---------------------------------------------------------------------------
-
-fn make_terminal_tool() -> Tool {
-    let params = vec![
-        ToolParameter {
-            name: "action".into(),
-            description: "Action to perform: execute (foreground command), run (background command), status (check task status), stop (kill background task), output (get background task output), list (list all background tasks)".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "command".into(),
-            description: "Shell command to execute".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "cwd".into(),
-            description: "Working directory to run the command in. Defaults to current directory.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "timeout".into(),
-            description: "Timeout in seconds for foreground execution. Default is 60 seconds.".into(),
-            parameter_type: "number".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "task_id".into(),
-            description: "Task ID for background operations (status, stop, output).".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "newest_only".into(),
-            description: "If true, only return new output since last read (for 'output' action).".into(),
-            parameter_type: "boolean".into(),
-            required: false,
-        },
-    ];
-    Tool {
-        name: "terminal".into(),
-        description: "Execute shell commands with foreground or background execution. Supports timeout, working directory, dangerous command blocking, and background task management (status/stop/output/list).".into(),
-        parameters: ToolParameters::Flat(params),
-    }
-}
-
-fn make_terminal_tool_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let call_id = args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let action = args
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("execute");
-
-            match action {
-                "execute" | "run" => handle_run(&args, call_id).await,
-                "status" => handle_task_status(&args, call_id).await,
-                "stop" => handle_task_stop(&args, call_id).await,
-                "output" => handle_task_output(&args, call_id).await,
-                "list" => handle_task_list(&call_id).await,
-                _ => Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(format!(
-                        "Unknown action: {}. Use: execute, run, status, stop, output, list",
-                        action
-                    )),
-                }),
-            }
-        })
-    })
 }
 
 async fn handle_run(args: &Value, call_id: String) -> anyhow::Result<ToolResult> {
@@ -524,18 +441,112 @@ async fn handle_task_list(call_id: &str) -> anyhow::Result<ToolResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Self-registration
+// Tool definition
+// ---------------------------------------------------------------------------
+
+fn make_terminal_tool_def() -> ToolMeta {
+    let params = vec![
+        ToolParameter {
+            name: "action".into(),
+            description: "Action to perform: execute (foreground command), run (background command), status (check task status), stop (kill background task), output (get background task output), list (list all background tasks)".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
+        ToolParameter {
+            name: "command".into(),
+            description: "Shell command to execute".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
+        ToolParameter {
+            name: "cwd".into(),
+            description: "Working directory to run the command in. Defaults to current directory.".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
+        ToolParameter {
+            name: "timeout".into(),
+            description: "Timeout in seconds for foreground execution. Default is 60 seconds.".into(),
+            parameter_type: "number".into(),
+            required: false,
+        },
+        ToolParameter {
+            name: "task_id".into(),
+            description: "Task ID for background operations (status, stop, output).".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
+        ToolParameter {
+            name: "newest_only".into(),
+            description: "If true, only return new output since last read (for 'output' action).".into(),
+            parameter_type: "boolean".into(),
+            required: false,
+        },
+    ];
+    ToolMeta {
+        name: "terminal".into(),
+        description: "Execute shell commands with foreground or background execution. Supports timeout, working directory, dangerous command blocking, and background task management (status/stop/output/list).".into(),
+        parameters: ToolParameters::Flat(params),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct TerminalTool;
 
-impl SelfRegisteringTool for TerminalTool {
-    fn tool() -> Tool {
-        make_terminal_tool()
-    }
+/// Execute terminal actions (execute/run/status/stop/output/list).
+async fn execute_terminal(args: &Value) -> anyhow::Result<ToolResult> {
+    let call_id = args
+        .get("call_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    fn handler() -> ToolHandler {
-        make_terminal_tool_handler()
+    let action = args
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("execute");
+
+    match action {
+        "execute" | "run" => handle_run(args, call_id).await,
+        "status" => handle_task_status(args, call_id).await,
+        "stop" => handle_task_stop(args, call_id).await,
+        "output" => handle_task_output(args, call_id).await,
+        "list" => handle_task_list(&call_id).await,
+        _ => Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(format!(
+                "Unknown action: {}. Use: execute, run, status, stop, output, list",
+                action
+            )),
+        }),
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for TerminalTool {
+    fn name(&self) -> &str {
+        "terminal"
+    }
+    fn description(&self) -> &str {
+        "Execute shell commands with foreground or background execution"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        execute_terminal(args).await.unwrap_or_else(|e| ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
     }
 }
 
@@ -543,7 +554,8 @@ impl SelfRegisteringTool for TerminalTool {
 ///
 /// Called automatically by `discover_builtin_tools`.
 pub fn register(registry: &mut ToolRegistry) {
-    TerminalTool::register_self(registry);
+    let tool = Box::new(TerminalTool);
+    registry.register_with_def(tool, make_terminal_tool_def());
 }
 
 // ---------------------------------------------------------------------------
@@ -557,7 +569,7 @@ mod tests {
 
     fn make_registry_with_terminal() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
-        TerminalTool::register_self(&mut registry);
+        crate::terminal::register(&mut registry);
         registry
     }
 

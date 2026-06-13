@@ -2,12 +2,10 @@ use base64::Engine;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::Arc;
 
+use super::registry::{Tool, ToolRegistry};
 use oben_config::config::AppConfig;
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
-
-use super::registry::{SelfRegisteringTool, ToolHandler};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
 // Image analysis — downloads images and calls vision APIs
@@ -398,7 +396,11 @@ async fn analyze_image(image_url: &str, prompt: &str) -> Result<String, String> 
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-fn make_vision_analyze_tool() -> Tool {
+// ---------------------------------------------------------------------------
+// Tool definition
+// ---------------------------------------------------------------------------
+
+fn make_vision_analyze_tool_def() -> ToolMeta {
     let params = vec![
         ToolParameter {
             name: "image_url".into(),
@@ -413,99 +415,114 @@ fn make_vision_analyze_tool() -> Tool {
             required: false,
         },
     ];
-    Tool {
+    ToolMeta {
         name: "vision_analyze".into(),
         description: "Analyze images from URLs or base64 data URLs using vision AI (GPT-4o / Claude). Pass a public HTTP/HTTPS URL (downloads the image) OR a data:image/png;base64,... URL. Returns a detailed description or answer to your question.".into(),
         parameters: ToolParameters::Flat(params),
     }
 }
 
-fn make_vision_analyze_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let prompt = args
-                .get("prompt")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Describe this image in detail.");
-
-            let call_id = args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let image_url_str = args
-                .get("image_url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing required 'image_url' argument. Provide either a public HTTP/HTTPS URL or a base64 data URL in format data:image/png;base64,..."))?;
-
-            // Handle data URLs directly (base64 encoded images) — skip SSRF download
-            if is_data_url(image_url_str) {
-                match analyze_from_data_url(image_url_str, prompt).await {
-                    Ok(analysis) => {
-                        return Ok(ToolResult {
-                            call_id,
-                            output: analysis,
-                            error: None,
-                        });
-                    }
-                    Err(e) => {
-                        return Ok(ToolResult {
-                            call_id,
-                            output: String::new(),
-                            error: Some(format!("Analysis failed: {}", e)),
-                        });
-                    }
-                }
-            }
-
-            // SSRF protection (only for http/https URLs)
-            if !is_safe_url(image_url_str) {
-                return Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(
-                        "Blocked: URL targets a private or internal network address".to_string(),
-                    ),
-                });
-            }
-
-            // Analyze the image via vision API
-            match analyze_image(image_url_str, prompt).await {
-                Ok(analysis) => Ok(ToolResult {
-                    call_id,
-                    output: analysis,
-                    error: None,
-                }),
-                Err(e) => Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(format!("Analysis failed: {}", e)),
-                }),
-            }
-        })
-    })
-}
-
 // ---------------------------------------------------------------------------
-// Self-registration
+// Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct VisionAnalyzeTool;
 
-impl SelfRegisteringTool for VisionAnalyzeTool {
-    fn tool() -> Tool {
-        make_vision_analyze_tool()
+/// Analyze an image from a URL or data URL.
+async fn execute_vision(args: &Value) -> anyhow::Result<ToolResult> {
+    let prompt = args
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Describe this image in detail.");
+
+    let call_id = args
+        .get("call_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let image_url_str = args
+        .get("image_url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing required 'image_url' argument. Provide either a public HTTP/HTTPS URL or a base64 data URL in format data:image/png;base64,..."))?;
+
+    // Handle data URLs directly (base64 encoded images)
+    if is_data_url(image_url_str) {
+        match analyze_from_data_url(image_url_str, prompt).await {
+            Ok(analysis) => {
+                return Ok(ToolResult {
+                    call_id,
+                    output: analysis,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                return Ok(ToolResult {
+                    call_id,
+                    output: String::new(),
+                    error: Some(format!("Analysis failed: {}", e)),
+                });
+            }
+        }
     }
 
-    fn handler() -> ToolHandler {
-        make_vision_analyze_handler()
+    // SSRF protection (only for http/https URLs)
+    if !is_safe_url(image_url_str) {
+        return Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(
+                "Blocked: URL targets a private or internal network address".to_string(),
+            ),
+        });
+    }
+
+    match analyze_image(image_url_str, prompt).await {
+        Ok(analysis) => Ok(ToolResult {
+            call_id,
+            output: analysis,
+            error: None,
+        }),
+        Err(e) => Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(format!("Analysis failed: {}", e)),
+        }),
     }
 }
 
+#[async_trait::async_trait]
+impl Tool for VisionAnalyzeTool {
+    fn name(&self) -> &str {
+        "vision_analyze"
+    }
+    fn description(&self) -> &str {
+        "Analyze images from URLs or base64 data URLs using vision AI"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        execute_vision(args).await.unwrap_or_else(|e| ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
 /// Register this module into the given registry.
-pub fn register(registry: &mut super::registry::ToolRegistry) {
-    VisionAnalyzeTool::register_self(registry);
+pub fn register(registry: &mut ToolRegistry) {
+    let tool = Box::new(VisionAnalyzeTool);
+    registry.register_with_def(tool, make_vision_analyze_tool_def());
 }
 
 // ---------------------------------------------------------------------------
@@ -520,7 +537,7 @@ mod tests {
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
-        VisionAnalyzeTool::register_self(&mut registry);
+        register(&mut registry);
         registry
     }
 

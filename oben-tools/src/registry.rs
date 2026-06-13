@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crate::BuiltinTools;
 use oben_models::ToolResult;
 use serde_json::Value;
 /// Tool registry — stores and dispatches tool calls.
@@ -10,8 +11,6 @@ use serde_json::Value;
 /// Tool>`. Universal pre-checks (validation before dispatch) apply across all
 /// tools in `execute()`.
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -34,12 +33,8 @@ pub trait Tool: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// SelfRegisteringTool — backward compat, now delegates to SelfRegisteringToolAdapter
+// Spawn function for subagent delegation
 // ---------------------------------------------------------------------------
-
-/// Closure-based handler type alias (used by all existing tool modules).
-pub type ToolHandler =
-    Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send>> + Send + Sync>;
 
 /// Spawn function for subagent delegation.
 /// Maps to `delegate_task_handler` from hermes-agent.
@@ -84,69 +79,6 @@ pub struct SubagentResult {
     pub exit_reason: Option<String>,
 }
 
-/// Trait for tools that register via (tool_def, handler) pair.
-/// The impl block below converts this to a Tool.
-pub trait SelfRegisteringTool {
-    fn tool() -> oben_models::Tool;
-    fn handler() -> ToolHandler;
-    fn register_self(registry: &mut ToolRegistry) {
-        let tool = Self::tool();
-        let handler = Self::handler();
-        let adapter = Box::new(SelfRegisteringToolAdapter::new(tool.clone(), handler));
-        registry.register_with_def(adapter, tool);
-    }
-}
-
-/// Adapter that satisfies Tool from a (oben_models::Tool, ToolHandler) pair.
-pub(crate) struct SelfRegisteringToolAdapter {
-    tool_def: oben_models::Tool,
-    handler: ToolHandler,
-}
-
-impl Clone for SelfRegisteringToolAdapter {
-    fn clone(&self) -> Self {
-        Self {
-            tool_def: self.tool_def.clone(),
-            handler: Arc::clone(&self.handler),
-        }
-    }
-}
-
-impl SelfRegisteringToolAdapter {
-    pub(crate) fn new(tool_def: oben_models::Tool, handler: ToolHandler) -> Self {
-        Self { tool_def, handler }
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for SelfRegisteringToolAdapter {
-    fn name(&self) -> &str {
-        &self.tool_def.name
-    }
-    fn description(&self) -> &str {
-        &self.tool_def.description
-    }
-    async fn execute(&self, args: &Value) -> ToolResult {
-        (self.handler)(args.clone())
-            .await
-            .unwrap_or_else(|e| ToolResult {
-                call_id: args
-                    .get("call_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                output: String::new(),
-                error: Some(e.to_string()),
-            })
-    }
-    fn clone_tool(&self) -> Box<dyn Tool> {
-        Box::new(SelfRegisteringToolAdapter {
-            tool_def: self.tool_def.clone(),
-            handler: Arc::clone(&self.handler),
-        })
-    }
-}
-
 // ---------------------------------------------------------------------------
 // ToolRegistry
 // ---------------------------------------------------------------------------
@@ -155,7 +87,7 @@ pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     /// Full tool definitions with parameters, stored alongside the trait objects.
     /// Used by `list_tool_definitions()` to return complete specs to the LLM.
-    tool_defs: HashMap<String, oben_models::Tool>,
+    tool_defs: HashMap<String, oben_models::ToolMeta>,
 }
 
 impl ToolRegistry {
@@ -166,28 +98,29 @@ impl ToolRegistry {
         }
     }
 
+    /// Register a basic tool without a full definition.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         info!("Registering tool: {}", tool.name());
         self.tools.insert(tool.name().to_string(), tool);
     }
 
-    /// Register a tool and store its full definition (including parameters).
-    pub fn register_with_def(&mut self, tool: Box<dyn Tool>, def: oben_models::Tool) {
+    /// Register a tool with its full definition (including parameters).
+    pub fn register_with_def(&mut self, tool: Box<dyn Tool>, def: oben_models::ToolMeta) {
         let name = tool.name().to_string();
         info!("Registering tool: {}", name);
         self.tools.insert(name.clone(), tool);
         self.tool_defs.insert(name, def);
     }
 
-    pub fn list_tools(&self) -> Vec<oben_models::Tool> {
+    pub fn list_tools(&self) -> Vec<oben_models::ToolMeta> {
         // Return stored tool definitions with full parameter specs.
         // Fall back to empty params for any tool registered without a def.
-        let mut defs: Vec<oben_models::Tool> = self.tool_defs.values().cloned().collect();
+        let mut defs: Vec<oben_models::ToolMeta> = self.tool_defs.values().cloned().collect();
         // If there are tools without definitions, fill them in with empty params
         for name in self.tools.keys() {
             if !defs.iter().any(|d| d.name == *name) {
                 let tool = &self.tools[name];
-                defs.push(oben_models::Tool {
+                defs.push(oben_models::ToolMeta {
                     name: tool.name().to_string(),
                     description: tool.description().to_string(),
                     parameters: oben_models::ToolParameters::Flat(vec![]),
@@ -289,9 +222,7 @@ impl Default for ToolRegistry {
 }
 
 pub fn discover_builtin_tools(registry: &mut ToolRegistry) {
-    for module_fn in super::ALL_TOOLS {
-        module_fn(registry);
-    }
+    BuiltinTools::register_all(registry);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,62 +234,44 @@ mod tests {
     use super::*;
 
     struct EchoTool;
-    impl SelfRegisteringTool for EchoTool {
-        fn tool() -> oben_models::Tool {
-            oben_models::Tool {
-                name: "echo-test".into(),
-                description: "Test echo".into(),
-                parameters: oben_models::ToolParameters::Flat(vec![]),
+    #[async_trait::async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str { "echo-test" }
+        fn description(&self) -> &str { "Test echo" }
+        async fn execute(&self, args: &Value) -> ToolResult {
+            let msg = args
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("no-msg");
+            ToolResult {
+                call_id: "t1".into(),
+                output: format!("echo: {}", msg),
+                error: None,
             }
         }
-        fn handler() -> ToolHandler {
-            Arc::new(|args: Value| {
-                Box::pin(async move {
-                    let msg = args
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("no-msg");
-                    Ok(ToolResult {
-                        call_id: "t1".into(),
-                        output: format!("echo: {}", msg),
-                        error: None,
-                    })
-                })
-            })
-        }
+        fn clone_tool(&self) -> Box<dyn Tool> { Box::new(Self) }
     }
 
     struct FailTool;
-    impl SelfRegisteringTool for FailTool {
-        fn tool() -> oben_models::Tool {
-            oben_models::Tool {
-                name: "fail-test".into(),
-                description: "Test fail".into(),
-                parameters: oben_models::ToolParameters::Flat(vec![]),
+    #[async_trait::async_trait]
+    impl Tool for FailTool {
+        fn name(&self) -> &str { "fail-test" }
+        fn description(&self) -> &str { "Test fail" }
+        async fn execute(&self, _args: &Value) -> ToolResult {
+            ToolResult {
+                call_id: "t2".into(),
+                output: String::new(),
+                error: Some("boom".into()),
             }
         }
-        fn handler() -> ToolHandler {
-            Arc::new(|_args: Value| {
-                Box::pin(async move {
-                    Ok(ToolResult {
-                        call_id: "t2".into(),
-                        output: String::new(),
-                        error: Some("boom".into()),
-                    })
-                })
-            })
-        }
+        fn clone_tool(&self) -> Box<dyn Tool> { Box::new(Self) }
     }
 
     struct ValidatingTool;
     #[async_trait::async_trait]
     impl Tool for ValidatingTool {
-        fn name(&self) -> &str {
-            "val-tool"
-        }
-        fn description(&self) -> &str {
-            "Validates args"
-        }
+        fn name(&self) -> &str { "val-tool" }
+        fn description(&self) -> &str { "Validates args" }
         fn validate(&self, args: &Value) -> Result<()> {
             if args.get("block").and_then(|v| v.as_bool()) == Some(true) {
                 Err(anyhow::anyhow!("Blocked by validation"))
@@ -388,35 +301,9 @@ mod tests {
     #[tokio::test]
     async fn test_register_list_has() {
         let mut r = ToolRegistry::new();
-        r.register(Box::new(SelfRegisteringToolAdapter::new(
-            oben_models::Tool {
-                name: "x".into(),
-                description: "x".into(),
-                parameters: oben_models::ToolParameters::Flat(vec![]),
-            },
-            Arc::new(|_| {
-                Box::pin(async {
-                    Ok(ToolResult {
-                        call_id: "c".into(),
-                        output: "ok".into(),
-                        error: None,
-                    })
-                })
-            }),
-        )));
+        r.register(Box::new(EchoTool));
         assert_eq!(r.len(), 1);
-        assert!(r.has_tool("x"));
-    }
-
-    #[tokio::test]
-    async fn test_register_self_adaptor() {
-        let mut r = ToolRegistry::new();
-        EchoTool::register_self(&mut r);
-        assert_eq!(r.len(), 1);
-        let res = r
-            .execute("echo-test", &serde_json::json!({"message": "hi"}))
-            .await;
-        assert_eq!(res.output, "echo: hi");
+        assert!(r.has_tool("echo-test"));
     }
 
     #[tokio::test]
@@ -430,23 +317,8 @@ mod tests {
     #[tokio::test]
     async fn test_handler_error() {
         let mut r = ToolRegistry::new();
-        r.register(Box::new(SelfRegisteringToolAdapter::new(
-            oben_models::Tool {
-                name: "fail".into(),
-                description: "fail".into(),
-                parameters: oben_models::ToolParameters::Flat(vec![]),
-            },
-            Arc::new(|_| {
-                Box::pin(async {
-                    Ok(ToolResult {
-                        call_id: "c".into(),
-                        output: String::new(),
-                        error: Some("boom".into()),
-                    })
-                })
-            }),
-        )));
-        let res = r.execute("fail", &serde_json::json!({"call_id":"x"})).await;
+        r.register(Box::new(FailTool));
+        let res = r.execute("fail-test", &serde_json::json!({"call_id":"x"})).await;
         assert_eq!(res.error.as_ref().unwrap(), "boom");
     }
 

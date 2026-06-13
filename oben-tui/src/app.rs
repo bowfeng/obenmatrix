@@ -24,7 +24,6 @@ use oben_agent::delegate::{build_spawn_fn_wrapper, SubagentSpawner};
 use oben_agent::{Agent, AgentCallbacks, AgentConfig};
 use oben_config::AppConfig;
 use oben_tools::delegate::DelegateTool;
-use oben_tools::registry::SpawnFn;
 use oben_tools::ToolRegistry;
 
 /// Payload carried by TurnDone completion event from spawned task.
@@ -411,7 +410,7 @@ impl App {
                 .list_tools()
                 .iter()
                 .map(|t| (*t).clone())
-                .collect::<Vec<oben_models::Tool>>(),
+                .collect::<Vec<oben_models::ToolMeta>>(),
         );
         let transport = Arc::new(transport);
 
@@ -750,6 +749,7 @@ impl App {
             gateway: self.config.gateway.clone(),
             display: self.config.display.clone(),
             context: self.config.context.clone(),
+            voice: self.config.voice.clone(),
             providers: self.config.providers.clone(),
             custom_providers: self.config.custom_providers.clone(),
             vision: self.config.vision.clone(),

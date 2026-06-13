@@ -1,13 +1,13 @@
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
 use serde_json::Value;
-/// Web search tool.
-///
-/// Self-registers via `SelfRegisteringTool` trait.
-use std::sync::Arc;
 
-use super::registry::{SelfRegisteringTool, ToolHandler, ToolRegistry};
+use super::registry::{Tool, ToolRegistry};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
-fn make_search_tool() -> Tool {
+// ---------------------------------------------------------------------------
+// Tool definition
+// ---------------------------------------------------------------------------
+
+fn make_search_tool_def() -> ToolMeta {
     let params = vec![
         ToolParameter {
             name: "query".into(),
@@ -22,55 +22,75 @@ fn make_search_tool() -> Tool {
             required: false,
         },
     ];
-    Tool {
+    ToolMeta {
         name: "web_search".into(),
         description: "Search the web for information".into(),
         parameters: ToolParameters::Flat(params),
     }
 }
 
-fn make_search_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
+// ---------------------------------------------------------------------------
+// Tool struct
+// ---------------------------------------------------------------------------
 
-            let _max_results = args
-                .get("max_results")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5);
+pub struct WebSearchTool;
 
-            Ok(ToolResult {
-                call_id: args
-                    .get("call_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                output: format!(
-                    "Web search for '{}': (placeholder - configure search provider in config)",
-                    query
-                ),
-                error: Some("Search provider not configured".to_string()),
-            })
-        })
+/// Placeholder handler — requires search provider configuration.
+async fn execute_web_search(args: &Value) -> anyhow::Result<ToolResult> {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
+
+    let _max_results = args
+        .get("max_results")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5);
+
+    Ok(ToolResult {
+        call_id: args
+            .get("call_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        output: format!(
+            "Web search for '{}': (placeholder - configure search provider in config)",
+            query
+        ),
+        error: Some("Search provider not configured".to_string()),
     })
 }
 
-pub struct SearchTool;
-
-impl SelfRegisteringTool for SearchTool {
-    fn tool() -> Tool {
-        make_search_tool()
+#[async_trait::async_trait]
+impl Tool for WebSearchTool {
+    fn name(&self) -> &str {
+        "web_search"
     }
-
-    fn handler() -> ToolHandler {
-        make_search_handler()
+    fn description(&self) -> &str {
+        "Search the web for information"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        execute_web_search(args).await.unwrap_or_else(|e| ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
 /// Register this module into the given registry.
 pub fn register(registry: &mut ToolRegistry) {
-    SearchTool::register_self(registry);
+    let tool = Box::new(WebSearchTool);
+    registry.register_with_def(tool, make_search_tool_def());
 }
