@@ -13,6 +13,16 @@ pub struct SummaryChunk {
     pub summary: String,
 }
 
+/// Which backend to use for session storage.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SessionStoreKind {
+    #[serde(rename = "database")]
+    #[default]
+    Database,
+    #[serde(rename = "memory")]
+    Memory,
+}
+
 /// Source tag for sessions (cli, telegram, discord, etc.).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum SessionSource {
@@ -137,18 +147,6 @@ pub struct Session {
     pub metadata: SessionMetadata,
 }
 
-/// In-memory access to a session's message buffer.
-///
-/// Both the real `SessionManager` and in-memory test doubles implement this
-/// trait, letting `TurnExecutor` and `ConversationLoop` work with any session
-/// store without requiring SQLite.
-pub trait SessionStore {
-    /// Get mutable access to a session's messages by ID.
-    fn session_mut(&mut self, session_id: &str) -> Option<&mut Session>;
-
-    /// Get read-only access to a session by ID.
-    fn session(&self, session_id: &str) -> Option<&Session>;
-}
 
 /// Full session lifecycle management trait.
 ///
@@ -157,7 +155,7 @@ pub trait SessionStore {
 ///
 /// Methods that create/switch sessions return `&mut Session` so the caller
 /// can mutate messages and metadata in one shot — no extra lookup needed.
-pub trait SessionManagerExt: Send + Sync {
+pub trait SessionManager: Send + Sync {
     /// Initialize the session store from disk.
     fn init(&mut self) -> Result<(), anyhow::Error>;
 
@@ -240,6 +238,30 @@ pub trait SessionManagerExt: Send + Sync {
         session_id: &str,
         messages: &[crate::Message],
     ) -> Result<(), anyhow::Error>;
+
+    /// Get the currently active session.
+    fn active_session(&self) -> Option<&Session>;
+
+    /// Persist pending messages to the session store.
+    fn incremental_save(&mut self, session_id: Option<&str>) -> Result<(), anyhow::Error>;
+
+    /// Create a new empty session and switch to it.
+    fn new_session(&mut self, name: &str) -> Result<&mut Session, anyhow::Error>;
+
+    /// Find a session ID by its name key.
+    fn find_key(&self, key: &str) -> Option<String>;
+
+    /// List all sessions as full `Session` structs (including messages and metadata).
+    fn list_sessions_full(&self) -> Vec<Session>;
+
+    /// Get all messages for a given session.
+    fn get_session_messages(&self, session_id: &str) -> Result<Vec<crate::Message>, anyhow::Error>;
+
+    /// Ensure a session is loaded into the in-memory cache from storage.
+    fn ensure_session_loaded(&mut self, session_id: &str) -> Result<(), anyhow::Error>;
+
+    /// Close the session manager, dropping connections and resetting state.
+    fn close(&mut self) -> Result<(), anyhow::Error>;
 }
 
 /// Entry in the session list view.
@@ -521,52 +543,3 @@ impl Session {
     }
 }
 
-// ── MessageStore: test double for SessionStore ─────────────────────────────
-
-/// Thin wrapper so tests can construct a `SessionStore` from a plain
-/// `Vec<Message>` in one line.
-pub struct MessageStore {
-    session: Session,
-}
-
-impl MessageStore {
-    pub fn new(session_id: impl Into<String>, messages: Vec<crate::Message>) -> Self {
-        let now = chrono::Utc::now();
-        Self {
-            session: Session {
-                id: session_id.into(),
-                name: "msg-store".into(),
-                created_at: now,
-                updated_at: now,
-                messages,
-                memory_context: None,
-                summary_chunks: Vec::new(),
-                persisted_message_count: 0,
-                metadata: SessionMetadata::default(),
-            },
-        }
-    }
-
-    /// Returns the current session (by value).
-    pub fn into_session(self) -> Session {
-        self.session
-    }
-}
-
-impl SessionStore for MessageStore {
-    fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
-        if self.session.id == session_id {
-            Some(&mut self.session)
-        } else {
-            None
-        }
-    }
-
-    fn session(&self, session_id: &str) -> Option<&Session> {
-        if self.session.id == session_id {
-            Some(&self.session)
-        } else {
-            None
-        }
-    }
-}

@@ -7,7 +7,7 @@ use oben_agent::compact_context::CompactContextEngine;
 use oben_agent::context::ContextEngine;
 use oben_agent::turn_executor::TurnExecutor;
 use oben_models::{CallMode, Message, TransportProvider};
-use oben_sessions::SessionManager;
+use oben_sessions::DBSessionManager;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -68,7 +68,7 @@ fn make_compacting_engine() -> CompactContextEngine {
 
 // ── Helper: create a session with many messages ────────────────────────
 
-fn create_populated_session(mgr: &mut SessionManager, msg_count: usize) -> String {
+fn create_populated_session(mgr: &mut DBSessionManager, msg_count: usize) -> String {
     let session = mgr.new_session("test-chat");
     for i in 0..msg_count {
         let msg = if i % 2 == 0 {
@@ -98,7 +98,7 @@ fn create_populated_session(mgr: &mut SessionManager, msg_count: usize) -> Strin
 ///       with parent_session_id lineage
 #[tokio::test]
 async fn test_turn_exec_rotates_session_on_compaction() {
-    let mut mgr = SessionManager::new_with_path(make_test_dir().path().join("rot-test")).unwrap();
+    let mut mgr = DBSessionManager::new_with_path(make_test_dir().path().join("rot-test")).unwrap();
     let session_id = create_populated_session(&mut mgr, 1500);
 
     let mut context_engine = make_compacting_engine();
@@ -160,7 +160,7 @@ async fn test_turn_exec_rotates_session_on_compaction() {
 #[tokio::test]
 async fn test_rotation_updates_active_session() {
     let mut mgr =
-        SessionManager::new_with_path(make_test_dir().path().join("active-test")).unwrap();
+        DBSessionManager::new_with_path(make_test_dir().path().join("active-test")).unwrap();
     let parent_id = create_populated_session(&mut mgr, 1500);
 
     let mut context_engine = make_compacting_engine();
@@ -208,7 +208,7 @@ async fn test_rotation_updates_active_session() {
 /// then: second child is titled "test-chat (3)" (incrementing from (2))
 #[tokio::test]
 async fn test_multiple_rotations_increment_numbering() {
-    let mut mgr = SessionManager::new_with_path(make_test_dir().path().join("multi-test")).unwrap();
+    let mut mgr = DBSessionManager::new_with_path(make_test_dir().path().join("multi-test")).unwrap();
     let session_id = create_populated_session(&mut mgr, 1500);
 
     let mut context_engine = make_compacting_engine();
@@ -284,7 +284,7 @@ async fn test_multiple_rotations_increment_numbering() {
 /// then: rotation failure is logged but the turn does not panic
 #[tokio::test]
 async fn test_rotation_failure_does_not_panic() {
-    let mut mgr = SessionManager::new_with_path(make_test_dir().path().join("fail-test")).unwrap();
+    let mut mgr = DBSessionManager::new_with_path(make_test_dir().path().join("fail-test")).unwrap();
     let session_id = create_populated_session(&mut mgr, 300);
 
     let mut context_engine = make_compacting_engine();

@@ -496,6 +496,7 @@ impl App {
             callbacks,
             concurrent_dispatch_config: oben_agent::ConcurrentDispatchConfig::default(),
             nudge_config: None,
+            session_store: self.config.session_store.clone(),
         };
 
         self.agent = Some(Arc::new(tokio::sync::Mutex::new(
@@ -753,6 +754,7 @@ impl App {
             providers: self.config.providers.clone(),
             custom_providers: self.config.custom_providers.clone(),
             vision: self.config.vision.clone(),
+            session_store: self.config.session_store.clone(),
         });
         self.panels.insert(PanelId::Setup, Box::new(panel));
     }
