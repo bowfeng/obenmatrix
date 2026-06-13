@@ -1,14 +1,9 @@
 use serde_json::Value;
-/// File search tool — content (grep-like) and name (glob-like) search.
-///
-/// Uses ripgrep (rg) for fast parallel search, falls back to basic grep/find.
-use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
-
-use super::registry::{SelfRegisteringTool, ToolHandler};
+use super::registry::{Tool, ToolRegistry};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 use oben_utils::path_security::is_path_safe;
 
 // ---------------------------------------------------------------------------
@@ -21,108 +16,6 @@ static RGPREP_FOUND: TokioMutex<Option<bool>> = TokioMutex::const_new(None);
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
-
-fn make_search_files_tool() -> Tool {
-    let params = vec![
-        ToolParameter {
-            name: "query".into(),
-            description: "Search query — file name pattern for name search, or text pattern for content search.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "path".into(),
-            description: "Root path to search in. Defaults to current directory.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "limit".into(),
-            description: "Maximum number of results to return. Default is 50.".into(),
-            parameter_type: "number".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "type".into(),
-            description: "Search type: 'name' for file name matching, 'content' for file content matching (grep-like). Default is 'content'.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "glob".into(),
-            description: "Optional glob pattern to filter file types (e.g., '*.rs', '*.py', '*.{js,ts}').".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-    ];
-    Tool {
-        name: "search_files".into(),
-        description: "Search for files by name or content. Uses ripgrep for fast parallel search. Defaults to content search (grep-like). Set type='name' for file name glob matching.".into(),
-        parameters: ToolParameters::Flat(params),
-    }
-}
-
-fn make_search_files_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
-
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
-
-            let search_type = args
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("content");
-
-            let glob = args.get("glob").and_then(|v| v.as_str());
-
-            // Safety check: dangerous query patterns
-            if is_dangerous_query(query) {
-                return Ok(ToolResult {
-                    call_id: args
-                        .get("call_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    output: String::new(),
-                    error: Some(
-                        "Invalid query: search terms must be alphanumeric strings".to_string(),
-                    ),
-                });
-            }
-
-            // Safety check: unsafe path
-            if !is_path_safe(std::path::Path::new(path)) {
-                return Ok(ToolResult {
-                    call_id: args
-                        .get("call_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    output: String::new(),
-                    error: Some("Unsafe search path".to_string()),
-                });
-            }
-
-            let call_id = args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            if search_type == "name" {
-                search_by_name(&query, path, limit as usize, &call_id).await
-            } else {
-                search_by_content(&query, path, limit as usize, glob, &call_id).await
-            }
-        })
-    })
-}
 
 /// Check if the query looks like a dangerous shell injection attempt.
 fn is_dangerous_query(query: &str) -> bool {
@@ -478,25 +371,144 @@ fn shell_escape_inner(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Self-registration
+// Tool definition
+// ---------------------------------------------------------------------------
+
+fn make_search_files_tool_def() -> ToolMeta {
+    let params = vec![
+        ToolParameter {
+            name: "query".into(),
+            description: "Search query — file name pattern for name search, or text pattern for content search.".into(),
+            parameter_type: "string".into(),
+            required: true,
+        },
+        ToolParameter {
+            name: "path".into(),
+            description: "Root path to search in. Defaults to current directory.".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
+        ToolParameter {
+            name: "limit".into(),
+            description: "Maximum number of results to return. Default is 50.".into(),
+            parameter_type: "number".into(),
+            required: false,
+        },
+        ToolParameter {
+            name: "type".into(),
+            description: "Search type: 'name' for file name matching, 'content' for file content matching (grep-like). Default is 'content'.".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
+        ToolParameter {
+            name: "glob".into(),
+            description: "Optional glob pattern to filter file types (e.g., '*.rs', '*.py', '*.{js,ts}').".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
+    ];
+    ToolMeta {
+        name: "search_files".into(),
+        description: "Search for files by name or content. Uses ripgrep for fast parallel search. Defaults to content search (grep-like). Set type='name' for file name glob matching.".into(),
+        parameters: ToolParameters::Flat(params),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct SearchFilesTool;
 
-impl SelfRegisteringTool for SearchFilesTool {
-    fn tool() -> Tool {
-        make_search_files_tool()
+/// Execute a file search by name or content.
+async fn execute_search_files(args: &Value) -> anyhow::Result<ToolResult> {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
+
+    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
+    let search_type = args
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("content");
+    let glob = args.get("glob").and_then(|v| v.as_str());
+
+    // Safety check: dangerous query patterns
+    if is_dangerous_query(query) {
+        return Ok(ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some(
+                "Invalid query: search terms must be alphanumeric strings".to_string(),
+            ),
+        });
     }
 
-    fn handler() -> ToolHandler {
-        make_search_files_handler()
+    // Safety check: unsafe path
+    if !is_path_safe(std::path::Path::new(path)) {
+        return Ok(ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some("Unsafe search path".to_string()),
+        });
+    }
+
+    let call_id = args
+        .get("call_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if search_type == "name" {
+        search_by_name(&query, path, limit as usize, &call_id).await
+    } else {
+        search_by_content(&query, path, limit as usize, glob, &call_id).await
     }
 }
 
+#[async_trait::async_trait]
+impl Tool for SearchFilesTool {
+    fn name(&self) -> &str {
+        "search_files"
+    }
+    fn description(&self) -> &str {
+        "Search for files by name or content"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        execute_search_files(args).await.unwrap_or_else(|e| ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
 /// Register this module into the given registry.
 /// Called automatically by `discover_builtin_tools`.
-pub fn register(registry: &mut super::registry::ToolRegistry) {
-    SearchFilesTool::register_self(registry);
+pub fn register(registry: &mut ToolRegistry) {
+    let tool = Box::new(SearchFilesTool);
+    registry.register_with_def(tool, make_search_files_tool_def());
 }
 
 // ---------------------------------------------------------------------------
@@ -510,7 +522,7 @@ mod tests {
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
-        SearchFilesTool::register_self(&mut registry);
+        register(&mut registry);
         registry
     }
 

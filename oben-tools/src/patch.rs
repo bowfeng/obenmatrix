@@ -1,14 +1,11 @@
 use serde_json::Value;
 /// Patch tool — fuzzy text replacement in files.
 ///
-/// Implements a multi-strategy matching chain to robustly find and replace text,
-/// accommodating variations in whitespace, indentation, and escaping.
+/// Implements `Tool` trait directly.
 use std::path::Path;
-use std::sync::Arc;
 
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
-
-use super::registry::{SelfRegisteringTool, ToolHandler};
+use super::registry::{Tool, ToolRegistry};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 use oben_utils::path_security::is_path_safe;
 
 // ---------------------------------------------------------------------------
@@ -235,7 +232,11 @@ fn generate_diff(old_content: &str, new_content: &str, path: &str) -> String {
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-fn make_patch_tool() -> Tool {
+// ---------------------------------------------------------------------------
+// Tool definition
+// ---------------------------------------------------------------------------
+
+fn make_patch_tool_def() -> ToolMeta {
     let params = vec![
         ToolParameter {
             name: "path".into(),
@@ -263,140 +264,156 @@ fn make_patch_tool() -> Tool {
             required: false,
         },
     ];
-    Tool {
+    ToolMeta {
         name: "patch".into(),
         description: "Patch a file by replacing text with fuzzy matching. Supports whitespace, indentation, and Unicode variations. Returns diff and match details.".into(),
         parameters: ToolParameters::Flat(params),
     }
 }
 
-fn make_patch_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
-
-            let old_string = args
-                .get("old_string")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'old_string' argument"))?;
-
-            let new_string = args
-                .get("new_string")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'new_string' argument"))?;
-
-            let replace_all = args
-                .get("replace_all")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            let call_id = args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // Safety check: path traversal
-            if !is_path_safe(Path::new(path)) {
-                return Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some("Unsafe file path".to_string()),
-                });
-            }
-
-            // Safety check: empty old_string
-            if old_string.trim().is_empty() {
-                return Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some("old_string cannot be empty".to_string()),
-                });
-            }
-
-            // Read file
-            let content = match tokio::fs::read_to_string(path).await {
-                Ok(c) => c,
-                Err(e) => {
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!("Failed to read {}: {}", path, e)),
-                    });
-                }
-            };
-
-            // Fuzzy find
-            let (match_pos, strategy) = fuzzy_find(&content, old_string);
-
-            let match_count = if let Some(_) = match_pos { 1 } else { 0 };
-
-            if match_count == 0 {
-                return Ok(ToolResult {
-                    call_id,
-                    output: format!("No match found for old_string in {} (strategy: {}). Try reading the file first to see exact content.", path, strategy),
-                    error: Some(format!("No match found in {} using strategy: {}", path, strategy)),
-                });
-            }
-
-            // If not replace_all and multiple occurrences, error
-            if !replace_all && content.matches(old_string).count() > 1 {
-                return Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(
-                        "Multiple occurrences found. Set replace_all=true to replace all."
-                            .to_string(),
-                    ),
-                });
-            }
-
-            // Replace
-            let new_content = replace_at(&content, match_pos.unwrap(), old_string, new_string);
-
-            // Generate diff
-            let diff = generate_diff(&content, &new_content, path);
-
-            // Write file
-            match tokio::fs::write(path, &new_content).await {
-                Ok(_) => Ok(ToolResult {
-                    call_id,
-                    output: format!("Patch applied successfully.\n\n{}", diff),
-                    error: None,
-                }),
-                Err(e) => Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(format!("Failed to write file: {}", e)),
-                }),
-            }
-        })
-    })
-}
-
 // ---------------------------------------------------------------------------
-// Self-registration
+// Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct PatchTool;
 
-impl SelfRegisteringTool for PatchTool {
-    fn tool() -> Tool {
-        make_patch_tool()
+/// Patch a file by replacing text with fuzzy matching.
+async fn execute_patch(args: &Value) -> anyhow::Result<ToolResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+
+    let old_string = args
+        .get("old_string")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'old_string' argument"))?;
+
+    let new_string = args
+        .get("new_string")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'new_string' argument"))?;
+
+    let replace_all = args
+        .get("replace_all")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let call_id = args
+        .get("call_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Safety check: path traversal
+    if !is_path_safe(Path::new(path)) {
+        return Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some("Unsafe file path".to_string()),
+        });
     }
 
-    fn handler() -> ToolHandler {
-        make_patch_handler()
+    // Safety check: empty old_string
+    if old_string.trim().is_empty() {
+        return Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some("old_string cannot be empty".to_string()),
+        });
+    }
+
+    // Read file
+    let content = match tokio::fs::read_to_string(path).await {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some(format!("Failed to read {}: {}", path, e)),
+            });
+        }
+    };
+
+    // Fuzzy find
+    let (match_pos, strategy) = fuzzy_find(&content, old_string);
+
+    let match_count = if let Some(_) = match_pos { 1 } else { 0 };
+
+    if match_count == 0 {
+        return Ok(ToolResult {
+            call_id,
+            output: format!("No match found for old_string in {} (strategy: {}). Try reading the file first to see exact content.", path, strategy),
+            error: Some(format!("No match found in {} using strategy: {}", path, strategy)),
+        });
+    }
+
+    // If not replace_all and multiple occurrences, error
+    if !replace_all && content.matches(old_string).count() > 1 {
+        return Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(
+                "Multiple occurrences found. Set replace_all=true to replace all."
+                    .to_string(),
+            ),
+        });
+    }
+
+    // Replace
+    let new_content = replace_at(&content, match_pos.unwrap(), old_string, new_string);
+
+    // Generate diff
+    let diff = generate_diff(&content, &new_content, path);
+
+    // Write file
+    match tokio::fs::write(path, &new_content).await {
+        Ok(_) => Ok(ToolResult {
+            call_id,
+            output: format!("Patch applied successfully.\n\n{}", diff),
+            error: None,
+        }),
+        Err(e) => Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(format!("Failed to write file: {}", e)),
+        }),
     }
 }
 
+#[async_trait::async_trait]
+impl Tool for PatchTool {
+    fn name(&self) -> &str {
+        "patch"
+    }
+    fn description(&self) -> &str {
+        "Patch a file by replacing text with fuzzy matching"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        execute_patch(args).await.unwrap_or_else(|e| ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
 /// Register this module into the given registry.
 /// Called automatically by `discover_builtin_tools`.
-pub fn register(registry: &mut super::registry::ToolRegistry) {
-    PatchTool::register_self(registry);
+pub fn register(registry: &mut ToolRegistry) {
+    let tool = Box::new(PatchTool);
+    registry.register_with_def(tool, make_patch_tool_def());
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +428,7 @@ mod tests {
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
-        PatchTool::register_self(&mut registry);
+        register(&mut registry);
         registry
     }
 

@@ -1,14 +1,12 @@
 use serde_json::Value;
 /// Skill tool — view and list available skills.
 ///
-/// Lists skills from the skills directory and displays full content.
+/// Implements `Tool` trait directly.
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
-
-use super::registry::{SelfRegisteringTool, ToolHandler};
+use super::registry::{Tool, ToolRegistry};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -183,71 +181,6 @@ fn find_skills() -> Vec<SkillMeta> {
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
-
-fn make_skill_tool() -> Tool {
-    let params = vec![
-        ToolParameter {
-            name: "action".into(),
-            description: "Action: 'list' to show all skills, 'view' to view a skill's full content.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "name".into(),
-            description: "Skill name or path (e.g., 'coding' or '03-fine-tuning/axolotl'). Used with 'view' action.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-        ToolParameter {
-            name: "category".into(),
-            description: "Optional category filter when listing skills.".into(),
-            parameter_type: "string".into(),
-            required: false,
-        },
-    ];
-    Tool {
-        name: "skill".into(),
-        description: "View and manage skills. Skills are reusable instructions for the agent. Actions: list (show all), view (display full content).".into(),
-        parameters: ToolParameters::Flat(params),
-    }
-}
-
-fn make_skill_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let call_id = args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let action = args
-                .get("action")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'action' argument. Use: list, view."))?;
-
-            let result = match action {
-                "list" => list_skills(&args, call_id),
-                "view" => {
-                    let name = args
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| anyhow::anyhow!("'name' is required for 'view' action."))?;
-                    view_skill(name, call_id)
-                }
-                _ => {
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!("Unknown action '{}'. Use: list, view.", action)),
-                    });
-                }
-            };
-
-            Ok(result)
-        })
-    })
-}
 
 fn list_skills(args: &Value, call_id: String) -> ToolResult {
     let category_filter = args
@@ -429,25 +362,106 @@ fn view_skill(name: &str, call_id: String) -> ToolResult {
 }
 
 // ---------------------------------------------------------------------------
-// Self-registration
+// Tool definition
+// ---------------------------------------------------------------------------
+
+fn make_skill_tool_def() -> ToolMeta {
+    let params = vec![
+        ToolParameter {
+            name: "action".into(),
+            description: "Action: 'list' to show all skills, 'view' to view a skill's full content.".into(),
+            parameter_type: "string".into(),
+            required: true,
+        },
+        ToolParameter {
+            name: "name".into(),
+            description: "Skill name or path (e.g., 'coding' or '03-fine-tuning/axolotl'). Used with 'view' action.".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
+        ToolParameter {
+            name: "category".into(),
+            description: "Optional category filter when listing skills.".into(),
+            parameter_type: "string".into(),
+            required: false,
+        },
+    ];
+    ToolMeta {
+        name: "skill".into(),
+        description: "View and manage skills. Skills are reusable instructions for the agent. Actions: list (show all), view (display full content).".into(),
+        parameters: ToolParameters::Flat(params),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct SkillTool;
 
-impl SelfRegisteringTool for SkillTool {
-    fn tool() -> Tool {
-        make_skill_tool()
-    }
+/// Execute skill actions (list, view).
+async fn execute_skill(args: &Value) -> anyhow::Result<ToolResult> {
+    let call_id = args
+        .get("call_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    fn handler() -> ToolHandler {
-        make_skill_handler()
+    let action = args
+        .get("action")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'action' argument. Use: list, view."))?;
+
+    match action {
+        "list" => Ok(list_skills(args, call_id)),
+        "view" => {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("'name' is required for 'view' action."))?;
+            Ok(view_skill(name, call_id))
+        }
+        _ => Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(format!("Unknown action '{}'. Use: list, view.", action)),
+        }),
     }
 }
 
+#[async_trait::async_trait]
+impl Tool for SkillTool {
+    fn name(&self) -> &str {
+        "skill"
+    }
+    fn description(&self) -> &str {
+        "View and manage skills"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        execute_skill(args).await.unwrap_or_else(|e| ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
 /// Register this module into the given registry.
 /// Called automatically by `discover_builtin_tools`.
-pub fn register(registry: &mut super::registry::ToolRegistry) {
-    SkillTool::register_self(registry);
+pub fn register(registry: &mut ToolRegistry) {
+    let tool = Box::new(SkillTool);
+    registry.register_with_def(tool, make_skill_tool_def());
 }
 
 // ---------------------------------------------------------------------------
@@ -462,7 +476,7 @@ mod tests {
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
-        SkillTool::register_self(&mut registry);
+        register(&mut registry);
         registry
     }
 

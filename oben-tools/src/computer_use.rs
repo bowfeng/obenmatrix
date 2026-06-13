@@ -10,12 +10,12 @@ use anyhow::Result;
 use regex::Regex;
 use serde_json::Value;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, OnceLock};
+use std::sync::{OnceLock};
 use tracing::debug;
 
-use oben_models::{Tool, ToolParameters, ToolResult};
+use oben_models::{ToolMeta, ToolParameters, ToolResult};
 
-use super::registry::{SelfRegisteringTool, ToolHandler};
+use super::registry::{Tool, ToolRegistry};
 
 // ===========================================================================
 // Schema
@@ -309,42 +309,6 @@ fn resolve_target_windows(app: Option<&str>) -> Option<(i64, i64)> {
 // ===========================================================================
 // Handler
 // ===========================================================================
-
-fn make_computer_use_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let call_id = args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-
-            // Extract action
-            let action = args
-                .get("action")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing required argument: action"))?
-                .trim()
-                .to_lowercase();
-
-            match action.as_str() {
-                "capture" => handle_capture(&args, call_id).await,
-                "click" | "double_click" | "right_click" | "middle_click" => {
-                    handle_pointer(&args, &action, call_id).await
-                }
-                "drag" => handle_drag(&args, call_id).await,
-                "scroll" => handle_scroll(&args, call_id).await,
-                "type" => handle_type(&args, call_id).await,
-                "key" => handle_key(&args, call_id).await,
-                "set_value" => handle_set_value(&args, call_id).await,
-                "wait" => handle_wait(&args, call_id).await,
-                "list_apps" => handle_list_apps(call_id).await,
-                "focus_app" => handle_focus_app(&args, call_id).await,
-                _ => Err(anyhow::anyhow!("Unknown action: '{action}'")),
-            }
-        })
-    })
-}
 
 async fn handle_capture(args: &Value, call_id: String) -> Result<ToolResult> {
     let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("som");
@@ -660,8 +624,8 @@ fn format_images(images: &[String]) -> String {
 // Tool Definition
 // ===========================================================================
 
-fn make_computer_use_tool() -> Tool {
-    Tool {
+fn make_computer_use_tool() -> ToolMeta {
+    ToolMeta {
         name: "computer_use".into(),
         description: "Drive the macOS desktop in the background — screenshots, mouse, keyboard, scroll, drag — without stealing the user's cursor, keyboard focus, or Space. Preferred workflow: call with action='capture' (mode='som' gives numbered element overlays), then click by element index for reliability. macOS only; requires cua-driver to be installed.".into(),
         parameters: ToolParameters::JsonSchema {
@@ -676,13 +640,71 @@ fn make_computer_use_tool() -> Tool {
 
 pub struct ComputerUseTool;
 
-impl SelfRegisteringTool for ComputerUseTool {
-    fn tool() -> Tool {
-        make_computer_use_tool()
+#[async_trait::async_trait]
+impl Tool for ComputerUseTool {
+    fn name(&self) -> &str {
+        "computer_use"
     }
-    fn handler() -> ToolHandler {
-        make_computer_use_handler()
+    fn description(&self) -> &str {
+        "Drive the macOS desktop in the background"
     }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        let call_id = args
+            .get("call_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let action = match args
+            .get("action")
+            .and_then(|v| v.as_str())
+        {
+            Some(a) => a.trim().to_lowercase(),
+            None => return ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some("Missing required argument: action".to_string()),
+            },
+        };
+
+        let result = match action.as_str() {
+            "capture" => handle_capture(&args, call_id.clone()).await,
+            "click" | "double_click" | "right_click" | "middle_click" => {
+                handle_pointer(&args, &action, call_id.clone()).await
+            }
+            "drag" => handle_drag(&args, call_id.clone()).await,
+            "scroll" => handle_scroll(&args, call_id.clone()).await,
+            "type" => handle_type(&args, call_id.clone()).await,
+            "key" => handle_key(&args, call_id.clone()).await,
+            "set_value" => handle_set_value(&args, call_id.clone()).await,
+            "wait" => handle_wait(&args, call_id.clone()).await,
+            "list_apps" => handle_list_apps(call_id.clone()).await,
+            "focus_app" => handle_focus_app(&args, call_id.clone()).await,
+            _ => Ok(ToolResult {
+                call_id: call_id.clone(),
+                output: String::new(),
+                error: Some(format!("Unknown action: '{action}'")),
+            }),
+        };
+        
+        match result {
+            Ok(tr) => tr,
+            Err(e) => ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some(e.to_string()),
+            },
+        }
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
+    }
+}
+
+/// Register this module into the given registry.
+pub fn register(registry: &mut ToolRegistry) {
+    let tool = Box::new(ComputerUseTool);
+    registry.register_with_def(tool, make_computer_use_tool());
 }
 
 // ===========================================================================
@@ -696,7 +718,7 @@ mod tests {
 
     fn make_registry() -> ToolRegistry {
         let mut r = ToolRegistry::new();
-        ComputerUseTool::register_self(&mut r);
+        crate::computer_use::register(&mut r);
         r
     }
 

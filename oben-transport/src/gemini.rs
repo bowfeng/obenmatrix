@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::debug;
 
 use oben_models::{
-    CallMode, Message, MessageContent, MessagePart, MessageRole, StreamDeltaCallback, Tool,
+    CallMode, Message, MessageContent, MessagePart, MessageRole, StreamDeltaCallback, ToolMeta,
     ToolParameters, TransportProvider, TransportResponse, TransportToolCall,
 };
 
@@ -307,7 +307,7 @@ fn translate_messages(
 // Tools
 // ---------------------------------------------------------------------------
 
-fn translate_tools(tools: &[Tool]) -> Option<Vec<GeminiTools>> {
+fn translate_tools(tools: &[ToolMeta]) -> Option<Vec<GeminiTools>> {
     let decls: Vec<GeminiFunctionDeclaration> = tools
         .iter()
         .filter_map(|t| {
@@ -690,7 +690,7 @@ pub struct GeminiMessagesTransport {
     base_url: String,
     api_key: String,
     model: String,
-    tools: Vec<Tool>,
+    tools: Vec<ToolMeta>,
     cached: std::sync::Mutex<Option<CachedReq>>,
     extra_body: Option<serde_json::Value>,
 }
@@ -717,7 +717,7 @@ impl GeminiMessagesTransport {
         }
     }
 
-    pub fn with_tools(mut self, tools: Vec<Tool>) -> Self {
+    pub fn with_tools(mut self, tools: Vec<ToolMeta>) -> Self {
         self.tools = tools;
         self
     }

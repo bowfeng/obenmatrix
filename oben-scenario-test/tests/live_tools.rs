@@ -5,7 +5,7 @@
 /// and the model returns structured `tool_calls` (not arbitrary XML-like tags).
 use anyhow::Result;
 use oben_config::AppConfig;
-use oben_models::{CallMode, Message, ProviderConfig, Tool, TransportProvider};
+use oben_models::{CallMode, Message, ProviderConfig, ToolMeta, TransportProvider};
 use oben_transport::Transport;
 
 /// Safely take the first `n` chars from a string (UTF-8 safe).
@@ -30,12 +30,12 @@ fn get_provider_config() -> ProviderConfig {
     pc
 }
 
-fn test_tools() -> Vec<Tool> {
+fn test_tools() -> Vec<ToolMeta> {
     vec![
-        Tool::builder("shell", "Execute a shell command and return the output.")
+        ToolMeta::builder("shell", "Execute a shell command and return the output.")
             .param("command", "The command to execute", "string", true)
             .build(),
-        Tool::builder(
+        ToolMeta::builder(
             "read_file",
             "Read the contents of a file at the given path.",
         )

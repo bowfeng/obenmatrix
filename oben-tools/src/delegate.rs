@@ -21,7 +21,7 @@ use serde_json::Value;
 use tokio::sync::Semaphore;
 
 use crate::registry::{SpawnFn, Tool, ToolRegistry};
-use oben_models::{Tool as ToolDef, ToolResult};
+use oben_models::{ToolMeta as ToolDef, ToolResult};
 use tracing::{debug, info, warn};
 
 /// Truncate a goal/context description for log lines to avoid spam.
@@ -608,6 +608,7 @@ pub fn register(registry: &mut ToolRegistry) {
 // ── Unit tests ─────────────────────────────────────────────────────────
 
 /// Helper: build a SpawnFn that returns a pre-constructed SubagentResult.
+#[allow(dead_code)]
 fn mock_spawn_fn(sr: crate::registry::SubagentResult) -> SpawnFn {
     Arc::new(move |_pid, _goal, _depth, _role| {
         let sr = sr.clone();
@@ -616,6 +617,7 @@ fn mock_spawn_fn(sr: crate::registry::SubagentResult) -> SpawnFn {
 }
 
 /// Helper: build a SpawnFn that returns an error.
+#[allow(dead_code)]
 fn error_spawn_fn(msg: String) -> SpawnFn {
     Arc::new(move |_pid, _goal, _depth, _role| {
         let msg = msg.clone();

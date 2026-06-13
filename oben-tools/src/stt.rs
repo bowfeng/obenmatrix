@@ -1,13 +1,12 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use reqwest::Client;
 use serde_json::Value;
 
 use oben_config::config::AppConfig;
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
-use super::registry::{SelfRegisteringTool, ToolHandler};
+use super::registry::{Tool, ToolRegistry};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -393,7 +392,7 @@ async fn do_transcribe(
 // Tool definition & handler
 // ---------------------------------------------------------------------------
 
-fn make_stt_tool() -> Tool {
+fn make_stt_tool() -> ToolMeta {
     let params = vec![
         ToolParameter {
             name: "audio_file".into(),
@@ -415,137 +414,151 @@ fn make_stt_tool() -> Tool {
         },
     ];
 
-    Tool {
+    ToolMeta {
         name: "speech_to_text".into(),
         description: "Transcribe speech audio to text. Supports 6 providers: whisper-rs (local GGML, free), OpenAI whisper-1, Groq whisper-turbo, Mistral Voxtral, xAI Grok, ElevenLabs Scribe. Accepts file path or base64-encoded audio data.".into(),
         parameters: ToolParameters::Flat(params),
     }
 }
 
-fn make_stt_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let call_id = args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // Extract audio_file or audio_base64
-            let audio_file = args
-                .get("audio_file")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-
-            let audio_base64 = args
-                .get("audio_base64")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-
-            let provider = args
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .unwrap_or("whisper-rs")
-                .to_string();
-
-            if audio_file.is_none() && audio_base64.is_none() {
-                return Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some("Either 'audio_file' or 'audio_base64' must be provided.".to_string()),
-                });
-            }
-
-            // Determine audio source
-            let temp_path: Option<std::path::PathBuf> = if let Some(path) = &audio_file {
-                let p = Path::new(path);
-                if !p.exists() {
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!("Audio file not found: {}, make sure the path is absolute or a valid local path.", path)),
-                    });
-                }
-                if !is_supported_format(p) {
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!("Unsupported audio format. Supported formats: {:?}", SUPPORTED_FORMATS)),
-                    });
-                }
-                if !is_within_size_limit(p) {
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!("Audio file {} exceeds 25 MB limit.", path)),
-                    });
-                }
-                Some(p.to_path_buf())
-            } else if let Some(b64) = &audio_base64 {
-                // Decode base64 to temp file
-                let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
-                    .map_err(|e| anyhow::anyhow!("Failed to decode base64 audio: {}", e))?;
-
-                if decoded.len() > MAX_AUDIO_FILE_SIZE as usize {
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some("Base64 audio data exceeds 25 MB limit.".to_string()),
-                    });
-                }
-
-                // Determine format from content-type hint or default to .wav
-                let ext = "wav";
-                let mut tmp = std::env::temp_dir();
-                tmp.push(format!("stt_input_{}.{}", std::process::id(), ext));
-                std::fs::write(&tmp, &decoded)
-                    .map_err(|e| anyhow::anyhow!("Failed to write temp audio: {}", e))?;
-                Some(tmp)
-            } else {
-                None
-            };
-
-            let result_path = temp_path.ok_or_else(|| {
-                anyhow::anyhow!("No audio source provided (neither audio_file nor audio_base64)")
-            })?;
-
-            // Load config
-            let config = AppConfig::load()
-                .unwrap_or_else(|_e| AppConfig::default());
-
-            // Perform transcription
-            let transcript = do_transcribe(&result_path, provider.as_str(), &config)
-                .await?;
-
-            // Clean up temp file if we created one
-            if audio_base64.is_some() && result_path.exists() {
-                let _ = std::fs::remove_file(&result_path);
-            }
-
-            Ok(ToolResult {
-                call_id,
-                output: transcript,
-                error: None,
-            })
-        })
-    })
-}
-
 pub struct SttTool;
 
-impl SelfRegisteringTool for SttTool {
-    fn tool() -> Tool {
-        make_stt_tool()
+#[async_trait::async_trait]
+impl Tool for SttTool {
+    fn name(&self) -> &str {
+        "speech_to_text"
     }
+    fn description(&self) -> &str {
+        "Transcribe speech audio to text"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        let call_id = args
+            .get("call_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
-    fn handler() -> ToolHandler {
-        make_stt_handler()
+        let audio_file = args
+            .get("audio_file")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let audio_base64 = args
+            .get("audio_base64")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let provider = args
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("whisper-rs")
+            .to_string();
+
+        if audio_file.is_none() && audio_base64.is_none() {
+            return ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some("Either 'audio_file' or 'audio_base64' must be provided.".to_string()),
+            };
+        }
+
+        let temp_path: Option<std::path::PathBuf> = if let Some(path) = &audio_file {
+            let p = Path::new(path);
+            if !p.exists() {
+                return ToolResult {
+                    call_id,
+                    output: String::new(),
+                    error: Some(format!("Audio file not found: {}, make sure the path is absolute or a valid local path.", path)),
+                };
+            }
+            if !is_supported_format(p) {
+                return ToolResult {
+                    call_id,
+                    output: String::new(),
+                    error: Some(format!("Unsupported audio format. Supported formats: {:?}", SUPPORTED_FORMATS)),
+                };
+            }
+            if !is_within_size_limit(p) {
+                return ToolResult {
+                    call_id,
+                    output: String::new(),
+                    error: Some(format!("Audio file {} exceeds 25 MB limit.", path)),
+                };
+            }
+            Some(p.to_path_buf())
+        } else if let Some(b64) = &audio_base64 {
+            let decoded = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64) {
+                Ok(d) => d,
+                Err(e) => return ToolResult {
+                    call_id,
+                    output: String::new(),
+                    error: Some(format!("Failed to decode base64 audio: {}", e)),
+                },
+            };
+            if decoded.len() > MAX_AUDIO_FILE_SIZE as usize {
+                return ToolResult {
+                    call_id,
+                    output: String::new(),
+                    error: Some("Base64 audio data exceeds 25 MB limit.".to_string()),
+                };
+            }
+            let ext = "wav";
+            let mut tmp = std::env::temp_dir();
+            tmp.push(format!("stt_input_{}.{}", std::process::id(), ext));
+            if let Err(e) = std::fs::write(&tmp, &decoded) {
+                return ToolResult {
+                    call_id,
+                    output: String::new(),
+                    error: Some(format!("Failed to write temp audio: {}", e)),
+                };
+            }
+            Some(tmp)
+        } else {
+            None
+        };
+
+        let result_path = match temp_path {
+            Some(p) => p,
+            None => return ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some("No audio source provided (neither audio_file nor audio_base64)".to_string()),
+            },
+        };
+
+        let config = match AppConfig::load() {
+            Ok(c) => c,
+            Err(_) => AppConfig::default(),
+        };
+
+        let transcript = match do_transcribe(&result_path, provider.as_str(), &config).await {
+            Ok(t) => t,
+            Err(e) => return ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some(e.to_string()),
+            },
+        };
+
+        if audio_base64.is_some() && result_path.exists() {
+            let _ = std::fs::remove_file(&result_path);
+        }
+
+        ToolResult {
+            call_id,
+            output: transcript,
+            error: None,
+        }
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
     }
 }
 
 /// Register this module into the given registry.
-pub fn register(registry: &mut super::registry::ToolRegistry) {
-    SttTool::register_self(registry);
+pub fn register(registry: &mut ToolRegistry) {
+    let tool = Box::new(SttTool);
+    registry.register_with_def(tool, make_stt_tool());
 }
 
 // ---------------------------------------------------------------------------
@@ -565,7 +578,8 @@ mod tests {
             "call_id": "test-1"
         });
         
-        let result = make_stt_handler()(test_args).await.unwrap();
+        let tool = SttTool;
+        let result = tool.execute(&test_args).await;
         assert!(result.error.is_some());
         assert!(result.output.is_empty());
         let err_msg = result.error.unwrap();
@@ -588,8 +602,8 @@ mod tests {
             "provider": "openai"
         });
         
-        // This should fail with unsupported format error (not .mp3/.wav etc)
-        let result = make_stt_handler()(test_args).await.unwrap();
+        let tool = SttTool;
+        let result = tool.execute(&test_args).await;
         assert!(result.error.is_some());
     }
 
@@ -598,25 +612,23 @@ mod tests {
     /// Then: file not found error occurs with whisper-rs provider
     #[tokio::test]
     async fn test_base64_audio_falls_back_to_whisper_rs() {
-        // Generate sample WAV-like base64 data (minimal valid WAV header + silence)
         use std::io::Write;
         
-        // Create a minimal WAV file in memory
         let mut wav_data = Vec::new();
         wav_data.extend_from_slice(b"RIFF");
-        wav_data.extend_from_slice(&((44 - 8 + 2) as u32).to_le_bytes()); // file size - 8
+        wav_data.extend_from_slice(&((44 - 8 + 2) as u32).to_le_bytes());
         wav_data.extend_from_slice(b"WAVE");
         wav_data.extend_from_slice(b"fmt ");
-        wav_data.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
-        wav_data.extend_from_slice(&1u16.to_le_bytes()); // PCM format
-        wav_data.extend_from_slice(&1u16.to_le_bytes()); // mono
-        wav_data.extend_from_slice(&16000u32.to_le_bytes()); // 16kHz
-        wav_data.extend_from_slice(&32000u32.to_le_bytes()); // byte rate
-        wav_data.extend_from_slice(&2u16.to_le_bytes()); // block align
-        wav_data.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        wav_data.extend_from_slice(&16u32.to_le_bytes());
+        wav_data.extend_from_slice(&1u16.to_le_bytes());
+        wav_data.extend_from_slice(&1u16.to_le_bytes());
+        wav_data.extend_from_slice(&16000u32.to_le_bytes());
+        wav_data.extend_from_slice(&32000u32.to_le_bytes());
+        wav_data.extend_from_slice(&2u16.to_le_bytes());
+        wav_data.extend_from_slice(&16u16.to_le_bytes());
         wav_data.extend_from_slice(b"data");
-        wav_data.extend_from_slice(&(2u32).to_le_bytes()); // data size
-        wav_data.extend_from_slice(&0i16.to_le_bytes()); // silence sample
+        wav_data.extend_from_slice(&(2u32).to_le_bytes());
+        wav_data.extend_from_slice(&0i16.to_le_bytes());
         
         let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
         
@@ -626,11 +638,10 @@ mod tests {
             "provider": "whisper-rs"
         });
         
-        // Should fail with whisper-rs not compiled in or model download failure
-        let result = make_stt_handler()(test_args).await;
+        let tool = SttTool;
+        let result = tool.execute(&test_args).await;
         
-        // Result should be error (whisper-rs needs model loading or network)
-        assert!(result.is_err());
+        assert!(result.error.is_some());
     }
 
     /// Given: file path pointing to non-existent file
@@ -642,16 +653,16 @@ mod tests {
         
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
-        drop(tmp); // Delete the file
+        drop(tmp);
         
-        // Now test with the deleted file path
         let test_args = serde_json::json!({
             "call_id": "test-nonexistent",
             "audio_file": &path,
             "provider": "openai"
         });
         
-        let result = make_stt_handler()(test_args).await.unwrap();
+        let tool = SttTool;
+        let result = tool.execute(&test_args).await;
         assert!(result.error.is_some());
         let err_msg = result.error.unwrap();
         assert!(err_msg.contains("not found") || err_msg.contains("NotFound"));
@@ -666,7 +677,6 @@ mod tests {
         use std::io::Write;
         use tempfile::NamedTempFile;
         
-        // Create minimal WAV file at 16kHz (whisper-rs requirement)
         let mut wav_data = Vec::new();
         wav_data.extend_from_slice(b"RIFF");
         wav_data.extend_from_slice(&((44 - 8 + 200) as u32).to_le_bytes());
@@ -681,7 +691,6 @@ mod tests {
         wav_data.extend_from_slice(&16u16.to_le_bytes());
         wav_data.extend_from_slice(b"data");
         wav_data.extend_from_slice(&(200u32).to_le_bytes());
-        // 100 samples of silence
         for _ in 0..100 {
             wav_data.extend_from_slice(&0i16.to_le_bytes());
         }
@@ -695,8 +704,8 @@ mod tests {
             "provider": "whisper-rs"
         });
         
-        // Should either succeed or fail gracefully (no crash)
-        let result = make_stt_handler()(test_args).await;
-        assert!(result.is_ok() || result.is_err()); // Just verify no panic
+        let tool = SttTool;
+        let result = tool.execute(&test_args).await;
+        assert!(result.error.is_some() || result.output.len() > 0);
     }
 }

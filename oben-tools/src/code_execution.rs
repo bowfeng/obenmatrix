@@ -1,157 +1,8 @@
 use serde_json::Value;
-/// Code execution tool — safely executes code in a sandboxed environment.
-///
-/// Supports Python code execution with output capture and timeout protection.
-use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use oben_models::{Tool, ToolParameter, ToolParameters, ToolResult};
-
-use super::registry::{SelfRegisteringTool, ToolHandler};
-
-// ---------------------------------------------------------------------------
-// Tool definitions
-// ---------------------------------------------------------------------------
-
-fn make_code_execution_tool() -> Tool {
-    let params = vec![
-        ToolParameter {
-            name: "code".into(),
-            description: "The Python code to execute.".into(),
-            parameter_type: "string".into(),
-            required: true,
-        },
-        ToolParameter {
-            name: "timeout".into(),
-            description: "Maximum execution time in seconds (default: 30).".into(),
-            parameter_type: "number".into(),
-            required: false,
-        },
-    ];
-    Tool {
-        name: "code_execution".into(),
-        description:
-            "Execute Python code in a sandboxed environment. Returns stdout, stderr, and exit code."
-                .into(),
-        parameters: ToolParameters::Flat(params),
-    }
-}
-
-fn make_code_execution_handler() -> ToolHandler {
-    Arc::new(|args: Value| {
-        Box::pin(async move {
-            let code = args
-                .get("code")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing 'code' argument"))?;
-
-            let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
-
-            let call_id = args
-                .get("call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // Security check: block dangerous operations.
-            // Strip all whitespace (spaces, newlines, tabs) so that
-            // "import\nos" matches the same as "importos".
-            let safe_code: String = code.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-
-            let dangerous_patterns = [
-                "importos",
-                "importos.",
-                "importsubprocess",
-                "importshutil",
-                "importsocket",
-                "importurllib",
-                "import requests",
-                "importhttp",
-                "open(",
-                "eval(",
-                "exec(",
-                "__import__",
-                ".system(",
-                ".popen(",
-            ];
-
-            for pattern in &dangerous_patterns {
-                if safe_code.contains(pattern) {
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!(
-                            "Security check: code contains disallowed pattern '{}'.",
-                            pattern
-                        )),
-                    });
-                }
-            }
-
-            // Write code to a uniquely-named temp file to avoid race conditions
-            // between parallel tests (all share the same process ID).
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let code_file = std::env::temp_dir().join(format!(
-                "oben_code_{}_{}.py",
-                std::process::id(),
-                timestamp
-            ));
-            if let Err(e) = std::fs::write(&code_file, code) {
-                return Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(format!("Failed to write code file: {}", e)),
-                });
-            }
-
-            // Execute with timeout
-            let output = match tokio::time::timeout(
-                std::time::Duration::from_secs(timeout_secs),
-                execute_python(&code_file),
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(_) => {
-                    let _ = std::fs::remove_file(&code_file);
-                    return Ok(ToolResult {
-                        call_id,
-                        output: String::new(),
-                        error: Some(format!(
-                            "Execution timed out after {} seconds.",
-                            timeout_secs
-                        )),
-                    });
-                }
-            };
-
-            let _ = std::fs::remove_file(&code_file);
-
-            match output {
-                Ok(exec_output) => Ok(ToolResult {
-                    call_id,
-                    output: format!(
-                        "Exit code: {}\n\nStdout:\n{}\n\nStderr:\n{}",
-                        exec_output.exit_code, exec_output.stdout, exec_output.stderr
-                    ),
-                    error: if exec_output.exit_code == 0 {
-                        None
-                    } else {
-                        Some(format!("Exit code: {}", exec_output.exit_code))
-                    },
-                }),
-                Err(e) => Ok(ToolResult {
-                    call_id,
-                    output: String::new(),
-                    error: Some(format!("Execution failed: {}", e)),
-                }),
-            }
-        })
-    })
-}
+use super::registry::{Tool, ToolRegistry};
+use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 /// Execution output
 #[derive(Debug)]
@@ -177,24 +28,182 @@ async fn execute_python(code_file: &std::path::Path) -> Result<ExecutionOutput, 
 }
 
 // ---------------------------------------------------------------------------
-// Self-registration
+// Tool definition
+// ---------------------------------------------------------------------------
+
+fn make_code_execution_tool_def() -> ToolMeta {
+    let params = vec![
+        ToolParameter {
+            name: "code".into(),
+            description: "The Python code to execute.".into(),
+            parameter_type: "string".into(),
+            required: true,
+        },
+        ToolParameter {
+            name: "timeout".into(),
+            description: "Maximum execution time in seconds (default: 30).".into(),
+            parameter_type: "number".into(),
+            required: false,
+        },
+    ];
+    ToolMeta {
+        name: "code_execution".into(),
+        description:
+            "Execute Python code in a sandboxed environment. Returns stdout, stderr, and exit code."
+                .into(),
+        parameters: ToolParameters::Flat(params),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool struct
 // ---------------------------------------------------------------------------
 
 pub struct CodeExecutionTool;
 
-impl SelfRegisteringTool for CodeExecutionTool {
-    fn tool() -> Tool {
-        make_code_execution_tool()
+/// Execute Python code in a sandboxed environment with security checks.
+async fn execute_code(args: &Value) -> anyhow::Result<ToolResult> {
+    let code = args
+        .get("code")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'code' argument"))?;
+
+    let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
+
+    let call_id = args
+        .get("call_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Security check: block dangerous operations.
+    let safe_code: String = code.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+
+    let dangerous_patterns = [
+        "importos",
+        "importos.",
+        "importsubprocess",
+        "importshutil",
+        "importsocket",
+        "importurllib",
+        "import requests",
+        "importhttp",
+        "open(",
+        "eval(",
+        "exec(",
+        "__import__",
+        ".system(",
+        ".popen(",
+    ];
+
+    for pattern in &dangerous_patterns {
+        if safe_code.contains(pattern) {
+            return Ok(ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some(format!(
+                    "Security check: code contains disallowed pattern '{}'.",
+                    pattern
+                )),
+            });
+        }
     }
 
-    fn handler() -> ToolHandler {
-        make_code_execution_handler()
+    // Write code to a uniquely-named temp file to avoid race conditions
+    // between parallel tests (all share the same process ID).
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let code_file = std::env::temp_dir().join(format!(
+        "oben_code_{}_{}.py",
+        std::process::id(),
+        timestamp
+    ));
+    if let Err(e) = std::fs::write(&code_file, code) {
+        return Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(format!("Failed to write code file: {}", e)),
+        });
+    }
+
+    // Execute with timeout
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        execute_python(&code_file),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = std::fs::remove_file(&code_file);
+            return Ok(ToolResult {
+                call_id,
+                output: String::new(),
+                error: Some(format!(
+                    "Execution timed out after {} seconds.",
+                    timeout_secs
+                )),
+            });
+        }
+    };
+
+    let _ = std::fs::remove_file(&code_file);
+
+    match output {
+        Ok(exec_output) => Ok(ToolResult {
+            call_id,
+            output: format!(
+                "Exit code: {}\n\nStdout:\n{}\n\nStderr:\n{}",
+                exec_output.exit_code, exec_output.stdout, exec_output.stderr
+            ),
+            error: if exec_output.exit_code == 0 {
+                None
+            } else {
+                Some(format!("Exit code: {}", exec_output.exit_code))
+            },
+        }),
+        Err(e) => Ok(ToolResult {
+            call_id,
+            output: String::new(),
+            error: Some(format!("Execution failed: {}", e)),
+        }),
     }
 }
 
+#[async_trait::async_trait]
+impl Tool for CodeExecutionTool {
+    fn name(&self) -> &str {
+        "code_execution"
+    }
+    fn description(&self) -> &str {
+        "Execute Python code in a sandboxed environment"
+    }
+    async fn execute(&self, args: &Value) -> ToolResult {
+        execute_code(args).await.unwrap_or_else(|e| ToolResult {
+            call_id: args
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            output: String::new(),
+            error: Some(e.to_string()),
+        })
+    }
+    fn clone_tool(&self) -> Box<dyn Tool> {
+        Box::new(Self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
 /// Register this module into the given registry.
-pub fn register(registry: &mut super::registry::ToolRegistry) {
-    CodeExecutionTool::register_self(registry);
+pub fn register(registry: &mut ToolRegistry) {
+    let tool = Box::new(CodeExecutionTool);
+    registry.register_with_def(tool, make_code_execution_tool_def());
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +217,7 @@ mod tests {
 
     fn make_registry() -> super::super::registry::ToolRegistry {
         let mut registry = super::super::registry::ToolRegistry::new();
-        CodeExecutionTool::register_self(&mut registry);
+        register(&mut registry);
         registry
     }
 

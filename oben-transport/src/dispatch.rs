@@ -17,7 +17,7 @@ use anyhow::Result;
 use oben_models::{
     provider_kind_to_transport,
     providers::{ProviderConfig, TransportProvider, TransportResponse},
-    CallMode, Message, MessageRole, ProviderKind, Tool,
+    CallMode, Message, MessageRole, ProviderKind, ToolMeta,
 };
 use serde_json;
 
@@ -73,7 +73,7 @@ impl Transport {
     pub fn from_config_with_tools(
         config: &ProviderConfig,
         system_prompt: impl Into<String>,
-        tools: Vec<Tool>,
+        tools: Vec<ToolMeta>,
     ) -> Self {
         let system_prompt = system_prompt.into();
 
@@ -109,7 +109,7 @@ impl Transport {
     pub fn from_config_with_tools_via_registry(
         config: &ProviderConfig,
         system_prompt: &str,
-        tools: &[Tool],
+        tools: &[ToolMeta],
     ) -> Arc<dyn TransportProvider + Send + Sync> {
         // Serialize tools into the config for transport creation
         let mut config_with_tools = config.clone();
@@ -129,7 +129,7 @@ impl Transport {
         };
 
         let sp = system_prompt.to_string();
-        let tools_vec: Vec<Tool> = config_with_tools
+        let tools_vec: Vec<ToolMeta> = config_with_tools
             .tools_json
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok())

@@ -523,7 +523,7 @@ async fn run_models(action: ModelsCommand) -> Result<()> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-fn collect_tool_defs(registry: &oben_tools::ToolRegistry) -> Vec<oben_models::Tool> {
+fn collect_tool_defs(registry: &oben_tools::ToolRegistry) -> Vec<oben_models::ToolMeta> {
     registry.list_tools()
 }
 

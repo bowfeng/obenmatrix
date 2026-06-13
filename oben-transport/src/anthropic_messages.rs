@@ -12,7 +12,6 @@
 /// └── conversion helpers: message_to_anthropic(), response_to_transport()
 /// ```
 use anyhow::{anyhow, Result};
-use base64::Engine;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use oben_models::{
@@ -332,7 +331,7 @@ impl AnthropicMessagesTransport {
         api_key: impl Into<String>,
         model: impl Into<String>,
         system_prompt: impl Into<String>,
-        tools: Vec<oben_models::Tool>,
+        tools: Vec<oben_models::ToolMeta>,
     ) -> Self {
         let model: String = model.into();
         let base = BaseTransport::new(base_url, api_key, model.clone());
@@ -389,7 +388,7 @@ impl AnthropicMessagesTransport {
     pub fn from_config_with_tools(
         config: &oben_models::ProviderConfig,
         system_prompt: impl Into<String>,
-        tools: Vec<oben_models::Tool>,
+        tools: Vec<oben_models::ToolMeta>,
     ) -> Self {
         let base_url = Self::resolve_base_url(config);
         let api_key = config.api_key.clone().unwrap_or_default();
@@ -1027,7 +1026,7 @@ impl TransportProvider for AnthropicMessagesTransport {
 // ── Conversion: oben Tool → AnthropicTool ───────────────────────────────────
 
 /// Convert an oben `Tool` to Anthropic API tool format.
-fn tool_to_anthropic(tool: &oben_models::Tool) -> AnthropicTool {
+fn tool_to_anthropic(tool: &oben_models::ToolMeta) -> AnthropicTool {
     let parameters = match &tool.parameters {
         oben_models::ToolParameters::JsonSchema { schema } => schema.clone(),
         oben_models::ToolParameters::Flat(params) => {
@@ -1174,7 +1173,7 @@ mod tests {
         /// given: an oben Tool with flat parameters
         /// when: converted to AnthropicTool
         /// then: produces correct input_schema with properties and required
-        let tool = oben_models::Tool {
+        let tool = oben_models::ToolMeta {
             name: "test_tool".to_string(),
             description: "A test tool".to_string(),
             parameters: oben_models::ToolParameters::Flat(vec![oben_models::ToolParameter {
