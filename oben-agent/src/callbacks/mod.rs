@@ -32,6 +32,11 @@
 /// ```
 use std::sync::Arc;
 
+// Re-export hook traits for use in AgentCallbacks
+use crate::hooks::kind::*;
+#[cfg(test)]
+use crate::hooks::adapters::*;
+
 // ---------------------------------------------------------------------------
 // Module declarations
 // ---------------------------------------------------------------------------
@@ -41,8 +46,6 @@ pub mod relay {
     pub use super::relay_impl::*;
 }
 
-// Re-define the relay logic inline so callbacks/ and callbacks.rs coexist.
-// (Moving this to a separate file would require restructuring the module tree.)
 mod relay_impl {
     use std::sync::{Arc, Mutex};
 
@@ -230,57 +233,40 @@ mod relay_impl {
 }
 
 // ---------------------------------------------------------------------------
-// AgentCallbacks — rich callback set plus optional relay
+// AgentCallbacks — composite of functional lifecycle hooks
 // ---------------------------------------------------------------------------
 
-/// Agent callbacks — rich set for platform integration.
+/// Agent callbacks — composite of functional lifecycle hooks plus optional relay.
+///
+/// Replaces the old 15+ closure field pattern with 10 domain-specific hook traits.
+/// Each field is optional — set only the hooks you need.
+///
+/// For backward compatibility, use the adapter types in `hooks::adapters` to wrap
+/// closure-style callbacks. The `CallbackAdapter` below provides a unified adapter
+/// that supports all event types and fires relay subscribers.
+///
+/// ## Relay Integration
+///
+/// When a relay is set, the adapter internally fires relay subscribers before
+/// invoking direct callbacks, matching the old `call_*` behavior.
+
 #[derive(Default)]
 pub struct AgentCallbacks {
-    /// Tool progress: (tool_name, args_preview)
-    pub tool_progress: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
-    /// Tool started: (tool_name, args_json)
-    pub tool_start: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
-    /// Tool completed: (tool_name, args_json, result)
-    pub tool_complete: Option<Box<dyn Fn(&str, &str, &str) + Send + Sync>>,
-    /// Thinking/thought stream delta
-    pub thinking: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    /// Reasoning stream delta
-    pub reasoning: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    /// Clarification request: (question, choices) -> user answer
-    pub clarify: Option<Box<dyn Fn(&str, &[String]) -> String + Send + Sync>>,
-    /// Step-by-step status message
-    pub step: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    /// Token stream delta (for TTS etc.)
-    pub stream_delta: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    /// Interim assistant message (non-streaming, full text)
-    pub interim_assistant: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    /// Tool generation event: (tool_name, call_id)
-    pub tool_gen: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
-    /// Lifecycle status: (level, message)
-    pub status: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
-    /// Verbose print — always visible even during streaming
-    pub vprint: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    /// Prompt output (e.g. "> ")
-    pub print_prompt: Option<Box<dyn Fn() + Send + Sync>>,
-    /// Print flushed
-    pub print_flush: Option<Box<dyn Fn() + Send + Sync>>,
-    /// Print info line
-    pub print_info: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    /// Read stdin input
-    pub read_input: Option<Box<dyn Fn() -> Option<String> + Send + Sync>>,
-    /// Print newline
-    pub print_newline: Option<Box<dyn Fn() + Send + Sync>>,
-    /// Exit decision (given user input)
-    pub should_exit: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
+    pub agent_loop: Option<Box<dyn AgentLoopHooks>>,
+    pub turn_lifecycle: Option<Box<dyn TurnLifecycleHooks>>,
+    pub api_lifecycle: Option<Box<dyn ApiLifecycleHooks>>,
+    pub tool_lifecycle: Option<Box<dyn ToolLifecycleHooks>>,
+    pub streaming: Option<Box<dyn StreamingHooks>>,
+    pub system_events: Option<Box<dyn SystemEventsHooks>>,
+    pub session_lifecycle: Option<Box<dyn SessionLifecycleHooks>>,
+    pub interrupt_lifecycle: Option<Box<dyn InterruptLifecycleHooks>>,
+    pub cli_interaction: Option<Box<dyn CLIInteractionHooks>>,
+    pub clarification: Option<Box<dyn ClarificationHooks>>,
     /// Optional relay for parent<→>child event forwarding.
-    ///
-    /// When set, all callback invocations are forwarded through the relay
-    /// so that parent subscribers can observe child agent events.
     pub relay: Option<Arc<relay_impl::CallbacksRelay>>,
 }
 
 /// Convenience trait to attach a relay to an existing `AgentCallbacks`.
-/// Mirrors the fluent-builder pattern in agent construction.
 pub trait WithRelay {
     fn with_relay(self, relay: Arc<relay_impl::CallbacksRelay>) -> Self;
 }
@@ -292,139 +278,253 @@ impl WithRelay for AgentCallbacks {
     }
 }
 
+/// Internal helper to get a relay-formatted string.
+fn relay_format(name: &str) -> String {
+    format!("[{name}]")
+}
+
 impl AgentCallbacks {
-    /// Call tool progress callback.
-    pub fn call_tool_progress(&self, tool_name: &str, args_preview: &str) {
-        if let Some(ref relay) = self.relay {
-            let formatted = relay_impl::CallbacksRelay::format_progress(tool_name, args_preview);
-            relay.tool_progress.notify(&formatted);
-        }
-        if let Some(cb) = &self.tool_progress {
-            cb(tool_name, args_preview);
+    // ── Tool lifecycle ────────────────────────────────────────────────
+
+    pub fn on_tool_progress(&self, tool_name: &str, args_preview: &str) {
+        self.fire_relay("tool_progress", &format!("{tool_name}: {args_preview}"));
+        if let Some(hook) = &self.tool_lifecycle {
+            hook.on_tool_progress(tool_name, args_preview);
         }
     }
 
-    /// Call tool start callback.
-    pub fn call_tool_start(&self, tool_name: &str, args_json: &str) {
-        if let Some(ref relay) = self.relay {
-            let formatted = relay_impl::CallbacksRelay::format_tool_start(tool_name, args_json);
-            relay.tool_start.notify(&formatted);
-        }
-        if let Some(cb) = &self.tool_start {
-            cb(tool_name, args_json);
+    pub fn on_tool_start(&self, tool_name: &str, args_json: &str) {
+        self.fire_relay("tool_start", tool_name);
+        if let Some(hook) = &self.tool_lifecycle {
+            hook.on_tool_start(tool_name, args_json);
         }
     }
 
-    /// Call tool complete callback.
-    pub fn call_tool_complete(&self, tool_name: &str, args_json: &str, result: &str) {
-        if let Some(ref relay) = self.relay {
-            let formatted =
-                relay_impl::CallbacksRelay::format_tool_complete(tool_name, args_json, result);
-            relay.tool_complete.notify(&formatted);
-        }
-        if let Some(cb) = &self.tool_complete {
-            cb(tool_name, args_json, result);
+    pub fn on_tool_complete(&self, tool_name: &str, args_json: &str, result: &str) {
+        self.fire_relay("tool_complete", &format!("{tool_name}: {result}"));
+        if let Some(hook) = &self.tool_lifecycle {
+            hook.on_tool_complete(tool_name, args_json, result);
         }
     }
 
-    /// Call thinking callback.
-    pub fn call_thinking(&self, text: &str) {
-        if let Some(ref relay) = self.relay {
-            let formatted = relay_impl::CallbacksRelay::format_thinking(text);
-            relay.thinking.notify(&formatted);
-        }
-        if let Some(cb) = &self.thinking {
-            cb(text);
+    pub fn on_tool_gen(&self, tool_name: &str, call_id: &str) {
+        self.fire_relay("tool_gen", &format!("{tool_name} {call_id}"));
+        if let Some(hook) = &self.tool_lifecycle {
+            hook.on_tool_gen(tool_name, call_id);
         }
     }
 
-    /// Call reasoning callback.
-    pub fn call_reasoning(&self, text: &str) {
-        if let Some(ref relay) = self.relay {
-            relay.reasoning.notify(&format!("[reasoning] {text}"));
-        }
-        if let Some(cb) = &self.reasoning {
-            cb(text);
+    // ── Streaming ─────────────────────────────────────────────────────
+
+    pub fn on_stream_delta(&self, text: &str) {
+        self.fire_relay("stream_delta", text);
+        if let Some(hook) = &self.streaming {
+            hook.on_stream_delta(text);
         }
     }
 
-    /// Call clarify callback — returns user answer or empty string.
-    pub fn call_clarify(&self, question: &str, choices: &[String]) -> String {
-        if let Some(ref relay) = self.relay {
-            relay.clarify.notify(&format!(
-                "[clarify] question: {question}, choices: {:?}",
-                choices
-            ));
+    pub fn on_thinking(&self, text: &str) {
+        self.fire_relay("thinking", text);
+        if let Some(hook) = &self.streaming {
+            hook.on_thinking(text);
         }
-        if let Some(cb) = &self.clarify {
-            cb(question, choices)
+    }
+
+    pub fn on_reasoning(&self, text: &str) {
+        self.fire_relay("reasoning", text);
+        if let Some(hook) = &self.streaming {
+            hook.on_reasoning(text);
+        }
+    }
+
+    pub fn on_interim_assistant(&self, text: &str) {
+        self.fire_relay("interim_assistant", text);
+        if let Some(hook) = &self.streaming {
+            hook.on_interim_assistant(text);
+        }
+    }
+
+    // ── Clarification ─────────────────────────────────────────────────
+
+    pub fn on_clarify(&self, question: &str, choices: &[String]) -> String {
+        self.fire_relay("clarify", &format!("question: {question}, choices: {choices:?}"));
+        if let Some(hook) = &self.clarification {
+            hook.on_clarify(question, choices)
         } else {
             String::new()
         }
     }
 
-    /// Call step callback.
-    pub fn call_step(&self, message: &str) {
-        if let Some(ref relay) = self.relay {
-            let formatted = relay_impl::CallbacksRelay::format_step(message);
-            relay.step.notify(&formatted);
-        }
-        if let Some(cb) = &self.step {
-            cb(message);
+    // ── System events ─────────────────────────────────────────────────
+
+    pub fn on_step(&self, message: &str) {
+        self.fire_relay("step", message);
+        if let Some(hook) = &self.system_events {
+            hook.on_step(message);
         }
     }
 
-    /// Call stream delta callback.
-    pub fn call_stream_delta(&self, text: &str) {
-        if let Some(ref relay) = self.relay {
-            relay.stream_delta.notify(&format!("[stream_delta] {text}"));
-        }
-        if let Some(cb) = &self.stream_delta {
-            cb(text);
+    pub fn on_status(&self, level: &str, message: &str) {
+        self.fire_relay("status", &format!("{level}: {message}"));
+        if let Some(hook) = &self.system_events {
+            hook.on_status(level, message);
         }
     }
 
-    /// Call interim assistant callback.
-    pub fn call_interim_assistant(&self, text: &str) {
-        if let Some(ref relay) = self.relay {
-            relay
-                .interim_assistant
-                .notify(&format!("[interim_assistant] {text}"));
-        }
-        if let Some(cb) = &self.interim_assistant {
-            cb(text);
+    pub fn on_vprint(&self, message: &str) {
+        self.fire_relay("vprint", message);
+        if let Some(hook) = &self.system_events {
+            hook.on_vprint(message);
         }
     }
 
-    /// Call tool gen callback.
-    pub fn call_tool_gen(&self, tool_name: &str, call_id: &str) {
-        if let Some(ref relay) = self.relay {
-            relay
-                .tool_gen
-                .notify(&format!("[tool_gen] {tool_name} {call_id}"));
-        }
-        if let Some(cb) = &self.tool_gen {
-            cb(tool_name, call_id);
+    // ── CLI interaction ───────────────────────────────────────────────
+
+    pub fn on_print_prompt(&self) {
+        if let Some(hook) = &self.cli_interaction {
+            hook.on_print_prompt();
         }
     }
 
-    /// Call status callback.
-    pub fn call_status(&self, level: &str, message: &str) {
-        if let Some(ref relay) = self.relay {
-            relay.status.notify(&format!("[status] {level}: {message}"));
-        }
-        if let Some(cb) = &self.status {
-            cb(level, message);
+    pub fn on_print_flush(&self) {
+        if let Some(hook) = &self.cli_interaction {
+            hook.on_print_flush();
         }
     }
 
-    /// Call vprint callback.
-    pub fn call_vprint(&self, message: &str) {
-        if let Some(ref relay) = self.relay {
-            relay.vprint.notify(&format!("[vprint] {message}"));
+    pub fn on_print_info(&self, message: &str) {
+        if let Some(hook) = &self.cli_interaction {
+            hook.on_print_info(message);
         }
-        if let Some(cb) = &self.vprint {
-            cb(message);
+    }
+
+    pub fn on_print_newline(&self) {
+        if let Some(hook) = &self.cli_interaction {
+            hook.on_print_newline();
+        }
+    }
+
+    pub fn on_read_input(&self) -> Option<String> {
+        if let Some(hook) = &self.cli_interaction {
+            hook.on_read_input()
+        } else {
+            None
+        }
+    }
+
+    pub fn on_should_exit(&self, input: &str) -> bool {
+        if let Some(hook) = &self.cli_interaction {
+            hook.on_should_exit(input)
+        } else {
+            false
+        }
+    }
+
+    // ── Agent loop ────────────────────────────────────────────────────
+
+    pub fn on_loop_start(&self) {
+        if let Some(hook) = &self.agent_loop {
+            hook.on_loop_start();
+        }
+    }
+
+    pub fn on_loop_end(&self, outcome: &str) {
+        if let Some(hook) = &self.agent_loop {
+            hook.on_loop_end(outcome);
+        }
+    }
+
+    // ── Turn lifecycle ────────────────────────────────────────────────
+
+    pub fn on_pre_turn(&self) {
+        if let Some(hook) = &self.turn_lifecycle {
+            hook.on_pre_turn();
+        }
+    }
+
+    pub fn on_post_turn(&self, response: &str, success: bool) {
+        if let Some(hook) = &self.turn_lifecycle {
+            hook.on_post_turn(response, success);
+        }
+    }
+
+    // ── API lifecycle ─────────────────────────────────────────────────
+
+    pub fn on_api_call_start(&self) {
+        self.fire_relay("api_call_start", "");
+        if let Some(hook) = &self.api_lifecycle {
+            hook.on_api_call_start();
+        }
+    }
+
+    pub fn on_api_call_complete(&self) {
+        self.fire_relay("api_call_complete", "");
+        if let Some(hook) = &self.api_lifecycle {
+            hook.on_api_call_complete();
+        }
+    }
+
+    pub fn on_api_call_error(&self, error: &str) {
+        self.fire_relay("api_call_error", error);
+        if let Some(hook) = &self.api_lifecycle {
+            hook.on_api_call_error(error);
+        }
+    }
+
+    // ── Session lifecycle ────────────────────────────────────────────
+
+    pub fn on_session_rotate(&self, parent_id: &str, child_id: &str) {
+        if let Some(hook) = &self.session_lifecycle {
+            hook.on_session_rotate(parent_id, child_id);
+        }
+    }
+
+    pub fn on_compression_start(&self, message_count: usize) {
+        if let Some(hook) = &self.session_lifecycle {
+            hook.on_compression_start(message_count);
+        }
+    }
+
+    pub fn on_compression_complete(&self, status: &str) {
+        if let Some(hook) = &self.session_lifecycle {
+            hook.on_compression_complete(status);
+        }
+    }
+
+    // ── Interrupt lifecycle ───────────────────────────────────────────
+
+    pub fn on_interrupt_requested(&self) {
+        if let Some(hook) = &self.interrupt_lifecycle {
+            hook.on_interrupt_requested();
+        }
+    }
+
+    pub fn on_interrupted(&self, reason: &str) {
+        if let Some(hook) = &self.interrupt_lifecycle {
+            hook.on_interrupted(reason);
+        }
+    }
+
+    // ── Internal ──────────────────────────────────────────────────────
+
+    fn fire_relay(&self, event_type: &str, data: &str) {
+        if let Some(ref relay) = self.relay {
+            let formatted = format!("[{event_type}] {data}");
+            match event_type {
+                "tool_progress" => relay.tool_progress.notify(&formatted),
+                "tool_start" => relay.tool_start.notify(&formatted),
+                "tool_complete" => relay.tool_complete.notify(&formatted),
+                "thinking" => relay.thinking.notify(&formatted),
+                "reasoning" => relay.reasoning.notify(&formatted),
+                "clarify" => relay.clarify.notify(&formatted),
+                "step" => relay.step.notify(&formatted),
+                "stream_delta" => relay.stream_delta.notify(&formatted),
+                "interim_assistant" => relay.interim_assistant.notify(&formatted),
+                "tool_gen" => relay.tool_gen.notify(&formatted),
+                "status" => relay.status.notify(&formatted),
+                "vprint" => relay.vprint.notify(&formatted),
+                _ => {}
+            }
         }
     }
 }
@@ -437,44 +537,49 @@ mod tests {
     #[test]
     fn test_default_callbacks_noop() {
         let cb = AgentCallbacks::default();
-        cb.call_tool_progress("shell", "ls");
-        cb.call_tool_start("shell", "{}");
-        cb.call_tool_complete("shell", "{}", "done");
-        cb.call_thinking("thinking...");
-        cb.call_reasoning("reasoning...");
-        cb.call_step("step 1");
-        cb.call_stream_delta("hello");
-        cb.call_interim_assistant("hi");
-        cb.call_tool_gen("shell", "call-1");
-        cb.call_status("lifecycle", "started");
-        cb.call_vprint("verbose");
-        let answer = cb.call_clarify("which one?", &["a".to_string(), "b".to_string()]);
-        assert_eq!(answer, "");
+        cb.on_tool_progress("shell", "ls");
+        cb.on_tool_start("shell", "{}");
+        cb.on_tool_complete("shell", "{}", "done");
+        cb.on_tool_gen("shell", "call-1");
+        cb.on_stream_delta("hello");
+        cb.on_interim_assistant("hi");
+        cb.on_step("step 1");
+        cb.on_status("lifecycle", "started");
+        cb.on_vprint("verbose");
+        cb.on_clarify("which one?", &["a".to_string(), "b".to_string()]);
+        cb.on_loop_start();
+        cb.on_loop_end("completed");
+        cb.on_pre_turn();
+        cb.on_post_turn("done", true);
     }
 
     #[test]
-    fn test_tool_progress_callback() {
+    fn test_tool_lifecycle_hook() {
         let invoked = std::sync::Arc::new(std::sync::Mutex::new(false));
         let invoked_clone = invoked.clone();
         let cb = AgentCallbacks {
-            tool_progress: Some(Box::new(move |name: &str, preview: &str| {
-                assert_eq!(name, "shell");
-                assert_eq!(preview, "ls");
-                *invoked_clone.lock().unwrap() = true;
+            tool_lifecycle: Some(Box::new(ToolLifecycleAdapter {
+                start: Some(Box::new(move |name: &str, _args: &str| {
+                    assert_eq!(name, "shell");
+                    *invoked_clone.lock().unwrap() = true;
+                })),
+                ..Default::default()
             })),
             ..Default::default()
         };
-        cb.call_tool_progress("shell", "ls");
+        cb.on_tool_start("shell", "{}");
         assert!(*invoked.lock().unwrap());
     }
 
     #[test]
-    fn test_clarify_callback_returns_answer() {
+    fn test_clarify_returns_answer() {
         let cb = AgentCallbacks {
-            clarify: Some(Box::new(move |_q: &str, _c: &[String]| "A".to_string())),
+            clarification: Some(Box::new(ClarificationAdapter {
+                handler: Some(Box::new(|_q: &str, _c: &[String]| "A".to_string())),
+            })),
             ..Default::default()
         };
-        assert_eq!(cb.call_clarify("pick one?", &["A".into(), "B".into()]), "A");
+        assert_eq!(cb.on_clarify("pick one?", &["A".into(), "B".into()]), "A");
     }
 
     #[test]
@@ -491,7 +596,7 @@ mod tests {
 
         let cb = AgentCallbacks::default().with_relay(Arc::new(callbacks_relay));
 
-        cb.call_tool_progress("shell", "ls");
+        cb.on_tool_progress("shell", "ls");
 
         let msg = received.lock().unwrap().take().unwrap();
         assert!(msg.contains("tool_progress"));
@@ -508,25 +613,85 @@ mod tests {
         let di = direct_invoked.clone();
 
         callbacks_relay
-            .tool_progress
+            .tool_start
             .subscribe(move |msg: &String| {
                 rc.lock().unwrap().push(msg.clone());
             });
 
         let cb = AgentCallbacks {
-            tool_progress: Some(Box::new(move |_n: &str, _p: &str| {
-                *di.lock().unwrap() = true;
+            tool_lifecycle: Some(Box::new(ToolLifecycleAdapter {
+                start: Some(Box::new(move |_n: &str, _p: &str| {
+                    *di.lock().unwrap() = true;
+                })),
+                ..Default::default()
             })),
             ..Default::default()
         }
         .with_relay(Arc::new(callbacks_relay));
 
-        cb.call_tool_progress("shell", "ls");
+        cb.on_tool_start("shell", "ls");
 
         let msgs = relay_received.lock().unwrap();
         assert!(!msgs.is_empty());
-        assert!(msgs.iter().any(|m| m.contains("tool_progress")));
+        assert!(msgs.iter().any(|m| m.contains("tool_start")));
 
         assert!(*direct_invoked.lock().unwrap());
+    }
+
+    #[test]
+    fn test_streaming_hook() {
+        let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rc = received.clone();
+        let cb = AgentCallbacks {
+            streaming: Some(Box::new(StreamingAdapter {
+                delta: Some(Box::new(move |text: &str| {
+                    rc.lock().unwrap().push(text.to_string());
+                })),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        cb.on_stream_delta("hello");
+        let msgs = received.lock().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0], "hello");
+    }
+
+    #[test]
+    fn test_system_events_hook() {
+        let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rc = received.clone();
+        let cb = AgentCallbacks {
+            system_events: Some(Box::new(SystemEventsAdapter {
+                status: Some(Box::new(move |level: &str, msg: &str| {
+                    rc.lock().unwrap().push(format!("{level}: {msg}"));
+                })),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        cb.on_status("warn", "disk full");
+        let msgs = received.lock().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0], "warn: disk full");
+    }
+
+    #[test]
+    fn test_agent_loop_hooks() {
+        let started = std::sync::Arc::new(std::sync::Mutex::new(false));
+        let outcome = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sc = started.clone();
+        let oc = outcome.clone();
+        let cb = AgentCallbacks {
+            agent_loop: Some(Box::new(AgentLoopAdapter {
+                start: Some(Box::new(move || *sc.lock().unwrap() = true)),
+                end: Some(Box::new(move |o: &str| *oc.lock().unwrap() = o.to_string())),
+            })),
+            ..Default::default()
+        };
+        cb.on_loop_start();
+        assert!(*started.lock().unwrap());
+        cb.on_loop_end("interrupted");
+        assert_eq!(*outcome.lock().unwrap(), "interrupted");
     }
 }

@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use std::io::Write;
+use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
@@ -123,18 +124,19 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         oben_agent::AgentCallbacks::default(),
     )    ).await?;
 
-    let callbacks = create_cli_callbacks();
-    chat.interactive_chat(stream, continue_with, &callbacks)
+    let callbacks = Arc::new(create_cli_callbacks());
+    chat.interactive_chat(stream, continue_with, callbacks, &config)
         .await
 }
 
 fn create_cli_callbacks() -> oben_agent::AgentCallbacks {
     use std::io::{self, Write};
-    oben_agent::AgentCallbacks {
+    use oben_agent::hooks::adapters::{CLIInteractionAdapter, StreamingAdapter};
+
+    let cli_adapter = CLIInteractionAdapter {
         print_prompt: Some(Box::new(|| print!("> "))),
         print_flush: Some(Box::new(|| { let _ = std::io::stdout().flush(); })),
-        print_info: Some(Box::new(|msg: &str| print!("{}
-", msg))),
+        print_info: Some(Box::new(|msg: &str| print!("{}\n", msg))),
         print_newline: Some(Box::new(|| println!())),
         read_input: Some(Box::new(|| {
             let mut input = String::new();
@@ -145,6 +147,19 @@ fn create_cli_callbacks() -> oben_agent::AgentCallbacks {
             }
         })),
         should_exit: Some(Box::new(|input: &str| input == "quit" || input == "exit")),
+    };
+
+    let streaming = StreamingAdapter {
+        delta: Some(Box::new(|text: &str| {
+            let _ = write!(std::io::stdout(), "{}", text);
+            let _ = std::io::stdout().flush();
+        })),
+        ..Default::default()
+    };
+
+    oben_agent::AgentCallbacks {
+        cli_interaction: Some(Box::new(cli_adapter)),
+        streaming: Some(Box::new(streaming)),
         ..Default::default()
     }
 }
@@ -177,19 +192,7 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
         oben_agent::AgentCallbacks::default(),
     )).await?;
 
-    let response = agent
-        .turn(
-            prompt,
-            stream,
-            stream.then(|| {
-                Box::new(|text: &str| {
-                    print!("{}", text);
-                    std::io::stdout().flush().ok();
-                }) as oben_models::StreamDeltaCallback
-            }),
-            None, // no interrupt from CLI
-        )
-        .await?;
+    let response = agent.turn(prompt, stream, None).await?;
 
     if !stream {
         println!("\n{}", response);
@@ -703,7 +706,6 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
                 goal_agent
                     .turn_with_message(
                         oben_models::Message::user(&prompt_owned),
-                        None,
                         None,
                     )
                     .await

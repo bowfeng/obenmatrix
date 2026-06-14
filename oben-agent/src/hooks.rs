@@ -10,6 +10,14 @@
 ///
 /// The `HookFactory` builds both lists from `HooksConfig`, replacing the hardcoded
 /// single-nudge-hook pattern in `ConversationLoop::run_loop`.
+///
+/// ## Functional Lifecycle Hooks
+///
+/// The `hooks::kind` module defines 10 domain-specific hook traits with no-op defaults.
+/// The `hooks::adapters` module provides adapter types that bridge closure-style
+/// callbacks to the new trait system.
+///
+/// Re-exports from the functional hook system:
 
 use crate::nudge::NudgeConfig;
 use crate::post_turn_hook::NudgePostTurnHook;
@@ -17,6 +25,10 @@ use crate::PostTurnHook;
 use tracing;
 
 use oben_config::HooksConfig;
+
+// Re-export functional hook traits and adapters
+pub mod kind;
+pub mod adapters;
 
 // ---------------------------------------------------------------------------
 // PostTurnObserver trait
@@ -204,3 +216,9 @@ impl PostTurnObserver for NoopObserver {
     fn on_turn_complete(&mut self, _response: &str, _msg_count: usize, _turns_since: usize) {}
     fn on_turn_error(&mut self, _error: &anyhow::Error, _msg_count: usize, _turns_since: usize) {}
 }
+
+// Re-export all hook traits
+pub use kind::*;
+
+// Re-export all adapter types
+pub use adapters::*;

@@ -20,7 +20,7 @@ use crate::interrupt::SharedInterrupt;
 use crate::message_sanitize::sanitize_messages;
 use crate::retry::{retry_with_backoff, retryable_transient, RetryConfig};
 use crate::stream_processor;
-use oben_models::{Message, MessageRole, Session, SessionManager, TransportProvider};
+use oben_models::{Message, MessageRole, Session, SessionManager, StreamDeltaCallback, TransportProvider};
 
 // ---------------------------------------------------------------------------
 // TurnConfig — configuration for turn execution
@@ -33,7 +33,7 @@ pub struct TurnConfig {
     /// Budget warning callback.
     pub budget_warning: Option<BudgetWarningCallback>,
     /// Agent callbacks for rich event dispatch (Tier 2).
-    pub callbacks: Option<AgentCallbacks>,
+    pub callbacks: Option<Arc<AgentCallbacks>>,
     /// Fallback model chain (Tier 2).
     pub fallback_chain: Option<FallbackChain>,
     /// Concurrent dispatch configuration (Tier 2).
@@ -86,7 +86,6 @@ impl TurnExecutor {
     /// - `session_id`: which session to operate on
     /// - `user_message`: the user's input
     /// - `call_mode`: Fresh or Incremental
-    /// - `delta_callback`: optional streaming callback
     pub async fn execute_turn(
         context_engine: &mut dyn ContextEngine,
         transport: &dyn TransportProvider,
@@ -95,7 +94,6 @@ impl TurnExecutor {
         session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
-        delta_callback: Option<oben_models::StreamDeltaCallback>,
     ) -> Result<TurnResult> {
         Self::execute_turn_with_config(
             context_engine,
@@ -105,9 +103,8 @@ impl TurnExecutor {
             session_id,
             user_message,
             call_mode,
-            delta_callback,
-            None,
-            None,
+            None,  // budget
+            None,  // interrupt
             TurnConfig::default(),
         )
         .await
@@ -130,7 +127,6 @@ impl TurnExecutor {
         session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
-        delta_callback: Option<oben_models::StreamDeltaCallback>,
         budget: Option<IterationBudget>,
         interrupt: Option<SharedInterrupt>,
         mut config: TurnConfig,
@@ -149,13 +145,6 @@ impl TurnExecutor {
         // Add user message to session
         session.messages.push(user_message);
 
-        let has_streaming = delta_callback.is_some();
-        let shared_cb = has_streaming.then(|| {
-            Arc::new(std::sync::Mutex::new(
-                delta_callback.unwrap() as oben_models::StreamDeltaCallback
-            ))
-        });
-
         // ── Budget setup ─────────────────────────────────────────────
         let mut budget = budget.unwrap_or_else(|| IterationBudget::new(90));
         if let Some(cb) = config.budget_warning {
@@ -164,7 +153,7 @@ impl TurnExecutor {
 
         // ── Activity tracking: mark turn start ───────────────────────
         if let Some(ref cb) = config.callbacks {
-            cb.call_status("lifecycle", "turn_start");
+            cb.on_status("lifecycle", "turn_start");
         }
         if let Some(ref int_state) = interrupt {
             int_state.touch_activity();
@@ -327,45 +316,42 @@ impl TurnExecutor {
 
             // ── API call with retry + activity tracking ──
             let transport_ref = transport;
-            let callbacks_ref = &config.callbacks;
 
-            // Clone the callback for this retry attempt, or use a no-op when
-            // not in streaming mode (no_stream / no-stream CLI flag).
-            let cb_shared = match &shared_cb {
-                Some(cb) => cb.clone(),
-                None => Arc::new(std::sync::Mutex::new(
-                    Box::new(|_text: &str| {}) as oben_models::StreamDeltaCallback
-                )),
-            };
+            // All streaming dispatch goes through the hook system.
+            // Clone Arc for 'static lifetime in the stream_chat closure.
+            let callback = config.callbacks.as_ref().map(|cb| Arc::clone(cb));
+            let callback_for_stream = callback.clone();
             let response = retry_with_backoff(&config.retry_config, || {
                 let transport_ref = transport_ref;
                 let messages = session.messages.clone();
                 let mode = call_mode.clone();
-                let cb = cb_shared.clone();
-                let callbacks_ref = callbacks_ref;
+                let callback = callback_for_stream.clone();
 
                 async move {
-                    if let Some(cb) = callbacks_ref {
-                        cb.call_status("lifecycle", "api_call_start");
+                    if let Some(ref cb) = callback {
+                        cb.on_status("lifecycle", "api_call_start");
                     }
-                    let cb_clone = cb.clone();
-                    let cb_wrapper = Box::new(move |text: &str| {
-                        cb_clone.lock().unwrap()(text);
-                    }) as oben_models::StreamDeltaCallback;
+                    let callback_for_dispatch = callback.clone();
+                    let cb_wrapper: StreamDeltaCallback = Box::new(move |text: &str| {
+                        // Dispatch every delta through the hook system in real-time.
+                        // The accumulated response text will also be dispatched below.
+                        if let Some(ref cb) = callback {
+                            cb.on_stream_delta(text);
+                        }
+                    }) as StreamDeltaCallback;
                     match transport_ref
                         .stream_chat(&messages, &mode, cb_wrapper)
                         .await
                     {
-                        Ok(resp) => {
-                            if let Some(cb) = callbacks_ref {
-                                cb.call_status("lifecycle", "api_call_complete");
+                        Ok(response) => {
+                            // Dispatch accumulated response text through the hook system.
+                            // Ensures subscribers receive the full response.
+                            if let Some(ref cb) = callback_for_dispatch {
+                                cb.on_stream_delta(&response.text);
                             }
-                            Ok(resp)
+                            Ok(response)
                         }
                         Err(e) => {
-                            if let Some(cb) = callbacks_ref {
-                                cb.call_status("warn", &format!("api_call_failed: {}", e));
-                            }
                             Err(retryable_transient(e.to_string()))
                         }
                     }
@@ -384,7 +370,7 @@ impl TurnExecutor {
                                 _fb.provider, _fb.model, classified.http_code
                             );
                             if let Some(ref cb) = config.callbacks {
-                                cb.call_status(
+                                cb.on_status(
                                     "warn",
                                     &format!("fallback_activated: {}/{}", _fb.provider, _fb.model),
                                 );
@@ -440,7 +426,7 @@ impl TurnExecutor {
                                 consecutive_empty_responses
                             );
                             if let Some(cb) = &config.callbacks {
-                                cb.call_status(
+                                cb.on_status(
                                     "info",
                                     &format!(
                                         "empty_response_recovery: attempt={}",
@@ -526,8 +512,8 @@ impl TurnExecutor {
                     // Notify callbacks of tool generation
                     if let Some(cb) = &config.callbacks {
                         for call in &pending_calls {
-                            cb.call_tool_gen(&call.tool_name, &call.call_id);
-                            cb.call_tool_start(&call.tool_name, &call.arguments.to_string());
+                            cb.on_tool_gen(&call.tool_name, &call.call_id);
+                            cb.on_tool_start(&call.tool_name, &call.arguments.to_string());
                         }
                     }
 
@@ -569,7 +555,7 @@ impl TurnExecutor {
                         };
                         session.messages.push(msg);
                         if let Some(cb) = &config.callbacks {
-                            cb.call_tool_complete(
+                            cb.on_tool_complete(
                                 &pending_calls[i].tool_name,
                                 &pending_calls[i].arguments.to_string(),
                                 &result.output,

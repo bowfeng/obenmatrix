@@ -38,10 +38,10 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::unbounded_channel;
-use tracing::info;
 
 use crate::app::TurnCompletion;
+use tokio::sync::mpsc::unbounded_channel;
+use tracing::info;
 
 pub struct Layouts {
     pub header: Rect,
@@ -870,7 +870,6 @@ async fn handle_chat_input(
     // interrupt handler which also needs to request_interrupt()
     // without acquiring the tokio::sync::Mutex.
     let agent_clone = agent;
-    let eb = Arc::clone(&app.event_bus);
     let eb_for_finalize = Arc::clone(&app.event_bus);
     let done_tx_clone = done_tx.clone();
     let input_clone = input.clone();
@@ -899,11 +898,10 @@ async fn handle_chat_input(
             info!("spawned_turn_task: calling agent");
             let (result, sid, messages) = {
                 let mut guard = agent_clone.lock().await;
-                // inline delta_callback now emits through EventBus
-                let delta_callback = Box::new(move |text: &str| {
-                    tracing::info!("[delta_callback] text.len={} text='{}'", text.len(), text);
-                    eb.on_stream_delta(text);
-                });
+                // No longer create a separate delta_callback — TurnExecutor dispatches
+                // all streaming deltas through config.callbacks.on_stream_delta (hook system).
+                // The AgentCallbacks streaming hook is set up in App::init_agent() which
+                // routes deltas to the EventBus, eliminating double-dispatch.
 
                 // Detect image URLs in input and build the appropriate message type
                 let input_msg = build_image_message(&input_clone);
@@ -914,24 +912,12 @@ async fn handle_chat_input(
                 );
 
                 let result = if has_images {
-                    tracing::info!(
-                        "spawned_turn_task: sending image message via turn_with_message"
-                    );
                     guard
-                        .turn_with_message(
-                            input_msg,
-                            Some(delta_callback),
-                            Some(Arc::clone(&interrupt_clone)),
-                        )
+                        .turn_with_message(input_msg, Some(Arc::clone(&interrupt_clone)))
                         .await
                 } else {
                     guard
-                        .turn(
-                            &input_clone,
-                            false,
-                            Some(delta_callback),
-                            Some(Arc::clone(&interrupt_clone)),
-                        )
+                        .turn(&input_clone, false, Some(Arc::clone(&interrupt_clone)))
                         .await
                 };
                 let sid = guard.active_session_name().await.map(|s| s.clone());

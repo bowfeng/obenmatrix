@@ -275,6 +275,7 @@ impl SubagentSpawner {
                 max_iterations,
                 max_messages,
                 fallback_models: vec![],
+                retry_config: crate::retry::RetryConfig::default(),
                 callbacks: crate::callbacks::AgentCallbacks::default(),
                 concurrent_dispatch_config:
                     crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
@@ -285,14 +286,12 @@ impl SubagentSpawner {
 
             let mut child_agent = match child_agent {
                 Ok(a) => a,
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Failed to create child agent: {e}"));
-                }
+                Err(e) => return Err(anyhow::anyhow!("Failed to create child agent: {e}")),
             };
 
             // Execute the child's turn with the goal as the first message input
             let result = child_agent
-                .turn(&goal, false, None, Some(Arc::clone(&interrupt_state)))
+                .turn(&goal, false, Some(Arc::clone(&interrupt_state)))
                 .await;
 
             let (summary, api_calls) = match result {
@@ -616,6 +615,7 @@ pub fn build_spawn_fn_wrapper(
                     max_iterations,
                     max_messages,
                     fallback_models: vec![],
+                    retry_config: crate::retry::RetryConfig::default(),
                     callbacks: crate::callbacks::AgentCallbacks::default(),
                      concurrent_dispatch_config:
                         crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
@@ -639,7 +639,7 @@ pub fn build_spawn_fn_wrapper(
                     child_session_id, depth
                 );
                 let result = child_agent
-                    .turn(&goal_clone, false, None, Some(Arc::clone(&interrupt_state)))
+                    .turn(&goal_clone, false, Some(Arc::clone(&interrupt_state)))
                     .await;
 
                 let duration = start.elapsed().as_secs_f64();

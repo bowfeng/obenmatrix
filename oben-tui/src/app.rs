@@ -419,39 +419,46 @@ impl App {
         // Create callback relay for parent→child subagent event forwarding.
         let callbacks_relay = CallbacksRelay::new();
 
-        let callbacks = AgentCallbacks {
+        let system_events = oben_agent::SystemEventsAdapter {
             step: Some(Box::new(move |msg: &str| {
                 info!("STEP: {}", msg);
             })),
             status: Some(Box::new(move |level: &str, msg: &str| {
                 info!("STATUS [{}]: {}", level, msg);
             })),
-            tool_start: {
-                let eb = Arc::clone(&event_bus);
-                Some(Box::new(move |tool_name: &str, args_json: &str| {
-                    eb.on_tool_start("tool-id", tool_name, args_json);
-                }))
-            },
-            tool_complete: {
-                let eb = Arc::clone(&event_bus);
-                Some(Box::new(
-                    move |tool_name: &str, _args_json: &str, result: &str| {
-                        eb.on_tool_complete("tool-id", tool_name, result);
-                    },
-                ))
-            },
-            stream_delta: {
-                let eb = Arc::clone(&event_bus);
-                Some(Box::new(move |text: &str| {
-                    eb.on_stream_delta(text);
-                }))
-            },
-            reasoning: {
-                let eb = Arc::clone(&event_bus);
-                Some(Box::new(move |text: &str| {
-                    eb.on_reasoning(text);
-                }))
-            },
+            ..Default::default()
+        };
+
+        let eb_for_tool = Arc::clone(&event_bus);
+        let eb_for_complete = Arc::clone(&event_bus);
+        let eb_for_delta = Arc::clone(&event_bus);
+        let eb_for_reasoning = Arc::clone(&event_bus);
+        let tool_lifecycle = oben_agent::ToolLifecycleAdapter {
+            start: Some(Box::new(move |tool_name: &str, args_json: &str| {
+                eb_for_tool.on_tool_start("tool-id", tool_name, args_json);
+            })),
+            complete: Some(Box::new(
+                move |tool_name: &str, _args_json: &str, result: &str| {
+                    eb_for_complete.on_tool_complete("tool-id", tool_name, result);
+                },
+            )),
+            ..Default::default()
+        };
+
+        let streaming = oben_agent::StreamingAdapter {
+            delta: Some(Box::new(move |text: &str| {
+                eb_for_delta.on_stream_delta(text);
+            })),
+            reasoning: Some(Box::new(move |text: &str| {
+                eb_for_reasoning.on_reasoning(text);
+            })),
+            ..Default::default()
+        };
+
+        let callbacks = AgentCallbacks {
+            system_events: Some(Box::new(system_events)),
+            tool_lifecycle: Some(Box::new(tool_lifecycle)),
+            streaming: Some(Box::new(streaming)),
             ..Default::default()
         }
         .with_relay(Arc::new(callbacks_relay));

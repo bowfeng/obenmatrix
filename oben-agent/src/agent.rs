@@ -56,6 +56,8 @@ pub struct AgentConfig {
     pub max_messages: usize,
     /// Fallback model chain.
     pub fallback_models: Vec<crate::fallback::FallbackConfig>,
+    /// Retry policy for API calls.
+    pub retry_config: crate::retry::RetryConfig,
     /// Agent callbacks for platform integration.
     pub callbacks: AgentCallbacks,
     /// Concurrent dispatch configuration.
@@ -128,6 +130,13 @@ impl AgentConfig {
             skills_dirs,
             context_config,
             fallback_models,
+            retry_config: crate::retry::RetryConfig {
+                max_retries: app_config.retry.max_retries,
+                base_delay_ms: app_config.retry.base_delay_ms,
+                max_delay_ms: app_config.retry.max_delay_ms,
+                jitter_factor: app_config.retry.jitter_factor,
+                retryable_codes: app_config.retry.retryable_codes.clone(),
+            },
             callbacks,
             concurrent_dispatch_config,
             session_store: app_config.session_store.clone(),
@@ -152,10 +161,14 @@ pub struct Agent {
     interrupt_state: Arc<InterruptState>,
     /// Fallback model chain.
     fallback_chain: FallbackChain,
+    /// Retry policy for user turns.
+    retry_config: crate::retry::RetryConfig,
     /// Agent callbacks.
-    callbacks: AgentCallbacks,
+    callbacks: Arc<AgentCallbacks>,
     /// System prompt prefix cache.
     prompt_cache: SystemPromptCache,
+    /// Max iteration budget per turn.
+    max_iterations: usize,
     /// Concurrent dispatch config.
     dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
     /// Hooks configuration for extensible post-turn behavior.
@@ -177,8 +190,10 @@ impl Agent {
             session_manager,
             interrupt_state: Arc::new(InterruptState::new()),
             fallback_chain: FallbackChain::new(config.fallback_models),
-            callbacks: config.callbacks,
+            callbacks: Arc::new(config.callbacks),
             prompt_cache: SystemPromptCache::new(),
+            retry_config: config.retry_config,
+            max_iterations: config.max_iterations,
             dispatch_config: config.concurrent_dispatch_config,
             hooks_config: config.hooks_config,
         };
@@ -239,8 +254,10 @@ impl Agent {
             session_manager,
             interrupt_state: Arc::new(InterruptState::new()),
             fallback_chain: FallbackChain::new(Vec::new()),
-            callbacks: AgentCallbacks::default(),
+            retry_config: crate::retry::RetryConfig::default(),
+            callbacks: Arc::new(AgentCallbacks::default()),
             prompt_cache: SystemPromptCache::new(),
+            max_iterations: 16,
             dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
             hooks_config: oben_config::HooksConfig::default(),
         }
@@ -328,13 +345,13 @@ impl Agent {
     // ── Tier 2: Callbacks ────────────────────────────────────────────────
 
     /// Set the agent callbacks.
-    pub fn set_callbacks(&mut self, callbacks: AgentCallbacks) {
+    pub fn set_callbacks(&mut self, callbacks: Arc<AgentCallbacks>) {
         self.callbacks = callbacks;
     }
 
     /// Get reference to current callbacks.
-    pub fn callbacks(&self) -> &AgentCallbacks {
-        &self.callbacks
+    pub fn callbacks_arc(&self) -> Arc<AgentCallbacks> {
+        Arc::clone(&self.callbacks)
     }
 
     // ── Tier 2: System Prompt Cache ──────────────────────────────────────
@@ -373,7 +390,6 @@ impl Agent {
         &mut self,
         input: &str,
         _stream: bool,
-        delta_callback: Option<StreamDeltaCallback>,
         interrupt: Option<Arc<crate::interrupt::InterruptState>>,
     ) -> Result<String> {
         let sid = self.resolve_session().await;
@@ -398,16 +414,13 @@ impl Agent {
             &sid,
             input_msg,
             &call_mode,
-            delta_callback,
             crate::conversation::TurnOptions {
-                retry_config: crate::retry::RetryConfig::default(),
-                budget: None,
+                retry_config: self.retry_config.clone(),
+                budget: Some(crate::budget::IterationBudget::new(self.max_iterations)),
                 interrupt,
-                callbacks: Some(std::mem::replace(
-                    &mut self.callbacks,
-                    crate::callbacks::AgentCallbacks::default(),
-                )),
+                callbacks: Some(Arc::clone(&self.callbacks)),
                 fallback: None,
+                dispatch_config: Some(self.dispatch_config.clone()),
             },
         )
         .await?;
@@ -426,7 +439,6 @@ impl Agent {
     pub async fn turn_with_message(
         &mut self,
         input_msg: Message,
-        delta_callback: Option<StreamDeltaCallback>,
         interrupt: Option<Arc<crate::interrupt::InterruptState>>,
     ) -> Result<String> {
         let sid = self.resolve_session().await;
@@ -450,16 +462,13 @@ impl Agent {
             &sid,
             input_msg,
             &call_mode,
-            delta_callback,
             crate::conversation::TurnOptions {
-                retry_config: crate::retry::RetryConfig::default(),
-                budget: None,
+                retry_config: self.retry_config.clone(),
+                budget: Some(crate::budget::IterationBudget::new(self.max_iterations)),
                 interrupt,
-                callbacks: Some(std::mem::replace(
-                    &mut self.callbacks,
-                    crate::callbacks::AgentCallbacks::default(),
-                )),
+                callbacks: Some(Arc::clone(&self.callbacks)),
                 fallback: None,
+                dispatch_config: Some(self.dispatch_config.clone()),
             },
         )
         .await?;
@@ -735,50 +744,33 @@ impl Agent {
         &mut self,
         stream: bool,
         continue_with: Option<&str>,
-        callbacks: &AgentCallbacks,
+        callbacks: Arc<AgentCallbacks>,
+        app_config: &oben_config::AppConfig,
     ) -> Result<()> {
+        self.callbacks = callbacks;
         let sm = Arc::clone(&self.session_manager);
-        if let Some(key) = continue_with {
-            let resolved = if key == "latest" {
-                sm.lock()
-                    .await
-                    .active_session()
-                    .map(|s| s.name.clone())
-                    .unwrap_or_else(|| key.to_string())
-            } else {
-                key.to_string()
-            };
-            let name = self.continue_session(&resolved).await?;
+        if let Some(resolved) = continue_with {
+            let name = self.continue_session(resolved).await?;
             if let Some(s) = sm.lock().await.active_session() {
                 let count = s.messages.len();
-                if let Some(ref cb) = callbacks.print_info {
-                    cb(&format!(
-                        "Continuing session: {} ({} messages)\n",
-                        name, count
-                    ));
-                }
+                Arc::as_ref(&self.callbacks).on_print_info(&format!(
+                    "Continuing session: {} ({} messages)\n",
+                    name, count
+                ));
                 print_session_messages(&s.messages, 10);
-                if let Some(ref cb) = callbacks.print_info {
-                    cb("");
-                }
+                Arc::as_ref(&self.callbacks).on_print_info("");
             }
         } else if let Some(name) = self.loaded_session_name().await {
             if let Some(s) = sm.lock().await.active_session() {
-                if let Some(ref cb) = callbacks.print_info {
-                    cb(&format!(
-                        "Session: {} ({} messages)\n",
-                        name,
-                        s.messages.len()
-                    ));
-                }
+                Arc::as_ref(&self.callbacks).on_print_info(&format!(
+                    "Session: {} ({} messages)\n",
+                    name,
+                    s.messages.len()
+                ));
             }
         }
-        if let Some(ref cb) = callbacks.print_info {
-            cb("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
-        }
-        if let Some(ref cb) = callbacks.print_flush {
-            cb();
-        }
+        Arc::as_ref(&self.callbacks).on_print_info("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
+        Arc::as_ref(&self.callbacks).on_print_flush();
 
         let sm = Arc::clone(&self.session_manager);
         // Build hooks from config via HookFactory — future hooks added in one place.
@@ -791,8 +783,9 @@ impl Agent {
             &mut *sm.lock().await,
             &mut self.call_mode,
             stream,
-            callbacks,
+            Arc::clone(&self.callbacks),
             &mut hooks,
+            app_config,
         )
         .await;
         _result
@@ -841,11 +834,12 @@ impl Agent {
 
         let budget = crate::budget::IterationBudget::new(16);
         let turn_options = crate::conversation::TurnOptions {
-            retry_config: Default::default(),
+            retry_config: self.retry_config.clone(),
             budget: Some(budget),
             interrupt: None,
             callbacks: None, // suppress user-facing callbacks during review
             fallback: None,
+            dispatch_config: Some(self.dispatch_config.clone()),
         };
 
         let sm = Arc::clone(&self.session_manager);
@@ -886,7 +880,6 @@ impl Agent {
             &sid,
             review_msg,
             &call_mode,
-            None,
             turn_options,
         )
         .await;

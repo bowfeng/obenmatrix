@@ -1,25 +1,27 @@
 /// Conversation loop — coordinator that wires the deep `TurnExecutor`.
 use anyhow::Result;
-use std::io::Write;
 use std::sync::Arc;
 
 use crate::budget::IterationBudget;
 use crate::callbacks::AgentCallbacks;
+use crate::concurrent_dispatch::ConcurrentDispatchConfig;
 use crate::context::ContextEngine;
 use crate::fallback::FallbackChain;
 use crate::interrupt::SharedInterrupt;
 use crate::post_turn_hook::PostTurnHook;
 use crate::retry::RetryConfig;
 use crate::turn_executor::{TurnConfig, TurnExecutor};
-use oben_models::{CallMode, Message, SessionManager, StreamDeltaCallback, TransportProvider};
+use oben_config::AppConfig;
+use oben_models::{CallMode, Message, SessionManager, TransportProvider};
 
 /// Configuration for a turn execution in ConversationLoop.
 pub struct TurnOptions {
     pub retry_config: RetryConfig,
     pub budget: Option<IterationBudget>,
     pub interrupt: Option<SharedInterrupt>,
-    pub callbacks: Option<AgentCallbacks>,
+    pub callbacks: Option<Arc<AgentCallbacks>>,
     pub fallback: Option<FallbackChain>,
+    pub dispatch_config: Option<ConcurrentDispatchConfig>,
 }
 
 impl Default for TurnOptions {
@@ -30,6 +32,7 @@ impl Default for TurnOptions {
             interrupt: None,
             callbacks: None,
             fallback: None,
+            dispatch_config: None,
         }
     }
 }
@@ -47,22 +50,23 @@ impl ConversationLoop {
         session_id: &str,
         user_message: Message,
         call_mode: &CallMode,
-        delta_callback: Option<StreamDeltaCallback>,
         options: TurnOptions,
     ) -> Result<String> {
         let TurnOptions {
             retry_config,
             budget,
             interrupt,
-            ..
+            callbacks,
+            fallback,
+            dispatch_config,
         } = options;
 
         let turn_config = TurnConfig {
             retry_config,
             budget_warning: None,
-            callbacks: options.callbacks,
-            fallback_chain: options.fallback,
-            dispatch_config: None,
+            callbacks: callbacks,
+            fallback_chain: fallback,
+            dispatch_config: dispatch_config,
         };
 
         let result: crate::TurnResult = TurnExecutor::execute_turn_with_config(
@@ -73,7 +77,6 @@ impl ConversationLoop {
             session_id,
             user_message,
             call_mode,
-            delta_callback,
             budget,
             interrupt,
             turn_config,
@@ -92,7 +95,6 @@ impl ConversationLoop {
         session_id: &str,
         user_message: Message,
         call_mode: &CallMode,
-        delta_callback: Option<StreamDeltaCallback>,
     ) -> Result<String> {
         Self::execute_turn_with_options(
             context_engine,
@@ -102,48 +104,73 @@ impl ConversationLoop {
             session_id,
             user_message,
             call_mode,
-            delta_callback,
             TurnOptions::default(),
         )
         .await
     }
 
-    /// Internal loop — shared turn pipeline with post-turn hook evaluation.
+    /// Run the interactive chat loop.
     ///
-    /// `hooks` is the list of post-turn hooks to evaluate after each user turn.
-    /// `run_loop` calls this with a single `NudgePostTurnHook`; higher-level
-    /// code can pass additional hooks (goal continuation, etc.)
-    pub async fn run_loop_impl(
+    /// After each turn, evaluates `hooks` for potential action. Each hook is
+    /// responsible for its own trigger logic (e.g. `NudgePostTurnHook` checks
+    /// turn count thresholds). If triggered, it runs a bounded review turn
+    /// to let the model decide.
+    ///
+    /// The hook list is built once at the `Agent` level from config, making
+    /// it configurable via `config.yaml` without editing source.
+    pub async fn run_loop(
         context_engine: &mut dyn ContextEngine,
         transport: Arc<dyn TransportProvider + Send + Sync>,
         tools: &Arc<oben_tools::ToolRegistry>,
         session_manager: &mut dyn SessionManager,
         call_mode: &mut Option<CallMode>,
         stream: bool,
-        callbacks: &AgentCallbacks,
-        hooks: &mut [Box<dyn crate::post_turn_hook::PostTurnHook>],
+        callbacks: Arc<AgentCallbacks>,
+        hooks: &mut [Box<dyn PostTurnHook>],
+        app_config: &AppConfig,
     ) -> Result<()> {
-        let mut is_resumed_session = true;
+        let mut is_resumed_session = session_manager.active_session().is_some();
+
+        // Extract config once to avoid rebuilding on every loop iteration
+        let retry_config = RetryConfig {
+            max_retries: app_config.retry.max_retries,
+            base_delay_ms: app_config.retry.base_delay_ms,
+            max_delay_ms: app_config.retry.max_delay_ms,
+            jitter_factor: app_config.retry.jitter_factor,
+            retryable_codes: app_config.retry.retryable_codes.clone(),
+        };
+        let max_iterations = app_config.max_iterations.unwrap_or(50);
+
+        // Build fallback chain from app_config
+        let fallback_chain = if !app_config.fallback_models.is_empty() {
+            let fallback_configs: Vec<crate::fallback::FallbackConfig> = app_config
+                .fallback_models
+                .iter()
+                .map(|fb| crate::fallback::FallbackConfig {
+                    provider: fb.provider.clone(),
+                    model: fb.model.clone(),
+                    api_key: fb.api_key.clone(),
+                    base_url: fb.base_url.clone(),
+                })
+                .collect();
+            Some(FallbackChain::new(fallback_configs))
+        } else {
+            None
+        };
+
+        // Build concurrent dispatch config from app_config
+        let dispatch_config = Some(ConcurrentDispatchConfig {
+            max_concurrency: app_config.concurrency.max_concurrency,
+            serial_only_tools: app_config.concurrency.serial_only_tools.clone(),
+            destructive_tools: app_config.concurrency.destructive_tools.clone(),
+        });
 
         loop {
-            if is_resumed_session {
-                is_resumed_session = false;
-            }
+            let cb = Arc::as_ref(&callbacks);
+            cb.on_print_prompt();
+            cb.on_print_flush();
 
-            // Print a newline before the prompt so the next response
-            // doesn't attach to the text
-            // if let Some(ref cb) = callbacks.print_newline {
-            //     cb();
-            // }
-
-            if let Some(ref cb) = callbacks.print_prompt {
-                cb();
-            }
-            if let Some(ref cb) = callbacks.print_flush {
-                cb();
-            }
-
-            let input = match callbacks.read_input.as_ref().and_then(|f| f()) {
+            let input = match cb.on_read_input() {
                 Some(line) if line.trim().is_empty() => {
                     return Err(anyhow::anyhow!("No more input available"));
                 }
@@ -153,7 +180,7 @@ impl ConversationLoop {
                 }
             };
 
-            let should_exit_flag = callbacks.should_exit.as_ref().map(|f| f(&input)).unwrap_or(false);
+            let should_exit_flag = cb.on_should_exit(&input);
             if should_exit_flag {
                 break;
             }
@@ -182,23 +209,13 @@ impl ConversationLoop {
 
             let input_msg = Message::user(&input);
 
-            let delta_cb = if stream {
-                let f: StreamDeltaCallback = Box::new(move |text: &str| {
-                    let _ = write!(std::io::stdout(), "{}", text);
-                    let _ = std::io::stdout().flush();
-                });
-                Some(f)
-            } else {
-                None
-            };
-
             // --- Turn execution with error-path persistence ---
             //
             // `execute_turn` takes `&mut session_manager` across the await,
             // preventing a second mutable borrow. We extract the result and
             // then call save() separately. Without this, errors would lose
             // the user's message (in memory but never persisted).
-            let response = Self::execute_turn(
+            let response = Self::execute_turn_with_options(
                 context_engine,
                 &*transport,
                 tools,
@@ -206,7 +223,14 @@ impl ConversationLoop {
                 &sid,
                 input_msg,
                 &call_mode_val,
-                delta_cb,
+                TurnOptions {
+                    retry_config: retry_config.clone(),
+                    budget: Some(IterationBudget::new(max_iterations)),
+                    interrupt: None,
+                    callbacks: Some(Arc::clone(&callbacks)),
+                    fallback: fallback_chain.clone(),
+                    dispatch_config: dispatch_config.clone(),
+                },
             )
             .await;
 
@@ -223,25 +247,17 @@ impl ConversationLoop {
 
             if let Some(resp) = response_text {
                 if !stream {
-                    if let Some(ref cb) = callbacks.print_info {
-                        cb(&format!("{}", resp));
-                    }
+                    Arc::as_ref(&callbacks).on_print_info(&format!("{}", resp));
                 } else {
                     // Stream mode: text already written via delta_cb without trailing newline
-                    if let Some(ref cb) = callbacks.print_newline {
-                        cb();
-                    }
+                    Arc::as_ref(&callbacks).on_print_newline();
                 }
-                if let Some(ref cb) = callbacks.print_flush {
-                    cb();
-                }
+                Arc::as_ref(&callbacks).on_print_flush();
             }
 
             // Print a newline after each response so the next prompt
             // doesn't attach to the LLM output
-            if let Some(ref cb) = callbacks.print_newline {
-                cb();
-            }
+            Arc::as_ref(&callbacks).on_print_newline();
 
             // --- Post-turn hooks ---
             let msg_count = session_manager
@@ -262,11 +278,12 @@ impl ConversationLoop {
                 let turn_msg = hook.prepare_turn();
                 let budget = IterationBudget::new(16);
                 let turn_options = crate::conversation::TurnOptions {
-                    retry_config: RetryConfig::default(),
+                    retry_config: retry_config.clone(),
                     budget: Some(budget),
                     interrupt: None,
                     callbacks: None,
-                    fallback: None,
+                    fallback: fallback_chain.clone(),
+                    dispatch_config: dispatch_config.clone(),
                 };
                 match Self::execute_turn_with_options(
                     context_engine,
@@ -276,7 +293,6 @@ impl ConversationLoop {
                     &sid,
                     turn_msg,
                     &call_mode_val,
-                    None,
                     turn_options,
                 )
                 .await
@@ -285,40 +301,11 @@ impl ConversationLoop {
                     Err(_) => hook.handle_error(),
                 }
             }
+            // After the first loop iteration, clear the resumed flag so
+            // subsequent turns behave normally.
+            is_resumed_session = false;
         }
 
         Ok(())
-    }
-
-    /// Run the interactive chat loop.
-    ///
-    /// After each turn, evaluates `hooks` for potential action. Each hook is
-    /// responsible for its own trigger logic (e.g. `NudgePostTurnHook` checks
-    /// turn count thresholds). If triggered, it runs a bounded review turn
-    /// to let the model decide.
-    ///
-    /// The hook list is built once at the `Agent` level from config, making
-    /// it configurable via `config.yaml` without editing source.
-    pub async fn run_loop(
-        context_engine: &mut dyn ContextEngine,
-        transport: Arc<dyn TransportProvider + Send + Sync>,
-        tools: &Arc<oben_tools::ToolRegistry>,
-        session_manager: &mut dyn SessionManager,
-        call_mode: &mut Option<CallMode>,
-        stream: bool,
-        callbacks: &AgentCallbacks,
-        hooks: &mut [Box<dyn PostTurnHook>],
-    ) -> Result<()> {
-        Self::run_loop_impl(
-            context_engine,
-            transport,
-            tools,
-            session_manager,
-            call_mode,
-            stream,
-            callbacks,
-            hooks,
-        )
-        .await
     }
 }
