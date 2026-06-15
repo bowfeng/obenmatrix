@@ -13,6 +13,8 @@ use crate::cli::{
     Cli, Commands, ConfigCommand, CronCommand, GoalCommand, ModelsCommand, SessionsCommand,
 };
 use clap::Parser;
+use crate::coordinator::CliCoordinator;
+use oben_agent::coordinator::ConversationConfig;
 use oben_cron::{CronJob, CronStore};
 use oben_goals::{GoalStore, JsonGoalStore};
 use oben_models::TransportProvider;
@@ -107,24 +109,21 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         Some(&volatile),
     );
 
-    let max_messages = config.context.max_messages.unwrap_or(100);
-
-    let tools = std::sync::Arc::new(tools);
-
-    use crate::coordinator::CliCoordinator;
-    use oben_agent::coordinator::ConversationConfig;
-
-    let config_clone = config.clone();
     let mut chat = oben_agent::Agent::new(
         config,
         assembled.prompt.clone(),
-        tools.clone(),
+        Arc::new(tools),
     ).await?;
 
     // Reuse Agent's HookEngine instead of creating duplicate.
-    let conversation_config = ConversationConfig::from_app_config(&config_clone);
+    let conversation_config = ConversationConfig::from_app_config(&chat.config());
     let hooks = Arc::clone(chat.hooks());
-    let coordinator = CliCoordinator::from_conversation(conversation_config, hooks);
+    let coordinator = CliCoordinator::from_conversation(
+        conversation_config,
+        hooks,
+        stream,
+        None, // max_turns: not yet configured in AppConfig
+    );
 
     // If continuing an existing session, resolve it first.
     if let Some(resolved) = continue_with {
@@ -146,10 +145,6 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     oben_tools::discover_builtin_tools(&mut tools);
 
     let system_prompt = oben_config::defaults::default_system_prompt();
-
-    let skills_dirs: Vec<std::path::PathBuf> = config.skills.dirs.iter()
-        .map(|d| std::path::PathBuf::from(d))
-        .collect();
 
     let mut agent = oben_agent::Agent::new(
         config,

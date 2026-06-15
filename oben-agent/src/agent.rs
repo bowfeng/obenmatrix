@@ -213,6 +213,11 @@ impl Agent {
         &self.hooks
     }
 
+    /// Access the AppConfig for constructing ConversationConfig and other coordinators.
+    pub fn config(&self) -> &oben_config::AppConfig {
+        &self.config
+    }
+
     /// Access the session manager for listing/saving outside the turn cycle.
     pub fn session_manager(&self) -> Arc<Mutex<SessionStore>> {
         Arc::clone(&self.session_manager)

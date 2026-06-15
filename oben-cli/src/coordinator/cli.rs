@@ -22,6 +22,8 @@ pub struct CliConfig {
     pub hooks: Arc<HookEngine>,
     /// Whether to stream output.
     pub stream: bool,
+    /// Maximum number of user turns in the conversation (None = unlimited).
+    pub max_turns: Option<usize>,
 }
 
 impl CliConfig {
@@ -39,12 +41,18 @@ pub struct CliCoordinator {
 }
 
 impl CliCoordinator {
-    /// Create a new CLI coordinator from conversation config and shared hooks.
-    pub fn from_conversation(conversation: ConversationConfig, hooks: Arc<HookEngine>) -> Self {
+    /// Create a new CLI coordinator from conversation config, shared hooks, and stream flag.
+    pub fn from_conversation(
+        conversation: ConversationConfig,
+        hooks: Arc<HookEngine>,
+        stream: bool,
+        max_turns: Option<usize>,
+    ) -> Self {
         let config = CliConfig {
             conversation,
             hooks,
-            stream: false,
+            stream,
+            max_turns,
         };
         let max_spawn_depth = config.conversation.max_spawn_depth;
         Self {
@@ -80,6 +88,7 @@ impl ConversationCoordinator for CliCoordinator {
         // Fire loop-start hooks.
         self.config.hooks.emit_loop_start();
 
+        let mut turn_count: usize = 0;
         loop {
             self.config.hooks.emit_pre_turn();
 
@@ -102,6 +111,15 @@ impl ConversationCoordinator for CliCoordinator {
                 self.config.hooks.emit_loop_end("quit");
                 return Ok(ConversationResult::Exit);
             }
+
+            // Check max turns limit before executing turn
+            if let Some(max_turns) = self.config.max_turns {
+                if turn_count >= max_turns {
+                    self.config.hooks.emit_loop_end("max_turns_reached");
+                    return Ok(ConversationResult::BudgetExhausted);
+                }
+            }
+            turn_count += 1;
 
             let sid = session_manager.active_session()
                 .map(|s| s.id.clone())
