@@ -338,11 +338,6 @@ impl TurnExecutor {
                         .await
                     {
                         Ok(response) => {
-                            // Dispatch accumulated response text through the hook system.
-                            // Ensures subscribers receive the full response.
-                            if let Some(ref hooks) = hooks_for_dispatch {
-                                hooks.emit_stream_delta(&response.text);
-                            }
                             Ok(response)
                         }
                         Err(e) => {

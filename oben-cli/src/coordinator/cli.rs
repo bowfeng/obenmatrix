@@ -202,15 +202,17 @@ impl ConversationCoordinator for CliCoordinator {
             let _ = session_manager.incremental_save(None);
 
             if let Some(ref resp) = response_text {
-                // If streaming mode, skip redundant print (streaming hook already wrote deltas).
-                // In non-streaming mode, always print the final response.
+                // In streaming mode, the HookEngine streaming hooks already printed
+                // the deltas during execute_turn_full. Print a newline + finalize the line.
+                // In non-streaming mode, print the full response here.
+                interaction.print_newline();
                 if !self.config.stream {
-                    interaction.print_newline();
                     interaction.print_info(resp);
                     interaction.flush();
                 }
+            } else {
+                interaction.print_newline();
             }
-            interaction.print_newline();
 
             let msg_count = session_manager.active_session()
                 .map_or(0, |s| s.messages.len());
