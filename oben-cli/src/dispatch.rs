@@ -130,32 +130,14 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
 }
 
 fn create_cli_callbacks() -> oben_agent::AgentCallbacks {
-    use std::io::{self, Write};
+    use oben_agent::event_bus::{CliLogSubscriber, EventBus};
     use oben_agent::hooks::adapters::{CLIInteractionAdapter, StreamingAdapter};
 
-    let cli_adapter = CLIInteractionAdapter {
-        print_prompt: Some(Box::new(|| print!("> "))),
-        print_flush: Some(Box::new(|| { let _ = std::io::stdout().flush(); })),
-        print_info: Some(Box::new(|msg: &str| print!("{}\n", msg))),
-        print_newline: Some(Box::new(|| println!())),
-        read_input: Some(Box::new(|| {
-            let mut input = String::new();
-            if io::stdin().read_line(&mut input).is_ok() {
-                Some(input.trim().to_string())
-            } else {
-                Some(String::new())
-            }
-        })),
-        should_exit: Some(Box::new(|input: &str| input == "quit" || input == "exit")),
-    };
-
-    let streaming = StreamingAdapter {
-        delta: Some(Box::new(|text: &str| {
-            let _ = write!(std::io::stdout(), "{}", text);
-            let _ = std::io::stdout().flush();
-        })),
-        ..Default::default()
-    };
+    let mut bus = EventBus::new();
+    bus.add_subscriber(CliLogSubscriber);
+    let bus = Arc::new(bus);
+    let streaming = StreamingAdapter::new(bus.clone());
+    let cli_adapter = CLIInteractionAdapter::new_clio();
 
     oben_agent::AgentCallbacks {
         cli_interaction: Some(Box::new(cli_adapter)),

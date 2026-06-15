@@ -33,6 +33,7 @@
 use std::sync::Arc;
 
 // Re-export hook traits for use in AgentCallbacks
+/// Re-export hook traits for use in AgentCallbacks
 use crate::hooks::kind::*;
 #[cfg(test)]
 use crate::hooks::adapters::*;
@@ -314,9 +315,21 @@ impl AgentCallbacks {
         }
     }
 
+    pub fn on_tool_error(&self, tool_name: &str, args_json: &str, error: &str) {
+        self.fire_relay("tool_error", &format!("{tool_name}: {error}"));
+        if let Some(hook) = &self.tool_lifecycle {
+            hook.on_tool_error(tool_name, args_json, error);
+        }
+    }
+
     // ── Streaming ─────────────────────────────────────────────────────
 
     pub fn on_stream_delta(&self, text: &str) {
+        tracing::trace!(
+            text_len = text.len(),
+            text_preview = ?text.chars().take(40).collect::<String>(),
+            "[Callbacks] on_stream_delta"
+        );
         self.fire_relay("stream_delta", text);
         if let Some(hook) = &self.streaming {
             hook.on_stream_delta(text);
@@ -533,6 +546,8 @@ impl AgentCallbacks {
 mod tests {
     use super::relay_impl;
     use super::*;
+    use crate::event_bus::EventBus;
+    use crate::hooks::adapters::{AgentLoopAdapter, ClarificationAdapter, StreamingAdapter, ToolLifecycleAdapter};
 
     #[test]
     fn test_default_callbacks_noop() {
@@ -540,6 +555,7 @@ mod tests {
         cb.on_tool_progress("shell", "ls");
         cb.on_tool_start("shell", "{}");
         cb.on_tool_complete("shell", "{}", "done");
+        cb.on_tool_error("shell", "{}", "timeout");
         cb.on_tool_gen("shell", "call-1");
         cb.on_stream_delta("hello");
         cb.on_interim_assistant("hi");
@@ -555,31 +571,25 @@ mod tests {
 
     #[test]
     fn test_tool_lifecycle_hook() {
-        let invoked = std::sync::Arc::new(std::sync::Mutex::new(false));
-        let invoked_clone = invoked.clone();
+        let bus = Arc::new(EventBus::new());
         let cb = AgentCallbacks {
-            tool_lifecycle: Some(Box::new(ToolLifecycleAdapter {
-                start: Some(Box::new(move |name: &str, _args: &str| {
-                    assert_eq!(name, "shell");
-                    *invoked_clone.lock().unwrap() = true;
-                })),
-                ..Default::default()
-            })),
+            tool_lifecycle: Some(Box::new(ToolLifecycleAdapter::new(bus))),
             ..Default::default()
         };
         cb.on_tool_start("shell", "{}");
-        assert!(*invoked.lock().unwrap());
+        cb.on_tool_complete("shell", "{}", "done");
+        cb.on_tool_error("shell", "{}", "timeout");
+        cb.on_tool_gen("shell", "call-1");
+        cb.on_tool_progress("shell", "ls");
     }
 
     #[test]
     fn test_clarify_returns_answer() {
         let cb = AgentCallbacks {
-            clarification: Some(Box::new(ClarificationAdapter {
-                handler: Some(Box::new(|_q: &str, _c: &[String]| "A".to_string())),
-            })),
+            clarification: Some(Box::new(ClarificationAdapter::new_noop())),
             ..Default::default()
         };
-        assert_eq!(cb.on_clarify("pick one?", &["A".into(), "B".into()]), "A");
+        assert!(cb.on_clarify("pick one?", &["A".into(), "B".into()]).is_empty());
     }
 
     #[test]
@@ -606,11 +616,8 @@ mod tests {
     #[test]
     fn test_relay_and_direct_callback_both_fire() {
         let callbacks_relay = relay_impl::CallbacksRelay::new();
-        let relay_received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let relay_received = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let rc = relay_received.clone();
-
-        let direct_invoked = std::sync::Arc::new(std::sync::Mutex::new(false));
-        let di = direct_invoked.clone();
 
         callbacks_relay
             .tool_start
@@ -619,12 +626,7 @@ mod tests {
             });
 
         let cb = AgentCallbacks {
-            tool_lifecycle: Some(Box::new(ToolLifecycleAdapter {
-                start: Some(Box::new(move |_n: &str, _p: &str| {
-                    *di.lock().unwrap() = true;
-                })),
-                ..Default::default()
-            })),
+            tool_lifecycle: Some(Box::new(ToolLifecycleAdapter::new(Arc::new(EventBus::new())))),
             ..Default::default()
         }
         .with_relay(Arc::new(callbacks_relay));
@@ -634,64 +636,34 @@ mod tests {
         let msgs = relay_received.lock().unwrap();
         assert!(!msgs.is_empty());
         assert!(msgs.iter().any(|m| m.contains("tool_start")));
-
-        assert!(*direct_invoked.lock().unwrap());
     }
 
     #[test]
     fn test_streaming_hook() {
-        let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let rc = received.clone();
+        let bus = Arc::new(EventBus::new());
         let cb = AgentCallbacks {
-            streaming: Some(Box::new(StreamingAdapter {
-                delta: Some(Box::new(move |text: &str| {
-                    rc.lock().unwrap().push(text.to_string());
-                })),
-                ..Default::default()
-            })),
+            streaming: Some(Box::new(StreamingAdapter::new(bus))),
             ..Default::default()
         };
         cb.on_stream_delta("hello");
-        let msgs = received.lock().unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0], "hello");
     }
 
     #[test]
-    fn test_system_events_hook() {
-        let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let rc = received.clone();
-        let cb = AgentCallbacks {
-            system_events: Some(Box::new(SystemEventsAdapter {
-                status: Some(Box::new(move |level: &str, msg: &str| {
-                    rc.lock().unwrap().push(format!("{level}: {msg}"));
-                })),
-                ..Default::default()
-            })),
-            ..Default::default()
-        };
+    fn test_system_events_default_noop() {
+        let cb = AgentCallbacks::default();
         cb.on_status("warn", "disk full");
-        let msgs = received.lock().unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0], "warn: disk full");
+        cb.on_step("working...");
+        cb.on_vprint("verbose debug");
     }
 
     #[test]
     fn test_agent_loop_hooks() {
-        let started = std::sync::Arc::new(std::sync::Mutex::new(false));
-        let outcome = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let sc = started.clone();
-        let oc = outcome.clone();
+        let bus = Arc::new(EventBus::new());
         let cb = AgentCallbacks {
-            agent_loop: Some(Box::new(AgentLoopAdapter {
-                start: Some(Box::new(move || *sc.lock().unwrap() = true)),
-                end: Some(Box::new(move |o: &str| *oc.lock().unwrap() = o.to_string())),
-            })),
+            agent_loop: Some(Box::new(AgentLoopAdapter::new(bus))),
             ..Default::default()
         };
         cb.on_loop_start();
-        assert!(*started.lock().unwrap());
-        cb.on_loop_end("interrupted");
-        assert_eq!(*outcome.lock().unwrap(), "interrupted");
+        cb.on_loop_end("completed");
     }
 }

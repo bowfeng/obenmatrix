@@ -19,6 +19,7 @@ pub mod compact;
 pub mod compact_context;
 pub mod concurrent_dispatch;
 pub mod context;
+pub mod event_bus;
 pub mod conversation;
 pub mod delegate;
 pub mod error_classifier;
@@ -45,6 +46,7 @@ pub use context::*;
 pub use conversation::*;
 #[allow(ambiguous_glob_reexports)]
 pub use error_classifier::*;
+pub use event_bus::*;
 pub use fallback::*;
 pub use hooks::*;
 #[allow(ambiguous_glob_reexports)]

@@ -56,8 +56,10 @@ pub trait ToolLifecycleHooks: Send + Sync {
     fn on_tool_start(&self, _tool_name: &str, _args: &str) {}
     /// Tool execution completes.
     fn on_tool_complete(&self, _tool_name: &str, _args: &str, _result: &str) {}
+    /// Tool execution failed with an error.
+    fn on_tool_error(&self, _tool_name: &str, _args: &str, _error: &str) {}
     /// Tool progress update (optional, for long-running tools).
-    fn on_tool_progress(&self, tool_name: &str, preview: &str) {}
+    fn on_tool_progress(&self, _tool_name: &str, _preview: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -67,13 +69,13 @@ pub trait ToolLifecycleHooks: Send + Sync {
 /// LLM output streaming events.
 pub trait StreamingHooks: Send + Sync {
     /// Main response text delta.
-    fn on_stream_delta(&self, text: &str) {}
+    fn on_stream_delta(&self, _text: &str) {}
     /// Thinking/reasoning text delta (from models that support it).
-    fn on_thinking(&self, text: &str) {}
+    fn on_thinking(&self, _text: &str) {}
     /// Reasoning text delta (separate from thinking).
-    fn on_reasoning(&self, text: &str) {}
+    fn on_reasoning(&self, _text: &str) {}
     /// Interim assistant message (non-streaming, full text).
-    fn on_interim_assistant(&self, text: &str) {}
+    fn on_interim_assistant(&self, _text: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -83,11 +85,11 @@ pub trait StreamingHooks: Send + Sync {
 /// System status and diagnostic events.
 pub trait SystemEventsHooks: Send + Sync {
     /// Status message with level (e.g., "lifecycle", "warn", "info").
-    fn on_status(&self, level: &str, message: &str) {}
+    fn on_status(&self, _level: &str, _message: &str) {}
     /// Step-by-step progress message.
-    fn on_step(&self, message: &str) {}
+    fn on_step(&self, _message: &str) {}
     /// Verbose print — always visible even during streaming.
-    fn on_vprint(&self, message: &str) {}
+    fn on_vprint(&self, _message: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -98,12 +100,12 @@ pub trait SystemEventsHooks: Send + Sync {
 pub trait SessionLifecycleHooks: Send + Sync {
     /// Called when a session is rotated (compressed → parent ended, child created).
     /// `parent_id` is the old session, `child_id` is the new session.
-    fn on_session_rotate(&self, parent_id: &str, child_id: &str) {}
+    fn on_session_rotate(&self, _parent_id: &str, _child_id: &str) {}
     /// Called before context compression begins.
-    fn on_compression_start(&self, message_count: usize) {}
+    fn on_compression_start(&self, _message_count: usize) {}
     /// Called after context compression completes.
     /// `status` describes the result: "compacted", "unchanged", "ineffective".
-    fn on_compression_complete(&self, status: &str) {}
+    fn on_compression_complete(&self, _status: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +117,7 @@ pub trait InterruptLifecycleHooks: Send + Sync {
     /// Called when an interrupt is requested (user presses Ctrl+C).
     fn on_interrupt_requested(&self) {}
     /// Called when the turn actually responds to the interrupt.
-    fn on_interrupted(&self, reason: &str) {}
+    fn on_interrupted(&self, _reason: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -126,12 +128,12 @@ pub trait InterruptLifecycleHooks: Send + Sync {
 pub trait CLIInteractionHooks: Send + Sync {
     fn on_print_prompt(&self) {}
     fn on_print_flush(&self) {}
-    fn on_print_info(&self, message: &str) {}
+    fn on_print_info(&self, _message: &str) {}
     fn on_print_newline(&self) {}
     fn on_read_input(&self) -> Option<String> {
         None
     }
-    fn on_should_exit(&self, input: &str) -> bool {
+    fn on_should_exit(&self, _input: &str) -> bool {
         false
     }
 }
@@ -142,7 +144,7 @@ pub trait CLIInteractionHooks: Send + Sync {
 
 /// Clarification request — asks user for disambiguation.
 pub trait ClarificationHooks: Send + Sync {
-    fn on_clarify(&self, question: &str, choices: &[String]) -> String {
+    fn on_clarify(&self, _question: &str, _choices: &[String]) -> String {
         String::new()
     }
 }

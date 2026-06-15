@@ -281,6 +281,7 @@ impl SubagentSpawner {
                     crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
                 session_store: oben_models::SessionStoreKind::Database,
                 hooks_config: oben_config::HooksConfig::default(),
+                event_bus: std::sync::Arc::new(crate::event_bus::EventBus::new()),
             })
             .await;
 
@@ -621,6 +622,7 @@ pub fn build_spawn_fn_wrapper(
                         crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
                     session_store: oben_models::SessionStoreKind::Database,
                     hooks_config: oben_config::HooksConfig::default(),
+                    event_bus: std::sync::Arc::new(crate::event_bus::EventBus::new()),
                 })
                 .await
                 .map_err(|e| {

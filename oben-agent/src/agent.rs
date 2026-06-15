@@ -31,6 +31,7 @@ use oben_models::{CallMode, Message, StreamDeltaCallback};
 use oben_sessions::{SessionManager, SessionStore};
 
 use crate::callbacks::AgentCallbacks;
+use crate::event_bus::EventBus;
 use crate::conversation::ConversationLoop;
 use crate::fallback::FallbackChain;
 use crate::hooks::HookFactory;
@@ -66,6 +67,8 @@ pub struct AgentConfig {
     pub session_store: oben_models::SessionStoreKind,
     /// Hooks configuration for extensible post-turn behavior.
     pub hooks_config: oben_config::HooksConfig,
+    /// Event bus — shared with callbacks, dispatched to by adapters.
+    pub event_bus: std::sync::Arc<EventBus>,
 }
 
 /// Builder for `AgentConfig` from `AppConfig`.
@@ -141,6 +144,7 @@ impl AgentConfig {
             concurrent_dispatch_config,
             session_store: app_config.session_store.clone(),
             hooks_config: app_config.hooks.clone(),
+            event_bus: std::sync::Arc::new(EventBus::new()),
         }
     }
 }
@@ -165,6 +169,8 @@ pub struct Agent {
     retry_config: crate::retry::RetryConfig,
     /// Agent callbacks.
     callbacks: Arc<AgentCallbacks>,
+    /// Event bus — shared with callbacks, dispatched to by adapters.
+    event_bus: std::sync::Arc<EventBus>,
     /// System prompt prefix cache.
     prompt_cache: SystemPromptCache,
     /// Max iteration budget per turn.
@@ -191,6 +197,7 @@ impl Agent {
             interrupt_state: Arc::new(InterruptState::new()),
             fallback_chain: FallbackChain::new(config.fallback_models),
             callbacks: Arc::new(config.callbacks),
+            event_bus: config.event_bus,
             prompt_cache: SystemPromptCache::new(),
             retry_config: config.retry_config,
             max_iterations: config.max_iterations,
@@ -256,6 +263,7 @@ impl Agent {
             fallback_chain: FallbackChain::new(Vec::new()),
             retry_config: crate::retry::RetryConfig::default(),
             callbacks: Arc::new(AgentCallbacks::default()),
+            event_bus: std::sync::Arc::new(EventBus::new()),
             prompt_cache: SystemPromptCache::new(),
             max_iterations: 16,
             dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
@@ -352,6 +360,11 @@ impl Agent {
     /// Get reference to current callbacks.
     pub fn callbacks_arc(&self) -> Arc<AgentCallbacks> {
         Arc::clone(&self.callbacks)
+    }
+
+    /// Get reference to the event bus.
+    pub fn event_bus(&self) -> &std::sync::Arc<EventBus> {
+        &self.event_bus
     }
 
     // ── Tier 2: System Prompt Cache ──────────────────────────────────────
@@ -488,19 +501,17 @@ impl Agent {
             match active_id {
                 Some(sid) => match sm.lock().await.switch_session(&sid) {
                     Ok(s) => s.id.clone(),
-                    Err(_) => sm
-                        .lock()
-                        .await
-                        .new_session(&generate_session_name()).unwrap()
-                        .id
-                        .clone(),
+                    Err(_) => {
+                        match sm.lock().await.new_session(&generate_session_name()) {
+                            Ok(s) => s.id.clone(),
+                            Err(_) => generate_session_name(),
+                        }
+                    }
                 },
-                None => sm
-                    .lock()
-                    .await
-                    .new_session(&generate_session_name()).unwrap()
-                    .id
-                    .clone(),
+                None => match sm.lock().await.new_session(&generate_session_name()) {
+                    Ok(s) => s.id.clone(),
+                    Err(_) => generate_session_name(),
+                },
             }
         };
         sid
@@ -635,9 +646,9 @@ impl Agent {
         let new_id = sm
             .lock()
             .await
-            .new_session(&generate_session_name()).unwrap()
-            .id
-            .clone();
+            .new_session(&generate_session_name())
+            .map(|s| s.id.clone())
+            .unwrap_or_else(|_| generate_session_name());
         // Reset call mode so next turn starts Fresh
         self.call_mode = None;
         Ok(new_id)
@@ -849,21 +860,16 @@ impl Agent {
             drop(guard);
             let sid = match active_id {
                 Some(sid) => sid,
-                None => sm
-                    .lock()
-                    .await
-                    .new_session(&generate_session_name()).unwrap()
-                    .id
-                    .clone(),
+                None => match sm.lock().await.new_session(&generate_session_name()) {
+                    Ok(s) => s.id.clone(),
+                    Err(_) => generate_session_name(),
+                },
             };
             sm.lock()
                 .await
                 .switch_session(&sid)
                 .map(|s| s.id.clone())
-                .unwrap_or_else(|_| {
-                    // Already ensured we have a valid session above; fall back to a fresh one
-                    generate_session_name()
-                })
+                .unwrap_or_else(|_| generate_session_name())
         };
         let call_mode = self
             .call_mode
@@ -977,3 +983,49 @@ fn print_session_messages(messages: &[Message], max_show: usize) {
         tracing::info!(overflow, more_messages = true, "... more messages");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_resolve_session_creates_fresh_on_empty() {
+        let mut agent = Agent::new_for_test().await;
+        let sid = agent.resolve_session().await;
+        assert!(!sid.is_empty());
+    }
+
+    #[test]
+    fn test_agent_callbacks_dispatches_tool_error() {
+        use crate::callbacks::AgentCallbacks;
+        use crate::hooks::kind::ToolLifecycleHooks;
+        use std::sync::{Arc, Mutex};
+
+        let called = Arc::new(Mutex::new(false));
+        let called_clone = called.clone();
+
+        struct ErrorCapturingAdapter {
+            called: Arc<Mutex<bool>>,
+        }
+
+        impl ToolLifecycleHooks for ErrorCapturingAdapter {
+            fn on_tool_error(&self, tool_name: &str, _args: &str, error: &str) {
+                assert_eq!(tool_name, "shell");
+                assert_eq!(error, "connection failed");
+                *self.called.lock().unwrap() = true;
+            }
+        }
+
+        let cb = AgentCallbacks {
+            tool_lifecycle: Some(Box::new(ErrorCapturingAdapter {
+                called: called_clone,
+            })),
+            ..Default::default()
+        };
+
+        cb.on_tool_error("shell", "{}", "connection failed");
+        assert!(*called.lock().unwrap(), "on_tool_error should have been called");
+    }
+}
+
+

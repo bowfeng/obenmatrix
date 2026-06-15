@@ -5,13 +5,14 @@
 //! (like the Hermes Agent reference), with each message wrapped in a rounded-border
 //! Block whose title shows the role label and icon.
 
+use parking_lot::Mutex as PlMutex;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, ScrollbarState};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use unicode_width::UnicodeWidthChar;
 
-use crate::turn::turn_state::TurnState;
+use oben_agent::TurnState;
 use crate::widgets::layout;
 use crate::widgets::message_renderer::{MessageRenderEntry, MessageRenderer};
 use crate::widgets::role_style::role_info_for_role;
@@ -54,7 +55,7 @@ pub struct ConversationState {
     /// Persisted scroll position across frames (AtomicUsize so render(&self) can update it).
     pub scroll_pos: Arc<AtomicUsize>,
     pub stream_info: Arc<StdMutex<String>>,
-    pub turn_state_ref: Option<Arc<StdMutex<TurnState>>>,
+    pub turn_state_ref: Option<Arc<PlMutex<TurnState>>>,
     /// Accumulated scroll delta from user mouse scroll. Reset by render.
     pub user_scroll_offset: Arc<AtomicI32>,
     /// Tracks content line count from previous frame — detects if content has grown.
@@ -657,38 +658,45 @@ impl ConversationWidget {
         // Parse stream text once, reuse for both scroll_offset and rendering.
         let stream_parsed = if is_streaming {
             if let Some(ref ts) = state.turn_state_ref {
-                if let Ok(ts) = ts.lock() {
-                    if !ts.streaming_text.is_empty() {
-                        let raw = ts
-                            .streaming_text
-                            .trim_start_matches(|c: char| c.is_whitespace());
-                        let stream_lines: Vec<Line<'static>> = raw
-                            .lines()
-                            .map(|l| {
-                                Line::from(Span::styled(
-                                    l.to_string(),
-                                    Style::default()
-                                        .fg(palette.info)
-                                        .add_modifier(Modifier::DIM),
-                                ))
-                            })
-                            .collect::<Vec<_>>();
-
-                        let wrapped = layout::wrap_styled_lines_to_lines(
-                            &stream_lines,
-                            inner_width.saturating_sub(2),
+                let ts = ts.lock();
+                let ts_len = ts.streaming_text.len();
+                if ts_len > 0 {
+                    // Log streaming_text length every ~10 draws during streaming
+                    // to avoid log flooding while still capturing growth pattern.
+                    if ts_len % 20 == 0 {
+                        tracing::trace!(
+                            ts_len,
+                            stream_preview = ?ts.streaming_text.chars().take(60).collect::<String>(),
+                            "TUI: streaming_text at draw"
                         );
-                        let stream_body_height = if wrapped.is_empty() {
-                            1usize
-                        } else {
-                            wrapped.len()
-                        };
-                        let stream_height =
-                            stream_body_height as u16 + layout::BODY_HEIGHT_ADJUSTER;
-                        Some((stream_lines, wrapped, stream_body_height, stream_height))
-                    } else {
-                        None
                     }
+                    let raw = ts
+                        .streaming_text
+                        .trim_start_matches(|c: char| c.is_whitespace());
+                    let stream_lines: Vec<Line<'static>> = raw
+                        .lines()
+                        .map(|l| {
+                            Line::from(Span::styled(
+                                l.to_string(),
+                                Style::default()
+                                    .fg(palette.info)
+                                    .add_modifier(Modifier::DIM),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+
+                    let wrapped = layout::wrap_styled_lines_to_lines(
+                        &stream_lines,
+                        inner_width.saturating_sub(2),
+                    );
+                    let stream_body_height = if wrapped.is_empty() {
+                        1usize
+                    } else {
+                        wrapped.len()
+                    };
+                    let stream_height =
+                        stream_body_height as u16 + layout::BODY_HEIGHT_ADJUSTER;
+                    Some((stream_lines, wrapped, stream_body_height, stream_height))
                 } else {
                     None
                 }
@@ -831,7 +839,7 @@ impl ConversationWidget {
         // ─── Phase 2.5: Streaming block (rendered after regular entries) ─
         let mut total_height = total_height;
         let mut streaming_rendered = false;
-        if let Some((stream_lines, _wrapped, _stream_body_lines, stream_height)) = stream_parsed {
+        if let Some((stream_lines, wrapped, _stream_body_lines, stream_height)) = stream_parsed {
             // Phase 1 already added stream_estimate_height (= stream_height) to total_height.
             // No double-add needed — total_height is already correct.
 
@@ -862,7 +870,7 @@ impl ConversationWidget {
                 last_entry_vp_bottom, stream_y
             );
 
-            if !stream_lines.is_empty() && stream_height > 0 {
+            if !wrapped.is_empty() && stream_height > 0 {
                 // Calculate available space below the last entry.
                 // This prevents the stream block from overlapping the message above.
                 let available_height = msg_area
@@ -902,18 +910,18 @@ impl ConversationWidget {
                 // Calculate line_offset so content is anchored to the BOTTOM of the viewport.
                 // Always use inner_height (viewport height), NOT body_area.height, because
                 // body_area can overflow the viewport when stream_height > viewport_height.
-                let max_visible_lines = inner_height.min(stream_lines.len());
-                let line_offset = stream_lines.len().saturating_sub(max_visible_lines);
+                let max_visible_lines = inner_height.min(wrapped.len());
+                let line_offset = wrapped.len().saturating_sub(max_visible_lines);
 
                 tracing::debug!(
-                    "[stream_render] block_area={:?} body_area={:?} stream_lines_count={} stream_block_start={} scroll_pos={} line_offset={} max_visible_lines={}",
-                    block_area, body_area, stream_lines.len(), stream_block_start, scroll_pos, line_offset, max_visible_lines
+                    "[stream_render] block_area={:?} body_area={:?} wrapped_lines={} stream_block_start={} scroll_pos={} line_offset={} max_visible_lines={}",
+                    block_area, body_area, wrapped.len(), stream_block_start, scroll_pos, line_offset, max_visible_lines
                 );
 
-                if !stream_lines.is_empty() {
+                if !wrapped.is_empty() {
                     // Log last few lines to see where content ends
-                    let tail_count = stream_lines.len().min(5);
-                    let tail_lines: Vec<String> = stream_lines
+                    let tail_count = wrapped.len().min(5);
+                    let tail_lines: Vec<String> = wrapped
                         .iter()
                         .rev()
                         .take(tail_count)
@@ -926,7 +934,7 @@ impl ConversationWidget {
                         })
                         .collect();
                     tracing::debug!("[stream_render] tail_lines: {:?}", tail_lines);
-                    let mut para = Paragraph::new(stream_lines.clone());
+                    let mut para = Paragraph::new(wrapped);
                     if line_offset > 0 {
                         para = para.scroll((line_offset as u16, 0));
                     }
@@ -1197,7 +1205,7 @@ impl ConversationWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::turn::turn_state::{ActiveTool, TurnState};
+    use oben_agent::{ActiveTool, TurnState};
     use std::time::Instant;
 
     /// Given: a TurnState with active tool calls AND streaming text
@@ -1289,11 +1297,11 @@ mod tests {
         let mut state = ConversationState::new();
         let mut turn = TurnState::new();
         turn.streaming_text = String::new();
-        state.turn_state_ref = Some(Arc::new(StdMutex::new(turn)));
+        state.turn_state_ref = Some(Arc::new(PlMutex::new(turn)));
         state.stream_info.lock().unwrap().clear();
 
         // Verify that a new TurnState is initialized empty
-        let state_guard = state.turn_state_ref.as_ref().map(|g| g.lock().unwrap());
+        let state_guard = state.turn_state_ref.as_ref().map(|g| g.lock());
         if let Some(guard) = state_guard {
             assert_eq!(guard.streaming_text, "");
             assert!(guard.active_tools.is_empty());

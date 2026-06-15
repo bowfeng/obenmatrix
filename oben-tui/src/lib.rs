@@ -6,11 +6,9 @@
 pub mod app;
 pub mod clipboard;
 pub mod commands;
-pub mod event;
 pub mod history;
 pub mod image;
 pub mod panels;
-pub mod turn;
 pub mod widgets;
 
 pub use app::App;
@@ -306,11 +304,10 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                     } else {
                         app.status = "Turn completed with errors".into();
-                        let eb_state = Arc::clone(&app.event_bus.state());
                         if let Some(chat) = app.get_chat_mut() {
                             chat.streaming = false;
                             chat.input.streaming = false;
-                            chat.update_from_turn_state(&eb_state.lock().unwrap());
+                            chat.update_from_turn_state();
                             app.needs_redraw = true;
                         }
                     }
@@ -512,7 +509,9 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             chat.streaming = false;
                             chat.input.streaming = false;
                         }
-                        app.event_bus.on_turn_completed("interrupted");
+                        let mut ts = app.turn_state.lock();
+                        ts.on_interrupted();
+                        ts.on_completed("interrupted");
                         app.needs_redraw = true;
                     }
                     Some(TuiEvent::Steer(text)) => {
@@ -840,18 +839,18 @@ async fn handle_chat_input(
     );
 
     // Begin turn tracking
-    let event_bus = Arc::clone(&app.event_bus);
-    event_bus.begin_turn();
-    tracing::info!("handle_chat_input: turn started via event bus");
+    {
+        let mut ts = app.turn_state.lock();
+        ts.on_turn_start();
+    }
+    tracing::info!("handle_chat_input: turn started");
 
     // Prepare ChatPanel for streaming
     if was_chat {
-        let eb_state = Arc::clone(&app.event_bus.state());
         if let Some(chat) = app.get_chat_mut() {
             tracing::info!("handle_chat_input: setting ChatPanel.streaming=true");
             chat.streaming = true;
             chat.input.streaming = true;
-            chat.message_state.turn_state_ref = Some(eb_state);
             chat.message_state
                 .scroll_to_bottom
                 .store(true, Ordering::SeqCst);
@@ -870,7 +869,7 @@ async fn handle_chat_input(
     // interrupt handler which also needs to request_interrupt()
     // without acquiring the tokio::sync::Mutex.
     let agent_clone = agent;
-    let eb_for_finalize = Arc::clone(&app.event_bus);
+    let turn_state_clone = Arc::clone(&app.turn_state);
     let done_tx_clone = done_tx.clone();
     let input_clone = input.clone();
     let interrupt_clone = Arc::clone(&app.interrupt_state);
@@ -939,7 +938,8 @@ async fn handle_chat_input(
             // Finalize turn state
             match &result {
                 Ok(_) => {
-                    eb_for_finalize.on_turn_completed("completed");
+                    let mut ts = turn_state_clone.lock();
+                    ts.on_completed("completed");
                     let _ = done_tx_clone.send(TurnCompletion {
                         success: true,
                         session_name: sid,
@@ -948,7 +948,8 @@ async fn handle_chat_input(
                     tracing::info!("spawned_turn_task: sent done_tx success");
                 }
                 Err(e) => {
-                    eb_for_finalize.on_turn_error(&format!("{}", e));
+                    let mut ts = turn_state_clone.lock();
+                    ts.on_error(&format!("{}", e));
                     tracing::info!("spawned_turn_task: finalized turn_state error: {}", e);
                     let _ = done_tx_clone.send(TurnCompletion {
                         success: false,
@@ -983,12 +984,9 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let layout = Layouts::new(area);
 
-    // Inject turn_state_ref into ChatPanel so draw() can read streaming text in real-time
-    // Clone event_bus state Arc first to avoid borrowing app twice
-    let eb_state = Arc::clone(&app.event_bus.state());
+    // update ChatPanel from turn_state (polling pattern via Arc<Mutex<TurnState>>)
     if let Some(chat) = app.get_chat_mut() {
-        chat.set_turn_state_ref(Arc::clone(&eb_state));
-        chat.update_from_turn_state(&eb_state.lock().unwrap());
+        chat.update_from_turn_state();
     }
 
     let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);

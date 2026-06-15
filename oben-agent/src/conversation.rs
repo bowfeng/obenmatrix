@@ -190,7 +190,7 @@ impl ConversationLoop {
                 .map(|s| s.id.clone())
                 .unwrap_or_else(|| {
                     let id = crate::agent::generate_session_name();
-                    session_manager.new_session(&id);
+                    let _ = session_manager.new_session(&id);
                     session_manager.active_session().unwrap().id.clone()
                 });
 

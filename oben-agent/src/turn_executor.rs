@@ -335,6 +335,7 @@ impl TurnExecutor {
                     let cb_wrapper: StreamDeltaCallback = Box::new(move |text: &str| {
                         // Dispatch every delta through the hook system in real-time.
                         // The accumulated response text will also be dispatched below.
+                        tracing::trace!(delta = text, "[TurnExecutor] delta_callback fired");
                         if let Some(ref cb) = callback {
                             cb.on_stream_delta(text);
                         }
@@ -554,12 +555,16 @@ impl TurnExecutor {
                             }
                         };
                         session.messages.push(msg);
+
+                        // Notify callbacks of tool completion or error
                         if let Some(cb) = &config.callbacks {
-                            cb.on_tool_complete(
-                                &pending_calls[i].tool_name,
-                                &pending_calls[i].arguments.to_string(),
-                                &result.output,
-                            );
+                            let tool_name = &pending_calls[i].tool_name;
+                            let args = &pending_calls[i].arguments.to_string();
+                            if let Some(ref err) = result.error {
+                                cb.on_tool_error(tool_name, args, err);
+                            } else {
+                                cb.on_tool_complete(tool_name, args, &result.output);
+                            }
                         }
                     }
                 }

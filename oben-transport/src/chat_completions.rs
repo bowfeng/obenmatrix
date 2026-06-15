@@ -347,6 +347,9 @@ struct StreamChoice {
 struct StreamDelta {
     #[serde(default)]
     pub content: Option<String>,
+    /// `reasoning_content` — used by thinking models (Qwen, DeepSeek, etc.)
+    #[serde(default, rename = "reasoning_content")]
+    pub reasoning_content: Option<String>,
     #[serde(default, rename = "tool_calls")]
     pub tool_calls: Option<Vec<StreamToolCallDelta>>,
     #[serde(default)]
@@ -810,6 +813,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         let mut tool_call_args: Vec<String> = Vec::new();
         let mut tool_call_ids: Vec<String> = Vec::new();
         let mut total_tokens: Option<usize> = None;
+        let mut delta_count: usize = 0;
 
         while let Some(event_result) = stream.next().await {
             let event = match event_result {
@@ -842,18 +846,41 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
             // Process choices
             for choice in chunk.choices {
                 if let Some(ref finish) = choice.finish_reason {
-                    // We don't currently use finish_reason, but it's captured for potential future use
                     let _ = finish;
                 }
 
+                tracing::trace!(choices_count = 1, "[ChatCompletions] SSE event parsed");
+
                 let delta = choice.delta;
 
-                // Accumulate text content and fire callback
-                if let Some(ref content) = delta.content {
-                    if !content.is_empty() {
-                        final_text.push_str(content);
-                        delta_callback(content);
+                // Accumulate text content and fire callback.
+                // Check both `content` and `reasoning_content` — some servers stream 
+                // thinking text in `content` while others use `reasoning_content`.
+                // The server may send both fields in the same event; pick whichever has text.
+                let text = match (&delta.content, &delta.reasoning_content) {
+                    (Some(c), Some(r)) => {
+                        // Both present: prefer content (standard), fall back to reasoning_content
+                        if !c.trim().is_empty() { c.as_str() }
+                        else if !r.trim().is_empty() { r.as_str() }
+                        else { "" }
                     }
+                    (Some(c), None) => {
+                        if !c.trim().is_empty() { c.as_str() }
+                        else { "" }
+                    }
+                    (None, Some(r)) => {
+                        if !r.trim().is_empty() { r.as_str() }
+                        else { "" }
+                    }
+                    (None, None) => "",
+                };
+                if !text.is_empty() {
+                    final_text.push_str(text);
+                    delta_count += 1;
+                    tracing::trace!(delta = text, "[ChatCompletions] SSE delta content found");
+                    delta_callback(text);
+                } else {
+                    tracing::trace!("[ChatCompletions] SSE delta found but content is empty (skipped)");
                 }
 
                 // Accumulate tool call deltas
@@ -917,6 +944,13 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
             }
             tool_calls = fallback;
         }
+
+        tracing::info!(
+            delta_count,
+            final_text_len = final_text.len(),
+            final_text_preview = ?final_text.chars().take(80).collect::<String>(),
+            "[ChatCompletions] stream_chat completed"
+        );
 
         Ok(TransportResponse {
             text: final_text,

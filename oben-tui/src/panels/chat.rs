@@ -1,13 +1,13 @@
 //! Chat panel — message history, streaming, input bar.
 
 use super::{KeyAction, Panel};
-use crate::event::EventBus;
-use crate::turn::turn_state;
 use crate::widgets::conversation::{ConversationState, ConversationWidget};
 use crate::widgets::input_bar::{InputBarResult, InputBarWidget, InputState};
 use crate::widgets::message_renderer::MessageRenderer;
 use crossterm::event::KeyEvent;
+use oben_agent::{TurnPhase, TurnState};
 use oben_models::Message;
+use parking_lot::Mutex as PlMutex;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
 use std::sync::atomic::Ordering;
@@ -23,16 +23,15 @@ pub struct ChatPanel {
     pub message_count: usize,
     renderer: MessageRenderer,
     message_display: ConversationWidget,
-    /// Shared event bus (used by auto-drain to emit queued messages when a
-    /// turn settles).  Set via `set_event_bus()` during app init.
-    event_bus: Option<Arc<EventBus>>,
+    /// Turn state reference for polling during draw.
+    turn_state_ref: Arc<PlMutex<TurnState>>,
     /// Channel to send drained messages back to the event loop.  Set via
     /// `set_input_sender()` during app init.
     input_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::TuiEvent>>,
     /// Previous turn phase — used to detect transitions into a settled state
     /// for queue auto-drain.  Only the *transition* into Completed/Error
     /// triggers a drain; steady-state draws do not fire again.
-    prev_phase: turn_state::TurnPhase,
+    prev_phase: TurnPhase,
     /// Whether auto-drain has already fired for this completion.
     /// Prevents draining the next queued message when a new turn starts
     /// but the phase hasn't yet moved from Completed (e.g., while delta
@@ -51,23 +50,20 @@ impl ChatPanel {
             message_count: 0,
             renderer: MessageRenderer::new(),
             message_display: ConversationWidget,
-            event_bus: None,
+            turn_state_ref: Arc::new(PlMutex::new(TurnState::new())),
             input_tx: None,
-            prev_phase: turn_state::TurnPhase::Idle,
+            prev_phase: TurnPhase::Idle,
             drained_this_turn: false,
         }
     }
 
     /// Create a chat panel with a specific theme from config.
-    pub fn new_with_theme(session_name: Option<String>, theme: &str) -> Self {
+    pub fn new_with_theme(session_name: Option<String>, theme: &str, turn_state: Arc<PlMutex<TurnState>>) -> Self {
         let mut panel = Self::new(session_name);
         panel.renderer.set_theme_from_str(theme);
+        panel.turn_state_ref = Arc::clone(&turn_state);
+        panel.set_turn_state_ref(turn_state);
         panel
-    }
-
-    /// Set the event bus for auto-drain.
-    pub fn set_event_bus(&mut self, event_bus: Arc<EventBus>) {
-        self.event_bus = Some(event_bus);
     }
 
     /// Set the input event sender for queue drain — drained messages are
@@ -117,20 +113,21 @@ impl ChatPanel {
     }
 
     /// Update from turn state and sync stream_info in display.
-    pub fn update_from_turn_state(&mut self, ts: &turn_state::TurnState) {
+    pub fn update_from_turn_state(&mut self) {
+        let ts = self.turn_state_ref.lock();
         self.message_display
-            .update_stream_info(&mut self.message_state, ts);
+            .update_stream_info(&mut self.message_state, &ts);
 
         let prev = self.prev_phase.clone();
         let current = ts.phase.clone();
 
         let settled = matches!(
             current,
-            turn_state::TurnPhase::Completed | turn_state::TurnPhase::Error(_)
+            TurnPhase::Completed | TurnPhase::Error(_)
         );
         let transitioning = !matches!(
             prev,
-            turn_state::TurnPhase::Completed | turn_state::TurnPhase::Error(_)
+            TurnPhase::Completed | TurnPhase::Error(_)
         );
 
         // Only drain when transitioned INTO settled AND agent is truly idle
@@ -208,7 +205,7 @@ impl ChatPanel {
     /// Set turn_state_ref so message display can read streaming text in real-time.
     pub fn set_turn_state_ref(
         &mut self,
-        turn_state: std::sync::Arc<std::sync::Mutex<turn_state::TurnState>>,
+        turn_state: Arc<PlMutex<TurnState>>,
     ) {
         self.message_state.turn_state_ref = Some(turn_state);
     }

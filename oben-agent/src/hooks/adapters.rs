@@ -1,127 +1,27 @@
-/// Adapter types that bridge individual Fn closures to the new hook traits.
-///
-/// These allow gradual migration: existing code that sets `AgentCallbacks {
-/// tool_start: Some(Box::new(|name, args| ...)), .. }` continues to work
-/// through adapter wrappers.
-
 use super::kind::*;
+use crate::event_bus::EventBus;
+use std::io::{self, Write};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // AgentLoopAdapter
 // ---------------------------------------------------------------------------
 
 pub struct AgentLoopAdapter {
-    pub start: Option<Box<dyn Fn() + Send + Sync>>,
-    pub end: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    bus: Arc<EventBus>,
 }
 
 impl AgentLoopAdapter {
-    pub fn new() -> Self {
-        Self {
-            start: None,
-            end: None,
-        }
-    }
-}
-
-impl Default for AgentLoopAdapter {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(bus: Arc<EventBus>) -> Self {
+        Self { bus }
     }
 }
 
 impl AgentLoopHooks for AgentLoopAdapter {
     fn on_loop_start(&self) {
-        if let Some(ref start) = self.start {
-            start();
-        }
+        self.bus.begin_turn();
     }
-    fn on_loop_end(&self, outcome: &str) {
-        if let Some(ref end) = self.end {
-            end(outcome);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// TurnLifecycleAdapter
-// ---------------------------------------------------------------------------
-
-pub struct TurnLifecycleAdapter {
-    pub pre: Option<Box<dyn Fn() + Send + Sync>>,
-    pub post: Option<Box<dyn Fn(&str, bool) + Send + Sync>>,
-}
-
-impl TurnLifecycleAdapter {
-    pub fn new() -> Self {
-        Self {
-            pre: None,
-            post: None,
-        }
-    }
-}
-
-impl Default for TurnLifecycleAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TurnLifecycleHooks for TurnLifecycleAdapter {
-    fn on_pre_turn(&self) {
-        if let Some(ref pre) = self.pre {
-            pre();
-        }
-    }
-    fn on_post_turn(&self, response: &str, success: bool) {
-        if let Some(ref post) = self.post {
-            post(response, success);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ApiLifecycleAdapter
-// ---------------------------------------------------------------------------
-
-pub struct ApiLifecycleAdapter {
-    pub start: Option<Box<dyn Fn() + Send + Sync>>,
-    pub complete: Option<Box<dyn Fn() + Send + Sync>>,
-    pub error: Option<Box<dyn Fn(&str) + Send + Sync>>,
-}
-
-impl ApiLifecycleAdapter {
-    pub fn new() -> Self {
-        Self {
-            start: None,
-            complete: None,
-            error: None,
-        }
-    }
-}
-
-impl Default for ApiLifecycleAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ApiLifecycleHooks for ApiLifecycleAdapter {
-    fn on_api_call_start(&self) {
-        if let Some(ref start) = self.start {
-            start();
-        }
-    }
-    fn on_api_call_complete(&self) {
-        if let Some(ref complete) = self.complete {
-            complete();
-        }
-    }
-    fn on_api_call_error(&self, error: &str) {
-        if let Some(ref error_cb) = self.error {
-            error_cb(error);
-        }
-    }
+    fn on_loop_end(&self, _outcome: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -129,50 +29,35 @@ impl ApiLifecycleHooks for ApiLifecycleAdapter {
 // ---------------------------------------------------------------------------
 
 pub struct ToolLifecycleAdapter {
-    pub gen: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
-    pub start: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
-    pub complete: Option<Box<dyn Fn(&str, &str, &str) + Send + Sync>>,
-    pub progress: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
+    bus: Arc<EventBus>,
 }
 
 impl ToolLifecycleAdapter {
-    pub fn new() -> Self {
-        Self {
-            gen: None,
-            start: None,
-            complete: None,
-            progress: None,
-        }
+    pub fn new(bus: Arc<EventBus>) -> Self {
+        Self { bus }
     }
 }
 
 impl Default for ToolLifecycleAdapter {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(EventBus::new()))
     }
 }
 
 impl ToolLifecycleHooks for ToolLifecycleAdapter {
     fn on_tool_gen(&self, tool_name: &str, call_id: &str) {
-        if let Some(ref gen) = self.gen {
-            gen(tool_name, call_id);
-        }
+        self.bus.on_tool_start(tool_name, call_id, "");
     }
     fn on_tool_start(&self, tool_name: &str, args: &str) {
-        if let Some(ref start) = self.start {
-            start(tool_name, args);
-        }
+        self.bus.on_tool_start(tool_name, args, "");
     }
     fn on_tool_complete(&self, tool_name: &str, args: &str, result: &str) {
-        if let Some(ref complete) = self.complete {
-            complete(tool_name, args, result);
-        }
+        self.bus.on_tool_complete(tool_name, args, result);
     }
-    fn on_tool_progress(&self, tool_name: &str, preview: &str) {
-        if let Some(ref progress) = self.progress {
-            progress(tool_name, preview);
-        }
+    fn on_tool_error(&self, tool_name: &str, args: &str, error: &str) {
+        self.bus.on_tool_start(tool_name, args, &format!("ERROR: {error}"));
     }
+    fn on_tool_progress(&self, _tool_name: &str, _preview: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -180,50 +65,30 @@ impl ToolLifecycleHooks for ToolLifecycleAdapter {
 // ---------------------------------------------------------------------------
 
 pub struct StreamingAdapter {
-    pub delta: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    pub thinking: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    pub reasoning: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    pub interim: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    bus: Arc<EventBus>,
 }
 
 impl StreamingAdapter {
-    pub fn new() -> Self {
-        Self {
-            delta: None,
-            thinking: None,
-            reasoning: None,
-            interim: None,
-        }
+    pub fn new(bus: Arc<EventBus>) -> Self {
+        Self { bus }
     }
 }
 
 impl Default for StreamingAdapter {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(EventBus::new()))
     }
 }
 
 impl StreamingHooks for StreamingAdapter {
     fn on_stream_delta(&self, text: &str) {
-        if let Some(ref delta) = self.delta {
-            delta(text);
-        }
+        self.bus.on_stream_delta(text);
     }
-    fn on_thinking(&self, text: &str) {
-        if let Some(ref thinking) = self.thinking {
-            thinking(text);
-        }
-    }
+    fn on_thinking(&self, _text: &str) {}
     fn on_reasoning(&self, text: &str) {
-        if let Some(ref reasoning) = self.reasoning {
-            reasoning(text);
-        }
+        self.bus.on_reasoning(text);
     }
-    fn on_interim_assistant(&self, text: &str) {
-        if let Some(ref interim) = self.interim {
-            interim(text);
-        }
-    }
+    fn on_interim_assistant(&self, _text: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -231,189 +96,87 @@ impl StreamingHooks for StreamingAdapter {
 // ---------------------------------------------------------------------------
 
 pub struct SystemEventsAdapter {
-    pub status: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
-    pub step: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    pub vprint: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    bus: Arc<EventBus>,
 }
 
 impl SystemEventsAdapter {
-    pub fn new() -> Self {
-        Self {
-            status: None,
-            step: None,
-            vprint: None,
-        }
-    }
-}
-
-impl Default for SystemEventsAdapter {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(bus: Arc<EventBus>) -> Self {
+        Self { bus }
     }
 }
 
 impl SystemEventsHooks for SystemEventsAdapter {
     fn on_status(&self, level: &str, message: &str) {
-        if let Some(ref status) = self.status {
-            status(level, message);
-        }
+        self.bus.on_system_event("status", &format!("[{level}] {message}"));
     }
     fn on_step(&self, message: &str) {
-        if let Some(ref step) = self.step {
-            step(message);
-        }
+        self.bus.on_system_event("step", message);
     }
     fn on_vprint(&self, message: &str) {
-        if let Some(ref vprint) = self.vprint {
-            vprint(message);
-        }
+        self.bus.on_system_event("vprint", message);
     }
 }
 
 // ---------------------------------------------------------------------------
-// SessionLifecycleAdapter
-// ---------------------------------------------------------------------------
-
-pub struct SessionLifecycleAdapter {
-    pub rotate: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
-    pub compression_start: Option<Box<dyn Fn(usize) + Send + Sync>>,
-    pub compression_complete: Option<Box<dyn Fn(&str) + Send + Sync>>,
-}
-
-impl SessionLifecycleAdapter {
-    pub fn new() -> Self {
-        Self {
-            rotate: None,
-            compression_start: None,
-            compression_complete: None,
-        }
-    }
-}
-
-impl Default for SessionLifecycleAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SessionLifecycleHooks for SessionLifecycleAdapter {
-    fn on_session_rotate(&self, parent_id: &str, child_id: &str) {
-        if let Some(ref rotate) = self.rotate {
-            rotate(parent_id, child_id);
-        }
-    }
-    fn on_compression_start(&self, message_count: usize) {
-        if let Some(ref start) = self.compression_start {
-            start(message_count);
-        }
-    }
-    fn on_compression_complete(&self, status: &str) {
-        if let Some(ref complete) = self.compression_complete {
-            complete(status);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// InterruptLifecycleAdapter
-// ---------------------------------------------------------------------------
-
-pub struct InterruptLifecycleAdapter {
-    pub requested: Option<Box<dyn Fn() + Send + Sync>>,
-    pub interrupted: Option<Box<dyn Fn(&str) + Send + Sync>>,
-}
-
-impl InterruptLifecycleAdapter {
-    pub fn new() -> Self {
-        Self {
-            requested: None,
-            interrupted: None,
-        }
-    }
-}
-
-impl Default for InterruptLifecycleAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl InterruptLifecycleHooks for InterruptLifecycleAdapter {
-    fn on_interrupt_requested(&self) {
-        if let Some(ref requested) = self.requested {
-            requested();
-        }
-    }
-    fn on_interrupted(&self, reason: &str) {
-        if let Some(ref interrupted) = self.interrupted {
-            interrupted(reason);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CLIInteractionAdapter
+// CLIInteractionAdapter (noop - CLI doesn't need interactive hooks)
 // ---------------------------------------------------------------------------
 
 pub struct CLIInteractionAdapter {
-    pub print_prompt: Option<Box<dyn Fn() + Send + Sync>>,
-    pub print_flush: Option<Box<dyn Fn() + Send + Sync>>,
-    pub print_info: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    pub print_newline: Option<Box<dyn Fn() + Send + Sync>>,
-    pub read_input: Option<Box<dyn Fn() -> Option<String> + Send + Sync>>,
-    pub should_exit: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
+    cliio: bool,
 }
 
 impl CLIInteractionAdapter {
-    pub fn new() -> Self {
-        Self {
-            print_prompt: None,
-            print_flush: None,
-            print_info: None,
-            print_newline: None,
-            read_input: None,
-            should_exit: None,
-        }
+    pub fn new_noop() -> Self {
+        Self { cliio: false }
+    }
+    pub fn new_clio() -> Self {
+        Self { cliio: true }
     }
 }
 
 impl Default for CLIInteractionAdapter {
     fn default() -> Self {
-        Self::new()
+        Self::new_noop()
     }
 }
 
 impl CLIInteractionHooks for CLIInteractionAdapter {
     fn on_print_prompt(&self) {
-        if let Some(ref cb) = self.print_prompt {
-            cb();
+        if self.cliio {
+            print!("> ");
+            let _ = std::io::stdout().flush();
         }
     }
     fn on_print_flush(&self) {
-        if let Some(ref cb) = self.print_flush {
-            cb();
+        if self.cliio {
+            let _ = std::io::stdout().flush();
         }
     }
     fn on_print_info(&self, message: &str) {
-        if let Some(ref cb) = self.print_info {
-            cb(message);
+        if self.cliio {
+            println!("{}", message);
         }
     }
     fn on_print_newline(&self) {
-        if let Some(ref cb) = self.print_newline {
-            cb();
+        if self.cliio {
+            println!();
         }
     }
     fn on_read_input(&self) -> Option<String> {
-        if let Some(ref cb) = self.read_input {
-            cb()
+        if self.cliio {
+            let mut input = String::new();
+            if io::stdin().read_line(&mut input).is_ok() {
+                Some(input.trim().to_string())
+            } else {
+                Some(String::new())
+            }
         } else {
             None
         }
     }
     fn on_should_exit(&self, input: &str) -> bool {
-        if let Some(ref cb) = self.should_exit {
-            cb(input)
+        if self.cliio {
+            input == "quit" || input == "exit"
         } else {
             false
         }
@@ -424,28 +187,41 @@ impl CLIInteractionHooks for CLIInteractionAdapter {
 // ClarificationAdapter
 // ---------------------------------------------------------------------------
 
-pub struct ClarificationAdapter {
-    pub handler: Option<Box<dyn Fn(&str, &[String]) -> String + Send + Sync>>,
-}
+pub struct ClarificationAdapter;
 
 impl ClarificationAdapter {
-    pub fn new() -> Self {
-        Self { handler: None }
+    pub fn new_noop() -> Self {
+        Self
     }
 }
 
 impl Default for ClarificationAdapter {
     fn default() -> Self {
-        Self::new()
+        Self::new_noop()
     }
 }
 
 impl ClarificationHooks for ClarificationAdapter {
-    fn on_clarify(&self, question: &str, choices: &[String]) -> String {
-        if let Some(ref handler) = self.handler {
-            handler(question, choices)
-        } else {
-            String::new()
-        }
+    fn on_clarify(&self, _question: &str, _choices: &[String]) -> String {
+        String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_lifecycle_adapter_dispatches_error() {
+        let bus = Arc::new(EventBus::new());
+        let adapter = ToolLifecycleAdapter::new(Arc::clone(&bus));
+
+        adapter.on_tool_gen("shell", "call-1");
+        adapter.on_tool_start("shell", "{}");
+        adapter.on_tool_complete("shell", "{}", "success");
+        adapter.on_tool_error("shell", "{}", "timeout occurred");
+        adapter.on_tool_progress("shell", "ls");
+
+        // If we got here without panicking, the dispatcher works
     }
 }

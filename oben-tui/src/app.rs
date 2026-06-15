@@ -8,6 +8,7 @@ use crate::panels::setup::SetupPanel;
 use crate::panels::splash::SplashPanel;
 use crate::panels::{KeyAction, Panel, PanelId};
 use anyhow::Result;
+use parking_lot::Mutex as PlMutex;
 use ratatui::layout::Rect;
 use ratatui_toaster::{ToastBuilder, ToastEngine, ToastEngineBuilder, ToastType};
 use std::borrow::Cow;
@@ -16,12 +17,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
-use crate::event::EventBus;
 use crate::history;
+use crate::widgets::conversation::{ConversationState, ConversationWidget};
+use crate::widgets::message_renderer::MessageRenderer;
 use oben_agent::callbacks::relay::CallbacksRelay;
 use oben_agent::callbacks::WithRelay;
 use oben_agent::delegate::{build_spawn_fn_wrapper, SubagentSpawner};
-use oben_agent::{Agent, AgentCallbacks, AgentConfig};
+use oben_agent::{Agent, AgentCallbacks, AgentConfig, EventBus, TurnState, TuiSubscriber};
 use oben_config::AppConfig;
 use oben_tools::delegate::DelegateTool;
 use oben_tools::ToolRegistry;
@@ -62,10 +64,10 @@ pub struct App {
     pub input_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::TuiEvent>>,
     pub input_history: history::InputHistory,
     pub paste_mode: bool,
-    /// Event bus — single event emission point, wraps TurnState internally.
-    /// Agents and UI components emit events through here to keep UI logic
-    /// testable independently from the Agent.
-    pub event_bus: Arc<EventBus>,
+    /// Shared `Arc<Mutex<TurnState>>` — owns all turn lifecycle state.
+    /// TUI polls this directly during draw loop (32ms interval).
+    /// TuiSubscriber wraps this and is registered with Agent's EventBus.
+    pub turn_state: Arc<PlMutex<TurnState>>,
     /// Pending session name to load on startup (from CLI `-s` argument).
     pub pending_session: Option<String>,
     /// Whether step-by-step reasoning mode is enabled.
@@ -174,9 +176,12 @@ impl App {
                     chat.streaming = false;
                     tracing::info!("[clear] chat streaming set to false");
                 }
-                // Clear event bus turn state to prevent stale streaming text from being redrawn
-                self.event_bus.clear();
-                tracing::info!("[clear] event_bus state cleared");
+                // Clear turn state to prevent stale streaming text from being redrawn
+                {
+                    let mut ts = self.turn_state.lock();
+                    ts.reset();
+                }
+                tracing::info!("[clear] turn state cleared");
                 self.session_id = None;
                 // Refresh SessionsPanel so cleared session list stays in sync.
                 if let Some(sp) = self
@@ -370,7 +375,7 @@ impl App {
             input_tx: None,
             input_history: history::InputHistory::new(),
             paste_mode: false,
-            event_bus: Arc::new(EventBus::new()),
+            turn_state: Arc::new(PlMutex::new(TurnState::new())),
             pending_session: None,
             reasoning_enabled: false,
             toast_engine,
@@ -414,46 +419,21 @@ impl App {
         );
         let transport = Arc::new(transport);
 
-        let event_bus = Arc::clone(&self.event_bus);
+        let turn_state = Arc::clone(&self.turn_state);
+        let tui_subscriber = TuiSubscriber::new(Arc::clone(&turn_state));
 
         // Create callback relay for parent→child subagent event forwarding.
+        let mut event_bus = EventBus::new();
+        event_bus.add_subscriber(tui_subscriber);
+        let event_bus = Arc::new(event_bus);
+
         let callbacks_relay = CallbacksRelay::new();
 
-        let system_events = oben_agent::SystemEventsAdapter {
-            step: Some(Box::new(move |msg: &str| {
-                info!("STEP: {}", msg);
-            })),
-            status: Some(Box::new(move |level: &str, msg: &str| {
-                info!("STATUS [{}]: {}", level, msg);
-            })),
-            ..Default::default()
-        };
+        let system_events = oben_agent::SystemEventsAdapter::new(Arc::clone(&event_bus));
 
-        let eb_for_tool = Arc::clone(&event_bus);
-        let eb_for_complete = Arc::clone(&event_bus);
-        let eb_for_delta = Arc::clone(&event_bus);
-        let eb_for_reasoning = Arc::clone(&event_bus);
-        let tool_lifecycle = oben_agent::ToolLifecycleAdapter {
-            start: Some(Box::new(move |tool_name: &str, args_json: &str| {
-                eb_for_tool.on_tool_start("tool-id", tool_name, args_json);
-            })),
-            complete: Some(Box::new(
-                move |tool_name: &str, _args_json: &str, result: &str| {
-                    eb_for_complete.on_tool_complete("tool-id", tool_name, result);
-                },
-            )),
-            ..Default::default()
-        };
+        let tool_lifecycle = oben_agent::ToolLifecycleAdapter::new(Arc::clone(&event_bus));
 
-        let streaming = oben_agent::StreamingAdapter {
-            delta: Some(Box::new(move |text: &str| {
-                eb_for_delta.on_stream_delta(text);
-            })),
-            reasoning: Some(Box::new(move |text: &str| {
-                eb_for_reasoning.on_reasoning(text);
-            })),
-            ..Default::default()
-        };
+        let streaming = oben_agent::StreamingAdapter::new(Arc::clone(&event_bus));
 
         let callbacks = AgentCallbacks {
             system_events: Some(Box::new(system_events)),
@@ -463,8 +443,7 @@ impl App {
         }
         .with_relay(Arc::new(callbacks_relay));
 
-        // Register delegate tool. Use a cloned (separate allocation) ToolRegistry for the
-        // closure — self.tools stays unique so Arc::get_mut succeeds.
+        // Register delegate tool.
         {
             let spawner_tools = Arc::new(ToolRegistry::clone(&*self.tools));
             let spawner = SubagentSpawner::new(
@@ -487,7 +466,7 @@ impl App {
             ));
         }
 
-        let agent_config = AgentConfig::from_app_config(
+        let mut agent_config = AgentConfig::from_app_config(
             &self.config,
             assembled.prompt,
             self.config.max_iterations.unwrap_or(50),
@@ -497,6 +476,7 @@ impl App {
             Arc::clone(&self.tools),
             callbacks,
         );
+        agent_config.event_bus = Arc::clone(&event_bus);
 
         self.agent = Some(Arc::new(tokio::sync::Mutex::new(
             Agent::new(agent_config).await?,
@@ -514,26 +494,24 @@ impl App {
     }
 
     pub fn begin_turn(&self) {
-        self.event_bus.begin_turn();
+        let mut ts = self.turn_state.lock();
+        ts.on_turn_start();
     }
 
     pub fn finalize_turn(&self, outcome: &str) {
-        self.event_bus.on_turn_completed(outcome);
+        let mut ts = self.turn_state.lock();
+        ts.on_completed(outcome);
     }
 
     pub async fn create_chat_panel(&mut self) -> Result<()> {
         tracing::info!("[panel] Creating ChatPanel");
         let theme = self.config.display.theme.clone();
-        let event_bus = Arc::clone(&self.event_bus);
+        let state_ref = Arc::clone(&self.turn_state);
         tracing::info!("[panel] Using theme: {}", theme);
         self.panels.insert(
             PanelId::Chat,
-            Box::new(ChatPanel::new_with_theme(None, &theme)),
+            Box::new(ChatPanel::new_with_theme(None, &theme, state_ref)),
         );
-        // Wire event bus into chat panel for queue auto-drain.
-        if let Some(chat) = self.get_chat_mut() {
-            chat.set_event_bus(event_bus);
-        }
         tracing::info!(
             "[panel] ChatPanel inserted, panels={:?}",
             self.panels.keys().collect::<Vec<_>>()
