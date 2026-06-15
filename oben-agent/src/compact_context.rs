@@ -493,6 +493,7 @@ mod tests {
                 text: self.summary.clone(),
                 tool_calls: vec![],
                 tokens_used: None,
+                reasoning: None,
             })
         }
 
@@ -506,6 +507,7 @@ mod tests {
                 text: self.summary.clone(),
                 tool_calls: vec![],
                 tokens_used: None,
+                reasoning: None,
             })
         }
     }

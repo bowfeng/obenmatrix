@@ -348,6 +348,7 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>
                 id: msg.id.clone(),
                 tool_call_ids: msg.tool_call_ids.clone(),
                 tool_calls: None,
+                reasoning: None,
             };
             results.push(dup_msg);
             pruned_count += 1;
@@ -980,6 +981,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
         assert_eq!(message_token_estimate(&msg), 500);
     }
@@ -1033,6 +1035,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: Some(vec![tool_call]),
+            reasoning: None,
         }];
         let (pruned, count) = prune_tool_results(&msgs, 10000);
         assert_eq!(count, 1);
@@ -1064,6 +1067,7 @@ mod tests {
                 id: None,
                 tool_call_ids: vec![],
                 tool_calls: Some(vec![assistant_call, assistant_call2]),
+                reasoning: None,
             },
             Message::tool_result("call-1", "result 1"),
             Message::tool_result("call-99", "orphaned result"), // orphaned
@@ -1100,6 +1104,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: Some(vec![assistant_call]),
+            reasoning: None,
         }];
         let mut messages: Vec<Message> = msgs;
         let (removed, added) = sanitize_tool_pairs(&mut messages);
@@ -1133,6 +1138,7 @@ mod tests {
                 id: None,
                 tool_call_ids: vec![],
                 tool_calls: None,
+                reasoning: None,
             },
             Message {
                 role: oben_models::MessageRole::User,
@@ -1140,6 +1146,7 @@ mod tests {
                 id: None,
                 tool_call_ids: vec![],
                 tool_calls: None,
+                reasoning: None,
             },
             Message {
                 role: oben_models::MessageRole::User,
@@ -1150,6 +1157,7 @@ mod tests {
                 id: None,
                 tool_call_ids: vec![],
                 tool_calls: None,
+                reasoning: None,
             },
         ];
         let mut messages: Vec<Message> = msgs;
@@ -1171,6 +1179,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         }];
         let mut messages: Vec<Message> = msgs;
         let count = strip_historical_media(&mut messages);
@@ -1188,6 +1197,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         }];
         let mut messages: Vec<Message> = msgs;
         let count = strip_historical_media(&mut messages);
@@ -1211,6 +1221,7 @@ mod tests {
                 id: None,
                 tool_call_ids: vec![],
                 tool_calls: None,
+                reasoning: None,
             },
             Message {
                 role: oben_models::MessageRole::User,
@@ -1221,6 +1232,7 @@ mod tests {
                 id: None,
                 tool_call_ids: vec![],
                 tool_calls: None,
+                reasoning: None,
             },
         ];
         let mut messages: Vec<Message> = msgs;
@@ -1259,6 +1271,7 @@ mod tests {
                 text: self.summary.clone(),
                 tool_calls: vec![],
                 tokens_used: None,
+                reasoning: None,
             })
         }
 
@@ -1272,6 +1285,7 @@ mod tests {
                 text: self.summary.clone(),
                 tool_calls: vec![],
                 tokens_used: None,
+                reasoning: None,
             })
         }
     }
@@ -1296,6 +1310,7 @@ mod tests {
                         tool_name: "file_read".to_string(),
                         arguments: serde_json::json!({"path": format!("/src/benchmarks/mod{i}.rs", i=i), "content": "x".repeat(500)}),
                     }]),
+                    reasoning: None,
                 };
                 msgs.push(tool_call_msg);
                 let tool_result = format!("Benchmark results for mod{}:\nDashMap: 125ns read, 340ns write\nRwLock: 45ns read, 2800ns write (under contention)\nMutex: 42ns read, 2650ns write\n\nThe benchmarks confirm that DashMap provides the best balanced performance for concurrent workloads.", i);
@@ -1557,6 +1572,7 @@ mod tests {
                 tool_name: "file_read".to_string(),
                 arguments: serde_json::json!({"path": "/src/main.rs"}),
             }]),
+            reasoning: None,
         };
         let messages = vec![
             Message::system("You are a helpful coding assistant dedicated to helping the user with their projects. You always write high-quality code and follow best practices."),

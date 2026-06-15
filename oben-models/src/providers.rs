@@ -473,6 +473,8 @@ pub struct TransportResponse {
     pub text: String,
     pub tool_calls: Vec<TransportToolCall>,
     pub tokens_used: Option<usize>,
+    /// Reasoning/thinking chain-of-thought from models that support it.
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -484,6 +486,8 @@ pub struct TransportToolCall {
 
 /// Callback type invoked with each text delta during streaming.
 pub type StreamDeltaCallback = Box<dyn FnMut(&str) + Send>;
+/// Callback type invoked with each reasoning delta during streaming.
+pub type ReasoningDeltaCallback = Box<dyn FnMut(&str) + Send>;
 
 /// Blanket impl: any `Arc<T: TransportProvider>` is also a `TransportProvider`.
 #[async_trait::async_trait]

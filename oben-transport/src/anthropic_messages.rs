@@ -274,6 +274,7 @@ fn anthropic_response_to_transport(resp: &AnthropicResponse) -> TransportRespons
         text,
         tool_calls,
         tokens_used: Some(resp.usage.output_tokens),
+        reasoning: None,
     }
 }
 
@@ -1019,6 +1020,7 @@ impl TransportProvider for AnthropicMessagesTransport {
             text: final_text,
             tool_calls,
             tokens_used: Some(total_output_tokens),
+            reasoning: None,
         })
     }
 }

@@ -397,12 +397,21 @@ impl TurnExecutor {
                     );
 
                     // ── Stream scrubbing (Tier 2): strip thinking blocks & memory context ──
-                    let before_scrub = text.clone();
-                    text = stream_processor::scrub_thinking_blocks(&text);
-                    if text != before_scrub {
-                        tracing::warn!("scrub_thinking_blocks changed text: before_len={} after_len={} diff={}",
-                            before_scrub.len(), text.len(), before_scrub.len() - text.len());
-                    }
+                    // scrub_thinking_blocks now returns (scrubbed_text, extracted_reasoning).
+                    // We combine any API-provided reasoning (response.reasoning) with
+                    // thinking blocks extracted from the content.
+                    let (mut text, scrubbed_reasoning) = stream_processor::scrub_thinking_blocks(&text);
+                    let combined_reasoning: Option<String> = match (response.reasoning, scrubbed_reasoning) {
+                        (Some(api), Some(scrubbed)) => {
+                            let mut combined = api;
+                            combined.push_str("\n\n");
+                            combined.push_str(&scrubbed);
+                            Some(combined)
+                        },
+                        (Some(api), None) => Some(api),
+                        (None, Some(scrubbed)) => Some(scrubbed),
+                        (None, None) => None,
+                    };
                     text = stream_processor::scrub_memory_context(&text);
 
                     // Update token tracking
@@ -446,15 +455,19 @@ impl TurnExecutor {
                         consecutive_empty_responses = 0;
                     }
 
-                    // Add assistant response to session
+                    // Add assistant response to session with combined reasoning
                     let assistant_msg = if !tool_calls.is_empty() {
                         let tool_call_data = tool_calls
                             .iter()
                             .map(oben_models::ToolCall::from_transport)
                             .collect();
-                        Message::assistant_tool_calls(tool_call_data)
+                        let mut msg = Message::assistant_tool_calls(tool_call_data);
+                        msg.reasoning = combined_reasoning;
+                        msg
                     } else {
-                        Message::assistant(text.trim().to_string())
+                        let mut msg = Message::assistant(text.trim().to_string());
+                        msg.reasoning = combined_reasoning;
+                        msg
                     };
                     session.messages.push(assistant_msg);
 
@@ -552,6 +565,7 @@ impl TurnExecutor {
                                 id: None,
                                 tool_call_ids: vec![tool_call_id.clone()],
                                 tool_calls: None,
+                                reasoning: None,
                             }
                         };
                         session.messages.push(msg);
@@ -651,6 +665,7 @@ mod tests {
                 text: text.to_string(),
                 tool_calls,
                 tokens_used: tokens,
+                reasoning: None,
             }
         }
 

@@ -528,6 +528,7 @@ fn translate_response(resp: &GeminiResponse, _model: &str) -> TransportResponse 
             text: String::new(),
             tool_calls: Vec::new(),
             tokens_used: None,
+            reasoning: None,
         };
     }
     let cand = &resp.candidates[0];
@@ -538,6 +539,7 @@ fn translate_response(resp: &GeminiResponse, _model: &str) -> TransportResponse 
                 text: String::new(),
                 tool_calls: Vec::new(),
                 tokens_used: None,
+                reasoning: None,
             }
         }
     };
@@ -574,18 +576,21 @@ fn translate_response(resp: &GeminiResponse, _model: &str) -> TransportResponse 
             text: texts.join("\n"),
             tool_calls: Vec::new(),
             tokens_used: None,
+            reasoning: None,
         }
     } else if is_text_empty {
         TransportResponse {
             text: String::new(),
             tool_calls,
             tokens_used: None,
+            reasoning: None,
         }
     } else {
         let mut r = TransportResponse {
             text: texts.join("\n"),
             tool_calls: Vec::new(),
             tokens_used: None,
+            reasoning: None,
         };
         r.tool_calls = tool_calls;
         r
@@ -925,12 +930,14 @@ impl TransportProvider for GeminiMessagesTransport {
                 text: full_text,
                 tool_calls: Vec::new(),
                 tokens_used: None,
+                reasoning: None,
             }
         } else {
             TransportResponse {
                 text: if has_text { full_text } else { String::new() },
                 tool_calls: tools_vec,
                 tokens_used: None,
+                reasoning: None,
             }
         };
 

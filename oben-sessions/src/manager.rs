@@ -356,12 +356,14 @@ fn row_to_message(row: &rusqlite::Row) -> std::result::Result<Message, rusqlite:
     let tool_calls = tool_calls.and_then(|tc| serde_json::from_str(&tc).ok());
     let tool_call_id: Option<String> = row.get("tool_call_id").ok();
     let id: Option<i64> = row.get("id").ok();
+    let reasoning: Option<String> = row.get("reasoning").ok();
     Ok(Message {
         role,
         content: oben_models::MessageContent::Text(content),
         id,
         tool_call_ids: tool_call_id.into_iter().collect(),
         tool_calls,
+        reasoning,
     })
 }
 
@@ -975,7 +977,7 @@ impl SessionDB {
         self.with_conn_mut(|conn| {
             // No nested transaction — with_conn_mut already manages BEGIN IMMEDIATE / COMMIT
             let mut stmt = conn.prepare(
-                "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id"
+                "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name, reasoning) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id"
             )?;
             for msg in messages.iter_mut() {
                 let role = match msg.role {
@@ -991,7 +993,8 @@ impl SessionDB {
                 } else {
                     None
                 };
-                let mut rows = stmt.query(params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown")])?;
+                let reasoning = &msg.reasoning;
+                let mut rows = stmt.query(params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown"), reasoning])?;
                 if let Some(row) = rows.next()? {
                     msg.id = Some(row.get(0)?);
                 }
