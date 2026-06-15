@@ -53,10 +53,12 @@ impl oben_agent::hooks::kind::Hook for CliStreamingHook {
 }
 
 impl oben_agent::hooks::kind::StreamingHooks for CliStreamingHook {
-    fn on_stream_delta(&self, _text: &str) {
-        // The TurnExecutor calls emit_stream_delta for every delta.
-        // The CliStreamingHook is registered in HookEngine.streaming_hooks.
-        // The actual stdout writing is done by CliCoordinator directly.
+    fn on_stream_delta(&self, text: &str) {
+        if !text.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(text.as_bytes());
+            let _ = std::io::stdout().flush();
+        }
     }
 }
 
