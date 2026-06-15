@@ -141,10 +141,11 @@ impl Default for StreamingContextScrubber {
 
 /// Scrub a single text string of thinking blocks (non-streaming).
 ///
-/// Only strips content between `thinking...</think>` pairs.
+/// Returns scrubbed text with content between `thinking...</think>` pairs removed.
+/// The removed blocks are returned as reasoning text for separate display.
 /// If a `thinking` tag is not closed, the entire text is preserved
 /// (we don't want to silently drop user-visible content).
-pub fn scrub_thinking_blocks(text: &str) -> String {
+pub fn scrub_thinking_blocks(text: &str) -> (String, Option<String>) {
     let preview: String = text.chars().take(80).collect();
     tracing::debug!(
         "scrub_thinking_blocks: input len={}, first_80={:?}",
@@ -152,6 +153,7 @@ pub fn scrub_thinking_blocks(text: &str) -> String {
         preview
     );
     let mut result = String::new();
+    let mut reasoning_parts: Vec<String> = Vec::new();
     let mut remaining = text.to_string();
 
     while let Some(start) = remaining.find("thinking") {
@@ -159,15 +161,32 @@ pub fn scrub_thinking_blocks(text: &str) -> String {
         result.push_str(before);
         let after_open = &remaining[start + "thinking".len()..];
         if let Some(end) = after_open.find("</think") {
+            let reasoning_text = &after_open[..end];
+            if !reasoning_text.trim().is_empty() {
+                reasoning_parts.push(reasoning_text.to_string());
+            }
             let after_close = &after_open[end + "</think>".len()..];
             remaining = after_close.to_string();
         } else {
             // Unclosed thinking block → preserve entire text
-            return text.to_string();
+            return (text.to_string(), None);
         }
     }
     result.push_str(&remaining);
-    result
+    
+    let reasoning = if reasoning_parts.is_empty() {
+        None
+    } else {
+        Some(reasoning_parts.join("\n\n"))
+    };
+    
+    (result, reasoning)
+}
+
+/// Scrub a single text string of thinking blocks (non-streaming).
+/// Legacy interface that discards extracted reasoning.
+pub fn scrub_thinking_blocks_only(text: &str) -> String {
+    scrub_thinking_blocks(text).0
 }
 
 /// Scrub a single text string of memory context blocks.
@@ -200,24 +219,32 @@ mod tests {
     #[test]
     fn test_scrub_strips_tags() {
         let text = format!("thinkinglet me think</think>visible");
-        assert_eq!(scrub_thinking_blocks(&text), "visible");
+        let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
+        assert_eq!(scrubbed, "visible");
+        assert_eq!(reasoning, Some("let me think".to_string()));
     }
 
     #[test]
     fn test_scrub_preserves_text_outside() {
         let text = format!("firstthinkingblock</think>second");
-        assert_eq!(scrub_thinking_blocks(&text), "firstsecond");
+        let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
+        assert_eq!(scrubbed, "firstsecond");
+        assert_eq!(reasoning, Some("block".to_string()));
     }
 
     #[test]
     fn test_scrub_multiple_blocks() {
         let text = format!("AthinkingB</think>CthinkingD</think>E");
-        assert_eq!(scrub_thinking_blocks(&text), "ACE");
+        let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
+        assert_eq!(scrubbed, "ACE");
+        assert_eq!(reasoning, Some("B\n\nD".to_string()));
     }
 
     #[test]
     fn test_scrub_no_tags() {
-        assert_eq!(scrub_thinking_blocks("just text"), "just text");
+        let (scrubbed, reasoning) = scrub_thinking_blocks("just text");
+        assert_eq!(scrubbed, "just text");
+        assert_eq!(reasoning, None);
     }
 
     #[test]
@@ -226,11 +253,15 @@ mod tests {
         // user-visible content. Now it preserves the full text because
         // we can't reliably determine intent of an unclosed tag.
         let text = format!("thinkingunclosed");
-        assert_eq!(scrub_thinking_blocks(&text), "thinkingunclosed");
+        let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
+        assert_eq!(scrubbed, "thinkingunclosed");
+        assert_eq!(reasoning, None);
 
         // Unclosed thinking in the middle of text
         let text = "hello thinking about this";
-        assert_eq!(scrub_thinking_blocks(&text), "hello thinking about this");
+        let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
+        assert_eq!(scrubbed, "hello thinking about this");
+        assert_eq!(reasoning, None);
     }
 
     // ── StreamingThinkScrubber tests ─────────────────────────────────

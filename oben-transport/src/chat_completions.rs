@@ -769,6 +769,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
             text,
             tool_calls,
             tokens_used: resp.usage.and_then(|u| u.total_tokens),
+            reasoning: None,
         })
     }
 
@@ -809,6 +810,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         let mut stream = body.eventsource();
 
         let mut final_text = String::new();
+        let mut final_reasoning = String::new();
         let mut tool_call_names: Vec<String> = Vec::new();
         let mut tool_call_args: Vec<String> = Vec::new();
         let mut tool_call_ids: Vec<String> = Vec::new();
@@ -853,10 +855,15 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
 
                 let delta = choice.delta;
 
-                // Accumulate text content and fire callback.
-                // Check both `content` and `reasoning_content` — some servers stream 
-                // thinking text in `content` while others use `reasoning_content`.
-                // The server may send both fields in the same event; pick whichever has text.
+                // Track content and reasoning separately.
+                // Some servers stream thinking text in `content` while others use `reasoning_content`.
+                // We accumulate both but deliver them through the appropriate callback.
+                let reasoning_delta = delta.reasoning_content.as_deref().unwrap_or("");
+                
+                if !reasoning_delta.is_empty() {
+                    final_reasoning.push_str(reasoning_delta);
+                }
+                
                 let text = match (&delta.content, &delta.reasoning_content) {
                     (Some(c), Some(r)) => {
                         // Both present: prefer content (standard), fall back to reasoning_content
@@ -868,9 +875,9 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
                         if !c.trim().is_empty() { c.as_str() }
                         else { "" }
                     }
-                    (None, Some(r)) => {
-                        if !r.trim().is_empty() { r.as_str() }
-                        else { "" }
+                    (None, Some(_)) => {
+                        // reasoning_content was handled above
+                        ""
                     }
                     (None, None) => "",
                 };
@@ -956,6 +963,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
             text: final_text,
             tool_calls,
             tokens_used: total_tokens,
+            reasoning: if final_reasoning.is_empty() { None } else { Some(final_reasoning) },
         })
     }
 }

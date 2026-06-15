@@ -233,6 +233,7 @@ impl Agent {
                     text: String::new(),
                     tool_calls: Vec::new(),
                     tokens_used: None,
+                    reasoning: None,
                 })
             }
             async fn stream_chat(
@@ -245,6 +246,7 @@ impl Agent {
                     text: String::new(),
                     tool_calls: Vec::new(),
                     tokens_used: None,
+                    reasoning: None,
                 })
             }
         }

@@ -473,6 +473,8 @@ pub struct TransportResponse {
     pub text: String,
     pub tool_calls: Vec<TransportToolCall>,
     pub tokens_used: Option<usize>,
+    /// Reasoning/thinking chain-of-thought from models that support it.
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone)]

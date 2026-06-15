@@ -236,6 +236,7 @@ mod tests {
                 text: self.response_text.clone(),
                 tool_calls: vec![],
                 tokens_used: Some(42),
+                reasoning: None,
             })
         }
 
@@ -249,6 +250,7 @@ mod tests {
                 text: self.response_text.clone(),
                 tool_calls: vec![],
                 tokens_used: Some(42),
+                reasoning: None,
             })
         }
     }

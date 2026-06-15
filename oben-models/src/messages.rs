@@ -12,6 +12,9 @@ pub struct Message {
     pub tool_call_ids: Vec<String>,
     /// Tool calls made by the assistant in this message.
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// Reasoning/thinking chain-of-thought from models that support it.
+    /// Separated from content so the TUI can render it as a distinct block.
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +68,7 @@ impl Message {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         }
     }
 
@@ -75,6 +79,7 @@ impl Message {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         }
     }
 
@@ -85,6 +90,7 @@ impl Message {
             id: None,
             tool_call_ids: vec![],
             tool_calls: Some(tool_calls),
+            reasoning: None,
         }
     }
 
@@ -95,6 +101,7 @@ impl Message {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         }
     }
 
@@ -105,6 +112,7 @@ impl Message {
             id: None,
             tool_call_ids: vec![tool_call_id.into()],
             tool_calls: None,
+            reasoning: None,
         }
     }
 }

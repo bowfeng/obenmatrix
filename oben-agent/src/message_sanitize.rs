@@ -94,6 +94,7 @@ fn flush_pending_user(merged: &mut Vec<Message>, pending_text: String) {
         id: None,
         tool_call_ids: vec![],
         tool_calls: None,
+        reasoning: None,
     });
 }
 
@@ -199,6 +200,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         }
     }
 
@@ -209,6 +211,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: Some(vec![]),
+            reasoning: None,
         }
     }
 
@@ -295,6 +298,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
 
         let text_msg = make_user("Hello");
@@ -323,6 +327,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
 
         let text_msg = make_user("先看这张");
@@ -355,6 +360,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
 
         let mut messages = vec![make_user("previous"), make_assistant("hello"), img_msg];
@@ -383,6 +389,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
 
         let mut messages = vec![
@@ -434,6 +441,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
 
         let text_msg1 = make_user("先");

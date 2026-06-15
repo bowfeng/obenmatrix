@@ -1113,6 +1113,7 @@ impl ConversationWidget {
                 body_lines,
                 is_tool_result: false,
                 tool_calls: Vec::new(),
+                reasoning: None,
             },
         );
     }
@@ -1143,6 +1144,7 @@ impl ConversationWidget {
                     body_lines,
                     is_tool_result: false,
                     tool_calls: Vec::new(),
+                    reasoning: None,
                 },
             );
         }

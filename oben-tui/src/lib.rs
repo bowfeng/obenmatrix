@@ -673,6 +673,7 @@ fn build_image_message(input: &str) -> oben_models::Message {
                 id: None,
                 tool_call_ids: vec![],
                 tool_calls: None,
+                reasoning: None,
             };
         }
 
@@ -691,6 +692,7 @@ fn build_image_message(input: &str) -> oben_models::Message {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
     }
 
@@ -764,6 +766,7 @@ fn build_image_message(input: &str) -> oben_models::Message {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         }
     } else {
         // Multiple images or text + images — use Parts variant
@@ -792,6 +795,7 @@ fn build_image_message(input: &str) -> oben_models::Message {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         }
     }
 }

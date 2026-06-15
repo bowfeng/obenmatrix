@@ -198,6 +198,8 @@ pub struct MessageRenderEntry {
     pub body_lines: Vec<StyledLine>,
     /// Tool call info to render inline.
     pub tool_calls: Vec<String>,
+    /// Reasoning/thinking text to render as a separate block.
+    pub reasoning: Option<String>,
 }
 
 impl MessageRenderEntry {
@@ -364,6 +366,34 @@ pub fn render_message_entry(
         render_body_lines(&text, palette)
     };
 
+    // Append reasoning if present (folded/abridged format with 45% truncation)
+    if let Some(ref reasoning) = msg.reasoning {
+        if !reasoning.is_empty() {
+            let truncated_len = (reasoning.chars().count() * 45) / 100;
+            let folding_pct = 100 - 45;
+            body_lines.push(StyledLine {
+                content: Line::raw(""),
+                role_color: None,
+            });
+            let display_text = if reasoning.chars().count() > truncated_len {
+                format!(
+                    "({}%) {}",
+                    folding_pct,
+                    &reasoning.chars().take(truncated_len).collect::<String>()
+                )
+            } else {
+                format!("({}%) {}", folding_pct, reasoning)
+            };
+            body_lines.push(StyledLine {
+                content: Line::styled(
+                    display_text,
+                    Style::default().fg(palette.muted).add_modifier(Modifier::DIM),
+                ),
+                role_color: None,
+            });
+        }
+    }
+
     // Tool call indicators
     let mut tool_calls = Vec::new();
     if let Some(tcs) = &msg.tool_calls {
@@ -406,6 +436,7 @@ pub fn render_message_entry(
         is_tool_result: msg.role == MessageRole::Tool,
         body_lines,
         tool_calls,
+        reasoning: msg.reasoning.clone(),
     }
 }
 
@@ -514,6 +545,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
         let entry = renderer.render_entry(&msg);
         assert_eq!(entry.role, MessageRole::Assistant);
@@ -533,6 +565,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
         let entry = renderer.render_entry(&msg);
         assert!(entry.is_tool_result);
@@ -553,6 +586,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
         let entry = renderer.render_entry(&msg);
         assert!(!entry.body_lines.is_empty());
@@ -596,6 +630,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         };
         let entry = renderer.render_entry(&msg);
         assert!(!entry.body_lines.is_empty());

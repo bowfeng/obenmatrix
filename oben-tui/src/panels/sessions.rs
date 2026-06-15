@@ -237,6 +237,7 @@ impl SessionsPanel {
                 body_lines,
                 is_tool_result: false,
                 tool_calls: Vec::new(),
+                reasoning: None,
             });
         }
         // Also add actual message entries
