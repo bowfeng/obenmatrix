@@ -107,44 +107,32 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         Some(&volatile),
     );
 
-    let max_iterations = config.max_iterations.unwrap_or(50);
     let max_messages = config.context.max_messages.unwrap_or(100);
 
-    let transport = create_transport(&config, &assembled.prompt, &tools);
     let tools = std::sync::Arc::new(tools);
 
-    let mut chat = oben_agent::Agent::new(oben_agent::AgentConfig::from_app_config(
-        &config,
+    use crate::coordinator::CliCoordinator;
+
+    let mut coordinator = CliCoordinator::from_app_config(&config);
+
+    let mut chat = oben_agent::Agent::new(
+        config,
         assembled.prompt.clone(),
-        max_iterations,
-        max_messages,
-        skills_dirs,
-        transport,
-        tools,
-        oben_agent::AgentCallbacks::default(),
-    )    ).await?;
+        tools.clone(),
+    ).await?;
 
-    let callbacks = Arc::new(create_cli_callbacks());
-    chat.interactive_chat(stream, continue_with, callbacks, &config)
-        .await
-}
-
-fn create_cli_callbacks() -> oben_agent::AgentCallbacks {
-    use oben_agent::event_bus::{CliLogSubscriber, EventBus};
-    use oben_agent::hooks::adapters::{CLIInteractionAdapter, StreamingAdapter};
-
-    let mut bus = EventBus::new();
-    bus.add_subscriber(CliLogSubscriber);
-    let bus = Arc::new(bus);
-    let streaming = StreamingAdapter::new(bus.clone());
-    let cli_adapter = CLIInteractionAdapter::new_clio();
-
-    oben_agent::AgentCallbacks {
-        cli_interaction: Some(Box::new(cli_adapter)),
-        streaming: Some(Box::new(streaming)),
-        ..Default::default()
+    // If continuing an existing session, resolve it first.
+    if let Some(resolved) = continue_with {
+        let _name = chat.continue_session(resolved).await?;
+    } else if let Some(name) = chat.loaded_session_name().await {
+        tracing::info!("Session: {}", name);
     }
+
+    chat.run(coordinator).await?;
+    Ok(())
 }
+
+
 
 async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     let config = oben_config::AppConfig::load()?;
@@ -153,26 +141,16 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
     oben_tools::discover_builtin_tools(&mut tools);
 
     let system_prompt = oben_config::defaults::default_system_prompt();
-    let transport = create_transport(&config, &system_prompt, &tools);
-    let tools = std::sync::Arc::new(tools);
-
-    let max_iterations = config.max_iterations.unwrap_or(50);
-    let max_messages = config.context.max_messages.unwrap_or(100);
 
     let skills_dirs: Vec<std::path::PathBuf> = config.skills.dirs.iter()
         .map(|d| std::path::PathBuf::from(d))
         .collect();
 
-    let mut agent = oben_agent::Agent::new(oben_agent::AgentConfig::from_app_config(
-        &config,
-        system_prompt,
-        max_iterations,
-        max_messages,
-        skills_dirs,
-        transport,
-        tools,
-        oben_agent::AgentCallbacks::default(),
-    )).await?;
+    let mut agent = oben_agent::Agent::new(
+        config,
+        system_prompt.clone(),
+        std::sync::Arc::new(tools),
+    ).await?;
 
     let response = agent.turn(prompt, stream, None).await?;
 
@@ -534,12 +512,6 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
         &config.model,
         system_prompt.clone(),
     ));
-    // transport is used later in the closure when creating goal_agent
-    let _transport = oben_transport::Transport::from_config_with_tools_via_registry(
-        &config.model,
-        &system_prompt,
-        &tool_defs,
-    );
 
     let plan_prompt = format!(
         "You are a planner. Break the following goal into a step-by-step plan.\n\n\
@@ -643,11 +615,11 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
     oben_tools::discover_builtin_tools(&mut tools);
     let tools = std::sync::Arc::new(tools);
     let sp = oben_config::defaults::default_system_prompt();
-    let transport =
+    let _transport =
           oben_transport::Transport::from_config_with_tools_via_registry(&config.model, &sp, &tool_defs);
 
-    let max_iterations = config.max_iterations.unwrap_or(50);
-    let max_messages = config.context.max_messages.unwrap_or(100);
+    let _max_iterations = config.max_iterations.unwrap_or(50);
+    let _max_messages = config.context.max_messages.unwrap_or(100);
 
     let loop_config =   oben_goals::GoalLoopConfig {
         max_turns: max_turns.unwrap_or(20),
@@ -661,27 +633,16 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
         &loop_config,
         &store,
         move |prompt| {
-            let transport = transport.clone();
             let tools = tools.clone();
             let sp = sp.clone();
-            let max_iterations = max_iterations;
-            let max_messages = max_messages;
             let prompt_owned = prompt.to_string();
             let config = config.clone();
             async move {
-                let skills_dirs: Vec<std::path::PathBuf> = config.skills.dirs.iter()
-                    .map(|d| std::path::PathBuf::from(d))
-                    .collect();
-                let mut goal_agent =   oben_agent::Agent::new(oben_agent::AgentConfig::from_app_config(
-                    &config,
-                    sp,
-                    max_iterations,
-                    max_messages,
-                    skills_dirs,
-                    transport,
-                    tools,
-                    oben_agent::AgentCallbacks::default(),
-                ))
+                let mut goal_agent =   oben_agent::Agent::new(
+                    config.clone(),
+                    sp.clone(),
+                    tools.clone(),
+                )
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 

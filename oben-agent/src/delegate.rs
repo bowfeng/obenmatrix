@@ -9,7 +9,7 @@
 ///   - Shared `Arc<Transport>` (safe, session-scoped)
 ///   - Shared `Arc<ToolRegistry>` (safe, filtered by delegate tool)
 ///   - Fresh `Box<dyn ContextEngine>`
-/// - Runs the child agent via `ConversationLoop`
+/// - Runs the child agent via `Agent::turn` (single-turn with interrupt support)
 /// - Returns `SubagentResult` with summary, metadata
 use std::sync::Arc;
 
@@ -18,8 +18,7 @@ use tracing::{debug, info, warn};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::context::ContextEngine;
-use crate::interrupt::InterruptState;
+use crate::interrupt::{InterruptState, SharedInterrupt};
 
 /// Result of executing a child agent delegation run.
 ///
@@ -127,6 +126,8 @@ pub struct Subagent {
     pub depth: usize,
     /// Whether this subagent can further delegate (role=orchestrator && depth < max).
     pub can_delegate: bool,
+    /// Thread-safe interrupt state for this subagent, shared with coordinator.
+    pub interrupt_state: SharedInterrupt,
     /// Handle to retrieve the result.
     handle: tokio::task::JoinHandle<Result<SubagentResult>>,
 }
@@ -157,6 +158,14 @@ impl Subagent {
     /// Check if the subagent has completed.
     pub fn is_done(&self) -> bool {
         self.handle.is_finished()
+    }
+
+    /// Interrupt this subagent gracefully.
+    ///
+    /// Fires `request_interrupt()` on the subagent's shared `InterruptState`,
+    /// which is polled by `TurnExecutor` during each tool-call iteration.
+    pub fn interrupt(&self, message: Option<String>) {
+        self.interrupt_state.request_interrupt(message);
     }
 }
 
@@ -207,6 +216,8 @@ impl SubagentSpawner {
     ///
     /// The child gets its own `SessionManager` (shared DB) pointed at the
     /// `child_session_id`, a fresh `ContextEngine`, and its own `Arc<InterruptState>`.
+    /// The interrupt state is created **before** spawning the async task so the
+    /// parent coordinator can wire it to the interruption hub.
     pub fn spawn(
         &self,
         child_session_id: String,
@@ -223,9 +234,14 @@ impl SubagentSpawner {
         let max_spawn_depth = self.max_spawn_depth;
         let child_session_id_clone = child_session_id.clone();
 
+        // Create interrupt state OUTSIDE the async block so it is accessible
+        // to the parent coordinator for subagent tree interrupt propagation.
+        let interrupt_state = Arc::new(InterruptState::new());
+        let interrupt_state_for_spawn = Arc::clone(&interrupt_state);
+
         let goal_clone = goal.clone();
         let handle = tokio::spawn(async move {
-            let goal = goal_clone;
+            let goal = goal_clone.clone();
             let start = std::time::Instant::now();
             let model_name = transport.name().to_owned();
 
@@ -251,48 +267,25 @@ impl SubagentSpawner {
                 }
             }
 
-            // Create child ContextEngine
-            let mut context_engine = Box::new(
-                crate::compact_context::CompactContextEngine::with_config(context_config.clone()),
-            ) as Box<dyn ContextEngine>;
-            context_engine.on_session_start(
-                &child_session_id_clone,
-                &format!("delegate:{}", model_name),
-                None,
-            );
-
-            // Create interrupt state for the child
-            let interrupt_state = Arc::new(InterruptState::new());
+            // Create child ContextEngine (fresh engine, no need to call on_session_start)
+            // Note: Child ContextEngine created by Agent::new below, not here.
+            // (Previously passed to on_session_start, which was removed)
 
             // Build child agent — this is the core of delegate tool:
             // a full `Agent` with fresh context but shared transport/tools.
-            let child_agent = crate::agent::Agent::new(crate::agent::AgentConfig {
+            let mut child_agent = crate::agent::Agent::new(
+                oben_config::AppConfig::default(),
                 system_prompt,
-                transport,
                 tools,
-                skills_dirs: vec![], // Subagents don't load skills (MVP)
-                context_config: context_config.clone(),
-                max_iterations,
-                max_messages,
-                fallback_models: vec![],
-                retry_config: crate::retry::RetryConfig::default(),
-                callbacks: crate::callbacks::AgentCallbacks::default(),
-                concurrent_dispatch_config:
-                    crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
-                session_store: oben_models::SessionStoreKind::Database,
-                hooks_config: oben_config::HooksConfig::default(),
-                event_bus: std::sync::Arc::new(crate::event_bus::EventBus::new()),
-            })
-            .await;
-
-            let mut child_agent = match child_agent {
-                Ok(a) => a,
-                Err(e) => return Err(anyhow::anyhow!("Failed to create child agent: {e}")),
-            };
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to create child agent: {e}")
+            })?;
 
             // Execute the child's turn with the goal as the first message input
             let result = child_agent
-                .turn(&goal, false, Some(Arc::clone(&interrupt_state)))
+                .turn(&goal, false, Some(Arc::clone(&interrupt_state_for_spawn)))
                 .await;
 
             let (summary, api_calls) = match result {
@@ -318,6 +311,7 @@ impl SubagentSpawner {
             role: "orchestrator".into(),
             depth,
             can_delegate: depth < max_spawn_depth,
+            interrupt_state,
             handle,
         }
     }
@@ -454,6 +448,10 @@ pub fn build_spawn_fn_wrapper(
                 &goal.chars().take(100).collect::<String>()
             );
 
+            // Create interrupt state OUTSIDE the async block so it is accessible
+            // to the parent coordinator for subagent tree interrupt propagation.
+            let interrupt_state = Arc::new(InterruptState::new());
+
             let transport = Arc::clone(&transport);
             let tools = Arc::clone(&tools);
             let context_config = context_config.clone();
@@ -484,6 +482,7 @@ pub fn build_spawn_fn_wrapper(
             let goal_short: String = goal_clone.chars().take(80).collect();
             debug!("delegate: child goal starts with: {}", goal_short);
 
+            let is_clone = Arc::clone(&interrupt_state);
             tokio::spawn(async move {
                 let start = std::time::Instant::now();
 
@@ -592,38 +591,16 @@ pub fn build_spawn_fn_wrapper(
                     "delegate: init_child_context_engine child_session_id={}",
                     child_session_id
                 );
-                let mut context_engine =
-                    Box::new(crate::compact_context::CompactContextEngine::with_config(
-                        context_config.clone(),
-                    )) as Box<dyn crate::context::ContextEngine>;
-                context_engine.on_session_start(
-                    &child_session_id,
-                    &format!("delegate:{}", transport.name()),
-                    None,
-                );
-
-                // Create interrupt state for the child
-                let interrupt_state = Arc::new(InterruptState::new());
+                // Note: Child ContextEngine created by Agent::new below, not here.
+                // (Previously passed to on_session_start, which was removed)
 
                 // Build child agent with the child's toolset
                 info!("delegate: build_child_agent child_session_id={} depth={} role={} max_iterations={}", child_session_id, depth, role_clone, max_iterations);
-                let mut child_agent = crate::agent::Agent::new(crate::agent::AgentConfig {
-                    system_prompt: child_system_prompt,
-                    transport: Arc::clone(&transport),
-                    tools: child_tool_registry,
-                    skills_dirs: vec![],
-                    context_config: context_config.clone(),
-                    max_iterations,
-                    max_messages,
-                    fallback_models: vec![],
-                    retry_config: crate::retry::RetryConfig::default(),
-                    callbacks: crate::callbacks::AgentCallbacks::default(),
-                     concurrent_dispatch_config:
-                        crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
-                    session_store: oben_models::SessionStoreKind::Database,
-                    hooks_config: oben_config::HooksConfig::default(),
-                    event_bus: std::sync::Arc::new(crate::event_bus::EventBus::new()),
-                })
+                let mut child_agent = crate::agent::Agent::new(
+                    oben_config::AppConfig::default(),
+                    child_system_prompt,
+                    child_tool_registry,
+                )
                 .await
                 .map_err(|e| {
                     warn!(
@@ -641,7 +618,7 @@ pub fn build_spawn_fn_wrapper(
                     child_session_id, depth
                 );
                 let result = child_agent
-                    .turn(&goal_clone, false, Some(Arc::clone(&interrupt_state)))
+                    .turn(&goal_clone, false, Some(Arc::clone(&is_clone)))
                     .await;
 
                 let duration = start.elapsed().as_secs_f64();

@@ -20,10 +20,8 @@ use tracing::info;
 use crate::history;
 use crate::widgets::conversation::{ConversationState, ConversationWidget};
 use crate::widgets::message_renderer::MessageRenderer;
-use oben_agent::callbacks::relay::CallbacksRelay;
-use oben_agent::callbacks::WithRelay;
 use oben_agent::delegate::{build_spawn_fn_wrapper, SubagentSpawner};
-use oben_agent::{Agent, AgentCallbacks, AgentConfig, EventBus, TurnState, TuiSubscriber};
+use oben_agent::{Agent, EventBus, HookEngine, TurnState, TuiSubscriber};
 use oben_config::AppConfig;
 use oben_tools::delegate::DelegateTool;
 use oben_tools::ToolRegistry;
@@ -422,26 +420,21 @@ impl App {
         let turn_state = Arc::clone(&self.turn_state);
         let tui_subscriber = TuiSubscriber::new(Arc::clone(&turn_state));
 
-        // Create callback relay for parent→child subagent event forwarding.
         let mut event_bus = EventBus::new();
         event_bus.add_subscriber(tui_subscriber);
         let event_bus = Arc::new(event_bus);
 
-        let callbacks_relay = CallbacksRelay::new();
-
-        let system_events = oben_agent::SystemEventsAdapter::new(Arc::clone(&event_bus));
-
-        let tool_lifecycle = oben_agent::ToolLifecycleAdapter::new(Arc::clone(&event_bus));
-
-        let streaming = oben_agent::StreamingAdapter::new(Arc::clone(&event_bus));
-
-        let callbacks = AgentCallbacks {
-            system_events: Some(Box::new(system_events)),
-            tool_lifecycle: Some(Box::new(tool_lifecycle)),
-            streaming: Some(Box::new(streaming)),
-            ..Default::default()
-        }
-        .with_relay(Arc::new(callbacks_relay));
+        // Build HookEngine with registered adapters for event dispatch through TurnExecutor.
+        let mut hook_engine = HookEngine::new();
+        hook_engine.register_system(Box::new(
+            oben_agent::SystemEventsAdapter::new(Arc::clone(&event_bus))
+        ));
+        hook_engine.register_tool(Box::new(
+            oben_agent::ToolLifecycleAdapter::new(Arc::clone(&event_bus))
+        ));
+        hook_engine.register_streaming(Box::new(
+            oben_agent::StreamingAdapter::new(Arc::clone(&event_bus))
+        ));
 
         // Register delegate tool.
         {
@@ -466,21 +459,16 @@ impl App {
             ));
         }
 
-        let mut agent_config = AgentConfig::from_app_config(
-            &self.config,
-            assembled.prompt,
-            self.config.max_iterations.unwrap_or(50),
-            self.config.context.max_messages.unwrap_or(100),
-            vec![],
-            transport,
-            Arc::clone(&self.tools),
-            callbacks,
-        );
-        agent_config.event_bus = Arc::clone(&event_bus);
-
         self.agent = Some(Arc::new(tokio::sync::Mutex::new(
-            Agent::new(agent_config).await?,
+            Agent::new(self.config.clone(), assembled.prompt.clone(), Arc::clone(&self.tools))
+                .await?,
         )));
+
+        // Replace default HookEngine with custom one (connected to EventBus for UI updates).
+        if let Some(agent) = &self.agent {
+            let mut guard = agent.lock().await;
+            guard.set_hooks(Arc::new(hook_engine));
+        }
 
         // Share the Agent's internal InterruptState with App so the event loop
         // can call request_interrupt() without acquiring the tokio::sync::Mutex

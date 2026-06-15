@@ -13,11 +13,7 @@ pub struct AppConfig {
     pub temperature: Option<f64>,
     pub max_tokens: Option<usize>,
     pub max_iterations: Option<usize>,
-    /// Maximum delegation depth for subagent spawning. When depth >= this value,
-    /// children become leaf agents and cannot delegate further.
     pub max_spawn_depth: Option<usize>,
-    /// Maximum number of subagent tasks running concurrently in batch mode.
-    /// Excess tasks wait in a queue until a slot opens up. Default is 5.
     pub max_concurrent_tasks: Option<usize>,
     pub tools: ToolsConfig,
     pub skills: SkillsConfig,
@@ -28,25 +24,12 @@ pub struct AppConfig {
     pub providers: Vec<ProviderConfig>,
     pub custom_providers: Vec<String>,
     pub vision: VisionConfig,
-    /// Session storage backend: "database" (default) or "memory".
-    #[serde(default)]
     pub session_store: SessionStoreKind,
-    /// Retry behavior for API calls.
-    #[serde(default)]
     pub retry: RetryConfig,
-    /// Concurrency settings for tool dispatch and compaction.
-    #[serde(default)]
     pub concurrency: ConcurrencyConfig,
-    /// Post-turn hook settings.
-    #[serde(default)]
     pub hooks: HooksConfig,
-    /// Fallback model chain.
     pub fallback_models: Vec<FallbackConfig>,
-    /// Agent personality and behavior.
-    #[serde(default)]
     pub agent: AgentConfig,
-    /// Event routing configuration for the callback relay.
-    #[serde(default)]
     pub events: EventsConfig,
 }
 

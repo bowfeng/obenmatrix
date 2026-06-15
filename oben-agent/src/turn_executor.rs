@@ -11,7 +11,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::budget::{BudgetWarningCallback, IterationBudget};
-use crate::callbacks::AgentCallbacks;
+use crate::hooks::HookEngine;
 use crate::concurrent_dispatch::{self, ConcurrentDispatchConfig, PendingToolCall};
 use crate::context::ContextEngine;
 use crate::error_classifier::{ClassifiedError, ErrorKind};
@@ -30,10 +30,10 @@ use oben_models::{Message, MessageRole, Session, SessionManager, StreamDeltaCall
 pub struct TurnConfig {
     /// Retry configuration for API calls.
     pub retry_config: RetryConfig,
-    /// Budget warning callback.
+    /// Budget warning callback function.
     pub budget_warning: Option<BudgetWarningCallback>,
-    /// Agent callbacks for rich event dispatch (Tier 2).
-    pub callbacks: Option<Arc<AgentCallbacks>>,
+    /// Unified hook engine for event dispatch during turn execution.
+    pub hooks: Option<Arc<HookEngine>>,
     /// Fallback model chain (Tier 2).
     pub fallback_chain: Option<FallbackChain>,
     /// Concurrent dispatch configuration (Tier 2).
@@ -45,7 +45,7 @@ impl Default for TurnConfig {
         Self {
             retry_config: RetryConfig::default(),
             budget_warning: None,
-            callbacks: None,
+            hooks: None,
             fallback_chain: None,
             dispatch_config: None,
         }
@@ -152,8 +152,8 @@ impl TurnExecutor {
         }
 
         // ── Activity tracking: mark turn start ───────────────────────
-        if let Some(ref cb) = config.callbacks {
-            cb.on_status("lifecycle", "turn_start");
+        if let Some(ref hooks) = config.hooks {
+            hooks.emit_status("lifecycle", "turn_start");
         }
         if let Some(ref int_state) = interrupt {
             int_state.touch_activity();
@@ -227,8 +227,8 @@ impl TurnExecutor {
                     let compacted_msgs = session.messages.clone();
                     let _ = session;
 
-                    // 1. End the parent session
-                    context_engine.on_session_end(&parent_id);
+                    // 1. Reset context engine state for the split
+                    context_engine.reset();
 
                     // 2. Split: end parent in DB, create child with lineage
                     let child_session = match session_manager.split_after_compression(&parent_id) {
@@ -284,14 +284,7 @@ impl TurnExecutor {
                     // 5. Copy compacted messages into child session's in-memory state
                     session.messages = compacted_msgs;
 
-                    // 6. Start the new session on the context engine
-                    let model = session.metadata.model.as_deref().unwrap_or("unknown");
-                    let context_length = if session.metadata.last_prompt_tokens > 0 {
-                        Some(session.metadata.last_prompt_tokens * 2)
-                    } else {
-                        Some(128_000)
-                    };
-                    context_engine.on_session_start(&child_id, model, context_length);
+                    // 6. Context engine already reset at session split (line ~230)
 
                     info!(
                         "Session rotated: {} → {}, copied {} compacted messages",
@@ -319,25 +312,25 @@ impl TurnExecutor {
 
             // All streaming dispatch goes through the hook system.
             // Clone Arc for 'static lifetime in the stream_chat closure.
-            let callback = config.callbacks.as_ref().map(|cb| Arc::clone(cb));
-            let callback_for_stream = callback.clone();
+            let hooks = config.hooks.as_ref().map(|cb| Arc::clone(cb));
+            let hooks_for_stream = hooks.clone();
             let response = retry_with_backoff(&config.retry_config, || {
                 let transport_ref = transport_ref;
                 let messages = session.messages.clone();
                 let mode = call_mode.clone();
-                let callback = callback_for_stream.clone();
+                let hooks = hooks_for_stream.clone();
 
                 async move {
-                    if let Some(ref cb) = callback {
-                        cb.on_status("lifecycle", "api_call_start");
+                    if let Some(ref hooks) = hooks {
+                        hooks.emit_status("lifecycle", "api_call_start");
                     }
-                    let callback_for_dispatch = callback.clone();
+                    let hooks_for_dispatch = hooks.clone();
                     let cb_wrapper: StreamDeltaCallback = Box::new(move |text: &str| {
                         // Dispatch every delta through the hook system in real-time.
                         // The accumulated response text will also be dispatched below.
-                        tracing::trace!(delta = text, "[TurnExecutor] delta_callback fired");
-                        if let Some(ref cb) = callback {
-                            cb.on_stream_delta(text);
+                        tracing::trace!(delta = text, "[TurnExecutor] delta_dispatch fired");
+                        if let Some(ref hooks) = hooks {
+                            hooks.emit_stream_delta(text);
                         }
                     }) as StreamDeltaCallback;
                     match transport_ref
@@ -347,8 +340,8 @@ impl TurnExecutor {
                         Ok(response) => {
                             // Dispatch accumulated response text through the hook system.
                             // Ensures subscribers receive the full response.
-                            if let Some(ref cb) = callback_for_dispatch {
-                                cb.on_stream_delta(&response.text);
+                            if let Some(ref hooks) = hooks_for_dispatch {
+                                hooks.emit_stream_delta(&response.text);
                             }
                             Ok(response)
                         }
@@ -370,8 +363,8 @@ impl TurnExecutor {
                                 "Fallback activated after retries: {}/{} (HTTP {:?})",
                                 _fb.provider, _fb.model, classified.http_code
                             );
-                            if let Some(ref cb) = config.callbacks {
-                                cb.on_status(
+                            if let Some(ref hooks) = config.hooks {
+                                hooks.emit_status(
                                     "warn",
                                     &format!("fallback_activated: {}/{}", _fb.provider, _fb.model),
                                 );
@@ -384,7 +377,7 @@ impl TurnExecutor {
             match response {
                 Ok(response) => {
                     let tool_calls = &response.tool_calls;
-                    let mut text = response.text.to_string();
+                    let text = response.text.to_string();
 
                     // text.len() is byte count (UTF-8), not char count.
                     // Slice by chars to avoid cutting mid-character.
@@ -435,8 +428,8 @@ impl TurnExecutor {
                                 "Empty LLM response (attempt {}), injecting system hint to recover",
                                 consecutive_empty_responses
                             );
-                            if let Some(cb) = &config.callbacks {
-                                cb.on_status(
+                            if let Some(ref hooks) = &config.hooks {
+                                hooks.emit_status(
                                     "info",
                                     &format!(
                                         "empty_response_recovery: attempt={}",
@@ -496,7 +489,7 @@ impl TurnExecutor {
                         });
                     }
 
-                    // ── Dispatch tool calls (concurrent + callbacks, Tier 2) ─────
+                    // Event dispatch through HookEngine, Tier 2) ─────
                     let default_dispatch = ConcurrentDispatchConfig::default();
                     let dispatch_config =
                         config.dispatch_config.as_ref().unwrap_or(&default_dispatch);
@@ -523,11 +516,11 @@ impl TurnExecutor {
                         })
                         .collect();
 
-                    // Notify callbacks of tool generation
-                    if let Some(cb) = &config.callbacks {
+                    // Event dispatch through HookEngine of tool generation
+                    if let Some(ref hooks) = &config.hooks {
                         for call in &pending_calls {
-                            cb.on_tool_gen(&call.tool_name, &call.call_id);
-                            cb.on_tool_start(&call.tool_name, &call.arguments.to_string());
+                            hooks.emit_tool_gen(&call.tool_name, &call.call_id);
+                            hooks.emit_tool_start(&call.tool_name, &call.arguments.to_string());
                         }
                     }
 
@@ -540,7 +533,7 @@ impl TurnExecutor {
                     )
                     .await?;
 
-                    // Store results and notify callbacks
+                    // Event dispatch through HookEngine
                     for (i, result) in results.iter().enumerate() {
                         let tool_call_id = &pending_calls[i].call_id;
 
@@ -570,14 +563,14 @@ impl TurnExecutor {
                         };
                         session.messages.push(msg);
 
-                        // Notify callbacks of tool completion or error
-                        if let Some(cb) = &config.callbacks {
+                        // Event dispatch through HookEngine of tool completion or error
+                        if let Some(ref hooks) = &config.hooks {
                             let tool_name = &pending_calls[i].tool_name;
                             let args = &pending_calls[i].arguments.to_string();
                             if let Some(ref err) = result.error {
-                                cb.on_tool_error(tool_name, args, err);
+                                hooks.emit_tool_error(tool_name, args, err);
                             } else {
-                                cb.on_tool_complete(tool_name, args, &result.output);
+                                hooks.emit_tool_complete(tool_name, args, &result.output);
                             }
                         }
                     }

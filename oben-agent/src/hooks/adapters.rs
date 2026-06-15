@@ -1,6 +1,5 @@
 use super::kind::*;
 use crate::event_bus::EventBus;
-use std::io::{self, Write};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -23,6 +22,11 @@ impl AgentLoopHooks for AgentLoopAdapter {
     }
     fn on_loop_end(&self, _outcome: &str) {}
 }
+
+impl Hook for AgentLoopAdapter {
+    fn id(&self) -> &str { "agent_loop" }
+}
+
 
 // ---------------------------------------------------------------------------
 // ToolLifecycleAdapter
@@ -60,6 +64,11 @@ impl ToolLifecycleHooks for ToolLifecycleAdapter {
     fn on_tool_progress(&self, _tool_name: &str, _preview: &str) {}
 }
 
+impl Hook for ToolLifecycleAdapter {
+    fn id(&self) -> &str { "tool_lifecycle" }
+}
+
+
 // ---------------------------------------------------------------------------
 // StreamingAdapter
 // ---------------------------------------------------------------------------
@@ -91,6 +100,11 @@ impl StreamingHooks for StreamingAdapter {
     fn on_interim_assistant(&self, _text: &str) {}
 }
 
+impl Hook for StreamingAdapter {
+    fn id(&self) -> &str { "streaming" }
+}
+
+
 // ---------------------------------------------------------------------------
 // SystemEventsAdapter
 // ---------------------------------------------------------------------------
@@ -105,106 +119,15 @@ impl SystemEventsAdapter {
     }
 }
 
+
 impl SystemEventsHooks for SystemEventsAdapter {
     fn on_status(&self, level: &str, message: &str) {
         self.bus.on_system_event("status", &format!("[{level}] {message}"));
     }
-    fn on_step(&self, message: &str) {
-        self.bus.on_system_event("step", message);
-    }
-    fn on_vprint(&self, message: &str) {
-        self.bus.on_system_event("vprint", message);
-    }
 }
 
-// ---------------------------------------------------------------------------
-// CLIInteractionAdapter (noop - CLI doesn't need interactive hooks)
-// ---------------------------------------------------------------------------
-
-pub struct CLIInteractionAdapter {
-    cliio: bool,
-}
-
-impl CLIInteractionAdapter {
-    pub fn new_noop() -> Self {
-        Self { cliio: false }
-    }
-    pub fn new_clio() -> Self {
-        Self { cliio: true }
-    }
-}
-
-impl Default for CLIInteractionAdapter {
-    fn default() -> Self {
-        Self::new_noop()
-    }
-}
-
-impl CLIInteractionHooks for CLIInteractionAdapter {
-    fn on_print_prompt(&self) {
-        if self.cliio {
-            print!("> ");
-            let _ = std::io::stdout().flush();
-        }
-    }
-    fn on_print_flush(&self) {
-        if self.cliio {
-            let _ = std::io::stdout().flush();
-        }
-    }
-    fn on_print_info(&self, message: &str) {
-        if self.cliio {
-            println!("{}", message);
-        }
-    }
-    fn on_print_newline(&self) {
-        if self.cliio {
-            println!();
-        }
-    }
-    fn on_read_input(&self) -> Option<String> {
-        if self.cliio {
-            let mut input = String::new();
-            if io::stdin().read_line(&mut input).is_ok() {
-                Some(input.trim().to_string())
-            } else {
-                Some(String::new())
-            }
-        } else {
-            None
-        }
-    }
-    fn on_should_exit(&self, input: &str) -> bool {
-        if self.cliio {
-            input == "quit" || input == "exit"
-        } else {
-            false
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ClarificationAdapter
-// ---------------------------------------------------------------------------
-
-pub struct ClarificationAdapter;
-
-impl ClarificationAdapter {
-    pub fn new_noop() -> Self {
-        Self
-    }
-}
-
-impl Default for ClarificationAdapter {
-    fn default() -> Self {
-        Self::new_noop()
-    }
-}
-
-impl ClarificationHooks for ClarificationAdapter {
-    fn on_clarify(&self, _question: &str, _choices: &[String]) -> String {
-        String::new()
-    }
+impl Hook for SystemEventsAdapter {
+    fn id(&self) -> &str { "system_events" }
 }
 
 #[cfg(test)]

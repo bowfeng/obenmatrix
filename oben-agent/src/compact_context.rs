@@ -229,53 +229,6 @@ impl ContextEngine for CompactContextEngine {
         }
     }
 
-    fn on_session_start(
-        &mut self,
-        session_id: &str,
-        model_name: &str,
-        context_length: Option<usize>,
-    ) {
-        self.ineffective_compression_count = 0;
-        self.consecutive_effective_compressions = 0;
-        self.last_compression_savings_pct = 0.0;
-        if let Some(ctx_len) = context_length {
-            self.config.context_length = ctx_len;
-        }
-        self._last_summary_error = None;
-        self._last_aux_model_failure_model = None;
-        tracing::info!(
-            "ContextEngine::on_session_start: session={} model={} context_length={}",
-            session_id,
-            model_name,
-            self.config.context_length
-        );
-    }
-
-    fn on_session_reset(&mut self) {
-        self.compression_count = 0;
-        self.last_prompt_tokens = 0;
-        self.last_completion_tokens = 0;
-        self.last_total_tokens = 0;
-        self._previous_summary = None;
-        self._last_summary_error = None;
-        self._last_aux_model_failure_model = None;
-        tracing::info!(
-            "ContextEngine::on_session_reset: compression_count={}",
-            self.compression_count
-        );
-    }
-
-    fn on_session_end(&mut self, session_id: &str) {
-        tracing::info!(
-            "ContextEngine::on_session_end: session={} compression_count={} last_error={:?}",
-            session_id,
-            self.compression_count,
-            self._last_summary_error
-        );
-        self._last_summary_error = None;
-        self._last_aux_model_failure_model = None;
-    }
-
     async fn preflight_check(
         &mut self,
         messages: &mut Vec<Message>,
@@ -421,26 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn test_on_session_start_resets_state() {
-        let mut engine = CompactContextEngine::new();
-        engine.compression_count = 5;
-        engine.ineffective_compression_count = 3;
-        engine.consecutive_effective_compressions = 2;
-        engine._last_summary_error = Some("test error".to_string());
-        engine._last_aux_model_failure_model = Some("old-model".to_string());
-
-        engine.on_session_start("session-123", "gpt-4", Some(8192));
-
-        assert_eq!(engine.ineffective_compression_count, 0);
-        assert_eq!(engine.consecutive_effective_compressions, 0);
-        assert_eq!(engine.last_compression_savings_pct, 0.0);
-        assert!(engine._last_summary_error.is_none());
-        assert!(engine._last_aux_model_failure_model.is_none());
-        assert_eq!(engine.config.context_length, 8192);
-    }
-
-    #[test]
-    fn test_on_session_reset_clears_state() {
+    fn test_reset_clears_all_state() {
         let mut engine = CompactContextEngine::new();
         engine.compression_count = 10;
         engine.last_prompt_tokens = 500;
@@ -448,8 +382,12 @@ mod tests {
         engine.last_total_tokens = 700;
         engine._previous_summary = Some("old summary".to_string());
         engine._last_summary_error = Some("error".to_string());
+        engine._last_aux_model_failure_model = Some("old-model".to_string());
+        engine.ineffective_compression_count = 3;
+        engine.consecutive_effective_compressions = 2;
+        engine.last_compression_savings_pct = 45.0;
 
-        engine.on_session_reset();
+        engine.reset();
 
         assert_eq!(engine.compression_count, 0);
         assert_eq!(engine.last_prompt_tokens, 0);
@@ -457,18 +395,20 @@ mod tests {
         assert_eq!(engine.last_total_tokens, 0);
         assert!(engine._previous_summary.is_none());
         assert!(engine._last_summary_error.is_none());
+        assert!(engine._last_aux_model_failure_model.is_none());
+        assert_eq!(engine.ineffective_compression_count, 0);
+        assert_eq!(engine.consecutive_effective_compressions, 0);
+        assert_eq!(engine.last_compression_savings_pct, 0.0);
     }
 
     #[test]
-    fn test_on_session_end_clears_error_state() {
+    fn test_reset_preserves_config() {
         let mut engine = CompactContextEngine::new();
-        engine._last_summary_error = Some("session ended".to_string());
-        engine._last_aux_model_failure_model = Some("model-x".to_string());
+        let saved_context_length = engine.config.context_length;
 
-        engine.on_session_end("session-456");
+        engine.reset();
 
-        assert!(engine._last_summary_error.is_none());
-        assert!(engine._last_aux_model_failure_model.is_none());
+        assert_eq!(engine.config.context_length, saved_context_length);
     }
 
     // ─── Async compact() tests with mock transport ─────────────────────────────
@@ -900,8 +840,8 @@ mod tests {
         let _ = engine.compact(&mut test_msgs, Some(&transport), None).await;
         assert!(engine.is_thrashing());
 
-        // New session clears thrashing
-        engine.on_session_start("new-session", "gpt-4", None);
+        // Reset clears thrashing
+        engine.reset();
 
         assert_eq!(engine.ineffective_compression_count, 0);
         assert_eq!(engine.consecutive_effective_compressions, 0);

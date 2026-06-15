@@ -2,14 +2,15 @@
 //!
 //! **Resource Ownership:**
 //! Agent owns all runtime resources — Transport, Tools, Skills, SystemPrompt,
-//! ContextEngine, and SessionManager. It delegates turn execution to `ConversationLoop`.
+//! ContextEngine, and SessionManager. It delegates turn execution to
+//! `coordinator::execute_turn_full`.
 //!
 //! **Responsibilities:**
 //! - Own Transport, Tools, Skills, SystemPrompt, ContextEngine (resource management)
 //! - Own SessionManager (session lifecycle, persistence)
-//! - Delegate turn cycle to ConversationLoop
+//! - Delegate turn cycle to shared `execute_turn_full`
 //! - Manage session switching
-//! - Interactive chat loop
+//! - Interactive chat loop via `run(coordinator)` — passes resources to a `ConversationCoordinator`
 //! - Cross-thread interrupt and steer (Tier 1)
 //! - Fallback model chain (Tier 2)
 //! - Rich callback system (Tier 2)
@@ -17,6 +18,7 @@
 //! - Concurrent tool dispatch (Tier 2)
 //! - Nudge / background review (Tier 2)
 
+use crate::fallback::FallbackChain;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -30,200 +32,96 @@ pub fn generate_session_name() -> String {
 use oben_models::{CallMode, Message, StreamDeltaCallback};
 use oben_sessions::{SessionManager, SessionStore};
 
-use crate::callbacks::AgentCallbacks;
-use crate::event_bus::EventBus;
-use crate::conversation::ConversationLoop;
-use crate::fallback::FallbackChain;
-use crate::hooks::HookFactory;
+
+use crate::coordinator::ConversationConfig;
+use crate::coordinator::execute_turn_full;
+use crate::coordinator::{ConversationCoordinator, ConversationResult};
 use crate::interrupt::InterruptState;
-use crate::system_prompt_cache::SystemPromptCache;
-use crate::PostTurnHook;
 
-/// Configuration for building an `Agent`.
-pub struct AgentConfig {
-    /// System prompt for the agent.
-    pub system_prompt: String,
-    /// Transport for LLM calls — a trait object so the registry can return any registered transport.
-    pub transport: std::sync::Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
-    /// Registered tools.
-    pub tools: std::sync::Arc<oben_tools::ToolRegistry>,
-    /// Skills directories.
-    pub skills_dirs: Vec<std::path::PathBuf>,
-    /// Compression configuration.
-    pub context_config: crate::compact::CompactCofig,
-    /// Max iteration budget per turn.
-    pub max_iterations: usize,
-    /// Max messages in context.
-    pub max_messages: usize,
-    /// Fallback model chain.
-    pub fallback_models: Vec<crate::fallback::FallbackConfig>,
-    /// Retry policy for API calls.
-    pub retry_config: crate::retry::RetryConfig,
-    /// Agent callbacks for platform integration.
-    pub callbacks: AgentCallbacks,
-    /// Concurrent dispatch configuration.
-    pub concurrent_dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
-    /// Session storage backend (e.g., "database" or "memory").
-    pub session_store: oben_models::SessionStoreKind,
-    /// Hooks configuration for extensible post-turn behavior.
-    pub hooks_config: oben_config::HooksConfig,
-    /// Event bus — shared with callbacks, dispatched to by adapters.
-    pub event_bus: std::sync::Arc<EventBus>,
-}
+/// Dummy coordinator for testing.
+pub struct DummyCoordinator;
 
-/// Builder for `AgentConfig` from `AppConfig`.
-///
-/// Maps config values to runtime types, providing a single entry point that
-/// replaces the manual `AgentConfig { ..., retry_config: RetryConfig::default(), ... }`
-/// boilerplate at every call site.
-impl AgentConfig {
-    /// Build an `AgentConfig` from `AppConfig` and runtime resources.
-    ///
-    /// **Parameters:**
-    /// - `app_config` — the full application config
-    /// - `system_prompt` — the assembled system prompt (identity + tool guidance + context)
-    /// - `max_iterations` — max iterations per turn
-    /// - `max_messages` — max messages in context
-    /// - `skills_dirs` — directories to scan for skills
-    /// - `transport` — LLM transport provider
-    /// - `tools` — tool registry
-    /// - `callbacks` — agent callbacks for platform integration
-    pub fn from_app_config(
-        app_config: &oben_config::AppConfig,
-        system_prompt: String,
-        max_iterations: usize,
-        max_messages: usize,
-        skills_dirs: Vec<std::path::PathBuf>,
-        transport: std::sync::Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
-        tools: std::sync::Arc<oben_tools::ToolRegistry>,
-        callbacks: AgentCallbacks,
-    ) -> Self {
-        // Derive context config from app_config
-        let context_config = crate::compact::CompactCofig {
-            context_length: app_config.context.context_length,
-            threshold_percent: app_config.context.threshold_percent,
-            ..crate::compact::CompactCofig::default()
-        };
-
-        // Derive fallback models from app_config
-        let fallback_models: Vec<crate::fallback::FallbackConfig> = app_config
-            .fallback_models
-            .iter()
-            .map(|fb| crate::fallback::FallbackConfig {
-                provider: fb.provider.clone(),
-                model: fb.model.clone(),
-                api_key: fb.api_key.clone(),
-                base_url: fb.base_url.clone(),
-            })
-            .collect();
-
-        // Derive concurrent dispatch config from app_config
-        let concurrent_dispatch_config = crate::concurrent_dispatch::ConcurrentDispatchConfig {
-            max_concurrency: app_config.concurrency.max_concurrency,
-            serial_only_tools: app_config.concurrency.serial_only_tools.clone(),
-            destructive_tools: app_config.concurrency.destructive_tools.clone(),
-        };
-
-        Self {
-            system_prompt,
-            transport,
-            tools,
-            max_iterations,
-            max_messages,
-            skills_dirs,
-            context_config,
-            fallback_models,
-            retry_config: crate::retry::RetryConfig {
-                max_retries: app_config.retry.max_retries,
-                base_delay_ms: app_config.retry.base_delay_ms,
-                max_delay_ms: app_config.retry.max_delay_ms,
-                jitter_factor: app_config.retry.jitter_factor,
-                retryable_codes: app_config.retry.retryable_codes.clone(),
-            },
-            callbacks,
-            concurrent_dispatch_config,
-            session_store: app_config.session_store.clone(),
-            hooks_config: app_config.hooks.clone(),
-            event_bus: std::sync::Arc::new(EventBus::new()),
-        }
+impl Default for DummyCoordinator {
+    fn default() -> Self {
+        Self
     }
 }
 
-/// An interactive agent — owns all resources, delegates to ConversationLoop.
+#[::async_trait::async_trait]
+impl ConversationCoordinator for DummyCoordinator {
+    async fn run(
+        &mut self,
+        _context_engine: &mut dyn crate::context::ContextEngine,
+        _transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
+        _tools: Arc<oben_tools::ToolRegistry>,
+        _session_manager: &mut dyn SessionManager,
+    ) -> Result<ConversationResult> {
+        Ok(ConversationResult::Exit)
+    }
+}
+
+/// An interactive agent — owns all resources, delegates turns to shared execute_turn_full.
 pub struct Agent {
-    /// Transport — owned by Agent, shared across sessions.
-    transport: std::sync::Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
-    /// Tools registry — owned by Agent.
+    transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
     tools: Arc<oben_tools::ToolRegistry>,
-    /// Context engine — owned by Agent, manages token tracking & compression.
     context_engine: Box<dyn crate::context::ContextEngine>,
-    /// Call mode — tracked per-session (Fresh on first turn, Incremental after).
     call_mode: Option<oben_models::CallMode>,
-    /// Session manager — owns session lifecycle and persistence.
     session_manager: Arc<Mutex<SessionStore>>,
-    /// Interrupt state — shared via Arc with ConversationLoop/TurnExecutor.
     interrupt_state: Arc<InterruptState>,
-    /// Fallback model chain.
-    fallback_chain: FallbackChain,
-    /// Retry policy for user turns.
-    retry_config: crate::retry::RetryConfig,
-    /// Agent callbacks.
-    callbacks: Arc<AgentCallbacks>,
-    /// Event bus — shared with callbacks, dispatched to by adapters.
-    event_bus: std::sync::Arc<EventBus>,
-    /// System prompt prefix cache.
-    prompt_cache: SystemPromptCache,
-    /// Max iteration budget per turn.
-    max_iterations: usize,
-    /// Concurrent dispatch config.
-    dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig,
-    /// Hooks configuration for extensible post-turn behavior.
-    hooks_config: oben_config::HooksConfig,
+    config: oben_config::AppConfig,
+    fallback_chain: Option<crate::fallback::FallbackChain>,
+    system_prompt: String,
+    hooks: Arc<super::hooks::HookEngine>,
 }
 
 impl Agent {
-    /// Create a new agent. Does NOT own a tokio runtime.
-    pub async fn new(config: AgentConfig) -> Result<Self> {
-        let session_manager = Arc::new(Mutex::new(SessionStore::new(config.session_store)?));
+    pub async fn new(
+        config: oben_config::AppConfig,
+        system_prompt: String,
+        tools: Arc<oben_tools::ToolRegistry>,
+    ) -> Result<Self> {
+        let system_prompt_cloned = system_prompt.clone();
+        let tools_for_transport: Vec<oben_models::ToolMeta> = tools.list_tools().iter().map(|t| t.clone()).collect();
+        let transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync> =
+            oben_transport::Transport::from_config_with_tools_via_registry(
+                &config.model,
+                &system_prompt_cloned,
+                &tools_for_transport,
+            );
+        let session_manager = Arc::new(Mutex::new(SessionStore::new(config.session_store.clone())?));
+        let hooks = Arc::new(super::hooks::HookBuilder::from_config(&config.hooks).build());
+        let context_config = crate::compact::CompactCofig {
+            context_length: config.context.context_length,
+            threshold_percent: config.context.threshold_percent,
+            ..crate::compact::CompactCofig::default()
+        };
 
         let mut agent = Self {
-            transport: config.transport,
-            tools: config.tools,
-            context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(
-                config.context_config,
-            )),
+            transport,
+            tools,
+            context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(context_config)),
             call_mode: None,
             session_manager,
             interrupt_state: Arc::new(InterruptState::new()),
-            fallback_chain: FallbackChain::new(config.fallback_models),
-            callbacks: Arc::new(config.callbacks),
-            event_bus: config.event_bus,
-            prompt_cache: SystemPromptCache::new(),
-            retry_config: config.retry_config,
-            max_iterations: config.max_iterations,
-            dispatch_config: config.concurrent_dispatch_config,
-            hooks_config: config.hooks_config,
+            config,
+            fallback_chain: None,
+            system_prompt,
+            hooks,
         };
-        // Initialize the prompt cache with the initial system prompt.
-        // The cache will be updated on each compaction/session change.
-        agent.prompt_cache.set_prompt(&config.system_prompt);
+
         agent.eager_load_active_session().await;
         Ok(agent)
     }
 
     /// Create a minimal Agent for testing. Does NOT call real transport or LLMs.
     pub async fn new_for_test() -> Self {
-        use crate::fallback::FallbackChain;
         use oben_models::providers::TransportProvider;
         use oben_models::{CallMode, TransportResponse};
 
-        // A no-op transport stub
         struct TestTransport;
         #[::async_trait::async_trait]
         impl TransportProvider for TestTransport {
-            fn name(&self) -> &str {
-                "test"
-            }
+            fn name(&self) -> &str { "test" }
             async fn chat(
                 &self,
                 _messages: &[Message],
@@ -251,9 +149,19 @@ impl Agent {
             }
         }
 
-        let session_manager = Arc::new(Mutex::new(SessionStore::new(oben_models::SessionStoreKind::Memory).unwrap()));
-        let transport = Arc::new(TestTransport) as Arc<dyn TransportProvider + Send + Sync>;
+        let session_manager = Arc::new(Mutex::new(SessionStore::new(
+            oben_models::SessionStoreKind::Memory,
+        )
+        .unwrap()));
         let tools = Arc::new(oben_tools::ToolRegistry::new());
+
+        let transport = Arc::new(
+            oben_transport::Transport::from_config_with_tools_via_registry(
+                &oben_config::AppConfig::default().model,
+                "",
+                &[],
+            )
+        ) as Arc<dyn TransportProvider + Send + Sync>;
 
         Self {
             transport,
@@ -262,15 +170,27 @@ impl Agent {
             call_mode: None,
             session_manager,
             interrupt_state: Arc::new(InterruptState::new()),
-            fallback_chain: FallbackChain::new(Vec::new()),
-            retry_config: crate::retry::RetryConfig::default(),
-            callbacks: Arc::new(AgentCallbacks::default()),
-            event_bus: std::sync::Arc::new(EventBus::new()),
-            prompt_cache: SystemPromptCache::new(),
-            max_iterations: 16,
-            dispatch_config: crate::concurrent_dispatch::ConcurrentDispatchConfig::default(),
-            hooks_config: oben_config::HooksConfig::default(),
+            config: oben_config::AppConfig::default(),
+            fallback_chain: None,
+            system_prompt: String::new(),
+            hooks: Arc::new(super::hooks::HookEngine::new()),
         }
+    }
+
+    /// Run a conversation loop driven by the given coordinator.
+    ///
+    /// The agent provides all runtime resources (ContextEngine, Transport, Tools,
+    /// SessionManager). The coordinator owns its own I/O provider and turn loop.
+    pub async fn run(
+        &mut self,
+        mut coordinator: impl ConversationCoordinator,
+    ) -> Result<ConversationResult> {
+        let sm = Arc::clone(&self.session_manager);
+        let trp = self.transport();
+        let tlr = self.tools_arc();
+        let ctx = self.context_engine.as_mut();
+        let mut guard = sm.lock().await;
+        coordinator.run(ctx, trp, tlr, &mut *guard).await
     }
 
     async fn eager_load_active_session(&mut self) {
@@ -293,6 +213,26 @@ impl Agent {
     /// Mutably access the session manager (for admin ops: load, delete, new).
     pub fn session_manager_mut(&mut self) -> Arc<Mutex<SessionStore>> {
         Arc::clone(&self.session_manager)
+    }
+
+    /// Access the context engine for external turn loop coordination.
+    pub fn context_engine(&self) -> &dyn crate::context::ContextEngine {
+        self.context_engine.as_ref()
+    }
+
+    /// Mutably access the context engine for external turn loop coordination.
+    pub fn context_engine_mut(&mut self) -> &mut dyn crate::context::ContextEngine {
+        self.context_engine.as_mut()
+    }
+
+    /// Access the transport for external turn loop coordination.
+    pub fn transport(&self) -> Arc<dyn oben_models::providers::TransportProvider + Send + Sync> {
+        Arc::clone(&self.transport)
+    }
+
+    /// Access the tools registry for external turn loop coordination.
+    pub fn tools_arc(&self) -> Arc<oben_tools::ToolRegistry> {
+        Arc::clone(&self.tools)
     }
 
     // ── Tier 1: Interrupt & Steer ────────────────────────────────────────
@@ -326,22 +266,22 @@ impl Agent {
 
     /// Set the fallback model chain.
     pub fn set_fallback_chain(&mut self, chain: Vec<crate::fallback::FallbackConfig>) {
-        self.fallback_chain = FallbackChain::new(chain);
+        self.fallback_chain = Some(FallbackChain::new(chain));
     }
 
     /// Check if a fallback was activated.
     pub fn fallback_activated(&self) -> bool {
-        self.fallback_chain.is_activated()
+        self.fallback_chain.as_ref().map(|fc| fc.is_activated()).unwrap_or(false)
     }
 
     /// Get the active fallback config (if any).
     pub fn active_fallback(&self) -> Option<&crate::fallback::FallbackConfig> {
-        self.fallback_chain.active_fallback()
+        self.fallback_chain.as_ref().and_then(|fc| fc.active_fallback())
     }
 
     /// Get fallback chain status for diagnostics.
     pub fn fallback_status(&self) -> String {
-        if self.fallback_chain.is_activated() {
+        if self.fallback_activated() {
             if let Some(fb) = self.active_fallback() {
                 format!("Fallback active: {}/{}", fb.provider, fb.model)
             } else {
@@ -354,36 +294,30 @@ impl Agent {
 
     // ── Tier 2: Callbacks ────────────────────────────────────────────────
 
-    /// Set the agent callbacks.
-    pub fn set_callbacks(&mut self, callbacks: Arc<AgentCallbacks>) {
-        self.callbacks = callbacks;
+    /// Set the agent hooks.
+    pub fn set_hooks(&mut self, hooks: Arc<super::hooks::HookEngine>) {
+        self.hooks = hooks;
     }
 
-    /// Get reference to current callbacks.
-    pub fn callbacks_arc(&self) -> Arc<AgentCallbacks> {
-        Arc::clone(&self.callbacks)
-    }
+    // ── Tier 2: System Prompt ──────────────────────────────────────────────
 
-    /// Get reference to the event bus.
-    pub fn event_bus(&self) -> &std::sync::Arc<EventBus> {
-        &self.event_bus
-    }
-
-    // ── Tier 2: System Prompt Cache ──────────────────────────────────────
-
-    /// Set the cached system prompt after building a new one.
-    pub fn set_cached_prompt(&mut self, prompt: &str) {
-        self.prompt_cache.set_prompt(prompt);
+    /// Update the cached system prompt after building a new one.
+    pub fn set_system_prompt(&mut self, prompt: &str) {
+        self.system_prompt = prompt.to_string();
     }
 
     /// Get the cached system prompt, if available.
-    pub fn get_cached_prompt(&self) -> Option<&str> {
-        self.prompt_cache.get_prompt()
+    pub fn get_system_prompt(&self) -> Option<&str> {
+        if self.system_prompt.is_empty() {
+            None
+        } else {
+            Some(&self.system_prompt)
+        }
     }
 
     /// Check if we have a cached prompt.
-    pub fn has_cached_prompt(&self) -> bool {
-        self.prompt_cache.has_prompt()
+    pub fn has_system_prompt(&self) -> bool {
+        !self.system_prompt.is_empty()
     }
 
     // ── Tier 2: Activity Tracking ────────────────────────────────────────
@@ -396,8 +330,12 @@ impl Agent {
     // ── Tier 2: Concurrent Dispatch ──────────────────────────────────────
 
     /// Get the concurrent dispatch config.
-    pub fn dispatch_config(&self) -> &crate::concurrent_dispatch::ConcurrentDispatchConfig {
-        &self.dispatch_config
+    pub fn dispatch_config(&self) -> crate::concurrent_dispatch::ConcurrentDispatchConfig {
+        crate::concurrent_dispatch::ConcurrentDispatchConfig {
+            max_concurrency: self.config.concurrency.max_concurrency,
+            serial_only_tools: self.config.concurrency.serial_only_tools.clone(),
+            destructive_tools: self.config.concurrency.destructive_tools.clone(),
+        }
     }
 
     /// Execute one conversation turn.
@@ -421,7 +359,21 @@ impl Agent {
         let input_msg = oben_models::Message::user(input);
         let sm = Arc::clone(&self.session_manager);
 
-        let response = ConversationLoop::execute_turn_with_options(
+        let conversation = ConversationConfig {
+            retry_config: crate::retry::RetryConfig {
+                max_retries: self.config.retry.max_retries,
+                base_delay_ms: self.config.retry.base_delay_ms,
+                max_delay_ms: self.config.retry.max_delay_ms,
+                jitter_factor: self.config.retry.jitter_factor,
+                retryable_codes: self.config.retry.retryable_codes.clone(),
+            },
+            max_iterations: self.config.max_iterations.unwrap_or(50),
+            fallback_configs: self.config.fallback_models.clone(),
+            dispatch_config: Some(self.dispatch_config()),
+            max_spawn_depth: self.config.max_spawn_depth.unwrap_or(3) as u32,
+        };
+
+        let response = execute_turn_full(
             &mut self.context_engine,
             &self.transport,
             &self.tools,
@@ -429,14 +381,9 @@ impl Agent {
             &sid,
             input_msg,
             &call_mode,
-            crate::conversation::TurnOptions {
-                retry_config: self.retry_config.clone(),
-                budget: Some(crate::budget::IterationBudget::new(self.max_iterations)),
-                interrupt,
-                callbacks: Some(Arc::clone(&self.callbacks)),
-                fallback: None,
-                dispatch_config: Some(self.dispatch_config.clone()),
-            },
+            &conversation,
+            Some(Arc::clone(&self.hooks)),
+            interrupt.map(|x| Arc::clone(&x)),
         )
         .await?;
 
@@ -469,7 +416,21 @@ impl Agent {
 
         let sm = Arc::clone(&self.session_manager);
 
-        let response = ConversationLoop::execute_turn_with_options(
+        let conversation = ConversationConfig {
+            retry_config: crate::retry::RetryConfig {
+                max_retries: self.config.retry.max_retries,
+                base_delay_ms: self.config.retry.base_delay_ms,
+                max_delay_ms: self.config.retry.max_delay_ms,
+                jitter_factor: self.config.retry.jitter_factor,
+                retryable_codes: self.config.retry.retryable_codes.clone(),
+            },
+            max_iterations: self.config.max_iterations.unwrap_or(50),
+            fallback_configs: self.config.fallback_models.clone(),
+            dispatch_config: Some(self.dispatch_config()),
+            max_spawn_depth: self.config.max_spawn_depth.unwrap_or(3) as u32,
+        };
+
+        let response = execute_turn_full(
             &mut self.context_engine,
             &self.transport,
             &self.tools,
@@ -477,14 +438,9 @@ impl Agent {
             &sid,
             input_msg,
             &call_mode,
-            crate::conversation::TurnOptions {
-                retry_config: self.retry_config.clone(),
-                budget: Some(crate::budget::IterationBudget::new(self.max_iterations)),
-                interrupt,
-                callbacks: Some(Arc::clone(&self.callbacks)),
-                fallback: None,
-                dispatch_config: Some(self.dispatch_config.clone()),
-            },
+            &conversation,
+            Some(Arc::clone(&self.hooks)),
+            interrupt.map(|x| Arc::clone(&x)),
         )
         .await?;
 
@@ -752,58 +708,6 @@ impl Agent {
         Ok(())
     }
 
-    /// Run an interactive chat.
-    pub async fn interactive_chat(
-        &mut self,
-        stream: bool,
-        continue_with: Option<&str>,
-        callbacks: Arc<AgentCallbacks>,
-        app_config: &oben_config::AppConfig,
-    ) -> Result<()> {
-        self.callbacks = callbacks;
-        let sm = Arc::clone(&self.session_manager);
-        if let Some(resolved) = continue_with {
-            let name = self.continue_session(resolved).await?;
-            if let Some(s) = sm.lock().await.active_session() {
-                let count = s.messages.len();
-                Arc::as_ref(&self.callbacks).on_print_info(&format!(
-                    "Continuing session: {} ({} messages)\n",
-                    name, count
-                ));
-                print_session_messages(&s.messages, 10);
-                Arc::as_ref(&self.callbacks).on_print_info("");
-            }
-        } else if let Some(name) = self.loaded_session_name().await {
-            if let Some(s) = sm.lock().await.active_session() {
-                Arc::as_ref(&self.callbacks).on_print_info(&format!(
-                    "Session: {} ({} messages)\n",
-                    name,
-                    s.messages.len()
-                ));
-            }
-        }
-        Arc::as_ref(&self.callbacks).on_print_info("🦀 ObenAgent ready. Type 'quit' or 'exit' to stop.\n");
-        Arc::as_ref(&self.callbacks).on_print_flush();
-
-        let sm = Arc::clone(&self.session_manager);
-        // Build hooks from config via HookFactory — future hooks added in one place.
-        let mut hooks: Vec<Box<dyn PostTurnHook>> = HookFactory::build_hooks(&self.hooks_config);
-
-        let _result = ConversationLoop::run_loop(
-            &mut self.context_engine,
-            Arc::clone(&self.transport),
-            &self.tools,
-            &mut *sm.lock().await,
-            &mut self.call_mode,
-            stream,
-            Arc::clone(&self.callbacks),
-            &mut hooks,
-            app_config,
-        )
-        .await;
-        _result
-    }
-
     /// Run a background memory/skill review turn (nudge).
     ///
     /// This is the internal implementation of C.15 — the "turn nudge" that
@@ -845,14 +749,18 @@ impl Agent {
         // Build the nudge prompt (mirrors Hermes _MEMORY_REVIEW_PROMPT).
         let prompt = self.build_nudge_prompt(memory_interval > 0, skill_interval > 0);
 
-        let budget = crate::budget::IterationBudget::new(16);
-        let turn_options = crate::conversation::TurnOptions {
-            retry_config: self.retry_config.clone(),
-            budget: Some(budget),
-            interrupt: None,
-            callbacks: None, // suppress user-facing callbacks during review
-            fallback: None,
-            dispatch_config: Some(self.dispatch_config.clone()),
+        let nudge_config = ConversationConfig {
+            retry_config: crate::retry::RetryConfig {
+                max_retries: self.config.retry.max_retries,
+                base_delay_ms: self.config.retry.base_delay_ms,
+                max_delay_ms: self.config.retry.max_delay_ms,
+                jitter_factor: self.config.retry.jitter_factor,
+                retryable_codes: self.config.retry.retryable_codes.clone(),
+            },
+            max_iterations: 16,
+            fallback_configs: self.config.fallback_models.clone(),
+            dispatch_config: Some(self.dispatch_config()),
+            max_spawn_depth: self.config.max_spawn_depth.unwrap_or(3) as u32,
         };
 
         let sm = Arc::clone(&self.session_manager);
@@ -880,7 +788,7 @@ impl Agent {
 
         let review_msg = Message::user(&prompt);
         let sm = Arc::clone(&self.session_manager);
-        let response_text = ConversationLoop::execute_turn_with_options(
+        let response_text = execute_turn_full(
             &mut self.context_engine,
             &self.transport,
             &self.tools,
@@ -888,7 +796,9 @@ impl Agent {
             &sid,
             review_msg,
             &call_mode,
-            turn_options,
+            &nudge_config,
+            None,
+            None,
         )
         .await;
 
@@ -998,34 +908,35 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_callbacks_dispatches_tool_error() {
-        use crate::callbacks::AgentCallbacks;
-        use crate::hooks::kind::ToolLifecycleHooks;
+    fn test_hook_engine_receives_tool_error() {
+        use super::super::hooks::kind::ToolLifecycleHooks;
+        use super::super::hooks::kind::Hook;
         use std::sync::{Arc, Mutex};
 
         let called = Arc::new(Mutex::new(false));
         let called_clone = called.clone();
 
-        struct ErrorCapturingAdapter {
+        struct ErrorCapturingHook {
             called: Arc<Mutex<bool>>,
         }
 
-        impl ToolLifecycleHooks for ErrorCapturingAdapter {
-            fn on_tool_error(&self, tool_name: &str, _args: &str, error: &str) {
-                assert_eq!(tool_name, "shell");
+        impl ToolLifecycleHooks for ErrorCapturingHook {
+            fn on_tool_error(&self, _tool_name: &str, _args: &str, error: &str) {
                 assert_eq!(error, "connection failed");
                 *self.called.lock().unwrap() = true;
             }
         }
 
-        let cb = AgentCallbacks {
-            tool_lifecycle: Some(Box::new(ErrorCapturingAdapter {
-                called: called_clone,
-            })),
-            ..Default::default()
-        };
+        impl Hook for ErrorCapturingHook {
+            fn id(&self) -> &str { "test_error" }
+        }
 
-        cb.on_tool_error("shell", "{}", "connection failed");
+        let mut engine = super::super::hooks::HookEngine::new();
+        engine.register_tool(Box::new(ErrorCapturingHook {
+            called: called_clone,
+        }));
+
+        engine.emit_tool_error("shell", "{}", "connection failed");
         assert!(*called.lock().unwrap(), "on_tool_error should have been called");
     }
 }

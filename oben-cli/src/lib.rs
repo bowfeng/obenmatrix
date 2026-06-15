@@ -4,5 +4,7 @@
 //! business logic only; this crate handles parsing, wiring, and output.
 
 pub mod cli;
+pub mod coordinator;
 pub mod dispatch;
+pub use coordinator::{CliConfig, CliCoordinator};
 pub use dispatch::run_cli;

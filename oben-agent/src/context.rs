@@ -72,22 +72,6 @@ pub trait ContextEngine: Send + Sync {
         focus_topic: Option<&str>,
     ) -> Result<CompactStatus>;
 
-    // -- Lifecycle hooks ----------------------------------------------------
-
-    /// Lifecycle hook: session start.
-    fn on_session_start(
-        &mut self,
-        session_id: &str,
-        model_name: &str,
-        context_length: Option<usize>,
-    );
-
-    /// Lifecycle hook: session reset.
-    fn on_session_reset(&mut self);
-
-    /// Lifecycle hook: session end.
-    fn on_session_end(&mut self, session_id: &str);
-
     /// Preflight check: compress messages if already over threshold.
     ///
     /// Mutates `messages` in-place. Returns the number of compression passes.
@@ -132,20 +116,6 @@ impl ContextEngine for Box<dyn ContextEngine> {
         focus_topic: Option<&str>,
     ) -> Result<CompactStatus> {
         (**self).compact(messages, transport, focus_topic).await
-    }
-    fn on_session_start(
-        &mut self,
-        session_id: &str,
-        model_name: &str,
-        context_length: Option<usize>,
-    ) {
-        (**self).on_session_start(session_id, model_name, context_length)
-    }
-    fn on_session_reset(&mut self) {
-        (**self).on_session_reset()
-    }
-    fn on_session_end(&mut self, session_id: &str) {
-        (**self).on_session_end(session_id)
     }
     async fn preflight_check(
         &mut self,
