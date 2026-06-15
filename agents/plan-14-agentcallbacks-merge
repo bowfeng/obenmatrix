@@ -1,0 +1,56 @@
+# Phase 14: Merge AgentCallbacks into HookEngine
+
+## Goal
+Consolidate the duplicate AgentCallbacks and HookEngine event dispatch systems into a single HookEngine.
+
+## Architecture Change
+
+### Before
+```
+TurnExecutor ───► AgentCallbacks ──► 10 trait impls ──► EventBus ──► TuiSubscriber
+CliCoordinator ───► HookEngine ──► 10 trait impls ──► EventBus ──► TuiSubscriber
+```
+
+**Two independent dispatch paths with 20+ event call sites duplicated.**
+
+### After
+```
+TurnExecutor ───► HookEngine::emit_*() ──► 3 registered adapters ──► EventBus ──► TuiSubscriber
+CliCoordinator ───► HookEngine::emit_*() ──► same HookEngine Arc (shared) ──► same path
+```
+
+**Single dispatch path. CliCoordinator owns HookEngine, passes Arc to Agent via AgentConfig.**
+
+## Files Changed
+
+| File | Change |
+|---|---|
+| `oben-agent/src/hooks/adapters.rs` | Each adapter now implements `Hook` trait in addition to (and instead of) `kind::*` traits |
+| `oben-agent/src/turn_executor.rs` | `TurnConfig.callbacks: Arc<AgentCallbacks>` → `TurnConfig.hooks: Arc<HookEngine>`; all `cb.on_*()` → `hooks.emit_*()` |
+| `oben-agent/src/coordinator/mod.rs` | `execute_turn_full` params: `callbacks: Arc<AgentCallbacks>` → `hooks: Arc<HookEngine>` |
+| `oben-agent/src/hooks/runtime.rs` | `run_hook_turn()` params updated; `TurnConfig` field name change |
+| `oben-agent/src/agent.rs` | `AgentConfig.callbacks: AgentCallbacks` → `hooks: Arc<HookEngine>`; `Agent.callbacks: Arc<AgentCallbacks>` → `hooks: Arc<HookEngine>`; `from_app_config()` signature changed |
+| `oben-agent/src/delegate.rs` | Child agents use `Arc::new(HookEngine::new())` + removed `event_bus` field |
+| `oben-cli/src/dispatch.rs` | Replaced `AgentCallbacks::default()` and `create_cli_callbacks()` with `Arc<HookEngine::new>()` |
+| `oben-tui/src/app.rs` | Building `HookEngine` with registered adapters instead of `AgentCallbacks.with_relay()` |
+| `oben-agent/src/callbacks/mod.rs` | **DELETED** |
+| `oben-agent/src/callbacks/relay_impl.rs` | **DELETED** |
+| `oben-agent/src/lib.rs` | Removed `pub mod callbacks` and `pub use callbacks::*` |
+
+## Test Results
+
+- `oben-agent --lib`: 165 passed, 0 failed
+- `oben-tui --lib`: 115 passed, 0 failed
+- `oben-cli --lib`: 0 failed
+- `oben-tools --lib`: 127 passed, 1 flaky (pre-existing, unrelated)
+- **Total: 407 tests**
+
+## Key Design Decisions
+
+1. **HookEngine in AgentConfig**: The caller (TUI/CLI) creates the HookEngine with adapters registered, then passes `Arc<HookEngine>` to AgentConfig. This gives callers full control over which hooks are active.
+
+2. **EventBus stays where it is**: EventBus is created by the caller (TUI), wrapped in adapters that implement `Hook`, then registered in the HookEngine. The EventBus is the transport layer, not the dispatch layer.
+
+3. **Removed kind::trait impls from adapters**: The adapters now only implement `Hook` trait (not both `Hook` and `kind::*` traits). This eliminates the ambiguity when calling methods like `on_tool_start()` on adapter instances.
+
+4. **CallbacksRelay completely removed**: The relay was dead code — parent agents created relays but child agents used `AgentCallbacks::default()` (relay = None), so events never flowed through the relay subscriber list.

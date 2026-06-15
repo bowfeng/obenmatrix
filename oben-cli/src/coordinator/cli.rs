@@ -18,22 +18,13 @@ use oben_tools::ToolRegistry;
 pub struct CliConfig {
     /// Shared conversation configuration (retry, fallback, dispatch, etc.).
     pub conversation: ConversationConfig,
-    /// Hook engine for managing post-turn hooks (nudge, etc.).
-    pub hooks: HookEngine,
+    /// Hook engine shared with Agent (Arc to avoid duplicate instantiation).
+    pub hooks: Arc<HookEngine>,
     /// Whether to stream output.
     pub stream: bool,
 }
 
 impl CliConfig {
-    pub fn from_app_config(app_config: &AppConfig) -> Self {
-        Self {
-            conversation: ConversationConfig::from_app_config(app_config),
-            hooks: HookBuilder::from_config(&app_config.hooks)
-                .build(),
-            stream: false,
-        }
-    }
-
     pub fn with_stream(mut self, stream: bool) -> Self {
         self.stream = stream;
         self
@@ -48,9 +39,13 @@ pub struct CliCoordinator {
 }
 
 impl CliCoordinator {
-    /// Create a new CLI coordinator from app config.
-    pub fn from_app_config(app_config: &AppConfig) -> Self {
-        let config = CliConfig::from_app_config(app_config);
+    /// Create a new CLI coordinator from conversation config and shared hooks.
+    pub fn from_conversation(conversation: ConversationConfig, hooks: Arc<HookEngine>) -> Self {
+        let config = CliConfig {
+            conversation,
+            hooks,
+            stream: false,
+        };
         let max_spawn_depth = config.conversation.max_spawn_depth;
         Self {
             config,
@@ -86,6 +81,8 @@ impl ConversationCoordinator for CliCoordinator {
         self.config.hooks.emit_loop_start();
 
         loop {
+            self.config.hooks.emit_pre_turn();
+
             interaction.write_raw(b"> ");
             interaction.flush();
 
@@ -167,8 +164,8 @@ impl ConversationCoordinator for CliCoordinator {
                 .map_or(0, |s| s.messages.len());
 
             // Post-turn: broadcast to all hooks (nudge hook may trigger sub-turn via callback)
-            let _ = response_text.as_deref().unwrap_or_default().to_string();
-            self.config.hooks.post_turn(&response_text.as_deref().unwrap_or_default().to_string(), msg_count);
+            let response_str = response_text.as_deref().unwrap_or_default();
+            self.config.hooks.post_turn(response_str, msg_count);
 
             is_resumed_session = false;
         }

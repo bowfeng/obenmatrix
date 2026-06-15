@@ -24,6 +24,8 @@ use tokio::sync::Mutex;
 
 use anyhow::Result;
 
+use super::hooks::HookEngine;
+
 pub fn generate_session_name() -> String {
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     let r = rand::random::<u64>() % 1_000_000;
@@ -205,6 +207,12 @@ impl Agent {
         }
     }
 
+    /// Access the shared HookEngine so CliCoordinator can reuse it
+    /// instead of creating its own duplicate instance.
+    pub fn hooks(&self) -> &Arc<HookEngine> {
+        &self.hooks
+    }
+
     /// Access the session manager for listing/saving outside the turn cycle.
     pub fn session_manager(&self) -> Arc<Mutex<SessionStore>> {
         Arc::clone(&self.session_manager)
@@ -359,19 +367,7 @@ impl Agent {
         let input_msg = oben_models::Message::user(input);
         let sm = Arc::clone(&self.session_manager);
 
-        let conversation = ConversationConfig {
-            retry_config: crate::retry::RetryConfig {
-                max_retries: self.config.retry.max_retries,
-                base_delay_ms: self.config.retry.base_delay_ms,
-                max_delay_ms: self.config.retry.max_delay_ms,
-                jitter_factor: self.config.retry.jitter_factor,
-                retryable_codes: self.config.retry.retryable_codes.clone(),
-            },
-            max_iterations: self.config.max_iterations.unwrap_or(50),
-            fallback_configs: self.config.fallback_models.clone(),
-            dispatch_config: Some(self.dispatch_config()),
-            max_spawn_depth: self.config.max_spawn_depth.unwrap_or(3) as u32,
-        };
+        let conversation = ConversationConfig::from_app_config(&self.config);
 
         let response = execute_turn_full(
             &mut self.context_engine,
@@ -416,19 +412,7 @@ impl Agent {
 
         let sm = Arc::clone(&self.session_manager);
 
-        let conversation = ConversationConfig {
-            retry_config: crate::retry::RetryConfig {
-                max_retries: self.config.retry.max_retries,
-                base_delay_ms: self.config.retry.base_delay_ms,
-                max_delay_ms: self.config.retry.max_delay_ms,
-                jitter_factor: self.config.retry.jitter_factor,
-                retryable_codes: self.config.retry.retryable_codes.clone(),
-            },
-            max_iterations: self.config.max_iterations.unwrap_or(50),
-            fallback_configs: self.config.fallback_models.clone(),
-            dispatch_config: Some(self.dispatch_config()),
-            max_spawn_depth: self.config.max_spawn_depth.unwrap_or(3) as u32,
-        };
+        let conversation = ConversationConfig::from_app_config(&self.config);
 
         let response = execute_turn_full(
             &mut self.context_engine,
@@ -749,19 +733,9 @@ impl Agent {
         // Build the nudge prompt (mirrors Hermes _MEMORY_REVIEW_PROMPT).
         let prompt = self.build_nudge_prompt(memory_interval > 0, skill_interval > 0);
 
-        let nudge_config = ConversationConfig {
-            retry_config: crate::retry::RetryConfig {
-                max_retries: self.config.retry.max_retries,
-                base_delay_ms: self.config.retry.base_delay_ms,
-                max_delay_ms: self.config.retry.max_delay_ms,
-                jitter_factor: self.config.retry.jitter_factor,
-                retryable_codes: self.config.retry.retryable_codes.clone(),
-            },
-            max_iterations: 16,
-            fallback_configs: self.config.fallback_models.clone(),
-            dispatch_config: Some(self.dispatch_config()),
-            max_spawn_depth: self.config.max_spawn_depth.unwrap_or(3) as u32,
-        };
+        let nudge_config = crate::coordinator::ConversationConfigBuilder::from_app_config(&self.config)
+            .with_max_iterations(16)
+            .build();
 
         let sm = Arc::clone(&self.session_manager);
         let sid = {

@@ -144,7 +144,7 @@ impl HookEngine {
     pub fn emit_turn_complete_with_count(&self, response: &str, turn_count: usize, msg_count: usize) {
         for h in &self.turn_hooks { h.on_post_turn(response, true); }
     }
-    pub fn post_turn(&mut self, response: &str, msg_count: usize) {
+    pub fn post_turn(&self, response: &str, msg_count: usize) {
         self.emit_turn_complete(response, msg_count);
     }
     pub fn turn_count(&self) -> usize {

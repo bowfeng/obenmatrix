@@ -112,14 +112,19 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
     let tools = std::sync::Arc::new(tools);
 
     use crate::coordinator::CliCoordinator;
+    use oben_agent::coordinator::ConversationConfig;
 
-    let mut coordinator = CliCoordinator::from_app_config(&config);
-
+    let config_clone = config.clone();
     let mut chat = oben_agent::Agent::new(
         config,
         assembled.prompt.clone(),
         tools.clone(),
     ).await?;
+
+    // Reuse Agent's HookEngine instead of creating duplicate.
+    let conversation_config = ConversationConfig::from_app_config(&config_clone);
+    let hooks = Arc::clone(chat.hooks());
+    let coordinator = CliCoordinator::from_conversation(conversation_config, hooks);
 
     // If continuing an existing session, resolve it first.
     if let Some(resolved) = continue_with {
