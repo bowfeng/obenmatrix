@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow;
 use super::kind::*;
@@ -92,7 +91,7 @@ pub struct HookEngine {
     pub(crate) agent_loop_hooks: Vec<Box<dyn AgentLoopHooks>>,
     pub(crate) turn_hooks: Vec<Box<dyn TurnLifecycleHooks>>,
     pub(crate) tool_hooks: Vec<Box<dyn ToolLifecycleHooks>>,
-    pub(crate) streaming_hooks: Vec<Box<dyn StreamingHooks>>,
+    pub(crate) streaming_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn StreamingHooks>>>>,
     pub(crate) system_hooks: Vec<Box<dyn SystemEventsHooks>>,
     pub(crate) session_hooks: Vec<Box<dyn SessionLifecycleHooks>>,
     pub(crate) interrupt_hooks: Vec<Box<dyn InterruptLifecycleHooks>>,
@@ -104,7 +103,7 @@ impl HookEngine {
             agent_loop_hooks: Default::default(),
             turn_hooks: Default::default(),
             tool_hooks: Default::default(),
-            streaming_hooks: Default::default(),
+            streaming_hooks: Arc::new(RwLock::new(Default::default())),
             system_hooks: Default::default(),
             session_hooks: Default::default(),
             interrupt_hooks: Default::default(),
@@ -113,13 +112,13 @@ impl HookEngine {
     pub fn register_agent_loop(&mut self, hook: Box<dyn AgentLoopHooks>) { self.agent_loop_hooks.push(hook); }
     pub fn register_turn(&mut self, hook: Box<dyn TurnLifecycleHooks>) { self.turn_hooks.push(hook); }
     pub fn register_tool(&mut self, hook: Box<dyn ToolLifecycleHooks>) { self.tool_hooks.push(hook); }
-    pub fn register_streaming(&mut self, hook: Box<dyn StreamingHooks>) { self.streaming_hooks.push(hook); }
+    pub fn register_streaming(&self, hook: Box<dyn StreamingHooks>) { self.streaming_hooks.write().unwrap().push(hook); }
     pub fn register_system(&mut self, hook: Box<dyn SystemEventsHooks>) { self.system_hooks.push(hook); }
     pub fn register_session(&mut self, hook: Box<dyn SessionLifecycleHooks>) { self.session_hooks.push(hook); }
     pub fn register_interrupt(&mut self, hook: Box<dyn InterruptLifecycleHooks>) { self.interrupt_hooks.push(hook); }
     pub fn count(&self) -> usize {
         self.agent_loop_hooks.len() + self.turn_hooks.len() + self.tool_hooks.len()
-            + self.streaming_hooks.len() + self.system_hooks.len() + self.session_hooks.len()
+            + self.streaming_hooks.read().unwrap().len() + self.system_hooks.len() + self.session_hooks.len()
             + self.interrupt_hooks.len()
     }
     pub fn emit_loop_start(&self) { for h in &self.agent_loop_hooks { h.on_loop_start(); } }
@@ -131,10 +130,10 @@ impl HookEngine {
     pub fn emit_tool_start(&self, n: &str, a: &str) { for h in &self.tool_hooks { h.on_tool_start(n, a); } }
     pub fn emit_tool_complete(&self, n: &str, a: &str, r: &str) { for h in &self.tool_hooks { h.on_tool_complete(n, a, r); } }
     pub fn emit_tool_error(&self, n: &str, a: &str, e: &str) { for h in &self.tool_hooks { h.on_tool_error(n, a, e); } }
-    pub fn emit_stream_delta(&self, t: &str) { for h in &self.streaming_hooks { h.on_stream_delta(t); } }
-    pub fn emit_thinking(&self, t: &str) { for h in &self.streaming_hooks { h.on_thinking(t); } }
-    pub fn emit_reasoning(&self, t: &str) { for h in &self.streaming_hooks { h.on_reasoning(t); } }
-    pub fn emit_interim_assistant(&self, t: &str) { for h in &self.streaming_hooks { h.on_interim_assistant(t); } }
+    pub fn emit_stream_delta(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_stream_delta(t); } }
+    pub fn emit_thinking(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_thinking(t); } }
+    pub fn emit_reasoning(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_reasoning(t); } }
+    pub fn emit_interim_assistant(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_interim_assistant(t); } }
     pub fn emit_status(&self, l: &str, m: &str) { for h in &self.system_hooks { h.on_status(l, m); } }
     pub fn emit_session_rotate(&self, p: &str, c: &str) { for h in &self.session_hooks { h.on_session_rotate(p, c); } }
     pub fn emit_compression_start(&self, n: usize) { for h in &self.session_hooks { h.on_compression_start(n); } }

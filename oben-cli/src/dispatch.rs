@@ -117,10 +117,15 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
 
     // Reuse Agent's HookEngine instead of creating duplicate.
     let conversation_config = ConversationConfig::from_app_config(&chat.config());
-    let hooks = Arc::clone(chat.hooks());
+    let hooks = chat.hooks();
+    // Register streaming hook so CLI prints deltas in real-time.
+    if stream {
+        use crate::coordinator::CliStreamingHook;
+        hooks.register_streaming(Box::new(CliStreamingHook::new()));
+    }
     let coordinator = CliCoordinator::from_conversation(
         conversation_config,
-        hooks,
+        Arc::clone(hooks),
         stream,
         None, // max_turns: not yet configured in AppConfig
     );

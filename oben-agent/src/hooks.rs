@@ -2,6 +2,7 @@
 
 use super::kind::*;
 use crate::nudge::NudgeConfig;
+use std::sync::{Arc, RwLock};
 
 pub mod kind;
 pub mod runtime;
@@ -115,7 +116,7 @@ impl HookBuilder {
             agent_loop_hooks: self.agent_loop_hooks,
             turn_hooks: self.turn_hooks,
             tool_hooks: self.tool_hooks,
-            streaming_hooks: self.streaming_hooks,
+            streaming_hooks: Arc::new(RwLock::new(self.streaming_hooks)),
             system_hooks: self.system_hooks,
             session_hooks: self.session_hooks,
             interrupt_hooks: self.interrupt_hooks,

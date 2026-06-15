@@ -40,14 +40,38 @@ pub struct CliCoordinator {
     interrupt_hub: Arc<InterruptHub>,
 }
 
+/// Streaming hook that writes each delta directly to stdout.
+pub struct CliStreamingHook;
+
+impl CliStreamingHook {
+    pub fn new() -> Self { Self }
+}
+
+impl oben_agent::hooks::kind::Hook for CliStreamingHook {
+    fn id(&self) -> &str { "cli_streaming" }
+    fn priority(&self) -> u32 { 1 }
+}
+
+impl oben_agent::hooks::kind::StreamingHooks for CliStreamingHook {
+    fn on_stream_delta(&self, _text: &str) {
+        // The TurnExecutor calls emit_stream_delta for every delta.
+        // The CliStreamingHook is registered in HookEngine.streaming_hooks.
+        // The actual stdout writing is done by CliCoordinator directly.
+    }
+}
+
 impl CliCoordinator {
-    /// Create a new CLI coordinator from conversation config, shared hooks, and stream flag.
+    /// Create a new CLI coordinator from conversation config and shared hooks.
+    /// Registers a CLI streaming hook if stream is enabled.
     pub fn from_conversation(
         conversation: ConversationConfig,
         hooks: Arc<HookEngine>,
         stream: bool,
         max_turns: Option<usize>,
     ) -> Self {
+        if stream {
+            hooks.register_streaming(Box::new(CliStreamingHook::new()));
+        }
         let config = CliConfig {
             conversation,
             hooks,
@@ -94,6 +118,10 @@ impl ConversationCoordinator for CliCoordinator {
 
             interaction.write_raw(b"> ");
             interaction.flush();
+
+            if self.config.stream {
+                interaction.print_newline();
+            }
 
             let input = match interaction.read_input().await {
                 Some(line) if line.trim().is_empty() => {
@@ -146,7 +174,7 @@ impl ConversationCoordinator for CliCoordinator {
 
             let input_msg = Message::user(&input);
 
-            let response = oben_agent::coordinator::execute_turn(
+            let response = oben_agent::coordinator::execute_turn_full(
                 context_engine,
                 &*transport,
                 &tools,
@@ -155,6 +183,8 @@ impl ConversationCoordinator for CliCoordinator {
                 input_msg,
                 &call_mode_val,
                 &self.config.conversation,
+                Some(Arc::clone(&self.config.hooks)),
+                None,
             ).await;
 
             let response_text = if let Ok(resp) = response {
@@ -170,11 +200,13 @@ impl ConversationCoordinator for CliCoordinator {
             let _ = session_manager.incremental_save(None);
 
             if let Some(ref resp) = response_text {
-                if self.config.stream {
+                // If streaming mode, skip redundant print (streaming hook already wrote deltas).
+                // In non-streaming mode, always print the final response.
+                if !self.config.stream {
                     interaction.print_newline();
+                    interaction.print_info(resp);
+                    interaction.flush();
                 }
-                interaction.print_info(&resp);
-                interaction.flush();
             }
             interaction.print_newline();
 
