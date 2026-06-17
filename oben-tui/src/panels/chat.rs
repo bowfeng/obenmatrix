@@ -146,33 +146,26 @@ impl ChatPanel {
                 "[chat_panel] auto-drain trigger: queue_len={}",
                 self.input.queue_len()
             );
-            if let Some(msg) = self.input.dequeue_msg() {
-                let drain_time = Instant::now();
-                tracing::info!("[chat_panel] auto-drain queued message: {}", msg);
-                // Send the queued message through the event loop, not by
-                // faking a full turn lifecycle.  Faking TurnStart +
-                // StreamDelta + TurnCompleted in draw() races with the
-                // real agent task that processes the next turn, which is
-                // why the streaming was "interrupted".
-                if let Some(ref tx) = &self.input_tx {
-                    if tx.send(crate::TuiEvent::ChatInput(msg.clone())).is_err() {
-                        tracing::warn!("[chat_panel] failed to send drained message");
-                    }
-                    // Force scroll to bottom after auto-drain so the next
-                    // AI response is visible.  Even if the user had scrolled
-                    // up while reading the previous response, the auto-drain
-                    // is sending a new message which should be visible.
-                    self.message_state
-                        .scroll_to_bottom
-                        .store(true, Ordering::SeqCst);
-                    tracing::debug!(
-                        "[chat_panel] drain: sent ChatInput in {:?}, queue_len_after={}, scroll_to_bottom=true",
-                        drain_time.elapsed(),
-                        self.input.queue_len()
-                    );
-                } else {
-                    tracing::debug!("[chat_panel] no input_tx for drained message");
+            let drain_time = Instant::now();
+            // Send a single QueueDrain event; the event loop will
+            // dequeue ALL messages from the queue in one pass and
+            // process each one sequentially through handle_chat_input.
+            // This avoids the race condition that used to occur when
+            // sending individual ChatInput events here.
+            if let Some(ref tx) = &self.input_tx {
+                if tx.send(crate::TuiEvent::QueueDrain).is_err() {
+                    tracing::warn!("[chat_panel] failed to send QueueDrain");
                 }
+                self.message_state
+                    .scroll_to_bottom
+                    .store(true, Ordering::SeqCst);
+                tracing::debug!(
+                    "[chat_panel] drain: sent QueueDrain in {:?}, queue_len={}",
+                    drain_time.elapsed(),
+                    self.input.queue_len()
+                );
+            } else {
+                tracing::debug!("[chat_panel] no input_tx for drained message");
             }
             self.drained_this_turn = true;
         } else if !settled || !transitioning {

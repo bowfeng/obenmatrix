@@ -21,7 +21,7 @@ use crate::history;
 use crate::widgets::conversation::{ConversationState, ConversationWidget};
 use crate::widgets::message_renderer::MessageRenderer;
 use oben_agent::delegate::{build_spawn_fn_wrapper, SubagentSpawner};
-use oben_agent::{Agent, EventBus, HookEngine, TurnState, TuiSubscriber};
+use oben_agent::{Agent, HookEngine, TurnState};
 use oben_config::AppConfig;
 use oben_tools::delegate::DelegateTool;
 use oben_tools::ToolRegistry;
@@ -64,7 +64,7 @@ pub struct App {
     pub paste_mode: bool,
     /// Shared `Arc<Mutex<TurnState>>` — owns all turn lifecycle state.
     /// TUI polls this directly during draw loop (32ms interval).
-    /// TuiSubscriber wraps this and is registered with Agent's EventBus.
+    /// HookEngine adapters (TuiStreamingAdapter, etc.) write to this state.
     pub turn_state: Arc<PlMutex<TurnState>>,
     /// Pending session name to load on startup (from CLI `-s` argument).
     pub pending_session: Option<String>,
@@ -418,22 +418,21 @@ impl App {
         let transport = Arc::new(transport);
 
         let turn_state = Arc::clone(&self.turn_state);
-        let tui_subscriber = TuiSubscriber::new(Arc::clone(&turn_state));
 
-        let mut event_bus = EventBus::new();
-        event_bus.add_subscriber(tui_subscriber);
-        let event_bus = Arc::new(event_bus);
-
-        // Build HookEngine with registered adapters for event dispatch through TurnExecutor.
+        // Build HookEngine with adapters that write directly to TurnState.
+        // EventBus is no longer used — TuiHookAdapters replace the old
+        // adapter→EventBus→TuiSubscriber chain.
+        // System events are informational (status bar, etc.), and no longer
+        // need to flow to TurnState.
         let mut hook_engine = HookEngine::new();
-        hook_engine.register_system(Box::new(
-            oben_agent::SystemEventsAdapter::new(Arc::clone(&event_bus))
+        hook_engine.register_streaming(Box::new(
+            oben_agent::TuiStreamingAdapter::new(Arc::clone(&turn_state))
         ));
         hook_engine.register_tool(Box::new(
-            oben_agent::ToolLifecycleAdapter::new(Arc::clone(&event_bus))
+            oben_agent::TuiToolLifecycleAdapter::new(Arc::clone(&turn_state))
         ));
-        hook_engine.register_streaming(Box::new(
-            oben_agent::StreamingAdapter::new(Arc::clone(&event_bus))
+        hook_engine.register_agent_loop(Box::new(
+            oben_agent::TuiAgentLoopAdapter::new(Arc::clone(&turn_state))
         ));
 
         // Register delegate tool.

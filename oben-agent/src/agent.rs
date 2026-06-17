@@ -2,11 +2,11 @@
 //!
 //! **Resource Ownership:**
 //! Agent owns all runtime resources — Transport, Tools, Skills, SystemPrompt,
-//! ContextEngine, and SessionManager. It delegates turn execution to
+//! ContextWindowManager, and SessionManager. It delegates turn execution to
 //! `coordinator::execute_turn_full`.
 //!
 //! **Responsibilities:**
-//! - Own Transport, Tools, Skills, SystemPrompt, ContextEngine (resource management)
+//! - Own Transport, Tools, Skills, SystemPrompt, ContextWindowManager (resource management)
 //! - Own SessionManager (session lifecycle, persistence)
 //! - Delegate turn cycle to shared `execute_turn_full`
 //! - Manage session switching
@@ -53,7 +53,7 @@ impl Default for DummyCoordinator {
 impl ConversationCoordinator for DummyCoordinator {
     async fn run(
         &mut self,
-        _context_engine: &mut dyn crate::context::ContextEngine,
+        _context_window_manager: &mut dyn crate::context::ContextWindowManager,
         _transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
         _tools: Arc<oben_tools::ToolRegistry>,
         _session_manager: &mut dyn SessionManager,
@@ -66,7 +66,7 @@ impl ConversationCoordinator for DummyCoordinator {
 pub struct Agent {
     transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
     tools: Arc<oben_tools::ToolRegistry>,
-    context_engine: Box<dyn crate::context::ContextEngine>,
+    context_window_manager: Box<dyn crate::context::ContextWindowManager>,
     call_mode: Option<oben_models::CallMode>,
     session_manager: Arc<Mutex<SessionStore>>,
     interrupt_state: Arc<InterruptState>,
@@ -101,7 +101,7 @@ impl Agent {
         let mut agent = Self {
             transport,
             tools,
-            context_engine: Box::new(crate::compact_context::CompactContextEngine::with_config(context_config)),
+            context_window_manager: Box::new(crate::compact_context::BuiltinContextWindowManager::with_config(context_config)),
             call_mode: None,
             session_manager,
             interrupt_state: Arc::new(InterruptState::new()),
@@ -168,7 +168,7 @@ impl Agent {
         Self {
             transport,
             tools,
-            context_engine: Box::new(crate::compact_context::CompactContextEngine::new()),
+            context_window_manager: Box::new(crate::compact_context::BuiltinContextWindowManager::new()),
             call_mode: None,
             session_manager,
             interrupt_state: Arc::new(InterruptState::new()),
@@ -181,7 +181,7 @@ impl Agent {
 
     /// Run a conversation loop driven by the given coordinator.
     ///
-    /// The agent provides all runtime resources (ContextEngine, Transport, Tools,
+    /// The agent provides all runtime resources (ContextWindowManager, Transport, Tools,
     /// SessionManager). The coordinator owns its own I/O provider and turn loop.
     pub async fn run(
         &mut self,
@@ -190,18 +190,13 @@ impl Agent {
         let sm = Arc::clone(&self.session_manager);
         let trp = self.transport();
         let tlr = self.tools_arc();
-        let ctx = self.context_engine.as_mut();
+        let ctx = self.context_window_manager.as_mut();
         let mut guard = sm.lock().await;
         coordinator.run(ctx, trp, tlr, &mut *guard).await
     }
 
     async fn eager_load_active_session(&mut self) {
-        let sid = self
-            .session_manager
-            .lock()
-            .await
-            .active_session()
-            .map(|s| s.id.clone());
+        let sid = self.context_window_manager.session_id();
         if let Some(sid) = sid {
             let _ = self.session_manager.lock().await.switch_session(&sid);
         }
@@ -228,14 +223,14 @@ impl Agent {
         Arc::clone(&self.session_manager)
     }
 
-    /// Access the context engine for external turn loop coordination.
-    pub fn context_engine(&self) -> &dyn crate::context::ContextEngine {
-        self.context_engine.as_ref()
+    /// Access the CWM for external turn loop coordination.
+    pub fn context_window_manager(&self) -> &dyn crate::context::ContextWindowManager {
+        self.context_window_manager.as_ref()
     }
 
-    /// Mutably access the context engine for external turn loop coordination.
-    pub fn context_engine_mut(&mut self) -> &mut dyn crate::context::ContextEngine {
-        self.context_engine.as_mut()
+    /// Mutably access the CWM for external turn loop coordination.
+    pub fn context_window_manager_mut(&mut self) -> &mut dyn crate::context::ContextWindowManager {
+        self.context_window_manager.as_mut()
     }
 
     /// Access the transport for external turn loop coordination.
@@ -375,7 +370,7 @@ impl Agent {
         let conversation = ConversationConfig::from_app_config(&self.config);
 
         let response = execute_turn_full(
-            &mut self.context_engine,
+            &mut self.context_window_manager,
             &self.transport,
             &self.tools,
             &mut *sm.lock().await,
@@ -420,7 +415,7 @@ impl Agent {
         let conversation = ConversationConfig::from_app_config(&self.config);
 
         let response = execute_turn_full(
-            &mut self.context_engine,
+            &mut self.context_window_manager,
             &self.transport,
             &self.tools,
             &mut *sm.lock().await,
@@ -440,26 +435,20 @@ impl Agent {
 
     /// Resolve session ID (lazy create if no active session).
     async fn resolve_session(&mut self) -> String {
-        let sm = Arc::clone(&self.session_manager);
-        let sid = {
-            let guard = sm.lock().await;
-            let active_id = guard.active_session().map(|s| s.id.clone());
-            drop(guard);
-            match active_id {
-                Some(sid) => match sm.lock().await.switch_session(&sid) {
-                    Ok(s) => s.id.clone(),
-                    Err(_) => {
-                        match sm.lock().await.new_session(&generate_session_name()) {
-                            Ok(s) => s.id.clone(),
-                            Err(_) => generate_session_name(),
-                        }
+        let sid = match self.context_window_manager.session_id() {
+            Some(sid) => match self.session_manager.lock().await.switch_session(&sid) {
+                Ok(s) => s.id.clone(),
+                Err(_) => {
+                    match self.session_manager.lock().await.new_session(&generate_session_name()) {
+                        Ok(s) => s.id.clone(),
+                        Err(_) => generate_session_name(),
                     }
-                },
-                None => match sm.lock().await.new_session(&generate_session_name()) {
-                    Ok(s) => s.id.clone(),
-                    Err(_) => generate_session_name(),
-                },
-            }
+                }
+            },
+            None => match self.session_manager.lock().await.new_session(&generate_session_name()) {
+                Ok(s) => s.id.clone(),
+                Err(_) => generate_session_name(),
+            },
         };
         sid
     }
@@ -477,13 +466,10 @@ impl Agent {
             })?
         };
         sm.lock().await.switch_session(&sid)?;
-        let name = {
-            sm.lock()
-                .await
-                .active_session()
-                .map(|s| s.name.clone())
-                .unwrap_or(key.to_string())
-        };
+        let name = match self.context_window_manager.session_id() {
+            Some(sid) => sm.lock().await.session(&sid).map(|s| s.name.clone()),
+            None => None,
+        }.unwrap_or(key.to_string());
         Ok(name)
     }
 
@@ -491,11 +477,10 @@ impl Agent {
     /// a no-session state. The next [turn] will lazily create a new session
     /// via [resolve_session].
     pub async fn reset(&mut self) -> Result<()> {
-        let sm = Arc::clone(&self.session_manager);
-        let sid = { sm.lock().await.active_session().map(|s| s.id.clone()) };
+        let sid = self.context_window_manager.session_id();
         if let Some(sid) = sid {
             // Delete from DB and in-memory cache; sets active_session_id = None
-            sm.lock().await.delete_session(&sid)?;
+            self.session_manager.lock().await.delete_session(&sid)?;
         }
         // Reset call mode so the next turn starts as Fresh.
         self.call_mode = None;
@@ -505,7 +490,7 @@ impl Agent {
     /// Compact (summarize) the current session context.
     ///
     /// Retrieves the active session messages, mutates them in-place via the
-    /// context engine's compaction logic, then saves the session back.
+    /// ContextWindowManager's compaction logic, then saves the session back.
     ///
     /// Returns a `CompactOutcome` describing what happened:
     /// - `AlreadyCompact` — messages within budget, no compaction needed
@@ -521,33 +506,31 @@ impl Agent {
         }
 
         // Get the active session
-        let (sid, mut messages) = {
-            let mut guard = sm.lock().await;
-            let sid = match guard.active_session().map(|s| s.id.clone()) {
-                Some(id) => id,
-                None => return crate::compact::CompactOutcome::AlreadyCompact,
-            };
-            let messages = match guard.active_session_mut() {
-                Some(s) => s.messages.clone(),
-                None => return crate::compact::CompactOutcome::AlreadyCompact,
-            };
-            (sid, messages)
+        let active_id = self.context_window_manager.session_id();
+        let sid = match active_id {
+            Some(id) => id,
+            None => return crate::compact::CompactOutcome::AlreadyCompact,
+        };
+        let mut guard = sm.lock().await;
+        let mut messages = match guard.session_mut(&sid) {
+            Some(s) => s.messages.clone(),
+            None => return crate::compact::CompactOutcome::AlreadyCompact,
         };
 
         // Check if compaction is needed
-        if !self.context_engine.should_compact(&messages) {
+        if !self.context_window_manager.should_compact(&messages) {
             return crate::compact::CompactOutcome::AlreadyCompact;
         }
 
         // Perform compaction
         let status = match self
-            .context_engine
+            .context_window_manager
             .compact(&mut messages, Some(self.transport.as_ref()), None)
             .await
         {
             Ok(status) => status,
             Err(e) => {
-                tracing::error!("ContextEngine::compact failed: {e}");
+                tracing::error!("ContextWindowManager::compact failed: {e}");
                 return crate::compact::CompactOutcome::AlreadyCompact;
             }
         };
@@ -603,10 +586,10 @@ impl Agent {
 
     /// Get the currently loaded session display name (title if set, else internal name).
     pub async fn loaded_session_name(&self) -> Option<String> {
-        let sm = Arc::clone(&self.session_manager);
-        let guard = sm.lock().await;
-        guard
-            .active_session()
+        let guard = self.session_manager.lock().await;
+        self.context_window_manager
+            .session_id()
+            .and_then(|sid| guard.session(&sid))
             .map(|s| s.metadata.title.as_deref().unwrap_or(&s.name).to_string())
     }
 
@@ -617,10 +600,11 @@ impl Agent {
 
     /// Get the active session messages.
     pub async fn loaded_session_messages(&self) -> Result<Vec<oben_models::Message>> {
-        let sm = Arc::clone(&self.session_manager);
-        let guard = sm.lock().await;
-        let msgs = guard
-            .active_session()
+        let guard = self.session_manager.lock().await;
+        let msgs = self
+            .context_window_manager
+            .session_id()
+            .and_then(|sid| guard.session(&sid))
             .map(|s| s.messages.clone())
             .unwrap_or_default();
         Ok(msgs)
@@ -721,8 +705,9 @@ impl Agent {
         let sm = Arc::clone(&self.session_manager);
         let has_memory_tool = {
             let guard = sm.lock().await;
-            !guard
-                .active_session()
+            self.context_window_manager
+                .session_id()
+                .and_then(|sid| guard.session(&sid))
                 .map(|s| s.messages.iter().any(|m| !m.tool_calls.is_none()))
                 .unwrap_or(true)
         };
@@ -744,9 +729,7 @@ impl Agent {
 
         let sm = Arc::clone(&self.session_manager);
         let sid = {
-            let guard = sm.lock().await;
-            let active_id = guard.active_session().map(|s| s.id.clone());
-            drop(guard);
+            let active_id = self.context_window_manager.session_id();
             let sid = match active_id {
                 Some(sid) => sid,
                 None => match sm.lock().await.new_session(&generate_session_name()) {
@@ -768,7 +751,7 @@ impl Agent {
         let review_msg = Message::user(&prompt);
         let sm = Arc::clone(&self.session_manager);
         let response_text = execute_turn_full(
-            &mut self.context_engine,
+            &mut self.context_window_manager,
             &self.transport,
             &self.tools,
             &mut *sm.lock().await,

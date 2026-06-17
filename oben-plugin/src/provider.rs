@@ -2,7 +2,7 @@
 //!
 //! Maps to Hermes' provider system where plugins register alternative
 //! backends for image_gen, video_gen, web_search, browser, memory,
-//! and context_engine.
+//! and context_window_manager.
 //!
 //! Each provider type has its own trait and registry. A provider is
 //! a plugin that implements a specific capability, and can be selected
@@ -342,12 +342,12 @@ pub trait VideoGenProvider: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// ContextEngine — context compression/summarization trait
+// ContextWindowManager — context compression/summarization trait
 // ---------------------------------------------------------------------------
 
 /// Output from a context compression request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContextEngineOutput {
+pub struct ContextWindowManagerOutput {
     /// Compressed messages.
     pub messages: Vec<serde_json::Value>,
 
@@ -366,7 +366,7 @@ pub struct ContextEngineOutput {
 
 /// Trait for context compression engines.
 #[async_trait]
-pub trait ContextEngine: Send + Sync {
+pub trait ContextWindowManager: Send + Sync {
     /// Engine identifier (e.g., "llm-summarize", "keyword-extract").
     fn name(&self) -> &str;
 
@@ -389,7 +389,7 @@ pub trait ContextEngine: Send + Sync {
         messages: &[serde_json::Value],
         max_tokens: Option<usize>,
         model: Option<&str>,
-    ) -> Result<ContextEngineOutput>;
+    ) -> Result<ContextWindowManagerOutput>;
 
     /// Optional: get setup schema for UI configuration.
     fn get_setup_schema(&self) -> Option<serde_json::Value> {
@@ -493,7 +493,7 @@ pub enum ProviderKind {
 
     /// Context compression engine (LLM summarizer, keyword extractor).
     #[serde(rename = "context_engine")]
-    ContextEngine,
+    ContextWindowManager,
 
     /// Custom model provider (self-hosted, enterprise, etc.).
     #[serde(rename = "model_provider")]
@@ -507,7 +507,7 @@ impl fmt::Display for ProviderKind {
             Self::VideoGen => write!(f, "video_gen"),
             Self::WebSearch => write!(f, "web_search"),
             Self::Browser => write!(f, "browser"),
-            Self::ContextEngine => write!(f, "context_engine"),
+            Self::ContextWindowManager => write!(f, "context_engine"),
             Self::ModelProvider => write!(f, "model_provider"),
         }
     }
@@ -522,7 +522,7 @@ impl FromStr for ProviderKind {
             "video_gen" => Ok(Self::VideoGen),
             "web_search" => Ok(Self::WebSearch),
             "browser" => Ok(Self::Browser),
-            "context_engine" => Ok(Self::ContextEngine),
+            "context_engine" => Ok(Self::ContextWindowManager),
             "model_provider" => Ok(Self::ModelProvider),
             _ => Err(anyhow::anyhow!("Unknown provider kind: '{}'", s)),
         }
@@ -783,11 +783,11 @@ impl Default for BrowserRegistry {
 }
 
 /// Registry for context compression engines (exclusive — one at a time).
-pub struct ContextEngineRegistry {
-    providers: Vec<Box<dyn ContextEngine + Send + Sync>>,
+pub struct ContextWindowManagerRegistry {
+    providers: Vec<Box<dyn ContextWindowManager + Send + Sync>>,
 }
 
-impl ContextEngineRegistry {
+impl ContextWindowManagerRegistry {
     pub fn new() -> Self {
         Self {
             providers: Vec::new(),
@@ -795,23 +795,23 @@ impl ContextEngineRegistry {
     }
 
     /// Register a provider. In exclusive mode, replaces previous.
-    pub fn register(&mut self, provider: Box<dyn ContextEngine + Send + Sync>) {
+    pub fn register(&mut self, provider: Box<dyn ContextWindowManager + Send + Sync>) {
         self.providers.clear();
         self.providers.push(provider);
     }
 
-    pub fn get_default(&self) -> Option<&(dyn ContextEngine + Send + Sync)> {
+    pub fn get_default(&self) -> Option<&(dyn ContextWindowManager + Send + Sync)> {
         self.providers.first().map(|p| p.as_ref())
     }
 
-    pub fn get_by_name(&self, name: &str) -> Option<&(dyn ContextEngine + Send + Sync)> {
+    pub fn get_by_name(&self, name: &str) -> Option<&(dyn ContextWindowManager + Send + Sync)> {
         self.providers
             .iter()
             .find(|p| p.name() == name)
             .map(|p| p.as_ref())
     }
 
-    pub fn list(&self) -> Vec<&(dyn ContextEngine + Send + Sync)> {
+    pub fn list(&self) -> Vec<&(dyn ContextWindowManager + Send + Sync)> {
         self.providers.iter().map(|p| p.as_ref()).collect()
     }
 
@@ -826,7 +826,7 @@ impl ContextEngineRegistry {
     }
 }
 
-impl Default for ContextEngineRegistry {
+impl Default for ContextWindowManagerRegistry {
     fn default() -> Self {
         Self::new()
     }
@@ -889,7 +889,7 @@ pub struct ImageGenMarker;
 pub struct VideoGenMarker;
 pub struct WebSearchMarker;
 pub struct BrowserMarker;
-pub struct ContextEngineMarker;
+pub struct ContextWindowManagerMarker;
 pub struct ModelProviderMarker;
 
 #[cfg(test)]
@@ -915,7 +915,7 @@ mod tests {
         );
         assert_eq!(
             ProviderKind::from_str("context_engine").unwrap(),
-            ProviderKind::ContextEngine
+            ProviderKind::ContextWindowManager
         );
         assert_eq!(
             ProviderKind::from_str("model_provider").unwrap(),
@@ -1080,8 +1080,8 @@ mod tests {
     }
 
     #[test]
-    fn test_context_engine_registry_exclusive() {
-        /// given: a context engine registry (exclusive)
+    fn test_context_window_manager_registry_exclusive() {
+        /// given: a ContextWindowManager registry (exclusive)
         /// when: two providers are registered
         /// then: only the last one remains
         struct MockEngine {
@@ -1096,7 +1096,7 @@ mod tests {
         }
 
         #[async_trait::async_trait]
-        impl ContextEngine for MockEngine {
+        impl ContextWindowManager for MockEngine {
             fn name(&self) -> &str {
                 &self.name_val
             }
@@ -1111,8 +1111,8 @@ mod tests {
                 _messages: &[serde_json::Value],
                 _max_tokens: Option<usize>,
                 _model: Option<&str>,
-            ) -> Result<ContextEngineOutput> {
-                Ok(ContextEngineOutput {
+            ) -> Result<ContextWindowManagerOutput> {
+                Ok(ContextWindowManagerOutput {
                     messages: vec![],
                     summary: "test".into(),
                     input_count: 0,
@@ -1122,7 +1122,7 @@ mod tests {
             }
         }
 
-        let mut reg = ContextEngineRegistry::new();
+        let mut reg = ContextWindowManagerRegistry::new();
         reg.register(Box::new(MockEngine::new("engine-a")));
         reg.register(Box::new(MockEngine::new("engine-b")));
         assert_eq!(reg.len(), 1);

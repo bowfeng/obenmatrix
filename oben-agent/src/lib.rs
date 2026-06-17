@@ -6,13 +6,14 @@
 //!   and implementations (CLI, TUI). Replaces `ConversationLoop` and `Agent::interactive_chat`.
 //! - **TurnExecutor** (`turn_executor.rs`) — deep module for the core turn cycle.
 //!   One method (`execute_turn`) hides the full budget/check/compress/call/dispatch loop.
-//! - **ContextEngine** (`context.rs`) — trait defining the context engine interface.
-//! - **CompactContextEngine** (`compact_context.rs`) — default implementation.
+//! - **ContextWindowManager** (`context.rs`) — trait defining the CWM interface.
+//! - **BuiltinContextWindowManager** (`compact_context.rs`) — default implementation.
 //! - **Compaction** (`compression.rs`) — the full compaction algorithm.
 //! - **InteractionProvider** (`interaction.rs`) — communication protocol with external
 //!   interfaces (CLI, TUI, Gateway).
 //! - **HookEngine** (`hooks/runtime.rs`) — unified hook registry and execution hub.
-//! - **TerminationPolicy** (`coordinator/termination.rs`) — pluggable termination criteria.
+//! - **TurnTerminationPolicy** + **TurnRemedyPolicy** (`coordinator/termination.rs`) —
+//!   pluggable turn termination (response evaluation) and remedy (budget/empty recovery).
 
 pub mod agent;
 pub mod budget;
@@ -36,6 +37,7 @@ pub mod retry;
 pub mod stream_processor;
 pub mod system_prompt;
 pub mod system_prompt_cache;
+pub mod transport;
 pub mod turn_executor;
 
 pub use agent::*;

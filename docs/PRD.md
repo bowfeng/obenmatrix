@@ -70,7 +70,7 @@
 | **oben-models** | 21 | ✅ | Message, Tool, Skill, Session, ProviderConfig, TransportProvider trait, ModelInfo, ModelListResponse, roundtrip JSON/YAML serialization, image content parts |
 | **oben-utils** | 6 | ✅ | Logging (tracing + `--verbose`/`RUST_LOG`), terminal spinner, path security, env helpers, table formatter |
 | **oben-config** | 6 | ✅ | YAML config, setup wizard (interactive), system prompt defaults, gateway config serialization, model discovery, roundtrip save/load |
-| **oben-agent** | 122 | ✅ | ConversationLoop, ContextEngine (buffer + token tracking + compression trigger + thrashing detection), full compaction algorithm (message pruning, tool result dedup/truncation, split enforcement), PromptBuilder with identity/skills/volatile blocks + prompt cache, IterationBudget (warnings, grace period), error classifier (8 categories), jittered exponential backoff retry, fallback model chain, cross-thread interrupt + steer, message sanitization (thinking-only drop, user merge, surrogate stripping), streaming scrubbers (thinking blocks, memory context), char-level UTF-8 streaming output, callback system (12+ types), concurrent tool dispatch (serial for destructive) |
+| **oben-agent** | 122 | ✅ | ConversationLoop, ContextWindowManager (buffer + token tracking + compression trigger + thrashing detection), full compaction algorithm (message pruning, tool result dedup/truncation, split enforcement), PromptBuilder with identity/skills/volatile blocks + prompt cache, IterationBudget (warnings, grace period), error classifier (8 categories), jittered exponential backoff retry, fallback model chain, cross-thread interrupt + steer, message sanitization (thinking-only drop, user merge, surrogate stripping), streaming scrubbers (thinking blocks, memory context), char-level UTF-8 streaming output, callback system (12+ types), concurrent tool dispatch (serial for destructive) |
 | **oben-transport** | 51 | ✅ | BaseHTTPTransport, ChatCompletionsTransport (OpenAI-compatible), SSE streaming via `eventsource-stream`, unit + integration tests |
 | **oben-tools** | 87 | ✅ | ToolRegistry + auto-registration, terminal (fg/bg + mgmt), read_file, write_file, http_get, web_search, search_files (ripgrep), patch (fuzzy), web_extract (SSRF + HTML), vision_analyze (image download + base64 encoding + OpenAI/Anthropic API call), memory (add/replace/remove + scan), clarify, todo (JSON store), code_execution (sandbox), osv_check, skill (list/view), 87 unit tests |
 | **oben-sessions** | 44 | ✅ | SessionDB (SQLite-backed session state engine with FTS5, message windows, lineage resolution), Rich Search (discover/scroll/browse shapes), Bounded MemoryStore (file locking, atomic writes, injection scanning, frozen snapshots). Legacy JSONL SessionManager preserved for backwards compatibility.
@@ -92,10 +92,10 @@ obenalien/               # Root workspace (binary — thin wrapper)
 │
 ├──oben-agent/           # Agent engine (ex-oben_conversation, expanded)
 │   ├── conversation.rs  # ConversationLoop — main turn cycle (streaming + non-streaming)
-│   ├── context.rs       # ContextEngine — unified: buffer, real token tracking, should_compress(), compress()
+│   ├── context.rs       # ContextWindowManager — unified: buffer, real token tracking, should_compress(), compress()
 │   ├── prompt.rs        # PromptBuilder — system prompt + message assembly
 │   ├── compact.rs       # Message pruning, tool result sanitization, split enforcement
-│   ├── compact_context.rs # ContextEngine with thrashing detection and error state
+│   ├── compact_context.rs # ContextWindowManager with thrashing detection and error state
 │   ├── system_prompt.rs # System prompt builder with identity, skills, volatile blocks
 │   ├── system_prompt_cache.rs # Prompt cache with TTL
 │   ├── budget.rs        # IterationBudget — turn limits, warnings, grace
@@ -277,7 +277,7 @@ Used `Arc<Mutex<F>>` in `run_turn_with_streaming` to share callbacks across stre
 - **PluginManager** — Central discovery & lifecycle, 4-source scanning (bundled, user, project, pip entry-points), YAML manifest parsing, load gating by kind/source
 - **PluginContext** — Registration API: tools, hooks, slash commands, skills, providers, platforms, message injection, LLM facade
 - **Hook system** — 17 lifecycle hooks (`pre_tool_call`, `post_tool_call`, `transform_llm_output`, `on_session_start/end`, `pre_gateway_dispatch`, `pre_approval_request`, etc.), `invoke_hook()` with per-callback error isolation, pre_tool_call blocking, context injection, LLM output transformation
-- **Provider traits** — `ImageGenProvider`, `VideoGenProvider`, `WebSearchProvider`, `BrowserProvider`, `MemoryProvider`, `ContextEngine`, `ProviderProfile` — each with registry, config-driven selection, `is_available()` gating
+- **Provider traits** — `ImageGenProvider`, `VideoGenProvider`, `WebSearchProvider`, `BrowserProvider`, `MemoryProvider`, `ContextWindowManager`, `ProviderProfile` — each with registry, config-driven selection, `is_available()` gating
 - **Plugin configuration** — `plugins.enabled` (opt-in allow-list), `plugins.disabled` (deny-list), kind-based load gating (bundled backends auto-load, user plugins gated)
 - **Plugin slash commands** — `/cmd` registration with async handling (30s timeout), TUI toolset grouping, conflict resolution against built-in commands
 - **Tool whitelisting** — Thread-local per-thread tool restriction for sub-agent threads

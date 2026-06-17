@@ -8,7 +8,7 @@
 ///   - Fresh `SessionManager` (shared DB, uses child session ID)
 ///   - Shared `Arc<Transport>` (safe, session-scoped)
 ///   - Shared `Arc<ToolRegistry>` (safe, filtered by delegate tool)
-///   - Fresh `Box<dyn ContextEngine>`
+///   - Fresh `Box<dyn ContextWindowManager>`
 /// - Runs the child agent via `Agent::turn` (single-turn with interrupt support)
 /// - Returns `SubagentResult` with summary, metadata
 use std::sync::Arc;
@@ -112,7 +112,7 @@ impl SubagentResult {
 ///
 /// **Resource model:**
 /// - Shared: `Arc<Transport>`, `Arc<ToolRegistry>`
-/// - Fresh: `Box<dyn ContextEngine>`, `Arc<InterruptState>`, `SessionManager`
+/// - Fresh: `Box<dyn ContextWindowManager>`, `Arc<InterruptState>`, `SessionManager`
 pub struct Subagent {
     /// The child's session ID.
     pub session_id: String,
@@ -182,7 +182,7 @@ pub struct SubagentSpawner {
     transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
     /// Parent's tool registry (parent decides what subset child gets).
     tools: Arc<oben_tools::ToolRegistry>,
-    /// Context config for child ContextEngine creation.
+    /// Context config for child ContextWindowManager creation.
     context_config: crate::compact::CompactCofig,
     /// Max iterations per child.
     max_iterations: usize,
@@ -215,7 +215,7 @@ impl SubagentSpawner {
     /// Spawn a child agent.
     ///
     /// The child gets its own `SessionManager` (shared DB) pointed at the
-    /// `child_session_id`, a fresh `ContextEngine`, and its own `Arc<InterruptState>`.
+    /// `child_session_id`, a fresh `ContextWindowManager`, and its own `Arc<InterruptState>`.
     /// The interrupt state is created **before** spawning the async task so the
     /// parent coordinator can wire it to the interruption hub.
     pub fn spawn(
@@ -267,8 +267,8 @@ impl SubagentSpawner {
                 }
             }
 
-            // Create child ContextEngine (fresh engine, no need to call on_session_start)
-            // Note: Child ContextEngine created by Agent::new below, not here.
+            // Create child ContextWindowManager (fresh engine, no need to call on_session_start)
+            // Note: Child ContextWindowManager created by Agent::new below, not here.
             // (Previously passed to on_session_start, which was removed)
 
             // Build child agent — this is the core of delegate tool:
@@ -511,7 +511,7 @@ pub fn build_spawn_fn_wrapper(
                         {
                             return Err(anyhow::anyhow!("Failed to set parent session ID: {e}"));
                         }
-                        if let Some(s) = sm.active_session_mut() {
+                        if let Some(s) = sm.session_mut(&child_id) {
                             s.metadata.parent_session_id = Some(parent_session_id_clone.clone());
                         }
                         Ok(SpawnedSession {
@@ -586,12 +586,12 @@ pub fn build_spawn_fn_wrapper(
                     child_session_id
                 );
 
-                // Create child ContextEngine
+                // Create child ContextWindowManager
                 info!(
-                    "delegate: init_child_context_engine child_session_id={}",
+                    "delegate: init_child_context_window_manager child_session_id={}",
                     child_session_id
                 );
-                // Note: Child ContextEngine created by Agent::new below, not here.
+                // Note: Child ContextWindowManager created by Agent::new below, not here.
                 // (Previously passed to on_session_start, which was removed)
 
                 // Build child agent with the child's toolset

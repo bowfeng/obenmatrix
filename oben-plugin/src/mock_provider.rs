@@ -7,7 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::provider::{
-    BrowserOutput, BrowserProvider, ContextEngine, ContextEngineOutput, ImageGenOutput,
+    BrowserOutput, BrowserProvider, ContextWindowManager, ContextWindowManagerOutput, ImageGenOutput,
     ImageGenProvider, ModelProvider, ProviderProfile, SearchResult, VideoGenOutput,
     VideoGenProvider, WebSearchOutput, WebSearchProvider,
 };
@@ -211,16 +211,16 @@ impl BrowserProvider for MockBrowserProvider {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// MockContextEngine — Demonstrates ContextEngine trait impl
+// MockContextWindowManager — Demonstrates ContextWindowManager trait impl
 // ────────────────────────────────────────────────────────────────────────
 
 /// A mock context compression engine.
-pub struct MockContextEngine {
+pub struct MockContextWindowManager {
     name_val: String,
     available: bool,
 }
 
-impl MockContextEngine {
+impl MockContextWindowManager {
     pub fn new(name: &str, available: bool) -> Self {
         Self {
             name_val: name.to_string(),
@@ -230,7 +230,7 @@ impl MockContextEngine {
 }
 
 #[async_trait::async_trait]
-impl ContextEngine for MockContextEngine {
+impl ContextWindowManager for MockContextWindowManager {
     fn name(&self) -> &str {
         &self.name_val
     }
@@ -257,8 +257,8 @@ impl ContextEngine for MockContextEngine {
         messages: &[serde_json::Value],
         _max_tokens: Option<usize>,
         _model: Option<&str>,
-    ) -> Result<ContextEngineOutput> {
-        Ok(ContextEngineOutput {
+    ) -> Result<ContextWindowManagerOutput> {
+        Ok(ContextWindowManagerOutput {
             messages: messages.to_vec(),
             summary: format!("Compressed {} messages", messages.len()),
             input_count: messages.len(),
@@ -469,10 +469,10 @@ mod tests {
 
     #[test]
     fn test_mock_context_engine() {
-        /// given: a mock context engine
+        /// given: a mock CWM
         /// when: compress() is called
         /// then: returns compressed output
-        let provider = MockContextEngine::new("mock-engine", true);
+        let provider = MockContextWindowManager::new("mock-engine", true);
         let messages = vec![
             serde_json::json!({"role": "user", "content": "Hello"}),
             serde_json::json!({"role": "assistant", "content": "Hi there"}),

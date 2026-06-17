@@ -1,93 +1,85 @@
 /// Turn executor — deep module for the core agent turn cycle.
 ///
-/// **Stateless**: `TurnExecutor` owns nothing — all resources (ContextEngine,
-/// Budget, Transport, Tools) are passed as function parameters.
-///
-/// Encapsulates the full turn cycle: budget check → compression → LLM call
-/// → tool dispatch → repeat until no more tool calls.
+/// Encapsulates: compression → LLM call → termination policy → remedy policy → tool dispatch.
 use std::sync::Arc;
 
 use anyhow::Result;
 use tracing::info;
 
-use crate::budget::{BudgetWarningCallback, IterationBudget};
-use crate::hooks::HookEngine;
+use crate::coordinator::termination::{
+    BudgetRemedyPolicy, DefaultTurnTerminationPolicy, EmptyResponseRemedyPolicy,
+    TurnRemedyAction, TurnRemedyPolicy, TurnRemedyPolicyGroup, TurnTerminationDecision,
+    TurnTerminationPolicy, TurnTerminationPolicyGroup,
+};
 use crate::concurrent_dispatch::{self, ConcurrentDispatchConfig, PendingToolCall};
-use crate::context::ContextEngine;
-use crate::error_classifier::{ClassifiedError, ErrorKind};
+use crate::context::{CompactStatus, ContextWindowManager};
 use crate::fallback::FallbackChain;
-use crate::interrupt::SharedInterrupt;
+use crate::hooks::HookEngine;
+// shared interrupt handled via __INTERRUPT__: marker in messages
 use crate::message_sanitize::sanitize_messages;
-use crate::retry::{retry_with_backoff, retryable_transient, RetryConfig};
+use crate::retry::{retry_with_backoff, RetryConfig};
 use crate::stream_processor;
-use oben_models::{Message, MessageRole, Session, SessionManager, StreamDeltaCallback, TransportProvider};
+use oben_models::{
+    Message, MessageContent, MessageRole, Session, SessionManager, StreamDeltaCallback,
+    TransportProvider, TransportToolCall,
+};
 
 // ---------------------------------------------------------------------------
-// TurnConfig — configuration for turn execution
+// TurnConfig
 // ---------------------------------------------------------------------------
 
-/// Configuration for a turn execution.
 pub struct TurnConfig {
-    /// Retry configuration for API calls.
     pub retry_config: RetryConfig,
-    /// Budget warning callback function.
-    pub budget_warning: Option<BudgetWarningCallback>,
-    /// Unified hook engine for event dispatch during turn execution.
     pub hooks: Option<Arc<HookEngine>>,
-    /// Fallback model chain (Tier 2).
     pub fallback_chain: Option<FallbackChain>,
-    /// Concurrent dispatch configuration (Tier 2).
     pub dispatch_config: Option<ConcurrentDispatchConfig>,
+    pub max_iterations: usize,
 }
 
 impl Default for TurnConfig {
     fn default() -> Self {
         Self {
             retry_config: RetryConfig::default(),
-            budget_warning: None,
             hooks: None,
             fallback_chain: None,
             dispatch_config: None,
+            max_iterations: 50,
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// TurnResult — what the executor returns after executing a turn
+// TurnResult
 // ---------------------------------------------------------------------------
 
 pub struct TurnResult {
     pub text: String,
-    pub messages: Vec<Message>,
+    pub reason: TurnResultReason,
 }
 
-// ---------------------------------------------------------------------------
-// TurnExecutor — stateless turn cycle
-// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, PartialEq)]
+pub enum TurnResultReason {
+    Normal,
+    ToolResult,
+    BudgetExhausted,
+}
 
-/// Stateless executor — the full agent turn cycle.
-///
-/// **Deep module**: one method, high leverage. All resources (ContextEngine,
-/// Budget, Transport, Tools) are passed as function parameters — `TurnExecutor`
-/// owns none of them.
-///
-/// **Responsibilities**: budget check → compression → LLM call → tool dispatch → repeat.
+enum CompactionResult {
+    Continue,
+    Rotated(String, Vec<Message>),
+    Complete(Vec<Message>),
+}
+
+    // ---------------------------------------------------------------------------
+    // TurnExecutor
+    // ---------------------------------------------------------------------------
+
 pub struct TurnExecutor;
 
 impl TurnExecutor {
-    /// Execute one turn: budget check → compress → LLM → dispatch → repeat.
-    ///
-    /// **Parameters** — all resources passed as parameters:
-    /// - `context_engine`: token tracking & compression
-    /// - `transport`: LLM API (dyn trait)
-    /// - `tools`: tool registry
-    /// - `store`: session store
-    /// - `session_manager`: session lifecycle (for rotation on compression)
-    /// - `session_id`: which session to operate on
-    /// - `user_message`: the user's input
-    /// - `call_mode`: Fresh or Incremental
+    /// Execute one turn with default policies.
     pub async fn execute_turn(
-        context_engine: &mut dyn ContextEngine,
+        context_window_manager: &mut dyn ContextWindowManager,
         transport: &dyn TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
         session_manager: &mut dyn SessionManager,
@@ -96,495 +88,487 @@ impl TurnExecutor {
         call_mode: &oben_models::CallMode,
     ) -> Result<TurnResult> {
         Self::execute_turn_with_config(
-            context_engine,
+            context_window_manager,
             transport,
             tools,
             session_manager,
             session_id,
             user_message,
             call_mode,
-            None,  // budget
-            None,  // interrupt
+            None,
+            None,
             TurnConfig::default(),
         )
         .await
     }
 
-    /// Execute one turn with full Tier 1 feature integration.
-    ///
-    /// This is the production-ready turn execution that includes:
-    /// - Message sanitization (surrogate stripping, thinking-only drop, user merge)
-    /// - Iteration budget with warnings
-    /// - Retry with jittered exponential backoff
-    /// - Error classification
-    /// - Cross-thread interrupt support
-    /// - Steer injection
+    /// Execute one turn with configurable termination/remedy policy groups.
     pub async fn execute_turn_with_config(
-        context_engine: &mut dyn ContextEngine,
+        context_window_manager: &mut dyn ContextWindowManager,
         transport: &dyn TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
         session_manager: &mut dyn SessionManager,
         session_id: &str,
         user_message: Message,
         call_mode: &oben_models::CallMode,
-        budget: Option<IterationBudget>,
-        interrupt: Option<SharedInterrupt>,
+        termination_policy: Option<TurnTerminationPolicyGroup>,
+        remedy_policy: Option<TurnRemedyPolicyGroup>,
         mut config: TurnConfig,
     ) -> Result<TurnResult> {
-        let mut current_session_id = session_id.to_string();
-        let mut current_session: Option<&mut Session> =
-            session_manager.session_mut(&current_session_id).map(|s| {
-                current_session_id = s.id.clone();
-                s
-            });
+        let (mut term, mut rem) = match (termination_policy, remedy_policy) {
+            (Some(t), Some(r)) => (t, r),
+            (Some(t), None) => {
+                let rem = Self::build_default_remedy(config.max_iterations);
+                (t, rem)
+            }
+            (None, Some(r)) => {
+                let term = Self::build_default_termination();
+                (term, r)
+            }
+            (None, None) => {
+                let term = Self::build_default_termination();
+                let rem = Self::build_default_remedy(config.max_iterations);
+                (term, rem)
+            }
+        };
 
-        let mut session = current_session
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", current_session_id))?;
+        let (mut session, mut current_session_id) =
+            Self::pre_turn_setup(context_window_manager, session_manager, session_id, user_message, &mut config)?;
+        let mut consecutive_empty: u32 = 0;
+        let mut decision_result: Option<TurnResult> = None;
+        'turn_loop: loop {
+            // Interrupt
+            if let Some(r) = Self::check_interrupt(&session) {
+                decision_result = Some(r);
+                break 'turn_loop;
+            }
 
-        // Add user message to session
-        session.messages.push(user_message);
+            // Compaction
+            match Self::run_compaction(
+                context_window_manager,
+                &mut session,
+                &mut current_session_id,
+                session_manager,
+                transport,
+            )
+            .await?
+            {
+                CompactionResult::Continue => {}
+                CompactionResult::Rotated(child_id, compacted) => {
+                    let (id, name, created_at, updated_at, memory_context, summary_chunks, persisted_message_count, metadata) = {
+                        let s = session_manager.session_mut(&child_id).ok_or_else(|| {
+                            anyhow::anyhow!("Child session disappeared: {}", child_id)
+                        })?;
+                        (s.id.clone(), s.name.clone(), s.created_at, s.updated_at,
+                         s.memory_context.clone(), s.summary_chunks.clone(),
+                         s.persisted_message_count, s.metadata.clone())
+                    };
+                    session.id = id;
+                    session.name = name;
+                    session.created_at = created_at;
+                    session.updated_at = updated_at;
+                    session.memory_context = memory_context;
+                    session.summary_chunks = summary_chunks;
+                    session.persisted_message_count = persisted_message_count;
+                    session.metadata = metadata;
+                    session.messages = compacted;
+                }
+                CompactionResult::Complete(_) => {
+                    decision_result = Some(TurnResult { text: String::new(), reason: TurnResultReason::BudgetExhausted });
+                    break;
+                }
+            }
 
-        // ── Budget setup ─────────────────────────────────────────────
-        let mut budget = budget.unwrap_or_else(|| IterationBudget::new(90));
-        if let Some(cb) = config.budget_warning {
-            budget.on_warning(cb);
+            // Sanitize
+            sanitize_messages(&mut session.messages);
+
+            // API call
+            let response = Self::api_call_with_retry(
+                transport,
+                &session.messages,
+                call_mode,
+                &config,
+            )
+                .await?;
+            let tool_calls = response.tool_calls.clone();
+
+            // Process response: scrub, update tokens, inject assistant msg
+            Self::process_response(
+                &response,
+                &tool_calls,
+                &mut session,
+                &current_session_id,
+                &mut consecutive_empty,
+                context_window_manager,
+            )?;
+
+            // Evaluate termination policy
+            let decision = term.evaluate(&crate::coordinator::termination::TurnTerminationContext {
+                response: &response,
+                messages: &session.messages,
+            })?;
+
+            // Enact decision
+            match decision {
+                TurnTerminationDecision::Continue => {
+                    // Phase 2: remedy check
+                    let action = rem
+                        .evaluate(config.max_iterations, &mut session.messages, consecutive_empty)?;
+                    match action {
+                        TurnRemedyAction::Continue => {
+                            Self::dispatch_tool_results(
+                                tools,
+                                &tool_calls,
+                                &mut session,
+                                &current_session_id,
+                                &config,
+                            )
+                            .await?;
+                        }
+                        TurnRemedyAction::Remedy => {
+                            // Hint injected into messages, loop continues
+                        }
+                        TurnRemedyAction::RemedyExhausted => {
+                            let last = Self::last_tool_result_text(&session.messages).unwrap_or_default();
+                            decision_result = Some(TurnResult { text: last.to_string(), reason: TurnResultReason::BudgetExhausted });
+                            break;
+                        }
+                    }
+                }
+                TurnTerminationDecision::ReturnLastToolResult => {
+                    if let Some(last) = Self::last_tool_result_text(&session.messages) {
+                        decision_result = Some(TurnResult { text: last.to_string(), reason: TurnResultReason::ToolResult });
+                        break;
+                    }
+                }
+                TurnTerminationDecision::Return(text) => {
+                    decision_result = Some(TurnResult { text, reason: TurnResultReason::Normal });
+                    break;
+                }
+            }
         }
 
-        // ── Activity tracking: mark turn start ───────────────────────
+        // Write final messages back to the session manager. All mutations in the main loop
+        // (process_response, dispatch_tool_results) operate on the local clone created in
+        // pre_turn_setup. We must sync them back so the TUI can read them after the turn.
+        let msg_count = session.messages.len();
+        if let Some(s) = session_manager.session_mut(&current_session_id) {
+            s.messages = session.messages;
+            s.metadata.message_count = msg_count;
+            s.metadata.tool_call_count = session.metadata.tool_call_count;
+            s.metadata.input_tokens = session.metadata.input_tokens;
+            s.metadata.output_tokens = session.metadata.output_tokens;
+            s.metadata.total_tokens = session.metadata.total_tokens;
+            s.metadata.estimated_cost_usd = session.metadata.estimated_cost_usd;
+        }
+        let _ = session_manager.incremental_save(Some(&current_session_id));
+
+        decision_result.ok_or_else(|| anyhow::anyhow!("Turn loop exited without a decision"))
+    }
+
+    // ------------------------------------------------------------------
+    // Private helpers
+    // ------------------------------------------------------------------
+
+    fn build_default_termination() -> TurnTerminationPolicyGroup {
+        let mut group = TurnTerminationPolicyGroup::new();
+        group.add_policy(Box::new(DefaultTurnTerminationPolicy::default()));
+        group
+    }
+
+    fn build_default_remedy(max_iterations: usize) -> TurnRemedyPolicyGroup {
+        // BudgetRemedyPolicy::remedyed is per-turn state; EmptyResponseRemedyPolicy
+        // only reads max_consecutive (no mutable state). Creating fresh group
+        // per turn is cheap — both constructors are simple struct initialization.
+        TurnRemedyPolicyGroup::new()
+            .with_policy(Box::new(BudgetRemedyPolicy::new(max_iterations)))
+            .with_policy(Box::new(EmptyResponseRemedyPolicy::new(3)))
+    }
+
+    fn pre_turn_setup(
+        context_window_manager: &mut dyn ContextWindowManager,
+        session_manager: &mut dyn SessionManager,
+        session_id: &str,
+        user_message: Message,
+        config: &mut TurnConfig,
+     ) -> Result<(Session, String)> {
+        let mut current_id = session_id.to_string();
+
+        // Use whichever session ID the CWM considers active as the primary.
+        // This may differ from the input `session_id` if the CWM already
+        // switched to a child session via split_before_turn.
+        let active_id = context_window_manager
+            .session_id()
+            .unwrap_or_else(|| session_id.to_string());
+
+        if let Some(new_id) = context_window_manager.should_do_time_based_split(session_manager) {
+            current_id = new_id;
+        }
+
+        // Prefer CWM's active session ID if available. This ensures we always
+        // have a valid session to work with, even if time-based split generated
+        // a name that isn't yet persisted to the store.
+        let id = {
+            // Try the CWM's session first (most likely to be valid)
+            match session_manager.session(&active_id) {
+                Some(s) => s.id.clone(),
+                None => {
+                    // Fall back to get_or_create (lazily creates if needed)
+                    session_manager.get_or_create_session(&current_id).id.clone()
+                }
+            }
+        };
+        // Ensure the CWM is synced to the actual session we're using.
+        context_window_manager.set_active_session(session_manager, id.clone());
+
+        let session_ref = session_manager
+            .session_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("Session missing after resolution: {}", id))?;
+
+        session_ref.messages.push(user_message);
+        context_window_manager.on_message_received(chrono::Utc::now());
+
         if let Some(ref hooks) = config.hooks {
             hooks.emit_status("lifecycle", "turn_start");
         }
-        if let Some(ref int_state) = interrupt {
-            int_state.touch_activity();
+
+        let session = Session {
+            id: session_ref.id.clone(),
+            name: session_ref.name.clone(),
+            created_at: session_ref.created_at,
+            updated_at: session_ref.updated_at,
+            messages: session_ref.messages.clone(),
+            memory_context: session_ref.memory_context.clone(),
+            summary_chunks: session_ref.summary_chunks.clone(),
+            persisted_message_count: session_ref.persisted_message_count,
+            metadata: session_ref.metadata.clone(),
+        };
+
+        Ok((session, id))
+    }
+
+    fn check_interrupt(session: &Session) -> Option<TurnResult> {
+        session.messages.iter().find_map(|m| {
+            if let MessageContent::Text(ref t) = m.content {
+                if t.starts_with("__INTERRUPT__:") {
+                    return Some(TurnResult { text: String::new(), reason: TurnResultReason::Normal });
+                }
+            }
+            None
+        })
+    }
+
+    async fn api_call_with_retry(
+        transport: &dyn TransportProvider,
+        messages: &[Message],
+        call_mode: &oben_models::CallMode,
+        config: &TurnConfig,
+    ) -> Result<oben_models::TransportResponse> {
+        let hooks = config.hooks.as_ref().map(|cb| Arc::clone(cb));
+        let messages = messages.to_vec();
+        let mode = call_mode.clone();
+
+        retry_with_backoff(&config.retry_config, move || {
+            let messages = messages.clone();
+            let mode = mode.clone();
+            let hooks = hooks.clone();
+
+            async move {
+                if let Some(ref hooks) = hooks {
+                    hooks.emit_status("lifecycle", "api_call_start");
+                }
+                let cb: StreamDeltaCallback = Box::new(move |delta: &str| {
+                    if let Some(ref hooks) = hooks {
+                        hooks.emit_stream_delta(delta);
+                    }
+                });
+                transport.stream_chat(&messages, &mode, cb).await.map_err(|e| e.into())
+            }
+        })
+        .await
+    }
+
+    async fn run_compaction(
+        ctx: &mut dyn ContextWindowManager,
+        session: &mut Session,
+        current_id: &mut String,
+        session_mgr: &mut dyn SessionManager,
+        transport: &dyn TransportProvider,
+    ) -> Result<CompactionResult> {
+        if !ctx.should_compact(&session.messages) {
+            return Ok(CompactionResult::Continue);
         }
 
-        // ── Core loop: LLM call → tool dispatch → repeat ─────────────
-        // Tracks consecutive empty (no text, no tool calls) LLM responses.
-        // Used to retry when a model returns empty output after tool results.
-        let mut consecutive_empty_responses: u32 = 0;
+        info!(
+            "Compacting ({} msgs, {} tokens)",
+            session.messages.len(),
+            ctx.estimate_tokens(&session.messages)
+        );
 
-        loop {
-            // Check interrupt
-            if let Some(int_state) = &interrupt {
-                if int_state.is_interrupted() {
-                    let msg = int_state.drain_interrupt_message();
-                    info!("Turn interrupted: {:?}", msg);
-                    return Ok(TurnResult {
-                        text: String::new(),
-                        messages: session.messages.clone(),
+        let status = ctx.compact(&mut session.messages, Some(transport), None).await?;
+        if status == CompactStatus::Unchanged {
+            return Ok(CompactionResult::Continue);
+        }
+
+        match Self::rotate_session(ctx, &mut session.messages, current_id, session_mgr) {
+            Ok((cid, msgs)) => Ok(CompactionResult::Rotated(cid, msgs)),
+            Err(e) => {
+                tracing::warn!("Rotation failed: {e}");
+                Ok(CompactionResult::Complete(session.messages.clone()))
+            }
+        }
+    }
+
+    fn rotate_session(
+        ctx: &mut dyn ContextWindowManager,
+        msgs: &mut Vec<Message>,
+        current_id: &mut String,
+        session_mgr: &mut dyn SessionManager,
+    ) -> Result<(String, Vec<Message>)> {
+        let parent_id = current_id.clone();
+        let compacted = msgs.clone();
+
+        let child = session_mgr.split_after_compression(&parent_id).map_err(|e| anyhow::anyhow!("Split failed: {}", e))?;
+        let child_id = child.id.clone();
+
+        let parent_msgs = {
+            let p = session_mgr.session(&parent_id).ok_or_else(|| anyhow::anyhow!("Parent gone: {}", parent_id))?;
+            p.messages.clone()
+        };
+        session_mgr.save_compacted(&child_id, &parent_msgs).map_err(|e| anyhow::anyhow!("Persist failed: {}", e))?;
+
+        *current_id = child_id.clone();
+        ctx.on_session_split(session_mgr, child_id.clone());
+        Ok((child_id, compacted))
+    }
+
+    fn process_response(
+        response: &oben_models::TransportResponse,
+        tool_calls: &[oben_models::TransportToolCall],
+        session: &mut Session,
+        _session_id: &str,
+        consecutive_empty: &mut u32,
+        context_window_manager: &mut dyn ContextWindowManager,
+    ) -> Result<()> {
+        let (scrubbed, scrubbed_reasoning) = stream_processor::scrub_thinking_blocks(&response.text);
+        let combined_reasoning: Option<String> = match (&response.reasoning, scrubbed_reasoning) {
+            (Some(a), Some(s)) => {
+                let mut c = a.clone();
+                c.push_str("\n\n");
+                c.push_str(&s);
+                Some(c)
+            }
+            (Some(a), None) => Some(a.clone()),
+            (None, Some(s)) => Some(s),
+            (None, None) => None,
+        };
+        let scrubbed = stream_processor::scrub_memory_context(&scrubbed);
+
+        if let Some(tokens) = response.tokens_used {
+            context_window_manager.update_from_response(tokens, 0, tokens);
+        }
+
+        let is_empty = scrubbed.trim().is_empty() && tool_calls.is_empty() && response.tokens_used.unwrap_or(0) > 0;
+        if is_empty {
+            *consecutive_empty += 1;
+        } else {
+            *consecutive_empty = 0;
+        }
+
+        let assistant = if !tool_calls.is_empty() {
+            let mut msg = Message::assistant_tool_calls(tool_calls.iter().map(oben_models::ToolCall::from_transport).collect());
+            msg.reasoning = combined_reasoning;
+            msg
+        } else {
+            let trimmed = scrubbed.trim();
+            let mut msg = Message::assistant(trimmed.to_string());
+            msg.reasoning = combined_reasoning;
+            msg
+        };
+        session.messages.push(assistant);
+
+        Ok(())
+    }
+
+    pub(crate) fn last_tool_result_text(messages: &[Message]) -> Option<&str> {
+        messages.last().and_then(|m| {
+            if m.role == MessageRole::Tool {
+                m.content.to_text_ref()
+            } else {
+                None
+            }
+        })
+    }
+
+    async fn dispatch_tool_results(
+        tools: &Arc<oben_tools::ToolRegistry>,
+        tool_calls: &[oben_models::TransportToolCall],
+        session: &mut Session,
+        session_id: &str,
+        config: &TurnConfig,
+    ) -> Result<()> {
+        let default_dispatch = ConcurrentDispatchConfig::default();
+        let dispatch_config = config
+            .dispatch_config
+            .as_ref()
+            .unwrap_or(&default_dispatch);
+
+        let pending: Vec<PendingToolCall> = tool_calls.iter().map(|c| {
+            let mut args = c.arguments.clone();
+            if c.tool_name == "delegate_task" {
+                if let Some(obj) = args.as_object_mut() {
+                    obj.entry("parent_session_id").or_insert_with(|| {
+                        serde_json::Value::String(session_id.to_string())
                     });
                 }
             }
-
-            // Budget check
-            if let Err(e) = budget.check() {
-                let classified = ClassifiedError::from_anyhow(&e);
-                match &classified.kind {
-                    ErrorKind::Other(msg) if msg.contains("grace") || msg.contains("exhausted") => {
-                        // Budget warning injected — add a message to context
-                        let warning_msg = oben_models::Message::user(
-                            "⚠️ You have reached your iteration limit. Please provide a final answer now without using any more tools."
-                        );
-                        session.messages.push(warning_msg);
-                        budget.consume_grace_call();
-                        continue;
-                    }
-                    _ => return Err(e),
-                }
+            PendingToolCall {
+                tool_name: c.tool_name.clone(),
+                arguments: args,
+                call_id: c.id.clone(),
             }
+        })
+        .collect();
 
-            // Auto-compression
-            if context_engine.should_compact(&session.messages) {
-                info!(
-                    "Auto-compression: context full ({} messages, {} est. tokens), compressing",
-                    session.messages.len(),
-                    context_engine.estimate_tokens(&session.messages),
-                );
-                let compacted = context_engine
-                    .compact(&mut session.messages, Some(transport), None)
-                    .await?;
+        if let Some(ref hooks) = config.hooks {
+            for call in &pending {
+                hooks.emit_tool_gen(&call.tool_name, &call.call_id);
+                hooks.emit_tool_start(&call.tool_name, &call.arguments.to_string());
+            }
+        }
 
-                if compacted == crate::context::CompactStatus::Unchanged {
-                    // Compression was ineffective — messages unchanged,
-                    // skip rotation and continue with the current session.
-                    tracing::warn!(
-                        "Compression ineffective ({} messages, {} est. tokens), skipping rotation",
-                        session.messages.len(),
-                        context_engine.estimate_tokens(&session.messages),
-                    );
+        let results = concurrent_dispatch::dispatch_tool_calls(tools, dispatch_config, &pending, None).await?;
+
+        for (i, result) in results.iter().enumerate() {
+            let call = &pending[i];
+            if result.output.is_empty() && call.call_id != "steer" && result.error.is_none() {
+                continue;
+            }
+            let msg = if !result.output.is_empty() {
+                Message::tool_result(&call.call_id, &result.output)
+            } else if let Some(ref err) = result.error {
+                Message::tool_result(&call.call_id, err)
+            } else {
+                Message {
+                    role: MessageRole::Tool,
+                    content: MessageContent::Text(String::new()),
+                    id: None,
+                    tool_call_ids: vec![call.call_id.clone()],
+                    tool_calls: None,
+                    reasoning: None,
+                }
+            };
+            session.messages.push(msg);
+
+            if let Some(ref hooks) = config.hooks {
+                if let Some(ref err) = result.error {
+                    hooks.emit_tool_error(&call.tool_name, &call.arguments.to_string(), err);
                 } else {
-                    // Session rotation: end parent, create child with lineage.
-                    // This mirrors Hermes Agent's `compress_context()` which splits
-                    // the session into parent (ended) + child (continuation).
-                    //
-                    // We can't hold `session` (borrowed from `session_manager`)
-                    // while calling `session_manager` methods. Drop the borrow,
-                    // do the rotation, then re-acquire.
-                    let parent_id = current_session_id.clone();
-                    // Clone compacted messages before dropping the borrow — they need
-                    // to be copied into the child session after rotation.
-                    let compacted_msgs = session.messages.clone();
-                    let _ = session;
-
-                    // 1. Reset context engine state for the split
-                    context_engine.reset();
-
-                    // 2. Split: end parent in DB, create child with lineage
-                    let child_session = match session_manager.split_after_compression(&parent_id) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::warn!(
-                                "Session rotation failed: {} (continuing with parent)",
-                                e
-                            );
-                            // Re-acquire old session reference
-                            current_session =
-                                Some(session_manager.session_mut(&parent_id).ok_or_else(|| {
-                                    anyhow::anyhow!("Parent session disappeared: {}", parent_id)
-                                })?);
-                            session = current_session.as_mut().ok_or_else(|| {
-                                anyhow::anyhow!("Parent session disappeared: {}", parent_id)
-                            })?;
-                            continue;
-                        }
-                    };
-                    let child_id = child_session.id.clone();
-
-                    // 3. Before taking &mut session, clone parent messages and persist to DB.
-                    //    Both session_manager.session() and save_compacted need access to
-                    //    session_manager, and they conflict with &mut session.
-                    let compacted = {
-                        let parent = session_manager.session(&parent_id).ok_or_else(|| {
-                            anyhow::anyhow!("Parent session disappeared after split: {}", parent_id)
-                        })?;
-                        parent.messages.clone()
-                    };
-                    // Now the &borrow on parent is released, so we can call save_compacted.
-                    session_manager
-                        .save_compacted(&child_id, &compacted)
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to persist compacted messages to child {}: {}",
-                                child_id,
-                                e
-                            )
-                        })?;
-
-                    // 4. Update our tracking — take mutable ref to child session
-                    current_session_id = child_id.clone();
-                    current_session =
-                        Some(session_manager.session_mut(&child_id).ok_or_else(|| {
-                            anyhow::anyhow!("Child session disappeared: {}", child_id)
-                        })?);
-                    session = current_session.as_mut().ok_or_else(|| {
-                        anyhow::anyhow!("Child session disappeared: {}", child_id)
-                    })?;
-
-                    // 5. Copy compacted messages into child session's in-memory state
-                    session.messages = compacted_msgs;
-
-                    // 6. Context engine already reset at session split (line ~230)
-
-                    info!(
-                        "Session rotated: {} → {}, copied {} compacted messages",
-                        parent_id,
-                        child_id,
-                        session.messages.len(),
-                    );
-                }
-            }
-
-            // Sanitize messages before API call
-            sanitize_messages(&mut session.messages);
-
-            // Check for pending steer to inject into last tool result
-            if let Some(int_state) = &interrupt {
-                if let Some(steer_text) = int_state.drain_pending_steer() {
-                    let steer_msg = Message::tool_result("steer", &steer_text);
-                    session.messages.push(steer_msg);
-                    info!("Injected steer text into tool result");
-                }
-            }
-
-            // ── API call with retry + activity tracking ──
-            let transport_ref = transport;
-
-            // All streaming dispatch goes through the hook system.
-            // Clone Arc for 'static lifetime in the stream_chat closure.
-            let hooks = config.hooks.as_ref().map(|cb| Arc::clone(cb));
-            let hooks_for_stream = hooks.clone();
-            let response = retry_with_backoff(&config.retry_config, || {
-                let transport_ref = transport_ref;
-                let messages = session.messages.clone();
-                let mode = call_mode.clone();
-                let hooks = hooks_for_stream.clone();
-
-                async move {
-                    if let Some(ref hooks) = hooks {
-                        hooks.emit_status("lifecycle", "api_call_start");
-                    }
-                    let hooks_for_dispatch = hooks.clone();
-                    let cb_wrapper: StreamDeltaCallback = Box::new(move |text: &str| {
-                        // Dispatch every delta through the hook system in real-time.
-                        // The accumulated response text will also be dispatched below.
-                        tracing::trace!(delta = text, "[TurnExecutor] delta_dispatch fired");
-                        if let Some(ref hooks) = hooks {
-                            hooks.emit_stream_delta(text);
-                        }
-                    }) as StreamDeltaCallback;
-                    match transport_ref
-                        .stream_chat(&messages, &mode, cb_wrapper)
-                        .await
-                    {
-                        Ok(response) => {
-                            Ok(response)
-                        }
-                        Err(e) => {
-                            Err(retryable_transient(e.to_string()))
-                        }
-                    }
-                }
-            })
-            .await;
-
-            // ── Fallback activation (after retry loop) ─────────────────
-            if let Err(ref e) = response {
-                let classified = ClassifiedError::from_anyhow(e);
-                if classified.kind.is_retryable() {
-                    if let Some(ref mut chain) = config.fallback_chain {
-                        if let Some(_fb) = chain.activate_next() {
-                            info!(
-                                "Fallback activated after retries: {}/{} (HTTP {:?})",
-                                _fb.provider, _fb.model, classified.http_code
-                            );
-                            if let Some(ref hooks) = config.hooks {
-                                hooks.emit_status(
-                                    "warn",
-                                    &format!("fallback_activated: {}/{}", _fb.provider, _fb.model),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            match response {
-                Ok(response) => {
-                    let tool_calls = &response.tool_calls;
-                    let text = response.text.to_string();
-
-                    // text.len() is byte count (UTF-8), not char count.
-                    // Slice by chars to avoid cutting mid-character.
-                    let preview: String = text.chars().take(100).collect();
-                    tracing::debug!(
-                        "TurnExecutor: got LLM response text len={}, tool_calls={}, first_100={:?}",
-                        text.len(),
-                        tool_calls.len(),
-                        preview
-                    );
-
-                    // ── Stream scrubbing (Tier 2): strip thinking blocks & memory context ──
-                    // scrub_thinking_blocks now returns (scrubbed_text, extracted_reasoning).
-                    // We combine any API-provided reasoning (response.reasoning) with
-                    // thinking blocks extracted from the content.
-                    let (mut text, scrubbed_reasoning) = stream_processor::scrub_thinking_blocks(&text);
-                    let combined_reasoning: Option<String> = match (response.reasoning, scrubbed_reasoning) {
-                        (Some(api), Some(scrubbed)) => {
-                            let mut combined = api;
-                            combined.push_str("\n\n");
-                            combined.push_str(&scrubbed);
-                            Some(combined)
-                        },
-                        (Some(api), None) => Some(api),
-                        (None, Some(scrubbed)) => Some(scrubbed),
-                        (None, None) => None,
-                    };
-                    text = stream_processor::scrub_memory_context(&text);
-
-                    // Update token tracking
-                    if let Some(tokens) = response.tokens_used {
-                        context_engine.update_from_response(tokens, 0, tokens);
-                    }
-
-                    // ── Detect empty LLM response (text="" + tool_calls=[]). ──────
-                    // When the model returns a fully empty response after tool
-                    // results, it has gone silent. Inject a system hint and retry,
-                    // bounded to prevent infinite loops (up to 2 extra attempts).
-                    let is_response_empty = text.trim().is_empty()
-                        && tool_calls.is_empty()
-                        && response.tokens_used.unwrap_or(0) > 0;
-                    if is_response_empty {
-                        consecutive_empty_responses += 1;
-                        let hint = "Your previous response was completely empty and will be skipped. Please summarize what you learned from the tool results above, or use a tool call if you need more information.";
-
-                        if consecutive_empty_responses < 2 {
-                            info!(
-                                "Empty LLM response (attempt {}), injecting system hint to recover",
-                                consecutive_empty_responses
-                            );
-                            if let Some(ref hooks) = &config.hooks {
-                                hooks.emit_status(
-                                    "info",
-                                    &format!(
-                                        "empty_response_recovery: attempt={}",
-                                        consecutive_empty_responses
-                                    ),
-                                );
-                            }
-                            session.messages.push(Message::system(hint.to_string()));
-                            continue;
-                        } else {
-                            info!(
-                                "Empty LLM response after 2 retries, skipping assistant message and falling back to last tool result"
-                            );
-                        }
-                    } else {
-                        consecutive_empty_responses = 0;
-                    }
-
-                    // Add assistant response to session with combined reasoning
-                    let assistant_msg = if !tool_calls.is_empty() {
-                        let tool_call_data = tool_calls
-                            .iter()
-                            .map(oben_models::ToolCall::from_transport)
-                            .collect();
-                        let mut msg = Message::assistant_tool_calls(tool_call_data);
-                        msg.reasoning = combined_reasoning;
-                        msg
-                    } else {
-                        let mut msg = Message::assistant(text.trim().to_string());
-                        msg.reasoning = combined_reasoning;
-                        msg
-                    };
-                    session.messages.push(assistant_msg);
-
-                    if tool_calls.is_empty() {
-                        // When text is empty, return last tool result if available
-                        if text.trim().is_empty() {
-                            if let Some(last_tool_result) = session.messages.last().and_then(|m| {
-                                if m.role == MessageRole::Tool {
-                                    m.content.to_text_ref()
-                                } else {
-                                    None
-                                }
-                            }) {
-                                if !last_tool_result.is_empty() {
-                                    return Ok(TurnResult {
-                                        text: last_tool_result.to_string(),
-                                        messages: session.messages.clone(),
-                                    });
-                                }
-                            }
-                        }
-
-                        return Ok(TurnResult {
-                            text: text.trim().to_string(),
-                            messages: session.messages.clone(),
-                        });
-                    }
-
-                    // Event dispatch through HookEngine, Tier 2) ─────
-                    let default_dispatch = ConcurrentDispatchConfig::default();
-                    let dispatch_config =
-                        config.dispatch_config.as_ref().unwrap_or(&default_dispatch);
-
-                    // Convert to pending calls and dispatch
-                    let parent_session_id = current_session_id.clone();
-                    let pending_calls: Vec<PendingToolCall> = tool_calls
-                        .iter()
-                        .map(|c| {
-                            let mut args = c.arguments.clone();
-                            // Inject parent_session_id into delegate task calls
-                            if c.tool_name == "delegate_task" {
-                                if let Some(obj) = args.as_object_mut() {
-                                    obj.entry("parent_session_id").or_insert_with(|| {
-                                        serde_json::Value::String(parent_session_id.clone())
-                                    });
-                                }
-                            }
-                            PendingToolCall {
-                                tool_name: c.tool_name.clone(),
-                                arguments: args,
-                                call_id: c.id.clone(),
-                            }
-                        })
-                        .collect();
-
-                    // Event dispatch through HookEngine of tool generation
-                    if let Some(ref hooks) = &config.hooks {
-                        for call in &pending_calls {
-                            hooks.emit_tool_gen(&call.tool_name, &call.call_id);
-                            hooks.emit_tool_start(&call.tool_name, &call.arguments.to_string());
-                        }
-                    }
-
-                    // Dispatch: concurrent if multiple, sequential if single
-                    let results = concurrent_dispatch::dispatch_tool_calls(
-                        tools,
-                        dispatch_config,
-                        &pending_calls,
-                        interrupt.as_ref(),
-                    )
-                    .await?;
-
-                    // Event dispatch through HookEngine
-                    for (i, result) in results.iter().enumerate() {
-                        let tool_call_id = &pending_calls[i].call_id;
-
-                        // Skip completely empty results unless it was a steer message.
-                        // A result with an error is not empty — the error message
-                        // is critical feedback for the LLM to understand what went wrong.
-                        let is_steer = tool_call_id == "steer";
-                        if result.output.is_empty() && !is_steer && result.error.is_none() {
-                            continue;
-                        }
-
-                        let msg = if !result.output.is_empty() {
-                            Message::tool_result(tool_call_id, &result.output)
-                        } else if let Some(ref err) = result.error {
-                            // Store the error as the tool result so the LLM can learn
-                            Message::tool_result(tool_call_id, err)
-                        } else {
-                            // For steer messages with no output/error, add placeholder
-                            Message {
-                                role: oben_models::MessageRole::Tool,
-                                content: oben_models::MessageContent::Text(String::new()),
-                                id: None,
-                                tool_call_ids: vec![tool_call_id.clone()],
-                                tool_calls: None,
-                                reasoning: None,
-                            }
-                        };
-                        session.messages.push(msg);
-
-                        // Event dispatch through HookEngine of tool completion or error
-                        if let Some(ref hooks) = &config.hooks {
-                            let tool_name = &pending_calls[i].tool_name;
-                            let args = &pending_calls[i].arguments.to_string();
-                            if let Some(ref err) = result.error {
-                                hooks.emit_tool_error(tool_name, args, err);
-                            } else {
-                                hooks.emit_tool_complete(tool_name, args, &result.output);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    // All retries exhausted — return error
-                    let classified = ClassifiedError::from_anyhow(&e);
-                    info!(
-                        "API call failed after retries (kind={:?}, code={:?}): {}",
-                        classified.kind, classified.http_code, e
-                    );
-
-                    return Err(e);
+                    hooks.emit_tool_complete(&call.tool_name, &call.arguments.to_string(), &result.output);
                 }
             }
         }
-        // Note: all code paths inside the loop use `return`, so this point is unreachable.
-        #[allow(unreachable_code)]
-        let _ = unreachable!("all loop paths return early");
+        Ok(())
     }
 }
 
@@ -592,33 +576,13 @@ impl TurnExecutor {
 mod tests {
     use super::*;
 
-    /// Regression test for UTF-8 char boundary slicing bug.
-    ///
-    /// **Bug**: `&text[..text.len().min(100)]` uses **byte count**, not
-    /// **char count**. A Chinese character like "没" is 3 bytes (98-101),
-    /// so byte 100 splits the character in half → panic!
-    ///
-    /// **Fix**: `text.chars().take(100).collect()` iterates char boundaries.
     #[test]
     fn test_utf8_char_slice_does_not_panic_with_chinese() {
-        // From the actual crash: byte 100 falls inside "没" (bytes 98-101)
         let text = "\n\n有一天，一块三分熟的牛排在街上走着，突然看到一块五分熟的牛排，却没有打招呼。\n为什么？\n因为他们**不熟**。😄\n\n还想听程序员专属笑话，还是日常冷笑话？随时点单～";
-
-        // text.len() is byte count; the old code used it to slice → panic
-        assert!(
-            text.len() > 100,
-            "text must be > 100 bytes for the bug to trigger"
-        );
-
-        // The OLD buggy code would panic:
-        // let _ = &text[..text.len().min(100)]; // panic: end byte index 100 is not a char boundary
-
-        // The fix: take chars, not bytes → safe
+        assert!(text.len() > 100);
         let preview: String = text.chars().take(100).collect();
         assert!(!preview.is_empty());
-        assert!(preview.contains("没")); // "没" is preserved fully
-
-        // Sanity: slicing at actual char boundary never panics
+        assert!(preview.contains("没"));
         let _ = &preview[..preview.len()];
     }
 
@@ -636,74 +600,27 @@ mod tests {
         assert_eq!(preview, "short");
     }
 
-    /// Verifies the empty-response detection heuristic.
-    ///
-    /// When text is blank, tool_calls is empty, and tokens_used > 0 (the model
-    /// consumed prompt tokens but produced nothing), the executor injects a
-    /// system hint on the first empty response and falls back to the last
-    /// tool result on the second consecutive empty response.
     #[test]
     fn test_empty_response_heuristic() {
-        fn mk(
-            text: &str,
-            tool_calls: Vec<oben_models::TransportToolCall>,
-            tokens: Option<usize>,
-        ) -> oben_models::TransportResponse {
+        fn mk(text: &str, tools: Vec<oben_models::TransportToolCall>, tokens: Option<usize>) -> oben_models::TransportResponse {
             oben_models::TransportResponse {
-                text: text.to_string(),
-                tool_calls,
+                text: text.into(),
+                tool_calls: tools,
                 tokens_used: tokens,
                 reasoning: None,
             }
         }
 
-        // Non-empty response with tokens → NOT empty
-        let resp = mk("Hello", vec![], Some(100));
-        let is_empty = resp.text.trim().is_empty()
-            && resp.tool_calls.is_empty()
-            && resp.tokens_used.unwrap_or(0) > 0;
-        assert!(!is_empty, "Normal response should not be flagged as empty");
+        let r = mk("Hello", vec![], Some(100));
+        let is_empty = r.text.trim().is_empty() && r.tool_calls.is_empty() && r.tokens_used.unwrap_or(0) > 0;
+        assert!(!is_empty);
 
-        // Empty text, no tool calls, but tokens > 0 → IS empty
-        let resp = mk("", vec![], Some(100));
-        let is_empty = resp.text.trim().is_empty()
-            && resp.tool_calls.is_empty()
-            && resp.tokens_used.unwrap_or(0) > 0;
-        assert!(is_empty, "Empty response with tokens should be flagged");
+        let r = mk("", vec![], Some(100));
+        let is_empty = r.text.trim().is_empty() && r.tool_calls.is_empty() && r.tokens_used.unwrap_or(0) > 0;
+        assert!(is_empty);
 
-        // Zero/None tokens → model produced nothing (likely error), NOT empty-flagged
-        let resp = mk("", vec![], None);
-        let is_empty = resp.text.trim().is_empty()
-            && resp.tool_calls.is_empty()
-            && resp.tokens_used.unwrap_or(0) > 0;
-        assert!(
-            !is_empty,
-            "Response with no tokens should not be flagged (likely error)"
-        );
-
-        // Response with tool calls → not empty (even if text is blank)
-        let resp = mk(
-            "",
-            vec![oben_models::TransportToolCall {
-                id: "tc1".into(),
-                tool_name: "terminal".into(),
-                arguments: serde_json::json!({"command": "ls"}),
-            }],
-            Some(100),
-        );
-        let is_empty = resp.text.trim().is_empty()
-            && resp.tool_calls.is_empty()
-            && resp.tokens_used.unwrap_or(0) > 0;
-        assert!(
-            !is_empty,
-            "Response with tool calls should not be flagged as empty"
-        );
-
-        // Whitespace-only text with tokens → empty
-        let resp = mk("   \n  ", vec![], Some(50));
-        let is_empty = resp.text.trim().is_empty()
-            && resp.tool_calls.is_empty()
-            && resp.tokens_used.unwrap_or(0) > 0;
-        assert!(is_empty, "Whitespace-only text should be flagged as empty");
+        let r = mk("", vec![], None);
+        let is_empty = r.text.trim().is_empty() && r.tool_calls.is_empty() && r.tokens_used.unwrap_or(0) > 0;
+        assert!(!is_empty);
     }
 }

@@ -17,7 +17,6 @@ use oben_models::{
 /// Useful for testing, one-shot commands, or embedded scenarios.
 pub struct MemSessionManager {
     sessions: HashMap<String, Session>,
-    active_session_id: Option<String>,
 }
 
 impl MemSessionManager {
@@ -25,7 +24,6 @@ impl MemSessionManager {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
-            active_session_id: None,
         }
     }
 
@@ -107,7 +105,7 @@ impl SessionManager for MemSessionManager {
         };
         let id = id.clone();
         self.sessions.insert(id.clone(), session);
-        self.active_session_id = Some(id.clone());
+        
         self.sessions.get_mut(&id).unwrap()
     }
 
@@ -131,19 +129,12 @@ impl SessionManager for MemSessionManager {
             })
             .ok_or_else(|| anyhow!("Session not found: {}", key))?;
 
-        self.active_session_id = Some(target.clone());
         Ok(self.sessions.get_mut(&target).unwrap())
     }
 
     fn reset_current_session(&mut self) -> Result<(), anyhow::Error> {
-        if let Some(sid) = &self.active_session_id {
-            if let Some(session) = self.sessions.get_mut(sid) {
-                session.metadata.end_reason = Some("reset".to_string());
-                session.metadata.ended_at = Some(Utc::now());
-                session.messages.clear();
-                session.persisted_message_count = 0;
-            }
-        }
+        // Deprecated: the notion of "current" session lives in ContextWindowManager now.
+        // Callers should use reset_session(key) with a specific key instead.
         Ok(())
     }
 
@@ -168,7 +159,7 @@ impl SessionManager for MemSessionManager {
             let new_id = uuid::Uuid::new_v4().to_string();
             session.metadata.id = new_id.clone();
             session.id = new_id;
-            self.active_session_id = Some(session.metadata.id.clone());
+            
         }
         Ok(())
     }
@@ -291,9 +282,6 @@ impl SessionManager for MemSessionManager {
             .ok_or_else(|| anyhow!("Session not found: {}", key))?;
 
         self.sessions.remove(&sid);
-        if self.active_session_id.as_deref() == Some(&sid) {
-            self.active_session_id = None;
-        }
         Ok(())
     }
 
@@ -302,22 +290,17 @@ impl SessionManager for MemSessionManager {
             return 0;
         }
         let cutoff = Utc::now() - chrono::Duration::days(max_age_days);
-        let active_sid = self.active_session_id.clone();
         let to_remove: Vec<String> = self
             .sessions
             .iter()
             .filter(|(_, s)| {
                 !s.metadata.suspended
                     && s.updated_at < cutoff
-                    && s.id != active_sid.as_deref().unwrap_or("")
             })
             .map(|(id, _)| id.clone())
             .collect();
         for sid in &to_remove {
             self.sessions.remove(sid);
-        }
-        if to_remove.contains(&self.active_session_id.clone().unwrap_or_default()) {
-            self.active_session_id = None;
         }
         to_remove.len()
     }
@@ -326,8 +309,14 @@ impl SessionManager for MemSessionManager {
         Ok(())
     }
 
-    fn active_session_id(&self) -> Option<String> {
-        self.active_session_id.clone()
+    fn resolve_session_id(&self, key: &str) -> Option<String> {
+        self.sessions.get_key_value(key)
+            .map(|(k, _)| k.clone())
+            .or_else(|| {
+                self.sessions.iter()
+                    .find(|(_, s)| s.name == key || s.id == key)
+                    .map(|(k, _)| k.clone())
+            })
     }
 
     fn update_token_tracking(
@@ -411,15 +400,9 @@ impl SessionManager for MemSessionManager {
         };
 
         self.sessions.insert(child_id.clone(), child_session);
-        self.active_session_id = Some(child_id.clone());
+        
 
         Ok(self.sessions.get(&child_id).unwrap().clone())
-    }
-
-    fn active_session_mut(&mut self) -> Option<&mut Session> {
-        self.active_session_id
-            .as_ref()
-            .and_then(|id| self.sessions.get_mut(id))
     }
 
     fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
@@ -440,12 +423,6 @@ impl SessionManager for MemSessionManager {
             s.persisted_message_count = messages.len();
         }
         Ok(())
-    }
-
-    fn active_session(&self) -> Option<&Session> {
-        self.active_session_id
-            .as_ref()
-            .and_then(|id| self.sessions.get(id))
     }
 
     fn incremental_save(&mut self, _session_id: Option<&str>) -> Result<(), anyhow::Error> {
@@ -474,8 +451,7 @@ impl SessionManager for MemSessionManager {
             },
         };
         self.sessions.insert(sid.clone(), session);
-        self.active_session_id = Some(sid);
-        self.sessions.get_mut(&self.active_session_id.clone().unwrap()).ok_or_else(|| anyhow!("Failed to access new session"))
+        self.sessions.get_mut(&sid).ok_or_else(|| anyhow!("Session insert failed: {}", sid))
     }
 
     fn find_key(&self, key: &str) -> Option<String> {
@@ -502,15 +478,15 @@ impl SessionManager for MemSessionManager {
 
     fn close(&mut self) -> Result<(), anyhow::Error> {
         self.sessions.clear();
-        self.active_session_id = None;
         Ok(())
     }
 }
 
 impl MemSessionManager {
-    /// Set the title of the active session.
-    pub fn set_title(&mut self, new_title: &str) -> Result<(), anyhow::Error> {
-        if let Some(session) = self.active_session_mut() {
+    /// Set the title of a session by key or ID.
+    pub fn set_title(&mut self, key: &str, new_title: &str) -> Result<(), anyhow::Error> {
+        let sid = self.resolve_session_id(key).ok_or_else(|| anyhow!("Session not found: {}", key))?;
+        if let Some(session) = self.sessions.get_mut(&sid) {
             session.metadata.title = Some(new_title.to_string());
         }
         Ok(())

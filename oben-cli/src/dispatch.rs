@@ -115,14 +115,9 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         Arc::new(tools),
     ).await?;
 
-    // Reuse Agent's HookEngine instead of creating duplicate.
+    // Coordinator handles streaming hook registration internally.
     let conversation_config = ConversationConfig::from_app_config(&chat.config());
     let hooks = chat.hooks();
-    // Register streaming hook so CLI prints deltas in real-time.
-    if stream {
-        use crate::coordinator::CliStreamingHook;
-        hooks.register_streaming(Box::new(CliStreamingHook::new()));
-    }
     let coordinator = CliCoordinator::from_conversation(
         conversation_config,
         Arc::clone(hooks),
@@ -231,17 +226,7 @@ fn list_sessions() -> Result<()> {
     } else {
         println!("Sessions ({}):", sessions.len());
         for s in sessions {
-            let marker = session_manager
-                .active_session()
-                .and_then(|a| {
-                    if a.id == s.id {
-                        Some(" ← active")
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or("");
-            println!("  📄 {} — {} messages{}", s.name, s.message_count, marker);
+            println!("  • {} — {} messages", s.name, s.message_count);
         }
     }
     Ok(())
@@ -251,10 +236,9 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
     let config = oben_config::AppConfig::load()?;
     let mut sm = oben_sessions::DBSessionManager::new()?;
 
-    let active_id = sm.active().map(|s| s.id.clone());
     let target: String = match session_key {
         Some(key) => key.to_string(),
-        None => active_id.unwrap_or_else(|| "active".to_string()),
+        None => "active".to_string(),
     };
     let target_ref = target.as_str();
 
@@ -348,7 +332,7 @@ fn dump_session(session_key: Option<&str>) -> Result<()> {
     let mut sm = oben_sessions::DBSessionManager::new()?;
     sm.load(None)?;
 
-    let active_id = sm.active().map(|s| s.id.clone());
+    let active_id: Option<String> = None;
     let target: String = match session_key {
         Some(key) => key.to_string(),
         None => active_id.clone().unwrap_or_else(|| "active".to_string()),

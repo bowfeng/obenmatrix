@@ -7,10 +7,12 @@ use std::sync::{Arc, RwLock};
 pub mod kind;
 pub mod runtime;
 pub mod adapters;
+pub mod tui;
 
 // Re-export key types
 pub use runtime::{HookEngine, NudgeHook};
 pub use adapters::{StreamingAdapter, SystemEventsAdapter, ToolLifecycleAdapter};
+pub use tui::{TuiStreamingAdapter, TuiToolLifecycleAdapter, TuiAgentLoopAdapter};
 
 // ---------------------------------------------------------------------------
 // HookBuilder

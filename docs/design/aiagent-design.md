@@ -8,7 +8,7 @@
 
 ## 1. AIAgent Conceptual Model (Hermes)
 
-The Hermes `AIAgent` is a **stateful runtime actor** that owns everything — LLM client, tools, context engine, memory, session, interrupt handling, streaming, callbacks, fallback models, and resource cleanup. It exposes two public entry points:
+The Hermes `AIAgent` is a **stateful runtime actor** that owns everything — LLM client, tools, ContextWindowManager, memory, session, interrupt handling, streaming, callbacks, fallback models, and resource cleanup. It exposes two public entry points:
 
 - **`run_conversation(user_message, ...)`** — Execute one full turn (loop: LLM call → tool dispatch → repeat until no more tool calls). Returns a `Dict` with `final_response`, `messages`, `api_calls`, `completed`.
 - **`chat(message, stream_callback)`** — Thin wrapper around `run_conversation` returning just the final text.
@@ -89,7 +89,7 @@ Key behaviors:
 | **Trajectory saving** (JSONL conversation logs) | ✅ | ❌ | ❌ Missing |
 | **System prompt caching** (prefix cache via session DB) | ✅ | ❌ | ❌ Missing |
 | **Tool guardrails** (validation/halting loop) | ✅ | ❌ | ❌ Missing |
-| **Context engine tools** (lcm_grep, etc.) | ✅ | ❌ | ❌ Missing |
+| **Context window manager tools** (lcm_grep, etc.) | ✅ | ❌ | ❌ Missing |
 | **Skill management** (create/improve from experience) | ✅ | ⚠️ (loader exists) | ⚠️ Partial |
 | **Checkpoint/rollback** (filesystem snapshots) | ✅ | ❌ | ❌ Missing |
 | **Rate limit tracking** | ✅ | ❌ | ❌ Missing |
@@ -104,10 +104,10 @@ Key behaviors:
 
 Our Rust `Agent` already handles the **core happy path**:
 
-1. **Resource ownership model** — Agent owns Transport, Tools, Skills, ContextEngine, SessionManager
+1. **Resource ownership model** — Agent owns Transport, Tools, Skills, ContextWindowManager, SessionManager
 2. **Turn execution** — Full loop: LLM call → tool dispatch → repeat
 3. **Session management** — Create, switch, persist, lazy-init
-4. **Context compression** — `ContextEngine` trait with auto-compaction
+4. **Context compression** — `ContextWindowManager` trait with auto-compaction
 5. **Streaming** — Basic delta callback support
 6. **Tool dispatch** — Through `ToolRegistry`
 7. **Interactive chat loop** — Via `ConversationLoop::run_loop`
@@ -143,7 +143,7 @@ Our Rust `Agent` already handles the **core happy path**:
 |---------|-------------|------------|
 | **Memory system** | External memory provider plugin (SQLite + provider abstraction) | High |
 | **Trajectory saving** | JSONL conversation logs with reasoning conversion | Low |
-| **Context engine tools** | Auto-inject tool schemas from context engine (lcm_grep, etc.) | Low |
+| **Context window manager tools** | Auto-inject tool schemas from ContextWindowManager (lcm_grep, etc.) | Low |
 | **Checkpoint/rollback** | Filesystem snapshots of conversation state | Medium |
 | **Background memory review** | Daemon thread that reviews memory/skills after N turns | Medium |
 | **Subagent delegation** | Child agent creation with interrupt propagation | High |
@@ -161,7 +161,7 @@ Our Rust `Agent` already handles the **core happy path**:
 AIAgent (struct)
 ├── Transport             (Arc<ChatCompletionsTransport>)    — existing
 ├── ToolRegistry          (Arc<ToolRegistry>)                — existing
-├── ContextEngine         (Box<dyn ContextEngine>)           — existing
+├── ContextWindowManager         (Box<dyn ContextWindowManager>)           — existing
 ├── SessionManager        (SessionManager)                   — existing
 ├── SystemPromptBuilder   (SystemPrompt)                     — existing
 ├── Callbacks             (AgentCallbacks)                   — NEW: richer callback set

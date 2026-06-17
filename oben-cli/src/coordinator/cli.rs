@@ -5,7 +5,7 @@ use oben_agent::coordinator::tree::InterruptHub;
 
 use anyhow::{anyhow, Result};
 
-use oben_agent::context::ContextEngine;
+use oben_agent::context::ContextWindowManager;
 use oben_agent::hooks::{HookBuilder, HookEngine};
 use oben_agent::interaction::InteractionProvider;
 use oben_agent::{ConversationConfig, ConversationCoordinator, ConversationResult};
@@ -103,13 +103,12 @@ impl CliCoordinator {
 impl ConversationCoordinator for CliCoordinator {
     async fn run(
         &mut self,
-        context_engine: &mut dyn ContextEngine,
+        context_window_manager: &mut dyn ContextWindowManager,
         transport: Arc<dyn TransportProvider + Send + Sync>,
         tools: Arc<ToolRegistry>,
         session_manager: &mut dyn SessionManager,
     ) -> Result<ConversationResult> {
         let interaction = oben_agent::interaction::StdioProvider::new();
-        let mut is_resumed_session = session_manager.active_session().is_some();
 
         // Fire loop-start hooks.
         self.config.hooks.emit_loop_start();
@@ -120,10 +119,6 @@ impl ConversationCoordinator for CliCoordinator {
 
             interaction.write_raw(b"> ");
             interaction.flush();
-
-            if self.config.stream {
-                interaction.print_newline();
-            }
 
             let input = match interaction.read_input().await {
                 Some(line) if line.trim().is_empty() => {
@@ -151,13 +146,16 @@ impl ConversationCoordinator for CliCoordinator {
             }
             turn_count += 1;
 
-            let sid = session_manager.active_session()
-                .map(|s| s.id.clone())
-                .unwrap_or_else(|| {
+            // Get or create session via CWM — this is now the single source of truth
+            // for which session is active (SessionManager no longer tracks active identity).
+            let sid = match context_window_manager.session_id() {
+                Some(id) => id,
+                None => {
                     let id = oben_agent::agent::generate_session_name();
-                    let _ = session_manager.new_session(&id);
-                    session_manager.active_session().unwrap().id.clone()
-                });
+                    context_window_manager.set_active_session(session_manager, id.clone());
+                    id
+                }
+            };
 
             let call_mode_val = match &self.call_mode {
                 Some(CallMode::Fresh(_)) => {
@@ -177,7 +175,7 @@ impl ConversationCoordinator for CliCoordinator {
             let input_msg = Message::user(&input);
 
             let response = oben_agent::coordinator::execute_turn_full(
-                context_engine,
+                context_window_manager,
                 &*transport,
                 &tools,
                 session_manager,
@@ -214,14 +212,12 @@ impl ConversationCoordinator for CliCoordinator {
                 interaction.print_newline();
             }
 
-            let msg_count = session_manager.active_session()
+            let msg_count = session_manager.session(&sid)
                 .map_or(0, |s| s.messages.len());
 
             // Post-turn: broadcast to all hooks (nudge hook may trigger sub-turn via callback)
             let response_str = response_text.as_deref().unwrap_or_default();
             self.config.hooks.post_turn(response_str, msg_count);
-
-            is_resumed_session = false;
         }
     }
 

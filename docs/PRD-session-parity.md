@@ -36,9 +36,9 @@ Hermes-agent has a mature, battle-tested session layer. Our Rust port (`oben-ses
 **Note on S.9:** The schema already has `parent_session_id` and `end_reason` columns (S.3 infrastructure), and `end_session()` exists in `SessionDB`. However, the compaction codepath in `oben-agent` **never calls `end_session()` or creates a new session** — it mutates the message buffer in-place on the same session row. The columns exist but are never populated during compaction. This means:
 - No compaction history tracked (can't see how many times a session was compressed)
 - No lineage chain for session search (parent→child relationships invisible)
-- No boundary for context engine / memory provider reset
+- No boundary for ContextWindowManager / memory provider reset
 - Title auto-numbering never triggered (e.g. "My Task (2)", "My Task (3)")
 
-Hermes rotates sessions on compression to create clean boundaries, track lineage, and let external systems (context engines, memory providers) reset state per-phase. Oben's approach is simpler but loses all compaction metadata.
+Hermes rotates sessions on compression to create clean boundaries, track lineage, and let external systems (ContextWindowManagers, memory providers) reset state per-phase. Oben's approach is simpler but loses all compaction metadata.
 
 **Workflow:** Open issue → branch (`#<number>-<desc>`) → implement → PR → close issue.

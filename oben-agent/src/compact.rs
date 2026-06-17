@@ -10,7 +10,7 @@
 ///
 /// Maps to `agent/context_compressor.py` in the Hermes Python agent.
 ///
-/// The `ContextEngine` in `context.rs` is the unified entry point that owns
+/// The `ContextWindowManager` in `context.rs` is the unified entry point that owns
 /// the message buffer, tracks token usage, decides when to compress,
 /// and calls the functions in this module.
 use anyhow::Result;

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow;
 use super::kind::*;
-use crate::ContextEngine;
+use crate::ContextWindowManager;
 use crate::nudge::NudgeConfig;
 
 // ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ impl HookEngine {
     /// Called when `post_turn()` determines a sub-turn should execute.
     pub async fn run_hook_turn(
         prompt: String,
-        ctx: &mut dyn ContextEngine,
+        ctx: &mut dyn ContextWindowManager,
         transport: &dyn oben_models::TransportProvider,
         tools: &Arc<oben_tools::ToolRegistry>,
         session_manager: &mut dyn oben_models::SessionManager,
@@ -165,7 +165,6 @@ impl HookEngine {
     ) -> anyhow::Result<()> {
         let turn_config = crate::turn_executor::TurnConfig {
             retry_config: conversation_config.retry_config.clone(),
-            budget_warning: None,
             hooks: None,
             fallback_chain: if conversation_config.fallback_configs.is_empty() {
                 None
@@ -184,12 +183,13 @@ impl HookEngine {
                 ))
             },
             dispatch_config: conversation_config.dispatch_config.clone(),
+            max_iterations: conversation_config.max_iterations,
         };
         let result = crate::turn_executor::TurnExecutor::execute_turn_with_config(
             ctx, transport, tools, session_manager, session_id,
             oben_models::Message::user(&prompt),
             call_mode,
-            Some(crate::budget::IterationBudget::new(16)),
+            None,
             None,
             turn_config,
         )

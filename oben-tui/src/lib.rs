@@ -6,6 +6,7 @@
 pub mod app;
 pub mod clipboard;
 pub mod commands;
+pub mod coordinator;
 pub mod history;
 pub mod image;
 pub mod panels;
@@ -40,6 +41,7 @@ use std::time::Duration;
 use crate::app::TurnCompletion;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
+use oben_sessions::SessionManager;
 
 pub struct Layouts {
     pub header: Rect,
@@ -73,6 +75,10 @@ pub enum TuiEvent {
     /// Inject a message into the next tool call without interrupting.
     /// (Mirrors `/steer` from the Hermes CLI.)
     Steer(String),
+    /// Signal the event loop to dequeue messages from ChatPanel's input queue
+    /// and submit them as ChatInput events. Replaces the old direct TuiEvent::ChatInput
+    /// sends from ChatPanel for auto-drain.
+    QueueDrain,
 }
 
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
@@ -279,15 +285,19 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     if completion.success {
                         let messages = if let Some(agent) = &app.agent {
                             let guard = agent.lock().await;
+                            let sm_arc = guard.session_manager();
+                            let sm_guard = sm_arc.lock().await;
                             let count = guard
-                                .session_manager().lock().await
-                                .active_session()
+                                .context_window_manager()
+                                .session_id()
+                                .and_then(|sid| sm_guard.session(&sid))
                                 .map(|s| s.messages.len())
                                 .unwrap_or(0);
                             tracing::info!("[done_rx] agent session has {} messages after lock", count);
                             guard
-                                .session_manager().lock().await
-                                .active_session()
+                                .context_window_manager()
+                                .session_id()
+                                .and_then(|sid| sm_guard.session(&sid))
                                 .map(|s| s.messages.clone())
                                 .unwrap_or_default()
                         } else {
@@ -412,10 +422,31 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                     }
                     Some(TuiEvent::ChatInput(input)) => {
-                        let start = std::time::Instant::now();
                         tracing::debug!("[event_loop] ChatInput event received, input.len()={}", input.len());
                         handle_chat_input(&mut app, input, &done_tx).await;
-                        tracing::debug!("[event_loop] ChatInput processed in {:?}", start.elapsed());
+                        tracing::debug!("[event_loop] ChatInput processed");
+                        app.needs_redraw = true;
+                    }
+                    Some(TuiEvent::QueueDrain) => {
+                        // Auto-drain from ChatPanel triggered this event.
+                        // The event loop owns app state, so it dequeues and
+                        // handles it directly.  Collect messages first to
+                        // avoid holding a mutable borrow across .await.
+                        let messages: Vec<String> = std::mem::take(&mut app.panels
+                            .get_mut(&crate::panels::PanelId::Chat)
+                            .unwrap()
+                            .downcast_mut::<crate::panels::chat::ChatPanel>()
+                            .unwrap()
+                            .input
+                            .input_queue);
+                        for msg in messages {
+                            tracing::info!(
+                                "[event_loop] QueueDrain: draining msg: {}",
+                                msg
+                            );
+                            handle_chat_input(&mut app, msg, &done_tx)
+                                .await;
+                        }
                         app.needs_redraw = true;
                     }
                     Some(TuiEvent::Resize(_w, _h)) => {
@@ -427,9 +458,12 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             let sid = app.session_id.clone();
                             let messages = if let Some(agent_arc) = &app.agent {
                                 let guard = agent_arc.lock().await;
+                                let sm_arc = guard.session_manager();
+                                let sm_guard = sm_arc.lock().await;
                                 guard
-                                    .session_manager().lock().await
-                                    .active_session()
+                                    .context_window_manager()
+                                    .session_id()
+                                    .and_then(|s| sm_guard.session(&s))
                                     .map(|s| s.messages.clone())
                                     .unwrap_or_default()
                             } else {
@@ -488,7 +522,13 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         if let Some(agent) = &app.agent {
                             let message_count = app.turn_message_count;
                             let g = agent.lock().await;
-                            if let Some(session) = g.session_manager().lock().await.active_session_mut() {
+                            let sm_arc = g.session_manager();
+                            let mut sm = sm_arc.lock().await;
+                            if let Some(session) = app
+                                .session_id
+                                .as_ref()
+                                .and_then(|sid| sm.session_mut(sid))
+                            {
                                 let current_count = session.messages.len();
                                 if current_count > message_count {
                                     let removed = current_count - message_count;
@@ -885,11 +925,12 @@ async fn handle_chat_input(
     if was_chat {
         if let Some(agent) = &app.agent {
             let g = agent.lock().await;
+            let sm_arc = g.session_manager();
+            let sm = sm_arc.lock().await;
             app.turn_message_count = g
-                .session_manager()
-                .lock()
-                .await
-                .active_session()
+                .context_window_manager()
+                .session_id()
+                .and_then(|sid| sm.session(&sid))
                 .map(|s| s.messages.len())
                 .unwrap_or(0);
         }
@@ -923,12 +964,17 @@ async fn handle_chat_input(
                         .turn(&input_clone, false, Some(Arc::clone(&interrupt_clone)))
                         .await
                 };
-                let sid = guard.active_session_name().await.map(|s| s.clone());
+                // Fetch session via CWM session_id (the trait no longer tracks "active").
+                let sm_arc = guard.session_manager();
+                let sm = sm_arc.lock().await;
+                let sid = guard.context_window_manager()
+                    .session_id()
+                    .and_then(|sid| sm.session(&sid))
+                    .map(|s| s.name.clone());
                 let msgs = guard
-                    .session_manager()
-                    .lock()
-                    .await
-                    .active_session()
+                    .context_window_manager()
+                    .session_id()
+                    .and_then(|sid| sm.session(&sid))
                     .map(|s| s.messages.clone())
                     .unwrap_or_default();
                 (result, sid, msgs)
