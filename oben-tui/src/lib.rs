@@ -6,7 +6,6 @@
 pub mod app;
 pub mod clipboard;
 pub mod commands;
-pub mod coordinator;
 pub mod history;
 pub mod image;
 pub mod panels;
@@ -39,9 +38,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::app::TurnCompletion;
+use oben_agent::hooks::HookEngine;
+use oben_agent::TurnPhase;
+use oben_models::SessionManager;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
-use oben_sessions::SessionManager;
 
 pub struct Layouts {
     pub header: Rect,
@@ -79,6 +80,8 @@ pub enum TuiEvent {
     /// and submit them as ChatInput events. Replaces the old direct TuiEvent::ChatInput
     /// sends from ChatPanel for auto-drain.
     QueueDrain,
+    /// Signal shutdown — sent when the keyboard reader task exits.
+    Quit,
 }
 
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
@@ -122,6 +125,24 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         tokio::spawn(async move {
             let mut a = init_arc_app.lock().await;
             let result = a.init_agent().await;
+            if result.is_ok() {
+                // Register TUI adapters on the agent's internal HookEngine.
+                // This follows the same pattern as CLI: Agent::new() creates
+                // HookEngine internally, then we register adapters via Agent::hooks().
+                if let Some(agent) = &a.agent {
+                    let hooks = Arc::clone(agent.lock().await.hooks());
+                    let ts = Arc::clone(&a.turn_state);
+                    hooks.register_streaming(Box::new(
+                        oben_agent::TuiStreamingAdapter::new(Arc::clone(&ts))
+                    ));
+                    hooks.register_tool(Box::new(
+                        oben_agent::TuiToolLifecycleAdapter::new(Arc::clone(&ts))
+                    ));
+                    hooks.register_agent_loop(Box::new(
+                        oben_agent::TuiAgentLoopAdapter::new(ts)
+                    ));
+                }
+            }
             let _ = tx.send(result);
         });
     }
@@ -191,212 +212,213 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         .map(|s| s.error.is_some())
         .unwrap_or(false)
     {
-        enter_error_splash(arc_app).await;
+        // Draw error splash (rain with error message) forever until Ctrl+C.
+        let backend = CrosstermBackend::new(io::stdout());
+        let mut err_terminal = Terminal::new(backend).unwrap();
+        err_terminal.clear().unwrap();
+        loop {
+            {
+                let a = arc_app.lock().await;
+                if let Some(splash) = a.panels.get(&PanelId::Splash) {
+                    err_terminal
+                        .draw(|frame| {
+                            splash.draw(frame, frame.area());
+                        })
+                        .ok();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(32)).await;
+            if crossterm::event::poll(Duration::from_millis(32)).unwrap_or(false) {
+                if let Ok(event) = crossterm::event::read() {
+                    if let crossterm::event::Event::Key(key) = event {
+                        if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            drop(err_terminal);
+                            io::stdout().execute(LeaveAlternateScreen).ok();
+                            io::stdout().execute(DisableMouseCapture).ok();
+                            disable_raw_mode().ok();
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    // --- UNWRAP arc_app for main event loop ---
-    let mut app = Arc::try_unwrap(arc_app)
-        .map_err(|_| anyhow::anyhow!("Arc has extra references after splash phase"))?
-        .into_inner();
-
     // --- MAIN EVENT LOOP SETUP ---
+    // Keep arc_app shared — coordinator and event loop both need mutable access.
     #[allow(unexpected_cfgs)]
     #[cfg(not(feature = "cli-wired"))]
     {
         // Tracing already initialized
     }
 
-    let (event_tx, mut event_rx) = unbounded_channel();
-    let event_tx_for_signal = event_tx.clone();
-    app.input_tx = Some(event_tx.clone());
-    // Wire input_sender into ChatPanel for queue auto-drain.
-    if let Some(chat) = app.get_chat_mut() {
-        chat.set_input_sender(event_tx.clone());
+    let (chat_tx, chat_rx) = unbounded_channel();
+    let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
+
+    // Extract hooks from the agent (following CLI pattern) and interrupt_state.
+    // Both are needed by the coordinator task.
+    let (hook_engine, interrupt_state) = {
+        let a = arc_app.lock().await;
+        let agent = a.agent.as_ref().unwrap();
+        let hooks = Arc::clone(agent.lock().await.hooks());
+        let interrupt = Arc::clone(&agent.lock().await.get_interrupt_state());
+        (hooks, interrupt)
+    };
+
+    // Initial draw — needs_redraw starts as true from App::new()
+    {
+        let mut app = arc_app.lock().await;
+        if app.needs_redraw {
+            terminal.draw(|frame| draw_ui(frame, &mut app))?;
+        }
     }
+
+    // --- SPAWN KEYBOARD READER TASK ---
+    let (event_tx, mut event_rx) = unbounded_channel();
+    let input_tx = event_tx.clone(); // For command events from app.handle_key()
 
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = Arc::clone(&running);
+    let event_tx_for_reader = event_tx.clone();
 
     let reader_handle = tokio::task::spawn_blocking(move || {
         while running_clone.load(Ordering::SeqCst) {
-            if crossterm::event::poll(Duration::from_millis(16)).unwrap() {
-                match crossterm::event::read().unwrap() {
-                    crossterm::event::Event::Key(key) => {
+            match crossterm::event::poll(Duration::from_millis(16)) {
+                Ok(true) => match crossterm::event::read() {
+                    Ok(crossterm::event::Event::Key(key)) => {
                         if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
-                            let _ = event_tx.send(TuiEvent::Key(key));
+                            if key.code == KeyCode::Char('c')
+                                && key.modifiers.contains(KeyModifiers::CONTROL)
+                            {
+                                tracing::info!("[reader_task] Ctrl+C detected, sending Quit");
+                                let _ = event_tx.send(TuiEvent::Quit);
+                            } else {
+                                tracing::debug!("[reader_task] key event: {:?}", key.code);
+                                let _ = event_tx.send(TuiEvent::Key(key));
+                            }
                         }
                     }
-                    crossterm::event::Event::Mouse(mouse) => {
+                    Ok(crossterm::event::Event::Mouse(mouse)) => {
                         let _ = event_tx.send(TuiEvent::Mouse(mouse));
                     }
-                    crossterm::event::Event::Resize(w, h) => {
+                    Ok(crossterm::event::Event::Resize(w, h)) => {
                         let _ = event_tx.send(TuiEvent::Resize(w, h));
                     }
-                    _ => {}
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!("[reader_task] crossterm read error: {e}");
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                },
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::error!("[reader_task] crossterm poll error: {e}");
+                    std::thread::sleep(Duration::from_millis(100));
                 }
             }
         }
+        // Reader task exiting — signal event loop to quit.
+        tracing::info!("[reader_task] exiting, sending Quit event");
+        let _ = event_tx_for_reader.send(TuiEvent::Quit);
     });
 
-    let running_for_signal = running.clone();
-    let quit_ev = TuiEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    tokio::spawn(async move {
-        let mut signal =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
-        let _ = signal.recv().await;
-        running_for_signal.store(false, Ordering::SeqCst);
-        let _ = event_tx_for_signal.send(quit_ev);
-    });
-
-    let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
-
-    // Initial draw — needs_redraw starts as true from App::new()
-    if app.needs_redraw {
-        terminal.draw(|frame| draw_ui(frame, &mut app))?;
+    // Wire input_tx for command events (/compact, interrupt, steer) and auto-drain.
+    arc_app.lock().await.input_tx = Some(input_tx.clone());
+    if let Some(chat) = arc_app.lock().await.get_chat_mut() {
+        chat.set_input_sender(input_tx.clone());
     }
+
+
+
+    // Spawn coordinator as async task.
+    // Coordinator loop: receive input → run turn → send completion.
+    // Uses `arc_app` internally (never uses the 4 dummy `run()` params).
+    let _coordinator_task = tokio::spawn(coordinator_run_loop(
+        chat_rx,
+        done_tx,
+        hook_engine,
+        interrupt_state,
+        Arc::clone(&arc_app),
+    ));
+
+    // --- MAIN EVENT LOOP (pure UI: keyboard/mouse -> display) ---
     loop {
-        if !app.running {
-            break;
-        }
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(32)) => {
-                // Check and hide expired toasts.
-                if let Some(expiry) = app.toast_expires_at {
-                    if std::time::Instant::now() >= expiry {
-                        app.toast_engine.hide_toast();
-                        app.toast_expires_at = None;
-                        app.needs_redraw = true;
-                    }
-                }
-                // During streaming, set needs_redraw so the 32ms timer paints
-                // live updates without relying on user events.  During idle
-                // (no turn active, nothing marked dirty) skip the draw entirely
-                // — this eliminates the ~300 draws/sec from mouse Moved events.
-                let is_streaming = app.get_chat().map(|c| c.streaming).unwrap_or(false);
-                if is_streaming {
-                    app.needs_redraw = true;
-                }
-            }
-            maybe_completion = done_rx.recv() => {
-                tracing::info!("[done_rx] recv returned");
-                if let Some(completion) = maybe_completion {
-                    tracing::info!("[done_rx] success={}, session_name={:?}, messages.len={}", completion.success, completion.session_name, completion.messages.len());
-                    app.turn_handle = None;
-                    if completion.success {
-                        let messages = if let Some(agent) = &app.agent {
-                            let guard = agent.lock().await;
-                            let sm_arc = guard.session_manager();
-                            let sm_guard = sm_arc.lock().await;
-                            let count = guard
-                                .context_window_manager()
-                                .session_id()
-                                .and_then(|sid| sm_guard.session(&sid))
-                                .map(|s| s.messages.len())
-                                .unwrap_or(0);
-                            tracing::info!("[done_rx] agent session has {} messages after lock", count);
-                            guard
-                                .context_window_manager()
-                                .session_id()
-                                .and_then(|sid| sm_guard.session(&sid))
-                                .map(|s| s.messages.clone())
-                                .unwrap_or_default()
-                        } else {
-                            Vec::new()
-                        };
-                        tracing::info!("[done_rx] messages to display: {}, calling update_from_messages", messages.len());
-                        if let Some(chat) = app.get_chat_mut() {
-                            tracing::info!("[done_rx] chat.message_count before update: {}", chat.message_count);
-                            chat.streaming = false;
-                            chat.input.streaming = false;
-                            chat.update_from_messages(&messages, completion.session_name);
-                            tracing::info!("[done_rx] chat.update_from_messages done, streaming={}", chat.streaming);
-                            app.needs_redraw = true;
-                        }
-                    } else {
-                        app.status = "Turn completed with errors".into();
-                        if let Some(chat) = app.get_chat_mut() {
-                            chat.streaming = false;
-                            chat.input.streaming = false;
-                            chat.update_from_turn_state();
-                            app.needs_redraw = true;
-                        }
-                    }
-                }
-            }
             event = event_rx.recv() => {
                 match event {
                     Some(TuiEvent::Key(key)) => {
-                tracing::info!("[event_loop] Key event: code={:?} modifiers={:?}", key.code, key.modifiers);
-                app.handle_key(key).await;
-                app.needs_redraw = true;
-            }
-            Some(TuiEvent::Mouse(mouse_event)) => {
-                        // Check for expired toasts on mouse move so UI updates
-                        // promptly when a toast expires during cursor hover.
-                        if let Some(expiry) = app.toast_expires_at {
-                            if std::time::Instant::now() >= expiry {
-                                app.toast_engine.hide_toast();
-                                app.toast_expires_at = None;
-                                app.needs_redraw = true;
-                            }
+                        {
+                            let mut app = arc_app.lock().await;
+                            app.handle_key(key).await;
                         }
+                        {
+                            let mut app = arc_app.lock().await;
+                            app.needs_redraw = true;
+                        }
+                    }
+                    Some(TuiEvent::Mouse(mouse_event)) => {
                         let (term_w, term_h) = size().unwrap_or((80, 24));
                         let body_area = Rect::new(0, 1, term_w, term_h.saturating_sub(2));
-                        match mouse_event.kind {
-                            MouseEventKind::ScrollUp => {
-                                tracing::debug!(
-                                    "[mouse] scroll_up: row={}, col={}",
-                                    mouse_event.row,
-                                    mouse_event.column
-                                );
+                        // Check for expired toasts on mouse move
+                        {
+                            let mut app = arc_app.lock().await;
+                            if let Some(expiry) = app.toast_expires_at {
+                                if std::time::Instant::now() >= expiry {
+                                    app.toast_engine.hide_toast();
+                                    app.toast_expires_at = None;
+                                    app.needs_redraw = true;
+                                }
                             }
-                            MouseEventKind::ScrollDown => {
-                                tracing::debug!(
-                                    "[mouse] scroll_down: row={}, col={}",
-                                    mouse_event.row,
-                                    mouse_event.column
-                                );
-                            }
-                            _ => {}
                         }
-                        let click_on_tabs = matches!(mouse_event.kind, MouseEventKind::Down(crossterm::event::MouseButton::Left))
-                            && mouse_event.row == 0;
+                        // Tab clicking (needs row check, done outside panel lock)
+                        let click_on_tabs = matches!(
+                            mouse_event.kind,
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                        ) && mouse_event.row == 0;
                         if click_on_tabs {
                             let tab_names = ["Chat", "Sessions"];
                             let tab_widths: Vec<usize> = tab_names.iter().map(|n| n.len() + 2).collect();
                             let mut consumed = 0usize;
                             for (i, &pw) in tab_widths.iter().enumerate() {
-                                if mouse_event.column >= consumed as u16 && mouse_event.column < (consumed + pw) as u16 {
+                                if mouse_event.column >= consumed as u16
+                                    && mouse_event.column < (consumed + pw) as u16
+                                {
                                     let target = match i {
                                         0 => PanelId::Chat,
                                         1 => PanelId::Sessions,
                                         _ => break,
                                     };
+                                    let mut app = arc_app.lock().await;
                                     if app.active_panel != target {
                                         app.activate_panel(target).await;
                                     }
                                     app.active_panel = target;
+                                    app.needs_redraw = true;
                                     break;
                                 }
                                 consumed += pw + 1;
                             }
-                            app.needs_redraw = true;
                             continue;
                         }
-                        let current_panel = app.active_panel;
-                        if let Some(panel) = app.panels.get_mut(&current_panel) {
-                            match mouse_event.kind {
-                                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                                    // Forward scroll events to the panel so it can update
-                                    // its scroll state (chat.rs::handle_mouse toggles
-                                    // scroll_to_bottom and adjusts user_scroll_offset).
+                        match mouse_event.kind {
+                            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                                let mut app = arc_app.lock().await;
+                                let panel_id = app.active_panel.clone();
+                                if let Some(panel) = app.panels.get_mut(&panel_id) {
                                     let _ = panel.handle_mouse(body_area, &mouse_event);
                                     app.needs_redraw = true;
                                 }
-                                _ => {
+                            }
+                            _ => {
+                                let mut app = arc_app.lock().await;
+                                let panel_id = app.active_panel.clone();
+                                if let Some(panel) = app.panels.get_mut(&panel_id) {
                                     if let Some(text) = panel.handle_mouse(body_area, &mouse_event) {
-                                        // Copy to clipboard
-                                        tracing::debug!("[lib] handle_mouse returned text, about to show toast");
+                                        tracing::debug!(
+                                            "[lib] handle_mouse returned text, about to show toast"
+                                        );
                                         let lines = text.lines().count();
                                         let msg = if lines == 1 {
                                             "Copied selection.".to_string()
@@ -406,10 +428,11 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                         app.show_toast(msg, ratatui_toaster::ToastType::Success);
                                         app.needs_redraw = true;
                                     } else {
-                                        tracing::debug!("[lib] handle_mouse returned None for event={:?}", mouse_event.kind);
+                                        tracing::debug!(
+                                            "[lib] handle_mouse returned None for event={:?}",
+                                            mouse_event.kind
+                                        );
                                     }
-                                    // Selection drag needs redraw so visible_body_ranges gets updated
-                                    // and render_selection can draw the highlight correctly.
                                     if let Some(chat) = app.get_chat() {
                                         let selecting = chat.message_state.selection_start.is_some()
                                             && chat.message_state.selection_end.is_some();
@@ -422,76 +445,165 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                     }
                     Some(TuiEvent::ChatInput(input)) => {
-                        tracing::debug!("[event_loop] ChatInput event received, input.len()={}", input.len());
-                        handle_chat_input(&mut app, input, &done_tx).await;
-                        tracing::debug!("[event_loop] ChatInput processed");
-                        app.needs_redraw = true;
+                        tracing::debug!(
+                            "[event_loop] ChatInput event, input.len()={}",
+                            input.len()
+                        );
+                        let _ = chat_tx.send(input);
+                        {
+                            let mut app = arc_app.lock().await;
+                            app.needs_redraw = true;
+                        }
                     }
                     Some(TuiEvent::QueueDrain) => {
-                        // Auto-drain from ChatPanel triggered this event.
-                        // The event loop owns app state, so it dequeues and
-                        // handles it directly.  Collect messages first to
-                        // avoid holding a mutable borrow across .await.
-                        let messages: Vec<String> = std::mem::take(&mut app.panels
-                            .get_mut(&crate::panels::PanelId::Chat)
-                            .unwrap()
-                            .downcast_mut::<crate::panels::chat::ChatPanel>()
-                            .unwrap()
-                            .input
-                            .input_queue);
+                        let messages: Vec<String> = {
+                            let mut app = arc_app.lock().await;
+                            std::mem::take(
+                                &mut app.panels
+                                    .get_mut(&PanelId::Chat)
+                                    .unwrap()
+                                    .downcast_mut::<crate::panels::chat::ChatPanel>()
+                                    .unwrap()
+                                    .input
+                                    .input_queue,
+                            )
+                        };
                         for msg in messages {
-                            tracing::info!(
-                                "[event_loop] QueueDrain: draining msg: {}",
-                                msg
-                            );
-                            handle_chat_input(&mut app, msg, &done_tx)
-                                .await;
+                            tracing::info!("[event_loop] QueueDrain: draining msg: {msg}");
+                            let _ = chat_tx.send(msg);
                         }
-                        app.needs_redraw = true;
+                        {
+                            let mut app = arc_app.lock().await;
+                            app.needs_redraw = true;
+                        }
                     }
                     Some(TuiEvent::Resize(_w, _h)) => {
-                        app.needs_redraw = true;
+                        {
+                            let mut app = arc_app.lock().await;
+                            app.needs_redraw = true;
+                        }
+                    }
+                    Some(TuiEvent::Interrupt) => {
+                        let is = {
+                            let a_guard = arc_app.lock().await;
+                            if let Some(agent) = &a_guard.agent {
+                                Some(Arc::clone(&agent.lock().await.get_interrupt_state()))
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(is) = is {
+                            is.request_interrupt(Some("interrupted".to_string()));
+                            is.reset_for_turn();
+                        }
+                        {
+                            let mut app = arc_app.lock().await;
+                            app.status = "Interrupted".into();
+                            if let Some(chat) = app.get_chat_mut() {
+                                chat.input.text.clear();
+                                chat.input.cursor = 0;
+                            }
+                            app.needs_redraw = true;
+                        }
+                    }
+                    Some(TuiEvent::Steer(text)) => {
+                        // Inject a mid-run message into the next tool result.
+                        if let Some(agent) = {
+                            let a = arc_app.lock().await;
+                            a.agent.clone()
+                        } {
+                            let accepted = agent.lock().await.steer(&text);
+                            if accepted {
+                                tracing::info!("[steer] queued: {text}");
+                                let mut app = arc_app.lock().await;
+                                app.show_toast(
+                                    "Steer queued - arrives after next tool call",
+                                    ToastType::Info,
+                                );
+                            } else {
+                                let mut app = arc_app.lock().await;
+                                app.show_toast(
+                                    "Steer rejected (empty payload).",
+                                    ToastType::Warning,
+                                );
+                            }
+                        } else {
+                            if let Some(chat) = arc_app.lock().await.get_chat_mut() {
+                                chat.input.enqueue_msg(text.clone());
+                                tracing::info!(
+                                    "[steer] no agent - queued message instead: {text}"
+                                );
+                                let mut app = arc_app.lock().await;
+                                app.show_toast(
+                                    "Agent not running - queued for next turn",
+                                    ToastType::Info,
+                                );
+                            }
+                        }
+                        if let Some(chat) = arc_app.lock().await.get_chat_mut() {
+                            if chat.input.pending_steer_count == 0 {
+                                chat.append_user_message(&text);
+                                chat.input.pending_steer_count += 1;
+                            }
+                        }
+                        {
+                            let mut app = arc_app.lock().await;
+                            app.needs_redraw = true;
+                        }
                     }
                     Some(TuiEvent::CompactSession) => {
-                        if let Some(agent_arc) = &app.agent {
+                        if let Some(agent_arc) = {
+                            let a = arc_app.lock().await;
+                            a.agent.clone()
+                        } {
                             let outcome = agent_arc.lock().await.compact_session().await;
-                            let sid = app.session_id.clone();
-                            let messages = if let Some(agent_arc) = &app.agent {
+                            let sid = {
+                                let a = arc_app.lock().await;
+                                a.session_id.clone()
+                            };
+                            let messages = if let Some(agent_arc) = {
+                                let a = arc_app.lock().await;
+                                a.agent.clone()
+                            } {
                                 let guard = agent_arc.lock().await;
                                 let sm_arc = guard.session_manager();
-                                let sm_guard = sm_arc.lock().await;
+                                let sm = sm_arc.lock().await;
                                 guard
                                     .context_window_manager()
                                     .session_id()
-                                    .and_then(|s| sm_guard.session(&s))
+                                    .and_then(|s| sm.session(&s))
                                     .map(|s| s.messages.clone())
                                     .unwrap_or_default()
                             } else {
                                 Vec::new()
                             };
-                            if let Some(chat) = app.get_chat_mut() {
+                            if let Some(chat) = arc_app.lock().await.get_chat_mut() {
                                 chat.update_from_messages(&messages, sid);
                             }
                             match outcome {
                                 oben_agent::compact::CompactOutcome::Compressed { .. } => {
+                                    let mut app = arc_app.lock().await;
                                     app.show_toast(
                                         "Session context compressed successfully.",
                                         ToastType::Success,
                                     );
                                 }
                                 oben_agent::compact::CompactOutcome::Ineffective { .. } => {
+                                    let mut app = arc_app.lock().await;
                                     app.show_toast(
                                         "Compaction skipped: no savings (all messages protected in head/tail zones).",
                                         ToastType::Info,
                                     );
                                 }
                                 oben_agent::compact::CompactOutcome::AlreadyCompact => {
+                                    let mut app = arc_app.lock().await;
                                     app.show_toast(
                                         "Session context already within budget.",
                                         ToastType::Info,
                                     );
                                 }
                                 oben_agent::compact::CompactOutcome::NoMiddleMessages { .. } => {
+                                    let mut app = arc_app.lock().await;
                                     app.show_toast(
                                         "Compaction skipped: all messages in protected head/tail zones.",
                                         ToastType::Info,
@@ -499,109 +611,76 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                 }
                             }
                         } else {
+                            let mut app = arc_app.lock().await;
                             app.show_toast(
                                 "Cannot compact: agent not initialized",
                                 ToastType::Warning,
                             );
                         }
-                        app.needs_redraw = true;
+                        {
+                            let mut app = arc_app.lock().await;
+                            app.needs_redraw = true;
+                        }
                     }
-                    Some(TuiEvent::Interrupt) => {
-                        tracing::info!("[interrupt] received, turn_handle={}", app.turn_handle.is_some());
-                        // Use Arc<InterruptState> directly — no tokio::sync::Mutex needed,
-                        // avoids the deadlock where spawn task holds the lock across turn().
-                        app.interrupt_state.request_interrupt(Some("interrupted".to_string()));
-                        app.interrupt_state.reset_for_turn();
-                        tracing::info!("[interrupt] signal sent via InterruptState");
-                        if let Some(handle) = app.turn_handle.take() {
-                            handle.abort();
-                            tracing::info!("[interrupt] aborted turn handle");
-                        }
-                        // The user message was inserted into the in-memory session buffer
-                        // by handle_chat_input before spawning. Truncate to remove orphaned messages.
-                        if let Some(agent) = &app.agent {
-                            let message_count = app.turn_message_count;
-                            let g = agent.lock().await;
-                            let sm_arc = g.session_manager();
-                            let mut sm = sm_arc.lock().await;
-                            if let Some(session) = app
-                                .session_id
-                                .as_ref()
-                                .and_then(|sid| sm.session_mut(sid))
-                            {
-                                let current_count = session.messages.len();
-                                if current_count > message_count {
-                                    let removed = current_count - message_count;
-                                    session.messages.drain(message_count..);
-                                    tracing::info!(
-                                        "[interrupt] truncated {} orphaned messages ({} → {})",
-                                        removed,
-                                        current_count,
-                                        message_count
-                                    );
-                                }
-                            }
-                        }
-                        app.status = "Interrupted".into();
-                        if let Some(chat) = app.get_chat_mut() {
-                            chat.input.text.clear();
-                            chat.input.cursor = 0;
-                            chat.streaming = false;
-                            chat.input.streaming = false;
-                        }
-                        let mut ts = app.turn_state.lock();
-                        ts.on_interrupted();
-                        ts.on_completed("interrupted");
-                        app.needs_redraw = true;
-                    }
-                    Some(TuiEvent::Steer(text)) => {
-                        // Inject a mid-run message into the next tool result.
-                        // (Mirrors `/steer` from the Hermes CLI.)
-                        if let Some(agent) = &app.agent {
-                            let accepted = agent.lock().await.steer(&text);
-                            if accepted {
-                                tracing::info!(
-                                    "[steer] queued: {text}",
-                                );
-                                app.show_toast(
-                                    format!("Steer queued — arrives after next tool call"),
-                                    ToastType::Info,
-                                );
-                            } else {
-                                app.show_toast(
-                                    "Steer rejected (empty payload).",
-                                    ToastType::Warning,
-                                );
-                            }
-                        } else {
-                            // No active run — fall back to queue semantics
-                            if let Some(chat) = app.get_chat_mut() {
-                                chat.input.enqueue_msg(text.clone());
-                                tracing::info!(
-                                    "[steer] no agent — queued message instead: {text}",
-                                );
-                                app.show_toast(
-                                    "Agent not running — queued for next turn",
-                                    ToastType::Info,
-                                );
-                            }
-                        }
-                        // Only display steer text as a chat message on the first Ctrl+Enter
-                        // of a batch. Subsequent steers in the same turn are suppressed.
-                        if let Some(chat) = app.get_chat_mut() {
-                            if chat.input.pending_steer_count == 0 {
-                                chat.append_user_message(&text);
-                                chat.input.pending_steer_count += 1;
-                            }
-                        }
-                        app.needs_redraw = true;
+                    Some(TuiEvent::Quit) => {
+                        // Reader task exited — close chat channel to tell coordinator
+                        // to finish its current turn (if any), then exit.
+                        tracing::info!("[event_loop] Quit event: closing chat_tx");
+                        drop(chat_tx);
+                        break;
                     }
                     None => break,
                 }
             }
+            maybe_completion = done_rx.recv() => {
+                if let Some(completion) = maybe_completion {
+                    tracing::info!("[done_rx] success={}, session_name={:?}, messages.len={}", completion.success, completion.session_name, completion.messages.len());
+                    let mut app = arc_app.lock().await;
+                    if completion.success {
+                        if let Some(chat) = app.get_chat_mut() {
+                            chat.streaming = false;
+                            chat.input.streaming = false;
+                            chat.update_from_messages(&completion.messages, completion.session_name);
+                            app.needs_redraw = true;
+                        }
+                    } else {
+                        app.status = "Turn completed with errors".into();
+                        if let Some(chat) = app.get_chat_mut() {
+                            chat.streaming = false;
+                            chat.input.streaming = false;
+                            chat.update_from_turn_state();
+                            app.needs_redraw = true;
+                        }
+                    }
+                } else {
+                    // Coordinator dropped done_tx - loop is finished.
+                    tracing::info!("[event_loop] done_rx closed, coordinator exited");
+                    break;
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(32)) => {
+                let mut app = arc_app.lock().await;
+                // Check and hide expired toasts.
+                if let Some(expiry) = app.toast_expires_at {
+                    if std::time::Instant::now() >= expiry {
+                        app.toast_engine.hide_toast();
+                        app.toast_expires_at = None;
+                        app.needs_redraw = true;
+                    }
+                }
+                // During streaming (turn_state has active phase), force redraw
+                // Access turn_state directly through the already-held app reference.
+                let ts = app.turn_state.lock();
+                let is_streaming = matches!(ts.phase, TurnPhase::Streaming | TurnPhase::ToolRunning);
+                drop(ts);
+                if is_streaming {
+                    app.needs_redraw = true;
+                }
+            }
         }
 
-        if app.needs_redraw {
+        if { let app = arc_app.lock().await; app.needs_redraw } {
+            let mut app = arc_app.lock().await;
             let _ = terminal.draw(|frame| draw_ui(frame, &mut app));
         }
     }
@@ -614,47 +693,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     disable_raw_mode()?;
     info!("TUI exited normally.");
     Ok(())
-}
-
-/// Enters error splash mode: draws rain with centered error message forever.
-/// Only exits when the user presses Ctrl+C.
-async fn enter_error_splash(arc_app: Arc<tokio::sync::Mutex<App>>) -> ! {
-    // Create a dedicated terminal for error splash, separate from the one used
-    // during the splash loop. Error splash never exits normally — only Ctrl+C.
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.clear().unwrap();
-
-    loop {
-        {
-            let a = arc_app.lock().await;
-            if let Some(splash) = a.panels.get(&PanelId::Splash) {
-                terminal
-                    .draw(|frame| {
-                        splash.draw(frame, frame.area());
-                    })
-                    .ok();
-            }
-        }
-
-        // Wait + poll for Ctrl+C
-        tokio::time::sleep(Duration::from_millis(32)).await;
-        if crossterm::event::poll(Duration::from_millis(32)).unwrap_or(false) {
-            if let Ok(event) = crossterm::event::read() {
-                if let crossterm::event::Event::Key(key) = event {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        drop(terminal);
-                        io::stdout().execute(LeaveAlternateScreen).ok();
-                        io::stdout().execute(DisableMouseCapture).ok();
-                        disable_raw_mode().ok();
-                        std::process::exit(0);
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Detect image URLs and local image file paths in the input text, then build
@@ -857,178 +895,6 @@ fn parse_input_for_images(input: &str) -> (String, Vec<(String, Option<String>)>
     (text, urls)
 }
 
-async fn handle_chat_input(
-    app: &mut App,
-    input: String,
-    done_tx: &tokio::sync::mpsc::UnboundedSender<TurnCompletion>,
-) {
-    info!("handle_chat_input: input.len()={}", input.len());
-
-    let Some(agent) = app.agent.as_ref().map(|a| Arc::clone(a)) else {
-        app.status = "Agent not initialized".into();
-        return;
-    };
-
-    if app.turn_handle.is_some() {
-        app.status = "Already processing a turn. Please wait...".into();
-        return;
-    }
-
-    let was_chat = app.active_panel == PanelId::Chat;
-    tracing::info!(
-        "handle_chat_input: was_chat={}, has_agent={}, turn_handle_some={}",
-        was_chat,
-        app.agent.is_some(),
-        app.turn_handle.is_some()
-    );
-
-    // Begin turn tracking
-    {
-        let mut ts = app.turn_state.lock();
-        ts.on_turn_start();
-    }
-    tracing::info!("handle_chat_input: turn started");
-
-    // Prepare ChatPanel for streaming
-    if was_chat {
-        if let Some(chat) = app.get_chat_mut() {
-            tracing::info!("handle_chat_input: setting ChatPanel.streaming=true");
-            chat.streaming = true;
-            chat.input.streaming = true;
-            chat.message_state
-                .scroll_to_bottom
-                .store(true, Ordering::SeqCst);
-            chat.append_user_message(&input);
-            tracing::info!(
-                "handle_chat_input: appended user message to chat, msg_count={}",
-                chat.message_count
-            );
-        }
-    }
-
-    // Spawn turn in background so event loop is not blocked.
-    // TokioMutex guard IS Send, so the spawned future can hold the lock
-    // across .await in agent.turn().
-    // Clone InterruptState for spawn closure — avoids deadlocking the
-    // interrupt handler which also needs to request_interrupt()
-    // without acquiring the tokio::sync::Mutex.
-    let agent_clone = agent;
-    let turn_state_clone = Arc::clone(&app.turn_state);
-    let done_tx_clone = done_tx.clone();
-    let input_clone = input.clone();
-    let interrupt_clone = Arc::clone(&app.interrupt_state);
-
-    // Record session message count from the session manager BEFORE the
-    // spawned task inserts the user message via execute_turn_with_options.
-    // If the task is aborted, those orphaned messages must be truncated.
-    // Lock dropped before spawn to avoid deadlock.
-    if was_chat {
-        if let Some(agent) = &app.agent {
-            let g = agent.lock().await;
-            let sm_arc = g.session_manager();
-            let sm = sm_arc.lock().await;
-            app.turn_message_count = g
-                .context_window_manager()
-                .session_id()
-                .and_then(|sid| sm.session(&sid))
-                .map(|s| s.messages.len())
-                .unwrap_or(0);
-        }
-    }
-
-    let handle = tokio::spawn({
-        tracing::info!("handle_chat_input: tokio::spawn called");
-        async move {
-            info!("spawned_turn_task: calling agent");
-            let (result, sid, messages) = {
-                let mut guard = agent_clone.lock().await;
-                // No longer create a separate delta_callback — TurnExecutor dispatches
-                // all streaming deltas through config.callbacks.on_stream_delta (hook system).
-                // The AgentCallbacks streaming hook is set up in App::init_agent() which
-                // routes deltas to the EventBus, eliminating double-dispatch.
-
-                // Detect image URLs in input and build the appropriate message type
-                let input_msg = build_image_message(&input_clone);
-                let has_images = matches!(
-                    input_msg.content,
-                    oben_models::MessageContent::Image { .. }
-                        | oben_models::MessageContent::Parts(_)
-                );
-
-                let result = if has_images {
-                    guard
-                        .turn_with_message(input_msg, Some(Arc::clone(&interrupt_clone)))
-                        .await
-                } else {
-                    guard
-                        .turn(&input_clone, false, Some(Arc::clone(&interrupt_clone)))
-                        .await
-                };
-                // Fetch session via CWM session_id (the trait no longer tracks "active").
-                let sm_arc = guard.session_manager();
-                let sm = sm_arc.lock().await;
-                let sid = guard.context_window_manager()
-                    .session_id()
-                    .and_then(|sid| sm.session(&sid))
-                    .map(|s| s.name.clone());
-                let msgs = guard
-                    .context_window_manager()
-                    .session_id()
-                    .and_then(|sid| sm.session(&sid))
-                    .map(|s| s.messages.clone())
-                    .unwrap_or_default();
-                (result, sid, msgs)
-            };
-
-            tracing::info!(
-                "spawned_turn_task: turn completed, is_ok={}",
-                result.is_ok()
-            );
-
-            // Finalize turn state
-            match &result {
-                Ok(_) => {
-                    let mut ts = turn_state_clone.lock();
-                    ts.on_completed("completed");
-                    let _ = done_tx_clone.send(TurnCompletion {
-                        success: true,
-                        session_name: sid,
-                        messages,
-                    });
-                    tracing::info!("spawned_turn_task: sent done_tx success");
-                }
-                Err(e) => {
-                    let mut ts = turn_state_clone.lock();
-                    ts.on_error(&format!("{}", e));
-                    tracing::info!("spawned_turn_task: finalized turn_state error: {}", e);
-                    let _ = done_tx_clone.send(TurnCompletion {
-                        success: false,
-                        session_name: None,
-                        messages: Vec::new(),
-                    });
-                    tracing::info!("spawned_turn_task: sent done_tx error");
-                }
-            }
-
-            tracing::info!("spawned_turn_task: done");
-        }
-    });
-
-    tracing::info!(
-        "handle_chat_input: spawn completed, handle={:?}, about to send done_tx",
-        handle
-    );
-    app.turn_handle = Some(handle);
-    app.input_history.append(&input);
-
-    if was_chat {
-        if let Some(chat) = app.get_chat_mut() {
-            chat.input.text.clear();
-            chat.input.cursor = 0;
-        }
-    }
-}
-
 fn draw_ui(frame: &mut Frame, app: &mut App) {
     app.needs_redraw = false;
     let area = frame.area();
@@ -1132,8 +998,130 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     frame.render_widget(status_para, status_area);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────
 
+
+// ── Coordinator run loop ──────────────────────────────────────────────────
+
+/// Main coordinator run loop — drives the TUI turn lifecycle.
+/// Get all resources from `arc_app` internally.
+async fn coordinator_run_loop(
+    mut chat_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    done_tx: tokio::sync::mpsc::UnboundedSender<TurnCompletion>,
+    hooks: Arc<HookEngine>,
+    interrupt_state: Arc<oben_agent::interrupt::InterruptState>,
+    arc_app: Arc<tokio::sync::Mutex<App>>,
+) {
+    // Loop start hook — fires TuiAgentLoopAdapter.on_loop_start()
+    hooks.emit_loop_start();
+
+    loop {
+        // Wait for user input
+        let input = match chat_rx.recv().await {
+            Some(text) => text,
+            None => {
+                tracing::info!("coordinator: chat channel closed, exiting");
+                hooks.emit_loop_end("chat_channel_closed");
+                return;
+            }
+        };
+
+        // Pre-turn hook
+        hooks.emit_pre_turn();
+
+        // Prepare ChatPanel for streaming
+        {
+            let mut app = arc_app.lock().await;
+            if let Some(chat) = app.get_chat_mut() {
+                chat.streaming = true;
+                chat.input.streaming = true;
+                chat.message_state
+                    .scroll_to_bottom
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                chat.append_user_message(&input);
+            }
+        }
+
+        // Run the turn — detect images
+        let input_msg = build_image_message(&input);
+        let has_images = matches!(
+            input_msg.content,
+            oben_models::MessageContent::Image { .. }
+                | oben_models::MessageContent::Parts(_)
+        );
+
+        let agent = {
+            let a = arc_app.lock().await;
+            a.agent.as_ref().unwrap().clone()
+        };
+
+        let interrupt_clone = Arc::clone(&interrupt_state);
+        let result = if has_images {
+            agent
+                .lock()
+                .await
+                .turn_with_message(input_msg, Some(Arc::clone(&interrupt_clone)))
+                .await
+        } else {
+            agent
+                .lock()
+                .await
+                .turn(&input, true, Some(Arc::clone(&interrupt_clone)))
+                .await
+        };
+
+        // Fetch session data for TurnCompletion
+        let (session_name, messages) = {
+            let guard = agent.lock().await;
+            let sm_arc = guard.session_manager();
+            let sm = sm_arc.lock().await;
+            let sid = guard
+                .context_window_manager()
+                .session_id()
+                .and_then(|sid| sm.session(&sid))
+                .map(|s| s.name.clone());
+            let msgs = guard
+                .context_window_manager()
+                .session_id()
+                .and_then(|sid| sm.session(&sid))
+                .map(|s| s.messages.clone())
+                .unwrap_or_default();
+            (sid, msgs)
+        };
+
+        // Turn complete hook
+        let response_text = messages.last().map(|m| {
+            if let oben_models::MessageContent::Text(ref t) = m.content {
+                t.clone()
+            } else {
+                String::new()
+            }
+        });
+        match &result {
+            Ok(_) => {
+                hooks.emit_turn_complete(
+                    &response_text.unwrap_or_default(),
+                    messages.len(),
+                );
+            }
+            Err(e) => {
+                hooks.emit_turn_error(e);
+            }
+        }
+
+        // Send completion to event loop
+        let _ = done_tx.send(TurnCompletion {
+            success: result.is_ok(),
+            session_name,
+            messages,
+        });
+
+        // Store input in history
+        {
+            let mut app = arc_app.lock().await;
+            app.input_history.append(&input);
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

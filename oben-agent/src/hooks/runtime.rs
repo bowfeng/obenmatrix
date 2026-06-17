@@ -88,66 +88,66 @@ impl TurnLifecycleHooks for NudgeHook {
 // ---------------------------------------------------------------------------
 
 pub struct HookEngine {
-    pub(crate) agent_loop_hooks: Vec<Box<dyn AgentLoopHooks>>,
-    pub(crate) turn_hooks: Vec<Box<dyn TurnLifecycleHooks>>,
-    pub(crate) tool_hooks: Vec<Box<dyn ToolLifecycleHooks>>,
+    pub(crate) agent_loop_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn AgentLoopHooks>>>>,
+    pub(crate) turn_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn TurnLifecycleHooks>>>>,
+    pub(crate) tool_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn ToolLifecycleHooks>>>>,
     pub(crate) streaming_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn StreamingHooks>>>>,
-    pub(crate) system_hooks: Vec<Box<dyn SystemEventsHooks>>,
-    pub(crate) session_hooks: Vec<Box<dyn SessionLifecycleHooks>>,
-    pub(crate) interrupt_hooks: Vec<Box<dyn InterruptLifecycleHooks>>,
+    pub(crate) system_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn SystemEventsHooks>>>>,
+    pub(crate) session_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn SessionLifecycleHooks>>>>,
+    pub(crate) interrupt_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn InterruptLifecycleHooks>>>>,
 }
 
 impl HookEngine {
     pub fn new() -> Self {
         Self {
-            agent_loop_hooks: Default::default(),
-            turn_hooks: Default::default(),
-            tool_hooks: Default::default(),
+            agent_loop_hooks: Arc::new(RwLock::new(Default::default())),
+            turn_hooks: Arc::new(RwLock::new(Default::default())),
+            tool_hooks: Arc::new(RwLock::new(Default::default())),
             streaming_hooks: Arc::new(RwLock::new(Default::default())),
-            system_hooks: Default::default(),
-            session_hooks: Default::default(),
-            interrupt_hooks: Default::default(),
+            system_hooks: Arc::new(RwLock::new(Default::default())),
+            session_hooks: Arc::new(RwLock::new(Default::default())),
+            interrupt_hooks: Arc::new(RwLock::new(Default::default())),
         }
     }
-    pub fn register_agent_loop(&mut self, hook: Box<dyn AgentLoopHooks>) { self.agent_loop_hooks.push(hook); }
-    pub fn register_turn(&mut self, hook: Box<dyn TurnLifecycleHooks>) { self.turn_hooks.push(hook); }
-    pub fn register_tool(&mut self, hook: Box<dyn ToolLifecycleHooks>) { self.tool_hooks.push(hook); }
+    pub fn register_agent_loop(&self, hook: Box<dyn AgentLoopHooks>) { self.agent_loop_hooks.write().unwrap().push(hook); }
+    pub fn register_turn(&self, hook: Box<dyn TurnLifecycleHooks>) { self.turn_hooks.write().unwrap().push(hook); }
+    pub fn register_tool(&self, hook: Box<dyn ToolLifecycleHooks>) { self.tool_hooks.write().unwrap().push(hook); }
     pub fn register_streaming(&self, hook: Box<dyn StreamingHooks>) { self.streaming_hooks.write().unwrap().push(hook); }
-    pub fn register_system(&mut self, hook: Box<dyn SystemEventsHooks>) { self.system_hooks.push(hook); }
-    pub fn register_session(&mut self, hook: Box<dyn SessionLifecycleHooks>) { self.session_hooks.push(hook); }
-    pub fn register_interrupt(&mut self, hook: Box<dyn InterruptLifecycleHooks>) { self.interrupt_hooks.push(hook); }
+    pub fn register_system(&self, hook: Box<dyn SystemEventsHooks>) { self.system_hooks.write().unwrap().push(hook); }
+    pub fn register_session(&self, hook: Box<dyn SessionLifecycleHooks>) { self.session_hooks.write().unwrap().push(hook); }
+    pub fn register_interrupt(&self, hook: Box<dyn InterruptLifecycleHooks>) { self.interrupt_hooks.write().unwrap().push(hook); }
     pub fn count(&self) -> usize {
-        self.agent_loop_hooks.len() + self.turn_hooks.len() + self.tool_hooks.len()
-            + self.streaming_hooks.read().unwrap().len() + self.system_hooks.len() + self.session_hooks.len()
-            + self.interrupt_hooks.len()
+        self.agent_loop_hooks.read().unwrap().len() + self.turn_hooks.read().unwrap().len() + self.tool_hooks.read().unwrap().len()
+            + self.streaming_hooks.read().unwrap().len() + self.system_hooks.read().unwrap().len() + self.session_hooks.read().unwrap().len()
+            + self.interrupt_hooks.read().unwrap().len()
     }
-    pub fn emit_loop_start(&self) { for h in &self.agent_loop_hooks { h.on_loop_start(); } }
-    pub fn emit_loop_end(&self, outcome: &str) { for h in &self.agent_loop_hooks { h.on_loop_end(outcome); } }
-    pub fn emit_pre_turn(&self) { for h in &self.turn_hooks { h.on_pre_turn(); } }
-    pub fn emit_turn_complete(&self, response: &str, _msg_count: usize) { for h in &self.turn_hooks { h.on_post_turn(response, true); } }
-    pub fn emit_turn_error(&self, error: &anyhow::Error) { for h in &self.turn_hooks { h.on_post_turn(&error.to_string(), false); } }
-    pub fn emit_tool_gen(&self, n: &str, c: &str) { for h in &self.tool_hooks { h.on_tool_gen(n, c); } }
-    pub fn emit_tool_start(&self, n: &str, a: &str) { for h in &self.tool_hooks { h.on_tool_start(n, a); } }
-    pub fn emit_tool_complete(&self, n: &str, a: &str, r: &str) { for h in &self.tool_hooks { h.on_tool_complete(n, a, r); } }
-    pub fn emit_tool_error(&self, n: &str, a: &str, e: &str) { for h in &self.tool_hooks { h.on_tool_error(n, a, e); } }
+    pub fn emit_loop_start(&self) { for h in self.agent_loop_hooks.read().unwrap().iter() { h.on_loop_start(); } }
+    pub fn emit_loop_end(&self, outcome: &str) { for h in self.agent_loop_hooks.read().unwrap().iter() { h.on_loop_end(outcome); } }
+    pub fn emit_pre_turn(&self) { for h in self.turn_hooks.read().unwrap().iter() { h.on_pre_turn(); } }
+    pub fn emit_turn_complete(&self, response: &str, _msg_count: usize) { for h in self.turn_hooks.read().unwrap().iter() { h.on_post_turn(response, true); } }
+    pub fn emit_turn_error(&self, error: &anyhow::Error) { for h in self.turn_hooks.read().unwrap().iter() { h.on_post_turn(&error.to_string(), false); } }
+    pub fn emit_tool_gen(&self, n: &str, c: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_gen(n, c); } }
+    pub fn emit_tool_start(&self, n: &str, a: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_start(n, a); } }
+    pub fn emit_tool_complete(&self, n: &str, a: &str, r: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_complete(n, a, r); } }
+    pub fn emit_tool_error(&self, n: &str, a: &str, e: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_error(n, a, e); } }
     pub fn emit_stream_delta(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_stream_delta(t); } }
     pub fn emit_thinking(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_thinking(t); } }
     pub fn emit_reasoning(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_reasoning(t); } }
     pub fn emit_interim_assistant(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_interim_assistant(t); } }
-    pub fn emit_status(&self, l: &str, m: &str) { for h in &self.system_hooks { h.on_status(l, m); } }
-    pub fn emit_session_rotate(&self, p: &str, c: &str) { for h in &self.session_hooks { h.on_session_rotate(p, c); } }
-    pub fn emit_compression_start(&self, n: usize) { for h in &self.session_hooks { h.on_compression_start(n); } }
-    pub fn emit_compression_complete(&self, s: &str) { for h in &self.session_hooks { h.on_compression_complete(s); } }
-    pub fn emit_interrupt_requested(&self) { for h in &self.interrupt_hooks { h.on_interrupt_requested(); } }
-    pub fn emit_interrupted(&self, r: &str) { for h in &self.interrupt_hooks { h.on_interrupted(r); } }
+    pub fn emit_status(&self, l: &str, m: &str) { for h in self.system_hooks.read().unwrap().iter() { h.on_status(l, m); } }
+    pub fn emit_session_rotate(&self, p: &str, c: &str) { for h in self.session_hooks.read().unwrap().iter() { h.on_session_rotate(p, c); } }
+    pub fn emit_compression_start(&self, n: usize) { for h in self.session_hooks.read().unwrap().iter() { h.on_compression_start(n); } }
+    pub fn emit_compression_complete(&self, s: &str) { for h in self.session_hooks.read().unwrap().iter() { h.on_compression_complete(s); } }
+    pub fn emit_interrupt_requested(&self) { for h in self.interrupt_hooks.read().unwrap().iter() { h.on_interrupt_requested(); } }
+    pub fn emit_interrupted(&self, r: &str) { for h in self.interrupt_hooks.read().unwrap().iter() { h.on_interrupted(r); } }
     pub fn emit_turn_complete_with_count(&self, response: &str, turn_count: usize, msg_count: usize) {
-        for h in &self.turn_hooks { h.on_post_turn(response, true); }
+        for h in self.turn_hooks.read().unwrap().iter() { h.on_post_turn(response, true); }
     }
     pub fn post_turn(&self, response: &str, msg_count: usize) {
         self.emit_turn_complete(response, msg_count);
     }
     pub fn turn_count(&self) -> usize {
-        self.turn_hooks.len()
+        self.turn_hooks.read().unwrap().len()
     }
 
     /// Execute a sub-turn for a triggered hook.

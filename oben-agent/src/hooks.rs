@@ -115,13 +115,13 @@ impl HookBuilder {
 
     pub fn build(self) -> HookEngine {
         HookEngine {
-            agent_loop_hooks: self.agent_loop_hooks,
-            turn_hooks: self.turn_hooks,
-            tool_hooks: self.tool_hooks,
+            agent_loop_hooks: Arc::new(RwLock::new(self.agent_loop_hooks)),
+            turn_hooks: Arc::new(RwLock::new(self.turn_hooks)),
+            tool_hooks: Arc::new(RwLock::new(self.tool_hooks)),
             streaming_hooks: Arc::new(RwLock::new(self.streaming_hooks)),
-            system_hooks: self.system_hooks,
-            session_hooks: self.session_hooks,
-            interrupt_hooks: self.interrupt_hooks,
+            system_hooks: Arc::new(RwLock::new(self.system_hooks)),
+            session_hooks: Arc::new(RwLock::new(self.session_hooks)),
+            interrupt_hooks: Arc::new(RwLock::new(self.interrupt_hooks)),
         }
     }
 }
