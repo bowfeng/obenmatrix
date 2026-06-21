@@ -182,6 +182,8 @@ pub struct SubagentSpawner {
     transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
     /// Parent's tool registry (parent decides what subset child gets).
     tools: Arc<oben_tools::ToolRegistry>,
+    /// Parent's full config — inherited by child agents for consistency.
+    config: oben_config::AppConfig,
     /// Context config for child ContextWindowManager creation.
     context_config: crate::compact::CompactCofig,
     /// Max iterations per child.
@@ -197,6 +199,7 @@ impl SubagentSpawner {
     pub fn new(
         transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
         tools: Arc<oben_tools::ToolRegistry>,
+        config: oben_config::AppConfig,
         context_config: crate::compact::CompactCofig,
         max_iterations: usize,
         max_messages: usize,
@@ -205,6 +208,7 @@ impl SubagentSpawner {
         Self {
             transport,
             tools,
+            config,
             context_config,
             max_iterations,
             max_messages,
@@ -228,6 +232,7 @@ impl SubagentSpawner {
     ) -> Subagent {
         let transport = Arc::clone(&self.transport);
         let tools = Arc::clone(&self.tools);
+        let config = self.config.clone();
         let context_config = self.context_config.clone();
         let max_iterations = self.max_iterations;
         let max_messages = self.max_messages;
@@ -272,9 +277,9 @@ impl SubagentSpawner {
             // (Previously passed to on_session_start, which was removed)
 
             // Build child agent — this is the core of delegate tool:
-            // a full `Agent` with fresh context but shared transport/tools.
+            // a full `Agent` with fresh context but shared transport/tools/parent-config.
             let mut child_agent = crate::agent::Agent::new(
-                oben_config::AppConfig::default(),
+                config,
                 system_prompt,
                 tools,
             )
@@ -432,6 +437,7 @@ pub fn build_spawn_fn_wrapper(
     // Arc::get_mut(&mut self.tools) succeeds for delegate tool registration.
     let transport = spawner.transport;
     let tools = spawner.tools;
+    let config = spawner.config;
     let context_config = spawner.context_config.clone();
     let max_iterations = spawner.max_iterations;
     let max_messages = spawner.max_messages;
@@ -474,6 +480,7 @@ pub fn build_spawn_fn_wrapper(
             let parent_session_id_clone = parent_session_id.clone();
             let goal_clone = goal.clone();
             let role_clone = role.to_string();
+            let config_for_child = config.clone();
 
             info!(
                 "delegate: spawning child parent_session_id={} depth={} role={}",
@@ -594,10 +601,9 @@ pub fn build_spawn_fn_wrapper(
                 // Note: Child ContextWindowManager created by Agent::new below, not here.
                 // (Previously passed to on_session_start, which was removed)
 
-                // Build child agent with the child's toolset
                 info!("delegate: build_child_agent child_session_id={} depth={} role={} max_iterations={}", child_session_id, depth, role_clone, max_iterations);
                 let mut child_agent = crate::agent::Agent::new(
-                    oben_config::AppConfig::default(),
+                    config_for_child,
                     child_system_prompt,
                     child_tool_registry,
                 )

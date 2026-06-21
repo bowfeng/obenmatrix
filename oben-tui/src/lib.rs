@@ -22,7 +22,6 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
-use oben_models::{Message, MessageContent, MessagePart};
 use panels::splash::SplashPanel;
 use panels::PanelId;
 use ratatui::backend::CrosstermBackend;
@@ -38,8 +37,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::app::TurnCompletion;
-use oben_agent::hooks::HookEngine;
-use oben_agent::TurnPhase;
+use oben_agent::coordinator::{ConversationConfig, ConversationResult};
+use oben_agent::context::ContextWindowManager;
+use oben_agent::generate_session_name;
+use anyhow::anyhow;
+use oben_models::CallMode;
+use oben_models::Message;
+use oben_models::MessageContent;
+use oben_models::MessagePart;
 use oben_models::SessionManager;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
@@ -258,7 +263,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
 
     // Extract hooks from the agent (following CLI pattern) and interrupt_state.
-    // Both are needed by the coordinator task.
+    // Both are needed by the coordinator.
     let (hook_engine, interrupt_state) = {
         let a = arc_app.lock().await;
         let agent = a.agent.as_ref().unwrap();
@@ -274,6 +279,21 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
             terminal.draw(|frame| draw_ui(frame, &mut app))?;
         }
     }
+
+    // Create the TUI coordinator to drive the agent conversation loop.
+    // The coordinator task runs concurrently with the event loop — it receives
+    // input from chat_rx (fed by event loop) and sends completions via done_tx.
+    let tui_coordinator = TuiCoordinator::new(
+        Arc::clone(&arc_app),
+        chat_rx,
+        done_tx,
+        interrupt_state,
+    );
+    let coordinator_handle = tokio::spawn(async move {
+        let result = tui_coordinator.drive().await;
+        // Ensure we don't leave a dangling Err in the result
+        let _ = result;
+    });
 
     // --- SPAWN KEYBOARD READER TASK ---
     let (event_tx, mut event_rx) = unbounded_channel();
@@ -330,18 +350,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         chat.set_input_sender(input_tx.clone());
     }
 
-
-
-    // Spawn coordinator as async task.
-    // Coordinator loop: receive input → run turn → send completion.
-    // Uses `arc_app` internally (never uses the 4 dummy `run()` params).
-    let _coordinator_task = tokio::spawn(coordinator_run_loop(
-        chat_rx,
-        done_tx,
-        hook_engine,
-        interrupt_state,
-        Arc::clone(&arc_app),
-    ));
 
     // --- MAIN EVENT LOOP (pure UI: keyboard/mouse -> display) ---
     loop {
@@ -659,22 +667,19 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(32)) => {
-                let mut app = arc_app.lock().await;
-                // Check and hide expired toasts.
-                if let Some(expiry) = app.toast_expires_at {
-                    if std::time::Instant::now() >= expiry {
-                        app.toast_engine.hide_toast();
-                        app.toast_expires_at = None;
-                        app.needs_redraw = true;
+                // Only check toast expiry — skip turn_state polling.
+                // Streaming status bar already updated when the user submitted
+                // the message (needs_redraw=true from ChatInput event).
+                // Auto-drain fires via done_rx completion, not timer polling.
+                {
+                    let mut app = arc_app.lock().await;
+                    if let Some(expiry) = app.toast_expires_at {
+                        if std::time::Instant::now() >= expiry {
+                            app.toast_engine.hide_toast();
+                            app.toast_expires_at = None;
+                            app.needs_redraw = true;
+                        }
                     }
-                }
-                // During streaming (turn_state has active phase), force redraw
-                // Access turn_state directly through the already-held app reference.
-                let ts = app.turn_state.lock();
-                let is_streaming = matches!(ts.phase, TurnPhase::Streaming | TurnPhase::ToolRunning);
-                drop(ts);
-                if is_streaming {
-                    app.needs_redraw = true;
                 }
             }
         }
@@ -685,8 +690,9 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         }
     }
 
-    running.store(false, Ordering::SeqCst);
+    // Reader task and coordinator should both complete by now.
     let _ = reader_handle.await;
+    let _ = coordinator_handle.await;
     drop(terminal);
     io::stdout().execute(LeaveAlternateScreen)?;
     io::stdout().execute(DisableMouseCapture)?;
@@ -998,128 +1004,180 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     frame.render_widget(status_para, status_area);
 }
 
+// ── TUI Coordinator ──────────────────────────────────────────────────────
 
-
-// ── Coordinator run loop ──────────────────────────────────────────────────
-
-/// Main coordinator run loop — drives the TUI turn lifecycle.
-/// Get all resources from `arc_app` internally.
-async fn coordinator_run_loop(
-    mut chat_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
-    done_tx: tokio::sync::mpsc::UnboundedSender<TurnCompletion>,
-    hooks: Arc<HookEngine>,
-    interrupt_state: Arc<oben_agent::interrupt::InterruptState>,
+/// TUI conversation coordinator — drives the TUI turn lifecycle.
+///
+/// Implements [`ConversationCoordinator`], receiving input from a channel
+/// (fed by the event loop) and sending completions back via a channel.
+/// This mirrors the CLI's `CliCoordinator` pattern.
+pub struct TuiCoordinator {
     arc_app: Arc<tokio::sync::Mutex<App>>,
-) {
-    // Loop start hook — fires TuiAgentLoopAdapter.on_loop_start()
-    hooks.emit_loop_start();
+    chat_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    done_tx: tokio::sync::mpsc::UnboundedSender<TurnCompletion>,
+    interrupt_state: Arc<oben_agent::interrupt::InterruptState>,
+    call_mode: Option<oben_models::CallMode>,
+}
 
-    loop {
-        // Wait for user input
-        let input = match chat_rx.recv().await {
-            Some(text) => text,
-            None => {
-                tracing::info!("coordinator: chat channel closed, exiting");
-                hooks.emit_loop_end("chat_channel_closed");
-                return;
-            }
-        };
-
-        // Pre-turn hook
-        hooks.emit_pre_turn();
-
-        // Prepare ChatPanel for streaming
-        {
-            let mut app = arc_app.lock().await;
-            if let Some(chat) = app.get_chat_mut() {
-                chat.streaming = true;
-                chat.input.streaming = true;
-                chat.message_state
-                    .scroll_to_bottom
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                chat.append_user_message(&input);
-            }
+impl TuiCoordinator {
+    pub fn new(
+        arc_app: Arc<tokio::sync::Mutex<App>>,
+        chat_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+        done_tx: tokio::sync::mpsc::UnboundedSender<TurnCompletion>,
+        interrupt_state: Arc<oben_agent::interrupt::InterruptState>,
+    ) -> Self {
+        Self {
+            arc_app,
+            chat_rx,
+            done_tx,
+            interrupt_state,
+            call_mode: None,
         }
+    }
 
-        // Run the turn — detect images
-        let input_msg = build_image_message(&input);
-        let has_images = matches!(
-            input_msg.content,
-            oben_models::MessageContent::Image { .. }
-                | oben_models::MessageContent::Parts(_)
-        );
-
-        let agent = {
-            let a = arc_app.lock().await;
-            a.agent.as_ref().unwrap().clone()
+    pub async fn drive(mut self) -> Result<ConversationResult> {
+        let hook_engine = {
+            let a = self.arc_app.lock().await;
+            let hooks = a.agent.as_ref().unwrap().lock().await.hooks().clone();
+            drop(a);
+            hooks
         };
 
-        let interrupt_clone = Arc::clone(&interrupt_state);
-        let result = if has_images {
-            agent
-                .lock()
-                .await
-                .turn_with_message(input_msg, Some(Arc::clone(&interrupt_clone)))
-                .await
-        } else {
-            agent
-                .lock()
-                .await
-                .turn(&input, true, Some(Arc::clone(&interrupt_clone)))
-                .await
-        };
+        hook_engine.emit_loop_start();
 
-        // Fetch session data for TurnCompletion
-        let (session_name, messages) = {
-            let guard = agent.lock().await;
-            let sm_arc = guard.session_manager();
-            let sm = sm_arc.lock().await;
-            let sid = guard
-                .context_window_manager()
-                .session_id()
-                .and_then(|sid| sm.session(&sid))
-                .map(|s| s.name.clone());
-            let msgs = guard
-                .context_window_manager()
-                .session_id()
-                .and_then(|sid| sm.session(&sid))
-                .map(|s| s.messages.clone())
-                .unwrap_or_default();
-            (sid, msgs)
-        };
+        loop {
+            hook_engine.emit_pre_turn();
 
-        // Turn complete hook
-        let response_text = messages.last().map(|m| {
-            if let oben_models::MessageContent::Text(ref t) = m.content {
-                t.clone()
+            let input = match self.chat_rx.recv().await {
+                Some(text) => text,
+                None => {
+                    tracing::info!("coordinator: chat channel closed, exiting");
+                    hook_engine.emit_loop_end("chat_channel_closed");
+                    return Ok(ConversationResult::Exit);
+                }
+            };
+
+            // Extract agent and app config BEFORE locking the Agent.
+            //
+            // CRITICAL: We must NOT hold `Arc<App>` while acquiring `Agent`
+            // (or vice versa), because the event loop thread also contends
+            // for both locks (see `EventLoop` `done_rx` completion path).
+            // Holding one while the other is held by a different task creates
+            // a deadlock when lock ordering is reversed.
+            //
+            // We clone `Agent` (an `Arc<Mutex<Agent>>`) which is cheap,
+            // then release `App` entirely before locking `Agent`.
+            let (agent_arc, config) = {
+                let a_guard = self.arc_app.lock().await;
+                let ag = a_guard.agent.as_ref().unwrap().clone();
+                let cfg = a_guard.config.clone();
+                (ag, cfg)
+            };
+
+            // Prepare ChatPanel for streaming — uses `Arc<App>` only
+            let session_name = {
+                let mut app = self.arc_app.lock().await;
+                let mut sid = None;
+                if let Some(chat) = app.get_chat_mut() {
+                    chat.streaming = true;
+                    chat.input.streaming = true;
+                    chat.message_state
+                        .scroll_to_bottom
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    chat.append_user_message(&input);
+                    sid = chat.session_name.clone();
+                }
+                sid
+            };
+
+            // Run the turn — ONLY `agent_arc` locked, `App` NOT held.
+            //
+            // This is the core of the deadlock fix: the entire LLM call,
+            // tool dispatch, and turn loop happen with `Agent` locked but
+            // `App` completely free for the event loop to acquire.
+            let input_msg = build_image_message(&input);
+            let interrupt_clone = Arc::clone(&self.interrupt_state);
+            let conversation = ConversationConfig::from_app_config(&config);
+
+            let response = if matches!(
+                input_msg.content,
+                MessageContent::Image { .. } | MessageContent::Parts(_)
+            ) {
+                agent_arc
+                    .lock()
+                    .await
+                    .turn_with_message(input_msg, Some(Arc::clone(&interrupt_clone)))
+                    .await
             } else {
-                String::new()
-            }
-        });
-        match &result {
-            Ok(_) => {
-                hooks.emit_turn_complete(
-                    &response_text.unwrap_or_default(),
-                    messages.len(),
-                );
-            }
-            Err(e) => {
-                hooks.emit_turn_error(e);
+                agent_arc
+                    .lock()
+                    .await
+                    .turn(&input, true, Some(Arc::clone(&interrupt_clone)))
+                    .await
+            };
+            let _ = self.interrupt_state.drain_interrupt_message();
+
+            // Fetch session data from agent (no `App` lock needed)
+            let (turn_session_name, messages_from_agent) = {
+                let guard = agent_arc.lock().await;
+                let sm_arc = guard.session_manager();
+                let sm = sm_arc.lock().await;
+                let sid = guard
+                    .context_window_manager()
+                    .session_id();
+                let name = sid.as_ref().and_then(|s| sm.session(s)).map(|s| s.name.clone());
+                let msgs = sid.and_then(|sid| sm.session(&sid)).map(|s| s.messages.clone()).unwrap_or_default();
+                (name, msgs)
+            };
+
+            let response_text = if let Ok(resp) = response {
+                Some(resp)
+            } else {
+                let e = response.unwrap_err();
+                let err_str = format!("Turn error: {}", e);
+                drop(e);
+                hook_engine.emit_loop_end(&err_str);
+                return Err(anyhow!(err_str));
+            };
+
+            // Post-turn hooks
+            let final_text = messages_from_agent.last().and_then(|m| {
+                if let MessageContent::Text(ref t) = m.content {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            }).unwrap_or_default();
+            hook_engine.emit_turn_complete(&final_text, messages_from_agent.len());
+
+            // Send completion to event loop to update the UI
+            let _ = self.done_tx.send(TurnCompletion {
+                success: true,
+                session_name: turn_session_name,
+                messages: messages_from_agent,
+            });
+
+            // Store input in history (App lock only, no Agent contention)
+            {
+                let mut app = self.arc_app.lock().await;
+                app.input_history.append(&input);
             }
         }
+    }
 
-        // Send completion to event loop
-        let _ = done_tx.send(TurnCompletion {
-            success: result.is_ok(),
-            session_name,
-            messages,
-        });
-
-        // Store input in history
-        {
-            let mut app = arc_app.lock().await;
-            app.input_history.append(&input);
-        }
+    /// Run the coordinator loop (via `agent.run(coordinator)` interface).
+    ///
+    /// `ConversationCoordinator::run` passes resources through `agent.run()`,
+    /// but this TUI coordinator reads everything from `Arc<App>` to stay
+    /// compatible with the TUI architecture.
+    pub async fn run(
+        mut self,
+        _context_window_manager: &mut dyn ContextWindowManager,
+        _transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
+        _tools: Arc<oben_tools::ToolRegistry>,
+        _session_manager: &mut dyn SessionManager,
+    ) -> Result<ConversationResult> {
+        self.drive().await
     }
 }
 #[cfg(test)]

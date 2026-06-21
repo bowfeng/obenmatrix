@@ -417,6 +417,7 @@ impl App {
         let spawner = SubagentSpawner::new(
             Arc::new(delegate_transport),
             Arc::new(ToolRegistry::clone(&*self.tools)),
+            self.config.clone(),
             oben_agent::compact::CompactCofig {
                 context_length: self.config.context.context_length,
                 threshold_percent: self.config.context.threshold_percent,
