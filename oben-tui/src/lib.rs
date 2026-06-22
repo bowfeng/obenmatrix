@@ -45,6 +45,7 @@ use oben_models::MessageContent;
 use oben_models::MessagePart;
 use oben_models::SessionManager;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::time::MissedTickBehavior;
 use tracing::info;
 
 pub struct Layouts {
@@ -101,7 +102,11 @@ pub enum TuiCommand {
         session_name: Option<String>,
     },
     /// Turn failed.
-    TurnFailed { status: String },
+    TurnFailed {
+        status: String,
+        messages: Vec<oben_models::Message>,
+        session_name: Option<String>,
+    },
     /// Append user input to history.
     AppendInputHistory { input: String },
     /// Coordinator wants shutdown (e.g. error).
@@ -371,10 +376,19 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         chat.set_input_sender(input_tx.clone());
     }
 
+    // Periodic redraw timer — ensures UI updates during streaming when no
+    // keyboard/mouse events fire. Without this, `TurnState.streaming_text`
+    // gets populated by transport callbacks but never reaches the screen.
+    let mut redraw_interval = tokio::time::interval(Duration::from_millis(16));
+    redraw_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     // --- MAIN EVENT LOOP (pure UI: keyboard/mouse -> display) ---
     loop {
         tokio::select! {
+            _ = redraw_interval.tick() => {
+                let mut app = arc_app.lock().await;
+                app.needs_redraw = true;
+            }
             event = event_rx.recv() => {
                 match event {
                     Some(TuiEvent::Key(key)) => {
@@ -711,13 +725,13 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                         app.needs_redraw = true;
                     }
-                    Some(TuiCommand::TurnFailed { status }) => {
+                    Some(TuiCommand::TurnFailed { status, messages, session_name }) => {
                         let mut app = arc_app.lock().await;
                         app.status = status.into();
                         if let Some(chat) = app.get_chat_mut() {
                             chat.streaming = false;
                             chat.input.streaming = false;
-                            chat.update_from_turn_state();
+                            chat.update_from_messages(&messages, session_name);
                         }
                         app.needs_redraw = true;
                     }
@@ -1180,6 +1194,8 @@ impl TuiCoordinator {
                 hook_engine.emit_loop_end(&err_str);
                 self.send(TuiCommand::TurnFailed {
                     status: err_str.clone(),
+                    messages: messages_from_agent.clone(),
+                    session_name: turn_session_name.clone(),
                 }).await;
                 return Err(anyhow!(err_str));
             }
