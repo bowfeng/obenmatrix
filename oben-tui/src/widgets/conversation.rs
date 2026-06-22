@@ -1168,6 +1168,10 @@ impl ConversationWidget {
         }
         let mut entry_lock = state.message_entries.lock().unwrap();
         *entry_lock = entries;
+        // Invalidate layout cache — content changed, so heights/wraps/ranges are stale.
+        if let Ok(mut guard) = state.cached_layout.lock() {
+            *guard = None;
+        }
         if reset_scroll {
             state.scroll_pos.store(0, Ordering::SeqCst);
         }

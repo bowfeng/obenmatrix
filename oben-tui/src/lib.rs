@@ -706,12 +706,29 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     Some(TuiCommand::StartTurn { input, session_name: _ }) => {
                         // Event loop is sole Arc<App> owner — apply streaming setup here.
                         let mut app = arc_app.lock().await;
+                        // Read agent data in its own scope to avoid borrow conflict with
+                        // get_chat_mut(). Session messages are rebuilt first so stale
+                        // entries from a previous turn are replaced with fresh data.
+                        let (session_name, session_msgs) = {
+                            if let Some(agent) = &app.agent {
+                                let guard = agent.lock().await;
+                                let msgs = guard.loaded_session_messages().await.unwrap_or_default();
+                                let name = guard.active_session_name().await;
+                                (name, msgs)
+                            } else {
+                                (None, Vec::new())
+                            }
+                        };
                         if let Some(chat) = app.get_chat_mut() {
-                            chat.streaming = true;
                             chat.input.streaming = true;
                             chat.message_state
                                 .scroll_to_bottom
                                 .store(true, Ordering::SeqCst);
+                            // Rebuild from session first — update_from_messages sets
+                            // streaming=false (designed for the completion path), so
+                            // re-enable it below so draw_ui sees is_streaming=true.
+                            chat.update_from_messages(&session_msgs, session_name);
+                            chat.streaming = true;
                             chat.append_user_message(&input);
                         }
                         app.needs_redraw = true;
