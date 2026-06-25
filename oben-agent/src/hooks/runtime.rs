@@ -130,7 +130,11 @@ impl HookEngine {
     pub fn emit_tool_start(&self, n: &str, a: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_start(n, a); } }
     pub fn emit_tool_complete(&self, n: &str, a: &str, r: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_complete(n, a, r); } }
     pub fn emit_tool_error(&self, n: &str, a: &str, e: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_error(n, a, e); } }
-    pub fn emit_stream_delta(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_stream_delta(t); } }
+    pub fn emit_stream_delta(&self, t: &str) {
+        for h in self.streaming_hooks.read().unwrap().iter() {
+            h.on_stream_delta(t);
+        }
+    }
     pub fn emit_thinking(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_thinking(t); } }
     pub fn emit_reasoning(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_reasoning(t); } }
     pub fn emit_interim_assistant(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_interim_assistant(t); } }

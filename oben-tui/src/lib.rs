@@ -379,7 +379,9 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     // Periodic redraw timer — ensures UI updates during streaming when no
     // keyboard/mouse events fire. Without this, `TurnState.streaming_text`
     // gets populated by transport callbacks but never reaches the screen.
-    let mut redraw_interval = tokio::time::interval(Duration::from_millis(16));
+    // Use 50ms interval for ~20fps — fast enough for smooth streaming, 
+    // avoids fighting the terminal with 16ms redraws.
+    let mut redraw_interval = tokio::time::interval(Duration::from_millis(50));
     redraw_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     // --- MAIN EVENT LOOP (pure UI: keyboard/mouse -> display) ---
@@ -387,6 +389,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         tokio::select! {
             _ = redraw_interval.tick() => {
                 let mut app = arc_app.lock().await;
+                 
                 app.needs_redraw = true;
             }
             event = event_rx.recv() => {
@@ -666,9 +669,10 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                     }
                     Some(TuiEvent::Quit) => {
-                        // Reader task exited — close chat channel to tell coordinator
+                        // Signal reader task to exit — close chat channel to tell coordinator
                         // to finish its current turn (if any), then exit.
-                        tracing::info!("[event_loop] Quit event: closing chat_tx");
+                        tracing::info!("[event_loop] Quit event received, signaling shutdown");
+                        running.store(false, Ordering::SeqCst);
                         drop(chat_tx);
                         break;
                     }
@@ -757,14 +761,17 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         app.input_history.append(&input);
                     }
                     Some(TuiCommand::Shutdown { reason }) => {
-                        // Close chat channel to tell coordinator to exit, then break loop.
+                        // Signal reader task to exit — close chat channel to tell coordinator
+                        // to finish its current turn (if any), then exit.
                         tracing::info!("[event_loop] Shutdown command received: {reason}");
+                        running.store(false, Ordering::SeqCst);
                         drop(chat_tx);
                         break;
                     }
                     None => {
                         // Command channel closed — shouldn't happen, but handle gracefully.
                         tracing::info!("[event_loop] command_rx closed, exiting main loop");
+                        running.store(false, Ordering::SeqCst);
                         break;
                     }
                 }
@@ -778,7 +785,14 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     }
 
     // Reader task and coordinator should both complete by now.
-    let _ = reader_handle.await;
+    // Use a timeout for the reader — if poll() blocks on the terminal fd
+    // without returning (e.g. on some macOS terminal configurations), we
+    // still need the process to exit gracefully.
+    let reader_timeout = tokio::time::timeout(
+        Duration::from_secs(2),
+        reader_handle,
+    ).await;
+    let _ = reader_timeout;
     let _ = coordinator_handle.await;
     drop(terminal);
     io::stdout().execute(LeaveAlternateScreen)?;

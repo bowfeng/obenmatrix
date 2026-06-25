@@ -710,10 +710,6 @@ impl ConversationWidget {
 
         let total_height = content_height + stream_estimate.unwrap_or(0);
 
-        tracing::debug!(
-            "[scroll_render_cycle] scroll_pos={} user_offset={} at_bottom={} block_count={} total_height={}",
-            scroll_pos, user_offset, at_bottom, layout_entries.len(), total_height
-        );
 
         // Compute scroll offset using the layout module
         let scroll_offset = layout::compute_scroll_offset(
@@ -725,13 +721,6 @@ impl ConversationWidget {
             scroll_pos,
         );
 
-        tracing::debug!(
-            "[scroll_offset_computed] scrollable_range={} scroll_to_bottom={} manual_scroll_pos={} computed_scroll_offset={}",
-            (total_height as i64 - inner_height as i64).max(0) as usize,
-            state.scroll_to_bottom.load(Ordering::SeqCst),
-            scroll_pos,
-            scroll_offset
-        );
 
         // Sync computed scroll_offset back to state so render_selection/get_text
         // use the correct body line range (prevents selecting beyond viewport).
@@ -808,13 +797,13 @@ impl ConversationWidget {
             let max_take = wrapped.len().saturating_sub(inner_offset);
             let inner_take = max_take.min(body_area.height as usize);
 
-            tracing::debug!(
-                "[scroll_in_block] idx={} content_start={} body_area_h={} scroll_offset={} view_top={}",
+            tracing::trace!(
+                "[scroll_in_block) idx={} content_start={} body_area_h={} scroll_offset={} view_top={}",
                 idx, content_start, body_area.height, scroll_offset, msg_area.y
             );
 
-            tracing::debug!(
-                "[layout] body_area.x={} block_rect.x={} msg_area.x={} area.x={}",
+            tracing::trace!(
+                "[layout body_area.x={} block_rect.x={} msg_area.x={} area.x={}",
                 body_area.x,
                 block_rect.x,
                 msg_area.left(),
@@ -864,8 +853,8 @@ impl ConversationWidget {
                 last_entry_vp_bottom.saturating_add(1)
             };
 
-            tracing::debug!(
-                "[stream] content_height={} view_height={} stream_height={} scroll_area_y={} stream_y={}",
+            tracing::trace!(
+                "[stream content_height={} view_height={} stream_height={} scroll_area_y={} stream_y={}",
                 total_height, view_height, stream_height,
                 last_entry_vp_bottom, stream_y
             );
@@ -913,7 +902,7 @@ impl ConversationWidget {
                 let max_visible_lines = inner_height.min(wrapped.len());
                 let line_offset = wrapped.len().saturating_sub(max_visible_lines);
 
-                tracing::debug!(
+                tracing::trace!(
                     "[stream_render] block_area={:?} body_area={:?} wrapped_lines={} stream_block_start={} scroll_pos={} line_offset={} max_visible_lines={}",
                     block_area, body_area, wrapped.len(), stream_block_start, scroll_pos, line_offset, max_visible_lines
                 );
@@ -933,7 +922,7 @@ impl ConversationWidget {
                                 .join("")
                         })
                         .collect();
-                    tracing::debug!("[stream_render] tail_lines: {:?}", tail_lines);
+                    tracing::trace!("[stream_render] tail_lines: {:?}", tail_lines);
                     let mut para = Paragraph::new(wrapped);
                     if line_offset > 0 {
                         para = para.scroll((line_offset as u16, 0));
@@ -961,7 +950,7 @@ impl ConversationWidget {
         let vp_bottom = prev_scroll_pos.saturating_add(inner_height as usize);
         let lines_from_bottom = (total_height as usize).saturating_sub(vp_bottom);
 
-        tracing::debug!(
+        tracing::trace!(
             "[scroll_phase3] user_offset={} (prev={}) scrollable_range={} prev_scrollable_range={} scroll_to_bottom={} offset_sign={}",
             offset, prev_user_offset, scrollable_range, prev_scrollable_range,
             state.scroll_to_bottom.load(Ordering::SeqCst),
@@ -987,7 +976,7 @@ impl ConversationWidget {
             scroll_pos = prev_scroll_pos;
         }
 
-        tracing::debug!(
+        tracing::trace!(
             "[scroll_phase3] initialized scroll_pos={} vp_bottom={} lines_from_bottom={}",
             scroll_pos,
             scroll_pos.saturating_add(inner_height as usize),
@@ -999,7 +988,7 @@ impl ConversationWidget {
         if offset != 0 && !state.scroll_to_bottom.load(Ordering::SeqCst) {
             scroll_pos =
                 ((scroll_pos as i64 + offset as i64).max(0) as usize).min(scrollable_range);
-            tracing::debug!(
+            tracing::trace!(
                 "[scroll_phase3] after_offset: scroll_pos={} vp_bottom={}",
                 scroll_pos,
                 scroll_pos.saturating_add(inner_height as usize)

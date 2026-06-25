@@ -172,7 +172,8 @@ impl ChatPanel {
             self.drained_this_turn = false;
         }
 
-        // Always keep prev_phase in sync.
+        // Always keep prev_phase and streaming flag in sync.
+        self.streaming = matches!(current, TurnPhase::Streaming);
         self.prev_phase = current;
     }
 
