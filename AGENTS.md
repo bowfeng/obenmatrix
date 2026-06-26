@@ -105,6 +105,14 @@ Documentation is bifurcated into high-level specs and explicit parity trackers t
 * `docs/PRD-{area}.md` — Design, internal architecture, and specs for our current feature layout. **All brand-new, custom functionality unrelated to parity gaps lives here.**
 * `docs/PRD-{area}-parity.md` — Feature-area parity trackers containing explicit gap ledgers vs Hermes-Agent. One file per area: `session`, `transport`, `conversation`, `tools`, `skills`, `gateway`, `goals`, `cli`, `utils`.
 
+**🏗️ Architecture Reference — IronClaw:** For the full agent loop architecture (message router, LLM reasoning, action executor, safety layer, self-repair), see [nealai/ironclaw](https://github.com/nearai/ironclaw) at `~/workspace/ironclaw`. Key reference files:
+- `src/lib.rs` — High-level architecture diagram and module map
+- `src/agent/mod.rs` — Core agent submodules (agent_loop, agentic_loop, session, scheduler, heartbeat, self_repair, routine_engine)
+- `src/agent/agent_loop.rs` — Agent message routing and turn loop
+- `src/agent/agentic_loop.rs` — Autonomous agentic loop with tool dispatch
+- `src/agent/self_repair.rs` — Stuck job detection and tool fixing
+- `src/agent/session_manager.rs` — Session lifecycle management
+
 ### 2. Parity Table Formatting Schema
 
 Every parity tracking file contains a table structured exactly like the following block. You must maintain this exact formatting layout when executing updates:

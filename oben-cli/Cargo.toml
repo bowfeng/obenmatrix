@@ -24,6 +24,7 @@ oben-goals = { path = "../oben-goals" }
 
 clap = { workspace = true, features = ["derive"] }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

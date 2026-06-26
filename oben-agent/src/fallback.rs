@@ -14,7 +14,7 @@ pub struct FallbackConfig {
 }
 
 /// Fallback chain state — tracks which fallback is active.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FallbackChain {
     /// Ordered list of fallback providers.
     fallbacks: Vec<FallbackConfig>,

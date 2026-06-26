@@ -2220,6 +2220,11 @@ impl DBSessionManager {
         self.find_session_key_by_name(key)
     }
 
+    /// Resolve a name key to a session ID.
+    pub fn resolve_session_id(&self, key: &str) -> Option<String> {
+        self.find_key(key)
+    }
+
     pub fn delete_session(&mut self, key: &str) -> Result<()> {
         // Resolve name → UUID (like switch() does)
         let resolved = self
@@ -2679,8 +2684,8 @@ impl SessionManager for DBSessionManager {
     fn save_session(&mut self, session_id: Option<&str>) -> Result<()> {
         Self::incremental_save(self, session_id)
     }
-    fn active_session_id(&self) -> Option<String> {
-        Self::active_session_id(self)
+    fn resolve_session_id(&self, key: &str) -> Option<String> {
+        Self::resolve_session_id(self, key)
     }
     fn update_token_tracking(
         &mut self,
@@ -2702,9 +2707,6 @@ impl SessionManager for DBSessionManager {
     fn split_after_compression(&mut self, parent_id: &str) -> Result<Session, anyhow::Error> {
         Self::split_after_compression(self, parent_id)
     }
-    fn active_session_mut(&mut self) -> Option<&mut Session> {
-        Self::active_session_mut(self)
-    }
     fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
         Self::session_mut(self, session_id)
     }
@@ -2713,9 +2715,6 @@ impl SessionManager for DBSessionManager {
     }
     fn save_compacted(&mut self, session_id: &str, messages: &[Message]) -> Result<(), anyhow::Error> {
         Self::save_compacted(self, session_id, messages)
-    }
-    fn active_session(&self) -> Option<&Session> {
-        self.active_session()
     }
     fn incremental_save(&mut self, session_id: Option<&str>) -> Result<(), anyhow::Error> {
         Self::incremental_save(self, session_id)

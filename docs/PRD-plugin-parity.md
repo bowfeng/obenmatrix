@@ -10,7 +10,7 @@ Hermes Agent has a full **plugin system** that lets users extend the agent with 
 
 This is a **priority-critical** gap: without it, ObenAgent cannot support third-party extensions, custom provider backends, or user-defined lifecycle hooks.
 
-**Phase 1-4 progress (#46, #50, #52, #53):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Core plugin infrastructure, provider traits (ImageGen/VideoGen/WebSearch/Browser/ContextEngine/ModelProvider), registries (ImageGenRegistry, VideoGenRegistry, WebSearchRegistry, BrowserRegistry, ContextEngineRegistry, ModelProviderRegistry), hook system, slash commands, CLI commands, slash command resolution, plugin skill registry, message injection, toolset grouping, ModelProvider trait, mock providers, `provides_providers` manifest field. 77 unit tests passing. **Phase 4 remaining gaps:** video_gen trait missing (VideoGenRegistry uses wrong ImageGenProvider trait), config-driven provider selection wiring, builtin provider registration on startup, LLM facade trust-gating, toolset grouping return format fix, integration tests.
+**Phase 1-4 progress (#46, #50, #52, #53):** Phase 1 + Phase 2 + Phase 3 + Phase 4 implemented — Core plugin infrastructure, provider traits (ImageGen/VideoGen/WebSearch/Browser/ContextWindowManager/ModelProvider), registries (ImageGenRegistry, VideoGenRegistry, WebSearchRegistry, BrowserRegistry, ContextWindowManagerRegistry, ModelProviderRegistry), hook system, slash commands, CLI commands, slash command resolution, plugin skill registry, message injection, toolset grouping, ModelProvider trait, mock providers, `provides_providers` manifest field. 77 unit tests passing. **Phase 4 remaining gaps:** video_gen trait missing (VideoGenRegistry uses wrong ImageGenProvider trait), config-driven provider selection wiring, builtin provider registration on startup, LLM facade trust-gating, toolset grouping return format fix, integration tests.
 
 ---
 
@@ -79,7 +79,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 
 | Severity | Description |
 |----------|-------------|
-| **priority-critical** | No `PluginContext`. This is the facade given to each plugin's `register()` function. It provides methods for registering tools, hooks, commands, skills, providers, platforms, context engines, and injecting messages. |
+| **priority-critical** | No `PluginContext`. This is the facade given to each plugin's `register()` function. It provides methods for registering tools, hooks, commands, skills, providers, platforms, ContextWindowManagers, and injecting messages. |
 
 | Status | Description |
 |--------|-------------|
@@ -168,7 +168,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 | ✅ #53 | **Web search provider registry** — `WebSearchProvider` for search/extract backends + `MockWebSearchProvider` impl |
 | ✅ #53 | **Browser provider registry** — `BrowserProvider` for cloud browser backends + `MockBrowserProvider` impl |
 | ✅ | **Memory provider registry** — `MemoryProvider` exclusive provider (one active at a time) | `MemoryManager::add_provider()` enforces builtin + 1 external max |
-| ✅ #53 | **Context engine registry** — `ContextEngine` exclusive engine (one active at a time, replaces built-in) + `MockContextEngine` impl |
+| ✅ #53 | **Context window manager registry** — `ContextWindowManager` exclusive engine (one active at a time, replaces built-in) + `MockContextWindowManager` impl |
 | ✅ #53 | **Model provider registry** — `ProviderProfile` for custom model providers + `MockModelProvider` impl |
 
 ### 12. Plugin Configuration & Enable/Disable
@@ -225,7 +225,7 @@ This is a **priority-critical** gap: without it, ObenAgent cannot support third-
 |--------|-------------|
 | ✅ #62 | **`remove()` on registries** — Add `remove()` to `ImageGenRegistry`, `VideoGenRegistry`, `WebSearchRegistry`, `BrowserRegistry`, `ModelProviderRegistry` |
 | ⚠️ #57 | **Config-driven provider selection** — Partially wired (see #57 below); AppConfig does NOT contain plugin config fields due to circular dependency; PluginConfig.read via `PluginConfig::from_file()` or `PluginManager::set_config()` |
-| ✅ #58 | **Builtin provider registration on startup** — `PluginManager::new()` registers mock ImageGen, VideoGen, WebSearch, Browser, and ModelProvider into respective registries. ContextEngine excluded (agent handles internally) |
+| ✅ #58 | **Builtin provider registration on startup** — `PluginManager::new()` registers mock ImageGen, VideoGen, WebSearch, Browser, and ModelProvider into respective registries. ContextWindowManager excluded (agent handles internally) |
 
 ### 17. Plugin LLM Facade Trust-Gating
 
@@ -346,7 +346,7 @@ The plugin system is a **crate-level addition** — likely `oben-plugin` or `obe
 |---|-------|-------------|----------|------------|
 | 1 | — | **Plugin infrastructure** — PluginManager, PluginManifest, discovery, loading, PluginContext | priority-critical | Rows 1-6 |
 | 2 | — | **Hook system** — 17 hook types, invoke_hook, pre_tool_call blocking, context injection | priority-critical | Row 7 |
-| 3 | — | **Provider traits** — ImageGenProvider, VideoGenProvider, WebSearchProvider, BrowserProvider, MemoryProvider, ContextEngine | priority-high | Row 11 |
+| 3 | — | **Provider traits** — ImageGenProvider, VideoGenProvider, WebSearchProvider, BrowserProvider, MemoryProvider, ContextWindowManager | priority-high | Row 11 |
 | 4 | — | **Provider registry** — Register/lookup pluggable backends, config-driven selection | priority-high | Row 11 |
 | 5 | — | **Plugin config** — enabled/disabled lists ✅, load gating by kind/source | priority-high | Row 12 |
 | 6 | — | **Plugin slash commands** — /cmd registration, async handling, TUI integration | priority-high | Row 8 |

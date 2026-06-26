@@ -67,25 +67,21 @@ impl SessionStore {
         }
     }
 
-    /// Delegate backend-specific methods: `active_session`, `set_title`, `active_session_mut`.
-    pub fn active_session(&self) -> Option<&Session> {
-        match self {
-            Self::Database(db) => db.active_session(),
-            Self::Memory(mem) => mem.active_session(),
-        }
-    }
-
-    pub fn active_session_mut(&mut self) -> Option<&mut Session> {
-        match self {
-            Self::Database(db) => db.active_session_mut(),
-            Self::Memory(mem) => mem.active_session_mut(),
-        }
-    }
-
+    /// Set the title of the active session (Database) or a session by key (Memory).
     pub fn set_title(&mut self, new_title: &str) -> Result<(), anyhow::Error> {
         match self {
             Self::Database(db) => db.set_title(new_title),
-            Self::Memory(mem) => mem.set_title(new_title),
+            Self::Memory(mem) => mem.set_title("default", new_title),
+        }
+    }
+
+    /// Set the title of a session by key.
+    pub fn set_title_by_key(&mut self, key: &str, new_title: &str) -> Result<(), anyhow::Error> {
+        match self {
+            Self::Database(_) => Err(anyhow::anyhow!(
+                "set_title_by_key is only supported on the Memory backend"
+            )),
+            Self::Memory(mem) => mem.set_title(key, new_title),
         }
     }
 }
@@ -182,10 +178,10 @@ impl crate::SessionManager for SessionStore {
         }
     }
 
-    fn active_session_id(&self) -> Option<String> {
+    fn resolve_session_id(&self, key: &str) -> Option<String> {
         match self {
-            Self::Database(db) => db.active_session_id(),
-            Self::Memory(mem) => mem.active_session_id(),
+            Self::Database(db) => db.resolve_session_id(key),
+            Self::Memory(mem) => mem.resolve_session_id(key),
         }
     }
 
@@ -214,13 +210,6 @@ impl crate::SessionManager for SessionStore {
         }
     }
 
-    fn active_session_mut(&mut self) -> Option<&mut Session> {
-        match self {
-            Self::Database(db) => db.active_session_mut(),
-            Self::Memory(mem) => mem.active_session_mut(),
-        }
-    }
-
     fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
         match self {
             Self::Database(db) => db.session_mut(session_id),
@@ -243,13 +232,6 @@ impl crate::SessionManager for SessionStore {
         match self {
             Self::Database(db) => db.save_compacted(session_id, messages),
             Self::Memory(mem) => mem.save_compacted(session_id, messages),
-        }
-    }
-
-    fn active_session(&self) -> Option<&Session> {
-        match self {
-            Self::Database(db) => db.active_session(),
-            Self::Memory(mem) => mem.active_session(),
         }
     }
 

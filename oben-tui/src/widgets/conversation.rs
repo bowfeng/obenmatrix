@@ -480,6 +480,17 @@ impl ConversationWidget {
         entries: &[MessageRenderEntry],
     ) {
         // ─── Outer frame ───────────────────────────────────────────────
+        static LAST_ENTRY_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(999);
+        if entries.len() != LAST_ENTRY_COUNT.load(std::sync::atomic::Ordering::SeqCst) {
+            let entry_roles: Vec<String> = entries.iter().map(|e| format!("{:?}", e.role)).collect();
+            tracing::info!(
+                "[render_bordered_blocks] NEW entry count: entries={} roles={:?} streaming={}",
+                entries.len(),
+                entry_roles,
+                is_streaming
+            );
+            LAST_ENTRY_COUNT.store(entries.len(), std::sync::atomic::Ordering::SeqCst);
+        }
         let outer_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette.muted))
@@ -660,6 +671,14 @@ impl ConversationWidget {
             if let Some(ref ts) = state.turn_state_ref {
                 let ts = ts.lock();
                 let ts_len = ts.streaming_text.len();
+                // Log every frame when streaming to debug why text isn't accumulating
+                if ts_len % 10 == 0 {
+                    tracing::info!(
+                        total_len = ts_len,
+                        stream_preview = ?ts.streaming_text.chars().take(60).collect::<String>(),
+                        "TUI: stream_text_len at draw"
+                    );
+                }
                 if ts_len > 0 {
                     // Log streaming_text length every ~10 draws during streaming
                     // to avoid log flooding while still capturing growth pattern.
@@ -710,10 +729,6 @@ impl ConversationWidget {
 
         let total_height = content_height + stream_estimate.unwrap_or(0);
 
-        tracing::debug!(
-            "[scroll_render_cycle] scroll_pos={} user_offset={} at_bottom={} block_count={} total_height={}",
-            scroll_pos, user_offset, at_bottom, layout_entries.len(), total_height
-        );
 
         // Compute scroll offset using the layout module
         let scroll_offset = layout::compute_scroll_offset(
@@ -725,13 +740,6 @@ impl ConversationWidget {
             scroll_pos,
         );
 
-        tracing::debug!(
-            "[scroll_offset_computed] scrollable_range={} scroll_to_bottom={} manual_scroll_pos={} computed_scroll_offset={}",
-            (total_height as i64 - inner_height as i64).max(0) as usize,
-            state.scroll_to_bottom.load(Ordering::SeqCst),
-            scroll_pos,
-            scroll_offset
-        );
 
         // Sync computed scroll_offset back to state so render_selection/get_text
         // use the correct body line range (prevents selecting beyond viewport).
@@ -808,13 +816,13 @@ impl ConversationWidget {
             let max_take = wrapped.len().saturating_sub(inner_offset);
             let inner_take = max_take.min(body_area.height as usize);
 
-            tracing::debug!(
-                "[scroll_in_block] idx={} content_start={} body_area_h={} scroll_offset={} view_top={}",
+            tracing::trace!(
+                "[scroll_in_block) idx={} content_start={} body_area_h={} scroll_offset={} view_top={}",
                 idx, content_start, body_area.height, scroll_offset, msg_area.y
             );
 
-            tracing::debug!(
-                "[layout] body_area.x={} block_rect.x={} msg_area.x={} area.x={}",
+            tracing::trace!(
+                "[layout body_area.x={} block_rect.x={} msg_area.x={} area.x={}",
                 body_area.x,
                 block_rect.x,
                 msg_area.left(),
@@ -846,50 +854,40 @@ impl ConversationWidget {
             let role_info = role_info_for_role(&MessageRole::Assistant, palette);
             let role_color = role_info.border_color;
 
-            // Streaming block position:
-            // - If total content fits in viewport (total_height <= view_height), render stream
-            //   right after the last visible entry (below it in viewport).
-            // - If content overflows (total_height > view_height), anchor stream block to
-            //   viewport bottom so newly streamed text stays visible.
-            // - When stream_height > view_height, the rect extends below the viewport and is
-            //   clipped by ratatui — the visible portion stays at the bottom.
-            let view_height = msg_area.height.saturating_sub(1);
-            let stream_y = if total_height as u16 <= view_height {
-                // Content fits: stream block renders right after the last visible entry.
-                last_entry_vp_bottom.saturating_add(1)
-            } else {
-                // Content overflows: anchor stream to the position below the last entry.
-                // Block rect starts at scroll_area_y and extends downward, clipped by msg_area.
-                // This prevents the block from floating above the message when stream_height > view_height.
-                last_entry_vp_bottom.saturating_add(1)
-            };
-
-            tracing::debug!(
-                "[stream] content_height={} view_height={} stream_height={} scroll_area_y={} stream_y={}",
-                total_height, view_height, stream_height,
-                last_entry_vp_bottom, stream_y
-            );
-
             if !wrapped.is_empty() && stream_height > 0 {
-                // Calculate available space below the last entry.
-                // This prevents the stream block from overlapping the message above.
+                // ── Compute available space before block creation ──
                 let available_height = msg_area
                     .height
                     .saturating_sub(last_entry_vp_bottom.saturating_add(1));
-                // Clamp the block rect to available space + any overflow that gets clipped.
-                // The content is anchored to the BOTTOM of this rect via Paragraph scroll.
-                let block_height = if total_height as u16 > view_height {
-                    // Overflow: limit to available space below the last entry.
-                    // Paragraph scroll shows the tail of the content at the bottom.
+                let view_height = msg_area.height.saturating_sub(1);
+                let is_overflowing = total_height as u16 > view_height;
+
+                // Streaming block y position:
+                // - When entries fit in viewport: render stream right after the last entry.
+                // - When content overflows AND available_height is 0 (entries fill the whole
+                //   message area): position stream at the bottom of the message area and
+                //   rely on paragraph scroll to show the tail of streaming text.
+                let stream_y = if is_overflowing && available_height == 0 {
+                    // Entries overflow the message area — position stream at bottom.
+                    msg_area.height.saturating_sub(1)
+                } else {
+                    // Entries fit — render stream right below the last entry.
+                    last_entry_vp_bottom.saturating_add(1)
+                };
+
+                // Block height: when entries overflow, the block fills all available space below
+                // the last entry (may be 0 if entries completely fill the message area).
+                // Paragraph scroll then shows the tail of the stream content at the bottom.
+                let block_height = if is_overflowing {
                     available_height
                 } else {
                     msg_area.height.min(stream_height)
                 };
                 let block_area = Rect::new(
                     msg_area.left(),
-                    last_entry_vp_bottom.saturating_add(1),
+                    stream_y,
                     msg_area.width,
-                    block_height,
+                    block_height.max(1), // ensure at least 1 line is visible
                 );
                 let block = Block::default()
                     .borders(Borders::ALL)
@@ -913,7 +911,7 @@ impl ConversationWidget {
                 let max_visible_lines = inner_height.min(wrapped.len());
                 let line_offset = wrapped.len().saturating_sub(max_visible_lines);
 
-                tracing::debug!(
+                tracing::trace!(
                     "[stream_render] block_area={:?} body_area={:?} wrapped_lines={} stream_block_start={} scroll_pos={} line_offset={} max_visible_lines={}",
                     block_area, body_area, wrapped.len(), stream_block_start, scroll_pos, line_offset, max_visible_lines
                 );
@@ -933,7 +931,7 @@ impl ConversationWidget {
                                 .join("")
                         })
                         .collect();
-                    tracing::debug!("[stream_render] tail_lines: {:?}", tail_lines);
+                    tracing::trace!("[stream_render] tail_lines: {:?}", tail_lines);
                     let mut para = Paragraph::new(wrapped);
                     if line_offset > 0 {
                         para = para.scroll((line_offset as u16, 0));
@@ -961,7 +959,7 @@ impl ConversationWidget {
         let vp_bottom = prev_scroll_pos.saturating_add(inner_height as usize);
         let lines_from_bottom = (total_height as usize).saturating_sub(vp_bottom);
 
-        tracing::debug!(
+        tracing::trace!(
             "[scroll_phase3] user_offset={} (prev={}) scrollable_range={} prev_scrollable_range={} scroll_to_bottom={} offset_sign={}",
             offset, prev_user_offset, scrollable_range, prev_scrollable_range,
             state.scroll_to_bottom.load(Ordering::SeqCst),
@@ -987,7 +985,7 @@ impl ConversationWidget {
             scroll_pos = prev_scroll_pos;
         }
 
-        tracing::debug!(
+        tracing::trace!(
             "[scroll_phase3] initialized scroll_pos={} vp_bottom={} lines_from_bottom={}",
             scroll_pos,
             scroll_pos.saturating_add(inner_height as usize),
@@ -999,7 +997,7 @@ impl ConversationWidget {
         if offset != 0 && !state.scroll_to_bottom.load(Ordering::SeqCst) {
             scroll_pos =
                 ((scroll_pos as i64 + offset as i64).max(0) as usize).min(scrollable_range);
-            tracing::debug!(
+            tracing::trace!(
                 "[scroll_phase3] after_offset: scroll_pos={} vp_bottom={}",
                 scroll_pos,
                 scroll_pos.saturating_add(inner_height as usize)
@@ -1162,12 +1160,47 @@ impl ConversationWidget {
         renderer: &MessageRenderer,
         reset_scroll: bool,
     ) {
-        let mut entries = Vec::new();
-        for msg in messages {
-            entries.push(renderer.render_entry(msg));
+        tracing::info!(
+            "[rebuild_from_messages] INPUT msgs={} messages={:?}",
+            messages.len(),
+            messages.iter().map(|m| format!("{:?}", m.role)).collect::<Vec<_>>()
+        );
+        let entries: Vec<MessageRenderEntry> = messages
+            .iter()
+            .flat_map(|m| renderer.render_entries(m))
+            .collect();
+        // LOG: preview body lines count and preview text per entry to catch accumulation
+        for (i, e) in entries.iter().enumerate() {
+            let body_preview: String = e.body_lines.iter()
+                .take(3)
+                .map(|l| l.content.spans.iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<Vec<_>>().join("")
+                )
+                .collect::<Vec<_>>()
+                .join(" | ");
+            tracing::info!(
+                "[rebuild_from_messages] ENTRY[{}] role={:?} body_lines={} content_preview={}",
+                i, e.role, e.body_lines.len(),
+                body_preview.chars().take(160).collect::<String>()
+            );
         }
-        let mut entry_lock = state.message_entries.lock().unwrap();
-        *entry_lock = entries;
+        {
+            let mut entry_lock = state.message_entries.lock().unwrap();
+            *entry_lock = entries;
+        }
+        // Drop the previous lock before acquiring again — self-deadlock otherwise.
+        {
+            let entries_after = state.message_entries.lock().unwrap();
+            tracing::info!(
+                "[rebuild_from_messages] COMMITTED entries={}",
+                entries_after.len()
+            );
+        }
+        // Invalidate layout cache — content changed, so heights/wraps/ranges are stale.
+        if let Ok(mut guard) = state.cached_layout.lock() {
+            *guard = None;
+        }
         if reset_scroll {
             state.scroll_pos.store(0, Ordering::SeqCst);
         }

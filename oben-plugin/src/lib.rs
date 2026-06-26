@@ -10,8 +10,8 @@
 //! - `invoke_hook()` — safe hook invocation with try/except per callback
 //! - `PluginManager` — singleton with discover/load/invoke/list
 //! - `PluginContext` — registration API for tools, hooks, commands, skills, providers
-//! - Provider traits (ImageGenProvider, WebSearchProvider, BrowserProvider, ContextEngine)
-//! - Provider registries (ImageGen, VideoGen, WebSearch, Browser, ContextEngine, ModelProvider)
+//! - Provider traits (ImageGenProvider, WebSearchProvider, BrowserProvider, ContextWindowManager)
+//! - Provider registries (ImageGen, VideoGen, WebSearch, Browser, ContextWindowManager, ModelProvider)
 //!   with register/get_default/get_by_name/list/remove and exclusivity enforcement
 //! - Full 4-source directory scanning with config-driven gating
 //! - Thread-local tool whitelist
@@ -47,13 +47,13 @@ pub use manager::{LoadedPlugin, PluginContext, PluginInfo, PluginManager};
 pub use manifest::{parse_manifest, PluginManifest, PluginSource};
 pub use message_injector::{InjectedMessage, MessageAction, MessageInjector};
 pub use mock_provider::{
-    MockBrowserProvider, MockContextEngine, MockImageGenProvider, MockModelProvider,
+    MockBrowserProvider, MockContextWindowManager, MockImageGenProvider, MockModelProvider,
     MockVideoGenProvider, MockWebSearchProvider,
 };
 pub use plugin_kind::PluginKind;
 pub use provider::{
     BrowserMarker, BrowserProvider, BrowserRegistry, ChatCompletionOutput, ChatToolCall,
-    CompletionUsage, ContextEngine, ContextEngineMarker, ContextEngineRegistry, ImageGenMarker,
+    CompletionUsage, ContextWindowManager, ContextWindowManagerMarker, ContextWindowManagerRegistry, ImageGenMarker,
     ImageGenProvider, ImageGenRegistry, ModelProvider, ModelProviderMarker, ModelProviderRegistry,
     ProviderKind, ProviderProfile, ToolCallFunction, VideoGenMarker, VideoGenRegistry,
     WebSearchMarker, WebSearchProvider, WebSearchRegistry,

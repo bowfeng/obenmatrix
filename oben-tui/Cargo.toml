@@ -44,6 +44,7 @@ rand = { version = "0.8", features = ["std", "std_rng"] }
 parking_lot = "0.12"
 regex = { workspace = true }
 tui-rain = { path = "../tui-rain-patched" }
+lazy_static = "1.5.0"
 
 [features]
 default = []

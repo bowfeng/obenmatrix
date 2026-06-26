@@ -393,10 +393,10 @@ impl PluginContext {
         );
     }
 
-    /// Register a context engine (exclusive — replaces previous).
-    pub fn register_context_engine(
+    /// Register a ContextWindowManager (exclusive — replaces previous).
+    pub fn register_context_window_manager(
         &self,
-        engine: Box<dyn crate::provider::ContextEngine + Send + Sync>,
+        engine: Box<dyn crate::provider::ContextWindowManager + Send + Sync>,
     ) {
         let name = engine.name().to_string();
         let manager = self
@@ -404,9 +404,9 @@ impl PluginContext {
             .upgrade()
             .expect("PluginManager no longer exists");
         let mut mgr = manager.lock().unwrap();
-        mgr.context_engine_registry.register(engine);
+        mgr.context_window_manager_registry.register(engine);
         debug!(
-            "Plugin {} registered context engine: {}",
+            "Plugin {} registered CWM: {}",
             self.manifest.name, name
         );
     }
@@ -522,15 +522,15 @@ impl PluginContext {
         profile
     }
 
-    /// Get info about the active context engine (if any).
-    pub fn get_context_engine(&self) -> Option<crate::provider::ProviderProfile> {
+    /// Get info about the active CWM (if any).
+    pub fn get_context_window_manager(&self) -> Option<crate::provider::ProviderProfile> {
         let manager = self
             .manager
             .upgrade()
             .expect("PluginManager no longer exists");
         let inner = manager.lock().unwrap();
         let profile = inner
-            .context_engine_registry
+            .context_window_manager_registry
             .get_default()
             .map(|p| p.list_models().into_iter().next())
             .flatten();
@@ -605,7 +605,7 @@ pub struct ManagerInner {
     /// Browser provider registry (non-exclusive).
     browser_registry: crate::provider::BrowserRegistry,
     /// Context engine registry (exclusive — one at a time).
-    context_engine_registry: crate::provider::ContextEngineRegistry,
+    context_window_manager_registry: crate::provider::ContextWindowManagerRegistry,
     /// Model provider registry (non-exclusive).
     model_provider_registry: crate::provider::ModelProviderRegistry,
 
@@ -700,7 +700,7 @@ impl PluginManager {
                 video_gen_registry: crate::provider::VideoGenRegistry::new(),
                 web_search_registry: crate::provider::WebSearchRegistry::new(),
                 browser_registry: crate::provider::BrowserRegistry::new(),
-                context_engine_registry: crate::provider::ContextEngineRegistry::new(),
+                context_window_manager_registry: crate::provider::ContextWindowManagerRegistry::new(),
                 model_provider_registry: crate::provider::ModelProviderRegistry::new(),
                 toolset_groups: std::collections::HashMap::new(),
                 tool_to_plugin: std::collections::HashMap::new(),
@@ -1250,11 +1250,11 @@ impl PluginManager {
             .collect()
     }
 
-    /// List all registered context engine names.
-    pub fn list_context_engines(&self) -> Vec<String> {
+    /// List all registered CWM names.
+    pub fn list_context_window_managers(&self) -> Vec<String> {
         let inner = self.inner.lock().unwrap();
         inner
-            .context_engine_registry
+            .context_window_manager_registry
             .list()
             .into_iter()
             .map(|p| p.name().to_string())
@@ -1400,7 +1400,7 @@ mod tests {
             video_gen_registry: crate::provider::VideoGenRegistry::new(),
             web_search_registry: crate::provider::WebSearchRegistry::new(),
             browser_registry: crate::provider::BrowserRegistry::new(),
-            context_engine_registry: crate::provider::ContextEngineRegistry::new(),
+            context_window_manager_registry: crate::provider::ContextWindowManagerRegistry::new(),
             model_provider_registry: crate::provider::ModelProviderRegistry::new(),
             toolset_groups: std::collections::HashMap::new(),
             tool_to_plugin: std::collections::HashMap::new(),
@@ -1572,7 +1572,7 @@ mod tests {
             video_gen_registry: crate::provider::VideoGenRegistry::new(),
             web_search_registry: crate::provider::WebSearchRegistry::new(),
             browser_registry: crate::provider::BrowserRegistry::new(),
-            context_engine_registry: crate::provider::ContextEngineRegistry::new(),
+            context_window_manager_registry: crate::provider::ContextWindowManagerRegistry::new(),
             model_provider_registry: crate::provider::ModelProviderRegistry::new(),
             toolset_groups: std::collections::HashMap::new(),
             tool_to_plugin: std::collections::HashMap::new(),
@@ -1621,7 +1621,7 @@ mod tests {
             video_gen_registry: crate::provider::VideoGenRegistry::new(),
             web_search_registry: crate::provider::WebSearchRegistry::new(),
             browser_registry: crate::provider::BrowserRegistry::new(),
-            context_engine_registry: crate::provider::ContextEngineRegistry::new(),
+            context_window_manager_registry: crate::provider::ContextWindowManagerRegistry::new(),
             model_provider_registry: crate::provider::ModelProviderRegistry::new(),
             toolset_groups: std::collections::HashMap::new(),
             tool_to_plugin: std::collections::HashMap::new(),

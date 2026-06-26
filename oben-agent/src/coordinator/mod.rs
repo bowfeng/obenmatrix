@@ -1,0 +1,172 @@
+/// The main conversation loop that all modes implement.
+use std::pin::Pin;
+use std::sync::Arc;
+
+use anyhow::Result;
+
+use crate::hooks::HookEngine;
+use crate::context::ContextWindowManager;
+use crate::interrupt::SharedInterrupt;
+use crate::turn_executor::TurnExecutor;
+use oben_models::{SessionManager, TransportProvider};
+use oben_tools::ToolRegistry;
+
+/// Shared config for both CLI and TUI conversation loops.
+pub mod config;
+pub use config::*;
+
+/// Pluggable termination policies used by concrete coordinators.
+pub mod termination;
+
+/// Subagent tree management and interrupt propagation hub.
+pub mod tree;
+
+// -- Shared turn execution utilities --
+
+/// Execute a single turn.
+pub async fn execute_turn(
+    context_window_manager: &mut dyn ContextWindowManager,
+    transport: &dyn TransportProvider,
+    tools: &Arc<oben_tools::ToolRegistry>,
+    session_manager: &mut dyn SessionManager,
+    session_id: &str,
+    user_message: oben_models::Message,
+    call_mode: &oben_models::CallMode,
+    conversation_config: &ConversationConfig,
+) -> Result<String> {
+    let turn_config = crate::turn_executor::TurnConfig {
+        retry_config: conversation_config.retry_config.clone(),
+        hooks: None,
+        fallback_chain: if conversation_config.fallback_configs.is_empty() {
+            None
+        } else {
+            Some(crate::fallback::FallbackChain::new(
+                conversation_config
+                    .fallback_configs
+                    .iter()
+                    .map(|fb| crate::fallback::FallbackConfig {
+                        provider: fb.provider.clone(),
+                        model: fb.model.clone(),
+                        api_key: fb.api_key.clone(),
+                        base_url: fb.base_url.clone(),
+                    })
+                    .collect(),
+            ))
+        },
+        dispatch_config: conversation_config.dispatch_config.clone(),
+        max_iterations: conversation_config.max_iterations,
+    };
+
+    let result = TurnExecutor::execute_turn_with_config(
+        context_window_manager,
+        transport,
+        tools,
+        session_manager,
+        session_id,
+        user_message,
+        call_mode,
+        None,
+        None,
+        turn_config,
+    )
+    .await?;
+
+    Ok(result.text)
+}
+
+/// Execute a single turn with full agent integration (hooks, interrupt).
+pub async fn execute_turn_full(
+    context_window_manager: &mut dyn ContextWindowManager,
+    transport: &dyn TransportProvider,
+    tools: &Arc<oben_tools::ToolRegistry>,
+    session_manager: &mut dyn SessionManager,
+    session_id: &str,
+    user_message: oben_models::Message,
+    call_mode: &oben_models::CallMode,
+    conversation_config: &ConversationConfig,
+    hooks: Option<Arc<HookEngine>>,
+    interrupt: Option<SharedInterrupt>,
+) -> Result<String> {
+    let turn_config = crate::turn_executor::TurnConfig {
+        retry_config: conversation_config.retry_config.clone(),
+        hooks,
+        fallback_chain: if conversation_config.fallback_configs.is_empty() {
+            None
+        } else {
+            Some(crate::fallback::FallbackChain::new(
+                conversation_config
+                    .fallback_configs
+                    .iter()
+                    .map(|fb| crate::fallback::FallbackConfig {
+                        provider: fb.provider.clone(),
+                        model: fb.model.clone(),
+                        api_key: fb.api_key.clone(),
+                        base_url: fb.base_url.clone(),
+                    })
+                    .collect(),
+            ))
+        },
+        dispatch_config: conversation_config.dispatch_config.clone(),
+        max_iterations: conversation_config.max_iterations,
+    };
+
+    let result = TurnExecutor::execute_turn_with_config(
+        context_window_manager,
+        transport,
+        tools,
+        session_manager,
+        session_id,
+        user_message,
+        call_mode,
+        None,
+        None,
+        turn_config,
+    )
+    .await?;
+
+    // Note: interrupt parameter was removed — interrupt handling moved to the
+    // concrete coordinators (CliCoordinator/TuiCoordinator) via the new flow.
+    let _ = interrupt;
+
+    Ok(result.text)
+}
+
+/// Result of a conversation loop.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConversationResult {
+    /// User chose to exit normally.
+    Exit,
+    /// Loop ended due to budget/iteration limit.
+    BudgetExhausted,
+    /// Loop ended due to external stop signal (Ctrl+C, disconnect).
+    Interrupted,
+    /// Loop ended due to a goal being satisfied.
+    GoalDone,
+    /// Loop ended due to an unrecoverable error.
+    Error(String),
+}
+
+/// The conversation coordinator.
+#[async_trait::async_trait]
+pub trait ConversationCoordinator: Send + Sync {
+    async fn run(
+        &mut self,
+        context_window_manager: &mut dyn ContextWindowManager,
+        transport: Arc<dyn TransportProvider + Send + Sync>,
+        tools: Arc<ToolRegistry>,
+        session_manager: &mut dyn SessionManager,
+    ) -> Result<ConversationResult>;
+
+    fn send_message(
+        &self,
+        _text: String,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
+
+    fn request_interrupt(
+        &self,
+        _message: Option<String>,
+    ) {
+    }
+}

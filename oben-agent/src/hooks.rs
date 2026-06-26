@@ -1,224 +1,152 @@
-/// Hook pipeline — configurable post-turn hooks and observers.
-///
-/// The hook pipeline provides two kinds of extensibility:
-///
-/// **PostTurnHook** — fires after each turn and can execute a sub-turn (LLM call).
-/// Used by e.g. `NudgePostTurnHook` (memory/skill review).
-///
-/// **PostTurnObserver** — fires after each turn but does NOT execute an LLM call.
-/// Used by e.g. auto-save, telemetry, logging, custom actions.
-///
-/// The `HookFactory` builds both lists from `HooksConfig`, replacing the hardcoded
-/// single-nudge-hook pattern in `ConversationLoop::run_loop`.
-///
-/// ## Functional Lifecycle Hooks
-///
-/// The `hooks::kind` module defines 10 domain-specific hook traits with no-op defaults.
-/// The `hooks::adapters` module provides adapter types that bridge closure-style
-/// callbacks to the new trait system.
-///
-/// Re-exports from the functional hook system:
+//! Hook factory — builds HookEngine with configurable adapters and NudgeHook.
 
+use super::kind::*;
 use crate::nudge::NudgeConfig;
-use crate::post_turn_hook::NudgePostTurnHook;
-use crate::PostTurnHook;
-use tracing;
+use std::sync::{Arc, RwLock};
 
-use oben_config::HooksConfig;
-
-// Re-export functional hook traits and adapters
 pub mod kind;
-pub mod adapters;
+pub mod runtime;
+pub mod tui;
+
+// Re-export key types
+pub use runtime::{HookEngine, NudgeHook};
+pub use tui::{TuiStreamingAdapter, TuiToolLifecycleAdapter, TuiAgentLoopAdapter};
+
+// Re-export types that TUI and consumers reference at the top level via oben_agent::
+pub use kind::{TurnState, TurnPhase, ActiveTool, CompletedTool, ActivityKind, ActivityItem};
 
 // ---------------------------------------------------------------------------
-// PostTurnObserver trait
+// HookBuilder
 // ---------------------------------------------------------------------------
 
-/// A hook that fires after each turn without executing an LLM call.
+/// Fluent builder for HookEngine.
 ///
-/// Use this for lightweight actions: event logging, auto-save triggers,
-/// custom metrics, telemetry emission, etc.
-pub trait PostTurnObserver {
-    /// Unique identifier for this observer (used in logs).
-    fn id(&self) -> &str;
-
-    /// Called after a successful turn.
-    fn on_turn_complete(
-        &mut self,
-        response: &str,
-        msg_count: usize,
-        turns_since_nudge: usize,
-    );
-
-    /// Called after a failed turn.
-    fn on_turn_error(&mut self, error: &anyhow::Error, msg_count: usize, turns_since_nudge: usize);
-}
-
-/// Nudge post-turn observer — fires after each turn and can trigger a review.
-pub struct NudgeObserver {
-    config: NudgeConfig,
-}
-
-impl NudgeObserver {
-    pub fn new(config: NudgeConfig) -> Self {
-        Self { config }
-    }
-}
-
-impl PostTurnObserver for NudgeObserver {
-    fn id(&self) -> &str {
-        "nudge"
-    }
-
-    fn on_turn_complete(
-        &mut self,
-        response: &str,
-        _msg_count: usize,
-        _turns_since_nudge: usize,
-    ) {
-        let tl = response.to_lowercase();
-        let noop = || {
-            tl.contains("nothing to")
-                || tl.contains("nothing worth")
-                || tl.contains("no changes needed")
-        };
-        if noop() {
-            tracing::info!("Nudge: nothing worth saving.");
-        } else {
-            tracing::info!("Nudge: checked memory — may have updated.");
-        }
-    }
-
-    fn on_turn_error(&mut self, error: &anyhow::Error, _msg_count: usize, _turns_since_nudge: usize) {
-        tracing::info!("Nudge review failed (non-fatal): {}", error);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// HookFactory — builds hooks and observers from config
-// ---------------------------------------------------------------------------
-
-/// Builds the hook and observer list from configuration.
+/// # Example
 ///
-/// For each hook type in `config.enabled`, looks up its deserialization config
-/// in `config.configs` and builds the corresponding hook. Unknown types are skipped.
-pub struct HookFactory;
+/// ```ignore
+/// let engine = HookBuilder::new()
+///     .register_streaming(Box::new(TuiStreamingAdapter::new(state)))
+///     .build();
+/// ```
+pub struct HookBuilder {
+    agent_loop_hooks: Vec<Box<dyn AgentLoopHooks>>,
+    turn_hooks: Vec<Box<dyn TurnLifecycleHooks>>,
+    tool_hooks: Vec<Box<dyn ToolLifecycleHooks>>,
+    streaming_hooks: Vec<Box<dyn StreamingHooks>>,
+    system_hooks: Vec<Box<dyn SystemEventsHooks>>,
+    session_hooks: Vec<Box<dyn SessionLifecycleHooks>>,
+    interrupt_hooks: Vec<Box<dyn InterruptLifecycleHooks>>,
+}
 
-impl HookFactory {
-    /// Build all post-turn hooks from config.
-    pub fn build_hooks(config: &HooksConfig) -> Vec<Box<dyn PostTurnHook>> {
-        if config.enabled.is_empty() {
-            return vec![];
+impl HookBuilder {
+    /// Create a HookBuilder with NudgeHook auto-registered from config.
+    pub fn from_config(hooks_config: &oben_config::HooksConfig) -> Self {
+        let nudge_config: NudgeConfig = hooks_config
+            .configs
+            .get("nudge")
+            .and_then(|v| serde_yaml::from_value::<NudgeConfig>(v.clone()).ok())
+            .unwrap_or_default();
+
+        let mut turn_hooks: Vec<Box<dyn TurnLifecycleHooks>> = Vec::new();
+        if nudge_config.enabled() {
+            let nudge: Box<dyn TurnLifecycleHooks> = Box::new(NudgeHook::from_config(&nudge_config));
+            turn_hooks.push(nudge);
         }
 
-        let mut hooks = Vec::with_capacity(config.enabled.len());
-
-        for hook_type in &config.enabled {
-            let Some(val) = config.configs.get(hook_type) else {
-                tracing::debug!("Hook type '{}' in enabled but no config found — skipping", hook_type);
-                continue;
-            };
-            hooks.push(Self::build_hook(hook_type.as_str(), val));
-        }
-
-        hooks
-    }
-
-    /// Build all post-turn observers from config.
-    pub fn build_observers(config: &HooksConfig) -> Vec<Box<dyn PostTurnObserver>> {
-        if config.enabled.is_empty() {
-            return vec![];
-        }
-
-        let mut observers = Vec::with_capacity(config.enabled.len());
-
-        for hook_type in &config.enabled {
-            let Some(val) = config.configs.get(hook_type) else {
-                continue;
-            };
-            observers.push(Self::build_observer(hook_type.as_str(), val));
-        }
-
-        observers
-    }
-
-    /// Build a single hook instance from its type name and config value.
-    fn build_hook(name: &str, config_value: &serde_yaml::Value) -> Box<dyn PostTurnHook> {
-        match name {
-            "nudge" => {
-                let nc = Self::deserialize_hook_config::<NudgeConfig>(config_value)
-                    .unwrap_or_default();
-                Box::new(NudgePostTurnHook::new(nc))
-            }
-            other => {
-                tracing::warn!("Unknown hook type '{}', cannot build", other);
-                Box::new(NoopHook::default())
-            }
+        Self {
+            agent_loop_hooks: Vec::new(),
+            turn_hooks,
+            tool_hooks: Vec::new(),
+            streaming_hooks: Vec::new(),
+            system_hooks: Vec::new(),
+            session_hooks: Vec::new(),
+            interrupt_hooks: Vec::new(),
         }
     }
 
-    /// Build a single observer instance from its type name and config value.
-    fn build_observer(name: &str, config_value: &serde_yaml::Value) -> Box<dyn PostTurnObserver> {
-        match name {
-            "nudge" => {
-                let nc = Self::deserialize_hook_config::<NudgeConfig>(config_value)
-                    .unwrap_or_default();
-                Box::new(NudgeObserver::new(nc))
-            }
-            other => {
-                tracing::warn!("Unknown observer type '{}', cannot build", other);
-                Box::new(NoopObserver::default())
-            }
+    /// Create an empty HookBuilder.
+    pub fn new() -> Self {
+        Self {
+            agent_loop_hooks: Vec::new(),
+            turn_hooks: Vec::new(),
+            tool_hooks: Vec::new(),
+            streaming_hooks: Vec::new(),
+            system_hooks: Vec::new(),
+            session_hooks: Vec::new(),
+            interrupt_hooks: Vec::new(),
         }
     }
 
-    fn deserialize_hook_config<T: serde::de::DeserializeOwned>(value: &serde_yaml::Value) -> Option<T> {
-        serde_yaml::from_value::<T>(value.clone()).ok()
+    pub fn register_agent_loop(mut self, hook: Box<dyn AgentLoopHooks>) -> Self {
+        self.agent_loop_hooks.push(hook);
+        self
+    }
+
+    pub fn register_turn(mut self, hook: Box<dyn TurnLifecycleHooks>) -> Self {
+        self.turn_hooks.push(hook);
+        self
+    }
+
+    pub fn register_tool(mut self, hook: Box<dyn ToolLifecycleHooks>) -> Self {
+        self.tool_hooks.push(hook);
+        self
+    }
+
+    pub fn register_streaming(mut self, hook: Box<dyn StreamingHooks>) -> Self {
+        self.streaming_hooks.push(hook);
+        self
+    }
+
+    pub fn register_system(mut self, hook: Box<dyn SystemEventsHooks>) -> Self {
+        self.system_hooks.push(hook);
+        self
+    }
+
+    pub fn register_session(mut self, hook: Box<dyn SessionLifecycleHooks>) -> Self {
+        self.session_hooks.push(hook);
+        self
+    }
+
+    pub fn register_interrupt(mut self, hook: Box<dyn InterruptLifecycleHooks>) -> Self {
+        self.interrupt_hooks.push(hook);
+        self
+    }
+
+    pub fn build(self) -> HookEngine {
+        HookEngine {
+            agent_loop_hooks: Arc::new(RwLock::new(self.agent_loop_hooks)),
+            turn_hooks: Arc::new(RwLock::new(self.turn_hooks)),
+            tool_hooks: Arc::new(RwLock::new(self.tool_hooks)),
+            streaming_hooks: Arc::new(RwLock::new(self.streaming_hooks)),
+            system_hooks: Arc::new(RwLock::new(self.system_hooks)),
+            session_hooks: Arc::new(RwLock::new(self.session_hooks)),
+            interrupt_hooks: Arc::new(RwLock::new(self.interrupt_hooks)),
+        }
     }
 }
 
-/// A no-op hook that does nothing — fallback for unknown types.
-struct NoopHook;
-
-impl Default for NoopHook {
+impl Default for HookBuilder {
     fn default() -> Self {
-        Self
+        Self::new()
     }
 }
 
-impl crate::PostTurnHook for NoopHook {
-    fn id(&self) -> &str {
-        "noop"
-    }
-    fn should_trigger(&mut self, _msg_count: usize, _turns_since: usize) -> bool {
-        false
-    }
-    fn prepare_turn(&mut self) -> oben_models::Message {
-        oben_models::Message::system(String::from("noop"))
-    }
-    fn handle_result(&mut self, _response: &str) {}
-    fn handle_error(&mut self) {}
-}
+#[cfg(test)]
+mod tests {
+    use super::kind::*;
+    use super::HookBuilder;
 
-/// A no-op observer that does nothing — fallback for unknown types.
-struct NoopObserver;
+    struct TestHook;
+    impl Hook for TestHook {
+        fn id(&self) -> &str { "test" }
+    }
+    impl AgentLoopHooks for TestHook {}
 
-impl Default for NoopObserver {
-    fn default() -> Self {
-        Self
+    #[test]
+    fn test_builder_new_empty() {
+        let engine = HookBuilder::new()
+            .register_agent_loop(Box::new(TestHook))
+            .build();
+        assert!(engine.count() >= 0);
     }
 }
-
-impl PostTurnObserver for NoopObserver {
-    fn id(&self) -> &str {
-        "noop"
-    }
-    fn on_turn_complete(&mut self, _response: &str, _msg_count: usize, _turns_since: usize) {}
-    fn on_turn_error(&mut self, _error: &anyhow::Error, _msg_count: usize, _turns_since: usize) {}
-}
-
-// Re-export all hook traits
-pub use kind::*;
-
-// Re-export all adapter types
-pub use adapters::*;

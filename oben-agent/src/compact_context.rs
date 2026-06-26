@@ -1,29 +1,36 @@
-/// Compact context engine — the default implementation of `ContextEngine`.
+/// Builtin ContextWindowManager — the default implementation of `ContextWindowManager`.
 ///
 /// Maps to Hermes' `agent/context_engine.py::ContextEngine`.
 ///
-/// The ContextEngine is a stateless policy layer for context window management.
-/// It borrows messages from the Session (the single source of truth), tracks
-/// real token usage from API responses, decides when compression should fire,
-/// and mutates the message buffer in-place via `compress()`.
+/// The ContextWindowManager is a stateful policy layer for context window management
+/// and session lifecycle. It borrows messages from the Session (the single source
+/// of truth), tracks real token usage from API responses, decides when compression
+/// should fire, and mutates the message buffer in-place via `compact()`.
 use anyhow::Result;
-use tracing::info;
+use chrono::{DateTime, Utc};
+use tracing::{info, warn};
 
 use crate::compact;
 use crate::compact::CompactCofig;
-use crate::context::{CompactStatus, ContextEngine};
-use oben_models::{Message, TransportProvider};
+use crate::context::{CompactStatus, ContextWindowManager, SessionSplitConfig};
+use oben_models::{Message, SessionManager, TransportProvider};
 
 // ---------------------------------------------------------------------------
-// CompactContextEngine
+// BuiltinContextWindowManager
 // ---------------------------------------------------------------------------
 
-/// The context engine — stateless policy layer for context window management.
+/// The builtin context window manager — default implementation for context window
+/// management and session lifecycle control.
 ///
 /// Tracks real token usage from API responses and decides when the
-/// context window is getting full.
-pub struct CompactContextEngine {
+/// context window is getting full. Owns the active session identity for its
+/// conversation so that multiple concurrent sessions (e.g. Gateway / Telegram)
+/// can each have their own CWM instance sharing one backend store.
+pub struct BuiltinContextWindowManager {
     config: CompactCofig,
+    session_split_config: SessionSplitConfig,
+    active_session_key: Option<(String, String)>, // (uuid, name)
+    last_message_timestamp: Option<DateTime<Utc>>,
     last_prompt_tokens: usize,
     last_completion_tokens: usize,
     last_total_tokens: usize,
@@ -37,7 +44,7 @@ pub struct CompactContextEngine {
     _last_aux_model_failure_model: Option<String>,
 }
 
-impl CompactContextEngine {
+impl BuiltinContextWindowManager {
     pub fn new() -> Self {
         Self::with_config(CompactCofig::default())
     }
@@ -45,6 +52,9 @@ impl CompactContextEngine {
     pub fn with_config(config: CompactCofig) -> Self {
         Self {
             config,
+            session_split_config: SessionSplitConfig::default(),
+            active_session_key: None,
+            last_message_timestamp: None,
             last_prompt_tokens: 0,
             last_completion_tokens: 0,
             last_total_tokens: 0,
@@ -57,6 +67,15 @@ impl CompactContextEngine {
             _last_summary_error: None,
             _last_aux_model_failure_model: None,
         }
+    }
+
+    pub fn with_session_config(
+        config: CompactCofig,
+        session_split_config: SessionSplitConfig,
+    ) -> Self {
+        let mut this = Self::with_config(config);
+        this.session_split_config = session_split_config;
+        this
     }
 
     #[allow(dead_code)]
@@ -74,7 +93,7 @@ impl CompactContextEngine {
 }
 
 #[async_trait::async_trait]
-impl ContextEngine for CompactContextEngine {
+impl ContextWindowManager for BuiltinContextWindowManager {
     fn update_from_response(
         &mut self,
         prompt_tokens: usize,
@@ -154,7 +173,7 @@ impl ContextEngine for CompactContextEngine {
         }
 
         info!(
-            "ContextEngine: firing compression (tokens: {}, threshold: {})",
+            "CWM: firing compression (tokens: {}, threshold: {})",
             self.last_total_tokens.max(self.estimate_tokens(messages)),
             self.config.threshold_tokens()
         );
@@ -208,7 +227,7 @@ impl ContextEngine for CompactContextEngine {
                 self.ineffective_compression_count += 1;
                 self.consecutive_effective_compressions = 0;
                 tracing::warn!(
-                    "Compression saved only {:.1}% — ineffective (threshold: {}%, consecutive: {}), keeping original messages",
+                    "CWM: compression saved only {:.1}% — ineffective (threshold: {}%, consecutive: {}), keeping original messages",
                     savings,
                     self.config.ineffective_threshold,
                     self.ineffective_compression_count,
@@ -227,53 +246,6 @@ impl ContextEngine for CompactContextEngine {
         } else {
             return Err(anyhow::anyhow!("compression requires a transport provider"));
         }
-    }
-
-    fn on_session_start(
-        &mut self,
-        session_id: &str,
-        model_name: &str,
-        context_length: Option<usize>,
-    ) {
-        self.ineffective_compression_count = 0;
-        self.consecutive_effective_compressions = 0;
-        self.last_compression_savings_pct = 0.0;
-        if let Some(ctx_len) = context_length {
-            self.config.context_length = ctx_len;
-        }
-        self._last_summary_error = None;
-        self._last_aux_model_failure_model = None;
-        tracing::info!(
-            "ContextEngine::on_session_start: session={} model={} context_length={}",
-            session_id,
-            model_name,
-            self.config.context_length
-        );
-    }
-
-    fn on_session_reset(&mut self) {
-        self.compression_count = 0;
-        self.last_prompt_tokens = 0;
-        self.last_completion_tokens = 0;
-        self.last_total_tokens = 0;
-        self._previous_summary = None;
-        self._last_summary_error = None;
-        self._last_aux_model_failure_model = None;
-        tracing::info!(
-            "ContextEngine::on_session_reset: compression_count={}",
-            self.compression_count
-        );
-    }
-
-    fn on_session_end(&mut self, session_id: &str) {
-        tracing::info!(
-            "ContextEngine::on_session_end: session={} compression_count={} last_error={:?}",
-            session_id,
-            self.compression_count,
-            self._last_summary_error
-        );
-        self._last_summary_error = None;
-        self._last_aux_model_failure_model = None;
     }
 
     async fn preflight_check(
@@ -339,6 +311,138 @@ impl ContextEngine for CompactContextEngine {
         self._previous_summary = None;
         self._last_summary_error = None;
         self._last_aux_model_failure_model = None;
+        self.last_message_timestamp = None;
+    }
+
+    // -- Session lifecycle -------------------------------------------------
+
+    fn session_id(&self) -> Option<String> {
+        self.active_session_key.as_ref().map(|(id, _)| id.clone())
+    }
+
+    fn set_active_session(&mut self, session_manager: &mut dyn SessionManager, session_name: String) {
+        // Only create a new session if one with this name doesn't already exist.
+        // This preserves accumulated messages from previous turns — always
+        // creating new sessions (the old behaviour) causes the in-memory
+        // HashMap to diverge from the one that CWM writes to, so the spawned
+        // task ends up reading an empty session (0 messages).
+        let existing_id = session_manager.find_key(&session_name);
+        let (session_id, name_used) = match existing_id {
+            Some(id) => {
+                tracing::debug!(
+                    "set_active_session: found existing session '{}': {}",
+                    session_name, id
+                );
+                (id, session_name)
+            }
+            None => {
+                let sess = session_manager.new_session(&session_name).ok();
+                match sess {
+                    Some(s) => {
+                        tracing::debug!(
+                            "set_active_session: created new session '{}': {}",
+                            session_name, s.id
+                        );
+                        // new_session may return a different ID than the
+                        // one we asked for because it resolves the name
+                        // internally; use the actual stored name for
+                        // consistency.
+                        let name_used = s.name.clone();
+                        (s.id.clone(), name_used)
+                    }
+                    None => {
+                        tracing::warn!(
+                            "set_active_session: failed to create session '{}', keeping existing",
+                            session_name
+                        );
+                        return;
+                    }
+                }
+            }
+        };
+        self.active_session_key = Some((session_id, name_used));
+        self.reset();
+    }
+
+    fn should_split_session(&self, current_time: DateTime<Utc>) -> bool {
+        if !self.session_split_config.enabled {
+            return false;
+        }
+        match self.last_message_timestamp {
+            Some(last) => {
+                let gap_seconds = (current_time - last).num_seconds() as u64;
+                gap_seconds > self.session_split_config.max_session_duration_seconds
+            }
+            None => false,
+        }
+    }
+
+    fn on_message_received(&mut self, timestamp: DateTime<Utc>) {
+        self.last_message_timestamp = Some(timestamp);
+    }
+
+    fn on_session_split(&mut self, session_manager: &mut dyn SessionManager, new_session_id: String) {
+        // on_session_split receives UUID of the new session (from split_after_compression child.id)
+        // Try to get the session name from the manager (may fail in tests with stub)
+        let name = session_manager.session_mut(&new_session_id).map(|s| s.name.clone()).unwrap_or_default();
+        self.active_session_key = Some((new_session_id.clone(), name));
+        self.reset();
+        // Sync with session manager: mark session fresh and reset metadata
+        if let Some(session) = session_manager.session_mut(&new_session_id) {
+            session.metadata.is_fresh_reset = true;
+            session.messages.clear();
+            session.metadata.message_count = 0;
+            session.metadata.tool_call_count = 0;
+            session.metadata.input_tokens = 0;
+            session.metadata.output_tokens = 0;
+            session.metadata.total_tokens = 0;
+            session.metadata.estimated_cost_usd = 0.0;
+            session.summary_chunks.clear();
+        }
+
+        self.reset();
+    }
+
+    fn should_do_time_based_split(&mut self, session_manager: &mut dyn SessionManager) -> Option<String> {
+        if !self.session_split_config.enabled {
+            return None;
+        }
+        let now = Utc::now();
+        match self.last_message_timestamp {
+            Some(last) => {
+                let gap = (now - last).num_seconds() as u64;
+                if gap <= self.session_split_config.max_session_duration_seconds {
+                    return None;
+                }
+            }
+            None => return None,
+        }
+
+        let parent_id = self.active_session_key.as_ref().map(|(id, _)| id.clone()).unwrap_or_default();
+        let parent_id = if parent_id.is_empty() {
+            session_manager
+                .list_sessions_full()
+                .into_iter()
+                .next()
+                .map(|s| s.id)
+                .unwrap_or_default()
+        } else {
+            parent_id
+        };
+
+        if let Ok(child) = session_manager.split_after_compression(&parent_id) {
+            let new_id = child.id.clone();
+            self.on_session_split(session_manager, new_id.clone());
+            info!("Time-based split: {} \u{2192} {}", parent_id, new_id);
+            Some(new_id)
+        } else {
+            warn!("Time-based split failed: continuing with parent {}", parent_id);
+            None
+        }
+    }
+
+    fn should_split_after_compaction(&self, status: CompactStatus) -> bool {
+        status != CompactStatus::Unchanged
     }
 }
 
@@ -349,6 +453,65 @@ impl ContextEngine for CompactContextEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oben_models::{Session, SessionManager};
+
+    struct StubSessionManager {
+        stored: Option<Session>,
+    }
+
+    impl StubSessionManager {
+        fn new() -> Self {
+            Self { stored: None }
+        }
+    }
+
+    impl Default for StubSessionManager {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl SessionManager for StubSessionManager {
+        fn init(&mut self) -> Result<(), anyhow::Error> { Ok(()) }
+        fn get_or_create_session(&mut self, _name: &str) -> &mut Session { unreachable!() }
+        fn create_session(&mut self, _name: &str) -> &mut Session { unreachable!() }
+        fn switch_session(&mut self, _key: &str) -> Result<&mut Session, anyhow::Error> { unreachable!() }
+        fn reset_current_session(&mut self) -> Result<(), anyhow::Error> { Ok(()) }
+        fn reset_session(&mut self, _key: &str) -> Result<(), anyhow::Error> { Ok(()) }
+        fn suspend_session(&mut self, _key: &str) -> bool { false }
+        fn mark_resume_pending(&mut self, _key: &str, _reason: &str) -> bool { false }
+        fn clear_resume_pending(&mut self, _key: &str) -> bool { false }
+        fn list_sessions(&self, _active_minutes: Option<u64>) -> Vec<oben_models::SessionListEntry> { Vec::new() }
+        fn delete_session(&mut self, _key: &str) -> Result<(), anyhow::Error> { Ok(()) }
+        fn prune_sessions(&mut self, _max_age_days: i64) -> usize { 0 }
+        fn save_session(&mut self, _session_id: Option<&str>) -> Result<(), anyhow::Error> { Ok(()) }
+        fn resolve_session_id(&self, _key: &str) -> Option<String> { None }
+        fn update_token_tracking(&mut self, _session_id: &str, _input_tokens: usize, _output_tokens: usize, _total_tokens: usize, _estimated_cost_usd: f64) {}
+        fn split_after_compression(&mut self, _parent_id: &str) -> Result<Session, anyhow::Error> { unreachable!() }
+        fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
+            if let Some(ref s) = self.stored {
+                if s.id == session_id {
+                    self.stored.as_mut()
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        fn session(&self, _session_id: &str) -> Option<&Session> { None }
+        fn save_compacted(&mut self, _session_id: &str, _messages: &[Message]) -> Result<(), anyhow::Error> { Ok(()) }
+        fn incremental_save(&mut self, _session_id: Option<&str>) -> Result<(), anyhow::Error> { Ok(()) }
+        fn new_session(&mut self, name: &str) -> Result<&mut Session, anyhow::Error> {
+            self.stored.get_or_insert_with(|| Session::new(name));
+            Ok(self.stored.as_mut().unwrap())
+        }
+        fn find_key(&self, _key: &str) -> Option<String> { None }
+        fn list_sessions_full(&self) -> Vec<Session> { Vec::new() }
+        fn get_session_messages(&self, _session_id: &str) -> Result<Vec<Message>, anyhow::Error> { Ok(Vec::new()) }
+        fn ensure_session_loaded(&mut self, _session_id: &str) -> Result<(), anyhow::Error> { Ok(()) }
+        fn close(&mut self) -> Result<(), anyhow::Error> { Ok(()) }
+    }
 
     fn make_message(content: &str) -> Message {
         Message::user(content)
@@ -356,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_estimate_tokens_text() {
-        let engine = CompactContextEngine::new();
+        let engine = BuiltinContextWindowManager::new();
         let msgs = vec![make_message(&"a".repeat(400))];
         let tokens = engine.estimate_tokens(&msgs);
         assert!(tokens > 50);
@@ -365,7 +528,7 @@ mod tests {
 
     #[test]
     fn test_threshold_tokens() {
-        let engine = CompactContextEngine::with_config(CompactCofig {
+        let engine = BuiltinContextWindowManager::with_config(CompactCofig {
             context_length: 100_000,
             ..Default::default()
         });
@@ -374,14 +537,14 @@ mod tests {
 
     #[test]
     fn test_update_from_response() {
-        let mut engine = CompactContextEngine::new();
+        let mut engine = BuiltinContextWindowManager::new();
         engine.update_from_response(1000, 500, 1500);
         assert_eq!(engine.last_total_tokens(), 1500);
     }
 
     #[test]
     fn test_should_compact_with_real_tokens() {
-        let engine = CompactContextEngine::with_config(CompactCofig {
+        let engine = BuiltinContextWindowManager::with_config(CompactCofig {
             context_length: 10_000,
             ..Default::default()
         });
@@ -397,14 +560,14 @@ mod tests {
             max_ineffective_consecutive: 2,
             ..Default::default()
         };
-        let engine = CompactContextEngine::with_config(config);
+        let engine = BuiltinContextWindowManager::with_config(config);
         assert!(!engine.is_thrashing());
         assert!(!engine.is_thrashing());
     }
 
     #[test]
     fn test_reset_clears_thrashing_state() {
-        let mut engine = CompactContextEngine::new();
+        let mut engine = BuiltinContextWindowManager::new();
         engine.ineffective_compression_count = 10;
         engine.consecutive_effective_compressions = 5;
         engine.reset();
@@ -414,42 +577,27 @@ mod tests {
 
     #[test]
     fn test_previous_summary_cleared_on_reset() {
-        let mut engine = CompactContextEngine::new();
+        let mut engine = BuiltinContextWindowManager::new();
         engine._previous_summary = Some("test summary".to_string());
         engine.reset();
         assert!(engine._previous_summary.is_none());
     }
 
     #[test]
-    fn test_on_session_start_resets_state() {
-        let mut engine = CompactContextEngine::new();
-        engine.compression_count = 5;
-        engine.ineffective_compression_count = 3;
-        engine.consecutive_effective_compressions = 2;
-        engine._last_summary_error = Some("test error".to_string());
-        engine._last_aux_model_failure_model = Some("old-model".to_string());
-
-        engine.on_session_start("session-123", "gpt-4", Some(8192));
-
-        assert_eq!(engine.ineffective_compression_count, 0);
-        assert_eq!(engine.consecutive_effective_compressions, 0);
-        assert_eq!(engine.last_compression_savings_pct, 0.0);
-        assert!(engine._last_summary_error.is_none());
-        assert!(engine._last_aux_model_failure_model.is_none());
-        assert_eq!(engine.config.context_length, 8192);
-    }
-
-    #[test]
-    fn test_on_session_reset_clears_state() {
-        let mut engine = CompactContextEngine::new();
+    fn test_reset_clears_all_state() {
+        let mut engine = BuiltinContextWindowManager::new();
         engine.compression_count = 10;
         engine.last_prompt_tokens = 500;
         engine.last_completion_tokens = 200;
         engine.last_total_tokens = 700;
         engine._previous_summary = Some("old summary".to_string());
         engine._last_summary_error = Some("error".to_string());
+        engine._last_aux_model_failure_model = Some("old-model".to_string());
+        engine.ineffective_compression_count = 3;
+        engine.consecutive_effective_compressions = 2;
+        engine.last_compression_savings_pct = 45.0;
 
-        engine.on_session_reset();
+        engine.reset();
 
         assert_eq!(engine.compression_count, 0);
         assert_eq!(engine.last_prompt_tokens, 0);
@@ -457,18 +605,128 @@ mod tests {
         assert_eq!(engine.last_total_tokens, 0);
         assert!(engine._previous_summary.is_none());
         assert!(engine._last_summary_error.is_none());
+        assert!(engine._last_aux_model_failure_model.is_none());
+        assert_eq!(engine.ineffective_compression_count, 0);
+        assert_eq!(engine.consecutive_effective_compressions, 0);
+        assert_eq!(engine.last_compression_savings_pct, 0.0);
     }
 
     #[test]
-    fn test_on_session_end_clears_error_state() {
-        let mut engine = CompactContextEngine::new();
-        engine._last_summary_error = Some("session ended".to_string());
-        engine._last_aux_model_failure_model = Some("model-x".to_string());
+    fn test_reset_preserves_config() {
+        let mut engine = BuiltinContextWindowManager::new();
+        let saved_context_length = engine.config.context_length;
 
-        engine.on_session_end("session-456");
+        engine.reset();
 
-        assert!(engine._last_summary_error.is_none());
-        assert!(engine._last_aux_model_failure_model.is_none());
+        assert_eq!(engine.config.context_length, saved_context_length);
+    }
+
+    // ── Session lifecycle tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_session_id_starts_none() {
+        let engine = BuiltinContextWindowManager::new();
+        assert_eq!(engine.session_id(), None);
+    }
+
+    #[test]
+    fn test_set_active_session_updates_id_and_resets_state() {
+        let mut engine = BuiltinContextWindowManager::new();
+
+        // Prime some token tracking state
+        engine.update_from_response(1000, 500, 1500);
+        engine.last_compression_savings_pct = 25.0;
+
+        assert_eq!(engine.session_id(), None);
+
+        // Bind a session — new_session generates a UUID, not the passed session_id
+        let mut stub = StubSessionManager::new();
+        engine.set_active_session(&mut stub, "chat-abc123".to_string());
+        assert_eq!(engine.session_id(), Some(stub.stored.as_ref().unwrap().id.clone()));
+
+        // Token tracking should be reset
+        assert_eq!(engine.last_total_tokens(), 0);
+    }
+
+    #[test]
+    fn test_should_split_session_returns_false_when_disabled() {
+        let mut engine = BuiltinContextWindowManager::with_config(CompactCofig::default());
+        engine.session_split_config.enabled = false;
+        engine.on_message_received(Utc::now() - chrono::Duration::days(10));
+
+        assert!(!engine.should_split_session(Utc::now()));
+    }
+
+    #[test]
+    fn test_should_split_session_returns_false_when_no_timestamp() {
+        let mut engine = BuiltinContextWindowManager::new();
+        engine.session_split_config.max_session_duration_seconds = 60;
+
+        // Never received a message
+        assert!(!engine.should_split_session(Utc::now()));
+    }
+
+    #[test]
+    fn test_should_split_session_returns_true_after_gap() {
+        let mut engine = BuiltinContextWindowManager::new();
+        engine.session_split_config.max_session_duration_seconds = 60;
+        engine.on_message_received(Utc::now() - chrono::Duration::minutes(5));
+
+        assert!(engine.should_split_session(Utc::now()));
+    }
+
+    #[test]
+    fn test_should_split_session_returns_false_within_gap() {
+        let mut engine = BuiltinContextWindowManager::new();
+        engine.session_split_config.max_session_duration_seconds = 60;
+        engine.on_message_received(Utc::now() - chrono::Duration::seconds(30));
+
+        assert!(!engine.should_split_session(Utc::now()));
+    }
+
+    #[test]
+    fn test_on_session_split_resets_tracking_and_updates_id() {
+        let mut engine = BuiltinContextWindowManager::new();
+        engine.update_from_response(5000, 2000, 7000);
+        engine.on_message_received(Utc::now());
+        let mut stub = StubSessionManager::new();
+        engine.on_session_split(&mut stub, "chat-new456".to_string());
+
+        assert_eq!(engine.session_id(), Some("chat-new456".to_string()));
+        assert_eq!(engine.last_total_tokens(), 0);
+        // Timestamp cleared by reset
+        assert_eq!(engine.last_message_timestamp, None);
+    }
+
+    #[test]
+    fn test_on_message_received_updates_timestamp() {
+        let mut engine = BuiltinContextWindowManager::new();
+        assert!(engine.last_message_timestamp.is_none());
+
+        let now = Utc::now();
+        engine.on_message_received(now);
+        assert_eq!(engine.last_message_timestamp, Some(now));
+    }
+
+    #[test]
+    fn test_session_split_disabled_then_enabled() {
+        let config = CompactCofig {
+            context_length: 100_000,
+            ..Default::default()
+        };
+        let mut engine = BuiltinContextWindowManager::with_config(config);
+
+        // Enabled — should split after 1 day gap
+        engine.on_message_received(Utc::now() - chrono::Duration::days(2));
+        assert!(engine.should_split_session(Utc::now()));
+
+        // Disabled — should never split
+        engine.session_split_config.enabled = false;
+        assert!(!engine.should_split_session(Utc::now()));
+
+        // Re-enabled — splits again
+        engine.session_split_config.enabled = true;
+        assert!(engine.should_split_session(Utc::now()));
     }
 
     // ─── Async compact() tests with mock transport ─────────────────────────────
@@ -532,7 +790,7 @@ mod tests {
             tail_overhead: 1.3,
             ..Default::default()
         };
-        let mut engine = CompactContextEngine::with_config(config);
+        let mut engine = BuiltinContextWindowManager::with_config(config);
         // Prime should_compact with real token count above threshold
         engine.update_from_response(50000, 50000, 100000);
 
@@ -574,7 +832,7 @@ mod tests {
             tail_overhead: 1.3,
             ..Default::default()
         };
-        let mut engine = CompactContextEngine::with_config(config);
+        let mut engine = BuiltinContextWindowManager::with_config(config);
         engine.update_from_response(50000, 50000, 100000);
 
         let mut messages = make_long_messages(50);
@@ -626,7 +884,7 @@ mod tests {
             tail_overhead: 1.3,
             ..Default::default()
         };
-        let mut engine = CompactContextEngine::with_config(config);
+        let mut engine = BuiltinContextWindowManager::with_config(config);
         engine.update_from_response(50000, 50000, 100000);
         let mut messages = make_long_messages(50);
 
@@ -646,7 +904,7 @@ mod tests {
             context_length: 100_000,
             ..Default::default()
         };
-        let mut engine = CompactContextEngine::with_config(config);
+        let mut engine = BuiltinContextWindowManager::with_config(config);
         // last_total_tokens = 0 and estimated tokens < threshold → no compaction
         // Don't prime update_from_response, so should_compact uses estimate
 
@@ -698,7 +956,7 @@ mod tests {
             tail_overhead: 1.3,
             ..Default::default()
         };
-        let mut engine = CompactContextEngine::with_config(config);
+        let mut engine = BuiltinContextWindowManager::with_config(config);
         engine.update_from_response(50000, 50000, 100000);
 
         let messages = make_long_messages(50);
@@ -766,7 +1024,7 @@ mod tests {
             tail_overhead: 1.3,
             ..Default::default()
         };
-        let mut engine = CompactContextEngine::with_config(config);
+        let mut engine = BuiltinContextWindowManager::with_config(config);
         // Prime last_total_tokens so should_compact returns true for 101 messages
         engine.update_from_response(50000, 50000, 100000);
 
@@ -803,7 +1061,7 @@ mod tests {
             tail_overhead: 1.3,
             ..Default::default()
         };
-        let mut engine = CompactContextEngine::with_config(config);
+        let mut engine = BuiltinContextWindowManager::with_config(config);
         // Prime last_total_tokens so should_compact returns true
         engine.update_from_response(50000, 50000, 100000);
         // Seed _previous_summary for iterative update mode (doesn't affect whether
@@ -839,7 +1097,7 @@ mod tests {
     async fn test_compact_last_savings_pct_updated() {
         // Seed _previous_summary so incremental savings are below threshold (ineffective).
         // Then verify savings_pct is tracked even for ineffective compressions.
-        let mut engine = CompactContextEngine::with_config(CompactCofig {
+        let mut engine = BuiltinContextWindowManager::with_config(CompactCofig {
             context_length: 100_000,
             ineffective_threshold: 10.0,
             tail_token_budget: 500,
@@ -882,7 +1140,7 @@ mod tests {
             tail_overhead: 1.3,
             ..Default::default()
         };
-        let mut engine = CompactContextEngine::with_config(config);
+        let mut engine = BuiltinContextWindowManager::with_config(config);
         engine.update_from_response(50000, 50000, 100000);
 
         let messages = make_long_messages(50);
@@ -900,8 +1158,8 @@ mod tests {
         let _ = engine.compact(&mut test_msgs, Some(&transport), None).await;
         assert!(engine.is_thrashing());
 
-        // New session clears thrashing
-        engine.on_session_start("new-session", "gpt-4", None);
+        // Reset clears thrashing
+        engine.reset();
 
         assert_eq!(engine.ineffective_compression_count, 0);
         assert_eq!(engine.consecutive_effective_compressions, 0);

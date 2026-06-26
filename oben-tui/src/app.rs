@@ -18,12 +18,8 @@ use std::time::Duration;
 use tracing::info;
 
 use crate::history;
-use crate::widgets::conversation::{ConversationState, ConversationWidget};
-use crate::widgets::message_renderer::MessageRenderer;
-use oben_agent::callbacks::relay::CallbacksRelay;
-use oben_agent::callbacks::WithRelay;
 use oben_agent::delegate::{build_spawn_fn_wrapper, SubagentSpawner};
-use oben_agent::{Agent, AgentCallbacks, AgentConfig, EventBus, TurnState, TuiSubscriber};
+use oben_agent::{Agent, TurnState};
 use oben_config::AppConfig;
 use oben_tools::delegate::DelegateTool;
 use oben_tools::ToolRegistry;
@@ -31,6 +27,7 @@ use oben_tools::ToolRegistry;
 /// Payload carried by TurnDone completion event from spawned task.
 pub(super) struct TurnCompletion {
     pub(super) success: bool,
+    pub(super) status: String,
     pub(super) session_name: Option<String>,
     pub(super) messages: Vec<oben_models::Message>,
 }
@@ -48,10 +45,6 @@ pub struct App {
     /// Agent protected by TokioMutex — guard is Send, needed for spawn()
     /// where we hold the lock across .await in agent.turn().
     pub agent: Option<Arc<tokio::sync::Mutex<Agent>>>,
-    /// Shared interrupt state — cloned from Agent and shared between
-    /// spawn task and event loop.  Allows handler to call request_interrupt()
-    /// without acquiring tokio::sync::Mutex, preventing deadlock.
-    pub interrupt_state: Arc<oben_agent::interrupt::InterruptState>,
     /// Message count in the session before the current turn's user message
     /// is inserted.  Used to truncate orphaned in-memory messages on abort
     /// (the spawn task calls `insert_message` before `execute_turn_with_options`,
@@ -66,7 +59,7 @@ pub struct App {
     pub paste_mode: bool,
     /// Shared `Arc<Mutex<TurnState>>` — owns all turn lifecycle state.
     /// TUI polls this directly during draw loop (32ms interval).
-    /// TuiSubscriber wraps this and is registered with Agent's EventBus.
+    /// HookEngine adapters (TuiStreamingAdapter, etc.) write to this state.
     pub turn_state: Arc<PlMutex<TurnState>>,
     /// Pending session name to load on startup (from CLI `-s` argument).
     pub pending_session: Option<String>,
@@ -334,6 +327,17 @@ impl App {
                         let guard = agent.lock().await;
                         let session_name = guard.active_session_name().await.map(|n| n.clone());
                         let messages = guard.loaded_session_messages().await.unwrap_or_default();
+                        let msg_roles: Vec<String> = messages.iter().map(|m| format!("{:?}", m.role)).collect();
+                        tracing::info!(
+                            "[activate_panel/Chat] session_name={:?} messages={:?} message_count={} roles={:?}",
+                            session_name,
+                            messages.iter().filter_map(|m| match &m.content {
+                                oben_models::MessageContent::Text(t) => Some(t.chars().take(30).collect::<String>()),
+                                _ => None,
+                            }).collect::<Vec<_>>(),
+                            messages.len(),
+                            msg_roles,
+                        );
                         s.set_session_data(session_name, messages);
                     }
                 }
@@ -366,7 +370,6 @@ impl App {
             status: String::new(),
             config,
             agent: None,
-            interrupt_state: Arc::from(oben_agent::interrupt::InterruptState::new()),
             turn_message_count: 0,
             turn_handle: None,
             session_id: None,
@@ -407,88 +410,46 @@ impl App {
             None,
             Some(&volatile),
         );
-        let transport = oben_transport::Transport::from_config_with_tools_via_registry(
-            &self.config.model,
-            &assembled.prompt,
-            &self
-                .tools
-                .list_tools()
-                .iter()
-                .map(|t| (*t).clone())
-                .collect::<Vec<oben_models::ToolMeta>>(),
-        );
-        let transport = Arc::new(transport);
 
-        let turn_state = Arc::clone(&self.turn_state);
-        let tui_subscriber = TuiSubscriber::new(Arc::clone(&turn_state));
-
-        // Create callback relay for parent→child subagent event forwarding.
-        let mut event_bus = EventBus::new();
-        event_bus.add_subscriber(tui_subscriber);
-        let event_bus = Arc::new(event_bus);
-
-        let callbacks_relay = CallbacksRelay::new();
-
-        let system_events = oben_agent::SystemEventsAdapter::new(Arc::clone(&event_bus));
-
-        let tool_lifecycle = oben_agent::ToolLifecycleAdapter::new(Arc::clone(&event_bus));
-
-        let streaming = oben_agent::StreamingAdapter::new(Arc::clone(&event_bus));
-
-        let callbacks = AgentCallbacks {
-            system_events: Some(Box::new(system_events)),
-            tool_lifecycle: Some(Box::new(tool_lifecycle)),
-            streaming: Some(Box::new(streaming)),
-            ..Default::default()
-        }
-        .with_relay(Arc::new(callbacks_relay));
-
-        // Register delegate tool.
-        {
-            let spawner_tools = Arc::new(ToolRegistry::clone(&*self.tools));
-            let spawner = SubagentSpawner::new(
-                Arc::clone(&transport),
-                spawner_tools,
-                oben_agent::compact::CompactCofig {
-                    context_length: self.config.context.context_length,
-                    threshold_percent: self.config.context.threshold_percent,
-                    ..oben_agent::compact::CompactCofig::default()
-                },
-                self.config.max_iterations.unwrap_or(50),
-                self.config.context.max_messages.unwrap_or(100),
-                self.config.max_spawn_depth.unwrap_or(3),
+        // Build delegate tool transport before creating the agent (we need
+        // exclusive access to self.tools for delegate registration, and after
+        // Agent::new() clones self.tools so Arc::get_mut would fail).
+        let delegate_transport =
+            oben_transport::Transport::from_config_with_tools_via_registry(
+                &self.config.model,
+                &assembled.prompt,
+                &self
+                    .tools
+                    .list_tools()
+                    .iter()
+                    .map(|t| (*t).clone())
+                    .collect::<Vec<oben_models::ToolMeta>>(),
             );
-            let spawn_fn = build_spawn_fn_wrapper(spawner, assembled.prompt.clone());
-            let registry = Arc::get_mut(&mut self.tools).unwrap();
-            registry.register(DelegateTool::new(
-                spawn_fn,
-                self.config.max_concurrent_tasks.unwrap_or(5),
-            ));
-        }
 
-        let mut agent_config = AgentConfig::from_app_config(
-            &self.config,
-            assembled.prompt,
+        let spawner = SubagentSpawner::new(
+            Arc::new(delegate_transport),
+            Arc::new(ToolRegistry::clone(&*self.tools)),
+            self.config.clone(),
+            oben_agent::compact::CompactCofig {
+                context_length: self.config.context.context_length,
+                threshold_percent: self.config.context.threshold_percent,
+                ..oben_agent::compact::CompactCofig::default()
+            },
             self.config.max_iterations.unwrap_or(50),
             self.config.context.max_messages.unwrap_or(100),
-            vec![],
-            transport,
-            Arc::clone(&self.tools),
-            callbacks,
+            self.config.max_spawn_depth.unwrap_or(3),
         );
-        agent_config.event_bus = Arc::clone(&event_bus);
+        let spawn_fn = build_spawn_fn_wrapper(spawner, assembled.prompt.clone());
+        let registry = Arc::get_mut(&mut self.tools).unwrap();
+        registry.register(DelegateTool::new(
+            spawn_fn,
+            self.config.max_concurrent_tasks.unwrap_or(5),
+        ));
 
         self.agent = Some(Arc::new(tokio::sync::Mutex::new(
-            Agent::new(agent_config).await?,
+            Agent::new(self.config.clone(), assembled.prompt.clone(), Arc::clone(&self.tools))
+                .await?,
         )));
-
-        // Share the Agent's internal InterruptState with App so the event loop
-        // can call request_interrupt() without acquiring the tokio::sync::Mutex
-        // that the spawn task holds across `guard.turn()`.
-        {
-            let guard = self.agent.as_ref().unwrap().lock().await;
-            self.interrupt_state = guard.get_interrupt_state();
-        }
 
         Ok(())
     }

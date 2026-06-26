@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::panels::sessions::SessionsPanel;
 use crate::panels::PanelId;
 use crate::App;
+use oben_sessions::SessionManager;
 
 /// Execute a session rename with the given new name.
 /// Called from `App::handle_key` when a `/rename` command arrives with args.
@@ -56,24 +57,27 @@ async fn rename_inner(
     new_name: &str,
 ) -> Result<String, String> {
     let mut guard = agent.lock().await;
-    let mut old_title = guard
-        .session_manager_mut()
-        .lock()
-        .await
-        .active_session()
-        .and_then(|s| s.metadata.title.clone())
-        .map(|t| t.clone())
-        .unwrap_or_else(|| "unnamed".to_string());
+    let old_opt = {
+        let sm_arc = guard.session_manager_mut();
+        let mut sm_guard = sm_arc.lock().await;
+        guard
+            .context_window_manager()
+            .session_id()
+            .and_then(|sid| sm_guard.session_mut(&sid))
+            .map(|s| s.metadata.title.as_deref().unwrap_or(&s.name).to_string())
+    };
+    let mut old_title = old_opt.unwrap_or_else(|| "unnamed".to_string());
 
     // Fall back to session name/title if no title was set yet
     if old_title == "unnamed" {
-        old_title = guard
-            .session_manager()
-            .lock()
-            .await
-            .active_session()
-            .map(|s| s.metadata.title.as_deref().unwrap_or(&s.name).to_string())
-            .unwrap_or_else(|| "unnamed".to_string());
+        let sm_arc = guard.session_manager();
+        let sm_guard = sm_arc.lock().await;
+        let old_opt = guard
+            .context_window_manager()
+            .session_id()
+            .and_then(|sid| sm_guard.session(&sid))
+            .map(|s| s.metadata.title.as_deref().unwrap_or(&s.name).to_string());
+        old_title = old_opt.unwrap_or_else(|| "unnamed".to_string());
     }
 
     guard
@@ -83,10 +87,4 @@ async fn rename_inner(
         .set_title(new_name)
         .map_err(|e| e.to_string())?;
     Ok(old_title)
-}
-
-fn get_session_display_name(sm: &oben_sessions::DBSessionManager) -> String {
-    sm.active_session()
-        .map(|s| s.metadata.title.as_deref().unwrap_or(&s.name).to_string())
-        .unwrap_or_else(|| "unnamed".to_string())
 }

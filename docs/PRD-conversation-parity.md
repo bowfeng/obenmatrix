@@ -10,7 +10,7 @@
 | # | Feature | Severity | Status | Issue | Notes |
 |---|---------|----------|--------|-------|-------|
 | C.1 | ConversationLoop (core turn cycle) | ✅ | ✅ | (built-in) | Streaming + non-streaming, tool calls |
-| C.2 | ContextEngine (buffer + token tracking + compression) | ✅ | ✅ | (built-in) | Full compaction algorithm |
+| C.2 | ContextWindowManager (buffer + token tracking + compression) | ✅ | ✅ | (built-in) | Full compaction algorithm |
 | C.3 | Fallback model chain | 🟡 | ✅ | [#27](https://github.com/bowfeng/oben-alien/issues/27) | Auto-activation, configurable fallback list |
 | C.4 | Callback system (12+ types) | 🟡 | ✅ | [#27](https://github.com/bowfeng/oben-alien/issues/27) | `on_turn_start`, `on_tool_call`, `on_error`, etc. |
 | C.5 | Streaming scrubbers (thinking blocks, memory context) | 🟡 | ✅ | [#27](https://github.com/bowfeng/oben-alien/issues/27) | `StreamingContextScrubber` state machine |
