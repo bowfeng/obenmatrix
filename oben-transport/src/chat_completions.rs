@@ -873,9 +873,9 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
                         if !c.trim().is_empty() { c.as_str() }
                         else { "" }
                     }
-                    (None, Some(_)) => {
-                        // reasoning_content was handled above
-                        ""
+                    (None, Some(r)) => {
+                        // reasoning_content alone (e.g., thinking text) — still stream to viewer
+                        r.as_str()
                     }
                     (None, None) => "",
                 };

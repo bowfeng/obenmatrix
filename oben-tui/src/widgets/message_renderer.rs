@@ -318,6 +318,24 @@ pub fn render_message_entry(
     let color = info.border_color;
     let icon = info.icon;
 
+    // Log raw message content to detect accumulation at render stage
+    let raw_content: String = match &msg.content {
+        MessageContent::Text(t) => t.clone(),
+        MessageContent::Image { url, .. } => format!("[image: {}]", url.chars().take(40).collect::<String>()),
+        MessageContent::Parts(parts) => parts.iter()
+            .map(|p| match p {
+                MessagePart::Text(t) => t.clone(),
+                MessagePart::Image { url, .. } => format!("[image: {}]", url.chars().take(40).collect::<String>()),
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+    tracing::info!(
+        "[render_entry] role={:?} raw_content_len={} preview={}",
+        msg.role, raw_content.len(),
+        raw_content.chars().take(120).collect::<String>()
+    );
+
     // Extract text content and image placeholders from message content.
     let mut has_images = false;
     let mut combined_parts: Vec<String> = Vec::new();

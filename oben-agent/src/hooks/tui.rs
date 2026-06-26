@@ -7,12 +7,12 @@ use super::kind::*;
 /// Shared state reference for TUI hook adapters.
 /// All adapters write directly to the same Arc<Mutex<TurnState>>.
 struct TuiState {
-    state: Arc<PlMutex<crate::event_bus::TurnState>>,
+    state: Arc<PlMutex<TurnState>>,
     next_tool_id: std::sync::atomic::AtomicU32,
 }
 
 impl TuiState {
-    fn new(state: Arc<PlMutex<crate::event_bus::TurnState>>) -> Self {
+    fn new(state: Arc<PlMutex<TurnState>>) -> Self {
         Self {
             state,
             next_tool_id: std::sync::atomic::AtomicU32::new(1),
@@ -33,7 +33,7 @@ pub struct TuiStreamingAdapter {
 }
 
 impl TuiStreamingAdapter {
-    pub fn new(state: Arc<PlMutex<crate::event_bus::TurnState>>) -> Self {
+    pub fn new(state: Arc<PlMutex<super::kind::TurnState>>) -> Self {
         Self {
             state: Arc::new(TuiState::new(state)),
         }
@@ -48,6 +48,19 @@ impl Hook for TuiStreamingAdapter {
 impl StreamingHooks for TuiStreamingAdapter {
     fn on_stream_delta(&self, text: &str) {
         let mut ts = self.state.state.lock();
+        let total_after = ts.streaming_text.len() + text.len();
+        if total_after % 20 == 0 {
+            tracing::info!(
+                delta_len = text.len(),
+                total_len = total_after,
+                phase = ?ts.phase,
+                "[TuiStreamingAdapter] on_stream_delta: {}+{}={} bytes (phase={:?})",
+                ts.streaming_text.len(),
+                text.len(),
+                total_after,
+                ts.phase
+            );
+        }
         ts.on_stream_delta(text);
     }
 
@@ -70,7 +83,7 @@ pub struct TuiToolLifecycleAdapter {
 }
 
 impl TuiToolLifecycleAdapter {
-    pub fn new(state: Arc<PlMutex<crate::event_bus::TurnState>>) -> Self {
+    pub fn new(state: Arc<PlMutex<super::kind::TurnState>>) -> Self {
         Self {
             state: Arc::new(TuiState::new(state)),
         }
@@ -122,7 +135,7 @@ pub struct TuiAgentLoopAdapter {
 }
 
 impl TuiAgentLoopAdapter {
-    pub fn new(state: Arc<PlMutex<crate::event_bus::TurnState>>) -> Self {
+    pub fn new(state: Arc<PlMutex<super::kind::TurnState>>) -> Self {
         Self {
             state: Arc::new(TuiState::new(state)),
         }
@@ -155,7 +168,7 @@ pub struct TuiTurnLifecycleAdapter {
 }
 
 impl TuiTurnLifecycleAdapter {
-    pub fn new(state: Arc<PlMutex<crate::event_bus::TurnState>>) -> Self {
+    pub fn new(state: Arc<PlMutex<super::kind::TurnState>>) -> Self {
         Self {
             state: Arc::new(TuiState::new(state)),
         }

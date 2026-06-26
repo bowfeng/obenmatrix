@@ -22,7 +22,6 @@ pub mod compact_context;
 pub mod concurrent_dispatch;
 pub mod context;
 pub mod coordinator;
-pub mod event_bus;
 pub mod delegate;
 pub mod error_classifier;
 pub mod fallback;
@@ -49,7 +48,6 @@ pub use context::*;
 pub use coordinator::*;
 #[allow(ambiguous_glob_reexports)]
 pub use error_classifier::*;
-pub use event_bus::*;
 pub use fallback::*;
 pub use hooks::*;
 pub use interaction::*;

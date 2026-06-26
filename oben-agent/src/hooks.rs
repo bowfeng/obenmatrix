@@ -6,13 +6,14 @@ use std::sync::{Arc, RwLock};
 
 pub mod kind;
 pub mod runtime;
-pub mod adapters;
 pub mod tui;
 
 // Re-export key types
 pub use runtime::{HookEngine, NudgeHook};
-pub use adapters::{StreamingAdapter, SystemEventsAdapter, ToolLifecycleAdapter};
 pub use tui::{TuiStreamingAdapter, TuiToolLifecycleAdapter, TuiAgentLoopAdapter};
+
+// Re-export types that TUI and consumers reference at the top level via oben_agent::
+pub use kind::{TurnState, TurnPhase, ActiveTool, CompletedTool, ActivityKind, ActivityItem};
 
 // ---------------------------------------------------------------------------
 // HookBuilder
@@ -23,10 +24,8 @@ pub use tui::{TuiStreamingAdapter, TuiToolLifecycleAdapter, TuiAgentLoopAdapter}
 /// # Example
 ///
 /// ```ignore
-/// let engine = HookBuilder::from_config(&hooks_config)
-///     .register_system(SystemEventsAdapter::new(bus.clone()))
-///     .register_tool(ToolLifecycleAdapter::new(bus.clone()))
-///     .register_streaming(StreamingAdapter::new(bus))
+/// let engine = HookBuilder::new()
+///     .register_streaming(Box::new(TuiStreamingAdapter::new(state)))
 ///     .build();
 /// ```
 pub struct HookBuilder {

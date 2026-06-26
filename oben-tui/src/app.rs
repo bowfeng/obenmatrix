@@ -27,6 +27,7 @@ use oben_tools::ToolRegistry;
 /// Payload carried by TurnDone completion event from spawned task.
 pub(super) struct TurnCompletion {
     pub(super) success: bool,
+    pub(super) status: String,
     pub(super) session_name: Option<String>,
     pub(super) messages: Vec<oben_models::Message>,
 }
@@ -326,6 +327,17 @@ impl App {
                         let guard = agent.lock().await;
                         let session_name = guard.active_session_name().await.map(|n| n.clone());
                         let messages = guard.loaded_session_messages().await.unwrap_or_default();
+                        let msg_roles: Vec<String> = messages.iter().map(|m| format!("{:?}", m.role)).collect();
+                        tracing::info!(
+                            "[activate_panel/Chat] session_name={:?} messages={:?} message_count={} roles={:?}",
+                            session_name,
+                            messages.iter().filter_map(|m| match &m.content {
+                                oben_models::MessageContent::Text(t) => Some(t.chars().take(30).collect::<String>()),
+                                _ => None,
+                            }).collect::<Vec<_>>(),
+                            messages.len(),
+                            msg_roles,
+                        );
                         s.set_session_data(session_name, messages);
                     }
                 }

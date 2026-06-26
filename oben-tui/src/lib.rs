@@ -96,17 +96,6 @@ pub enum TuiEvent {
 pub enum TuiCommand {
     /// Coordinator needs the UI ready for a new streaming turn.
     StartTurn { input: String, session_name: Option<String> },
-    /// Turn completed — new messages to flush into the chat.
-    CompleteTurn {
-        messages: Vec<oben_models::Message>,
-        session_name: Option<String>,
-    },
-    /// Turn failed.
-    TurnFailed {
-        status: String,
-        messages: Vec<oben_models::Message>,
-        session_name: Option<String>,
-    },
     /// Append user input to history.
     AppendInputHistory { input: String },
     /// Coordinator wants shutdown (e.g. error).
@@ -679,19 +668,83 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     None => break,
                 }
             }
-            maybe_completion = done_rx.recv() => {
-                if let Some(completion) = maybe_completion {
-                    tracing::info!("[done_rx] success={}, session_name={:?}, messages.len={}", completion.success, completion.session_name, completion.messages.len());
-                    let mut app = arc_app.lock().await;
-                    if completion.success {
-                        if let Some(chat) = app.get_chat_mut() {
-                            chat.streaming = false;
-                            chat.input.streaming = false;
-                            chat.update_from_messages(&completion.messages, completion.session_name);
-                            app.needs_redraw = true;
+                    maybe_completion = done_rx.recv() => {
+                        if let Some(completion) = maybe_completion {
+                            let msg_roles: Vec<String> = completion.messages.iter()
+                                .map(|m| format!("{:?}", m.role))
+                                .collect();
+                            tracing::info!("[done_rx] success={}, session_name={:?}, messages.len={}, msg_types={:?}, first_msg_preview_len={}",
+                                completion.success,
+                                completion.session_name,
+                                completion.messages.len(),
+                                msg_roles,
+                                completion.messages.first()
+                                    .and_then(|m| match &m.content {
+                                        oben_models::MessageContent::Text(t) => Some(t.chars().take(40).collect::<String>()),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_else(|| "non-text".into()),
+                            );
+                             tracing::info!("[done_rx] session_data_before_rebuild session_name={:?}",
+                                 completion.session_name,
+                             );
+                             // Fetch the freshest session messages directly —
+                             // completion.messages may be stale if the session changed
+                             // between turn completion and event loop processing.
+                             let fresh_messages: Vec<Message> = {
+                                 let a = arc_app.lock().await;
+                                 let agent_arc = a.agent.clone();
+                                 drop(a);
+                                 if let Some(arc_agent) = agent_arc {
+                                     let guard = arc_agent.lock().await;
+                                     let sm_arc = guard.session_manager();
+                                     let sid = guard
+                                         .context_window_manager()
+                                         .session_id()
+                                         .map(|s| s.to_string());
+                                     drop(guard);
+                                     let sm = sm_arc.lock().await;
+                                     sid.and_then(|s| sm.session(&s))
+                                         .map(|s| s.messages.clone())
+                                         .unwrap_or_default()
+                                 } else {
+                                     Vec::new()
+                                 }
+                             };
+                             let fresh_msg_roles: Vec<String> = fresh_messages.iter()
+                                 .map(|m| format!("{:?}", m.role)).collect();
+                             tracing::info!(
+                                 "[done_rx] fetched fresh session msgs={} roles={:?}",
+                                 fresh_messages.len(),
+                                 fresh_msg_roles
+                             );
+                             /* Log first 120 chars of each text message to catch accumulation */
+                             for (i, m) in fresh_messages.iter().enumerate() {
+                                 let preview = match &m.content {
+                                     oben_models::MessageContent::Text(t) => {
+                                         t.chars().take(120).collect::<String>()
+                                     }
+                                     _ => "(non-text)".into(),
+                                 };
+                                 tracing::info!(
+                                     "[done_rx] msg[{}] role={:?} content={}",
+                                     i, m.role, preview
+                                 );
+                             }
+                             let mut app = arc_app.lock().await;
+                             if completion.success {
+                                 if let Some(chat) = app.get_chat_mut() {
+                                     chat.streaming = false;
+                                     chat.input.streaming = false;
+                                     chat.update_from_messages(&fresh_messages, completion.session_name);
+                                     app.needs_redraw = true;
+                                 }
+                             } else {
+                        if !completion.status.is_empty() {
+                            app.status = completion.status.into();
+                        } else {
+                            app.status = "Turn completed with errors".into();
                         }
-                    } else {
-                        app.status = "Turn completed with errors".into();
                         if let Some(chat) = app.get_chat_mut() {
                             chat.streaming = false;
                             chat.input.streaming = false;
@@ -707,52 +760,19 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
             }
             cmd = command_rx.recv() => {
                 match cmd {
-                    Some(TuiCommand::StartTurn { input, session_name: _ }) => {
-                        // Event loop is sole Arc<App> owner — apply streaming setup here.
+                    Some(TuiCommand::StartTurn { .. }) => {
+                        // StartTurn only resets streaming state and triggers redraw.
+                        // The user message is added to the session by the coordinator's
+                        // turn execution, and `done_rx` rebuilds display from session
+                        // — no need to append user message here, preventing duplicates.
                         let mut app = arc_app.lock().await;
-                        // Read agent data in its own scope to avoid borrow conflict with
-                        // get_chat_mut(). Session messages are rebuilt first so stale
-                        // entries from a previous turn are replaced with fresh data.
-                        let (session_name, session_msgs) = {
-                            if let Some(agent) = &app.agent {
-                                let guard = agent.lock().await;
-                                let msgs = guard.loaded_session_messages().await.unwrap_or_default();
-                                let name = guard.active_session_name().await;
-                                (name, msgs)
-                            } else {
-                                (None, Vec::new())
-                            }
-                        };
                         if let Some(chat) = app.get_chat_mut() {
-                            chat.input.streaming = true;
+                            chat.message_state.stream_info.lock().unwrap().clear();
                             chat.message_state
                                 .scroll_to_bottom
                                 .store(true, Ordering::SeqCst);
-                            // Rebuild from session first — update_from_messages sets
-                            // streaming=false (designed for the completion path), so
-                            // re-enable it below so draw_ui sees is_streaming=true.
-                            chat.update_from_messages(&session_msgs, session_name);
+                            chat.input.streaming = true;
                             chat.streaming = true;
-                            chat.append_user_message(&input);
-                        }
-                        app.needs_redraw = true;
-                    }
-                    Some(TuiCommand::CompleteTurn { messages, session_name }) => {
-                        let mut app = arc_app.lock().await;
-                        if let Some(chat) = app.get_chat_mut() {
-                            chat.streaming = false;
-                            chat.input.streaming = false;
-                            chat.update_from_messages(&messages, session_name);
-                        }
-                        app.needs_redraw = true;
-                    }
-                    Some(TuiCommand::TurnFailed { status, messages, session_name }) => {
-                        let mut app = arc_app.lock().await;
-                        app.status = status.into();
-                        if let Some(chat) = app.get_chat_mut() {
-                            chat.streaming = false;
-                            chat.input.streaming = false;
-                            chat.update_from_messages(&messages, session_name);
                         }
                         app.needs_redraw = true;
                     }
@@ -1008,8 +1028,28 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     let layout = Layouts::new(area);
 
     // update ChatPanel from turn_state (polling pattern via Arc<Mutex<TurnState>>)
-    if let Some(chat) = app.get_chat_mut() {
-        chat.update_from_turn_state();
+    let (entry_count, entry_roles, is_streaming) = {
+        if let Some(chat) = app.get_chat_mut() {
+            let ec = chat.message_state.message_entries.lock().unwrap().len();
+            let er: Vec<String> = chat.message_state.message_entries.lock().unwrap()
+                .iter().map(|e| format!("{:?}", e.role)).collect();
+            chat.update_from_turn_state();
+            let s = chat.streaming;
+            (ec, er, s)
+        } else {
+            (0, Vec::new(), false)
+        }
+    };
+    if entry_count > 0 || is_streaming {
+        tracing::info!(
+            "[draw_ui] drawing chat: entries={} roles={:?} streaming={}",
+            entry_count, entry_roles, is_streaming
+        );
+    } else {
+        tracing::trace!(
+            "[draw_ui] drawing chat: entries={} roles={:?} streaming={}",
+            entry_count, entry_roles, is_streaming
+        );
     }
 
     let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);
@@ -1159,9 +1199,8 @@ impl TuiCoordinator {
             hooks
         };
 
-        hook_engine.emit_loop_start();
-
         loop {
+            hook_engine.emit_loop_start();
             hook_engine.emit_pre_turn();
 
             let input = match self.chat_rx.recv().await {
@@ -1184,10 +1223,9 @@ impl TuiCoordinator {
                 session_name: None, // event loop gets this from arc_app
             }).await;
 
-            // Run the turn — ONLY `agent_arc` locked, NO App contention.
+            // Send the turn — ONLY `agent_arc` locked, NO App contention.
             let input_msg = build_image_message(&input);
             let interrupt_clone = Arc::clone(&self.interrupt_state);
-            let conversation = ConversationConfig::from_app_config(&config);
 
             let response = if matches!(
                 input_msg.content,
@@ -1223,15 +1261,31 @@ impl TuiCoordinator {
             if let Err(e) = response {
                 let err_str = format!("Turn error: {}", e);
                 hook_engine.emit_loop_end(&err_str);
-                self.send(TuiCommand::TurnFailed {
+                // Single completion channel — sends error status to event loop.
+                let completion = TurnCompletion {
+                    success: false,
                     status: err_str.clone(),
-                    messages: messages_from_agent.clone(),
                     session_name: turn_session_name.clone(),
-                }).await;
+                    messages: messages_from_agent,
+                };
+                let _ = self.done_tx.send(completion);
                 return Err(anyhow!(err_str));
             }
 
             // Post-turn hooks
+            let msg_roles_coordinator: Vec<String> = messages_from_agent.iter()
+                .map(|m| format!("{:?}", m.role)).collect();
+            let msg_preview: Vec<String> = messages_from_agent.iter()
+                .filter_map(|m| match &m.content {
+                    MessageContent::Text(t) => Some(t.chars().take(40).collect::<String>()),
+                    _ => None,
+                }).collect();
+            tracing::info!(
+                "[coordinator/turn_done] sending completion success=true session_name=? msgs={} roles={:?} previews={:?}",
+                messages_from_agent.len(),
+                msg_roles_coordinator,
+                msg_preview,
+            );
             let final_text = messages_from_agent.last().and_then(|m| {
                 if let MessageContent::Text(ref t) = m.content {
                     Some(t.clone())
@@ -1241,19 +1295,19 @@ impl TuiCoordinator {
             }).unwrap_or_default();
             hook_engine.emit_turn_complete(&final_text, messages_from_agent.len());
 
-            // Send completion to event loop to update the UI
+            // Single completion channel — no duplicate channel.
             let completion = TurnCompletion {
                 success: true,
+                status: String::new(),
                 session_name: turn_session_name.clone(),
-                messages: messages_from_agent.clone(),
+                messages: messages_from_agent,
             };
             let _ = self.done_tx.send(completion);
 
-            // Also send via command channel so event loop can apply it
-            self.send(TuiCommand::CompleteTurn {
-                messages: messages_from_agent,
-                session_name: turn_session_name,
-            }).await;
+            // Signal loop end after sending completion so Phase 2.5 can still
+            // render the accumulated streaming_text on the next draw before
+            // done_rx rebuilds Phase 1 from the session.
+            hook_engine.emit_loop_end("completed");
 
             // Store input in history (via command, not direct App access)
             self.send(TuiCommand::AppendInputHistory {

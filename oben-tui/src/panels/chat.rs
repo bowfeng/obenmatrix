@@ -5,14 +5,15 @@ use crate::widgets::conversation::{ConversationState, ConversationWidget};
 use crate::widgets::input_bar::{InputBarResult, InputBarWidget, InputState};
 use crate::widgets::message_renderer::MessageRenderer;
 use crossterm::event::KeyEvent;
-use oben_agent::{TurnPhase, TurnState};
-use oben_models::Message;
 use parking_lot::Mutex as PlMutex;
+use parking_lot::RwLock;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
+use oben_agent::{TurnPhase, TurnState};
+use oben_models::Message;
 
 /// Chat panel — message history, input bar, and streaming control.
 pub struct ChatPanel {
@@ -61,6 +62,7 @@ impl ChatPanel {
     pub fn new_with_theme(session_name: Option<String>, theme: &str, turn_state: Arc<PlMutex<TurnState>>) -> Self {
         let mut panel = Self::new(session_name);
         panel.renderer.set_theme_from_str(theme);
+        // Both references must point to the same Arc that the TuiStreamingAdapter writes to
         panel.turn_state_ref = Arc::clone(&turn_state);
         panel.set_turn_state_ref(turn_state);
         panel
@@ -136,6 +138,12 @@ impl ChatPanel {
         let agent_idle = !ts.is_active();
 
         let drain_trigger = settled && transitioning && agent_idle && !self.drained_this_turn;
+        if settled || transitioning {
+            tracing::info!(
+                "[chat_panel] update_from_turn_state: settled={}, transitioning={}, agent_idle={}, drained_this_turn={}, prev_phase={:?}, current_phase={:?}, drain={}",
+                settled, transitioning, agent_idle, self.drained_this_turn, prev, current, drain_trigger
+            );
+        }
         tracing::debug!(
             "[chat_panel] update_from_turn_state: settled={}, transitioning={}, agent_idle={}, drained_this_turn={}, prev_phase={:?}, current_phase={:?}, drain={}",
             settled, transitioning, agent_idle, self.drained_this_turn, prev, current, drain_trigger

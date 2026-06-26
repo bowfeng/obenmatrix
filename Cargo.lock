@@ -2631,6 +2631,7 @@ dependencies = [
  "chrono",
  "crossterm 0.29.0",
  "dirs",
+ "lazy_static",
  "oben-agent",
  "oben-config",
  "oben-gateway",
