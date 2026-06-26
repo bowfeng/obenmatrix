@@ -242,7 +242,7 @@ impl SessionsPanel {
         }
         // Also add actual message entries
         for msg in &session.messages {
-            entries.push(renderer.render_entry(msg));
+            entries.extend(renderer.render_entries(msg));
         }
         self.message_state.message_entries.lock().unwrap().clear();
         self.message_state

@@ -384,33 +384,7 @@ pub fn render_message_entry(
         render_body_lines(&text, palette)
     };
 
-    // Append reasoning if present (folded/abridged format with 45% truncation)
-    if let Some(ref reasoning) = msg.reasoning {
-        if !reasoning.is_empty() {
-            let truncated_len = (reasoning.chars().count() * 45) / 100;
-            let folding_pct = 100 - 45;
-            body_lines.push(StyledLine {
-                content: Line::raw(""),
-                role_color: None,
-            });
-            let display_text = if reasoning.chars().count() > truncated_len {
-                format!(
-                    "({}%) {}",
-                    folding_pct,
-                    &reasoning.chars().take(truncated_len).collect::<String>()
-                )
-            } else {
-                format!("({}%) {}", folding_pct, reasoning)
-            };
-            body_lines.push(StyledLine {
-                content: Line::styled(
-                    display_text,
-                    Style::default().fg(palette.muted).add_modifier(Modifier::DIM),
-                ),
-                role_color: None,
-            });
-        }
-    }
+
 
     // Tool call indicators
     let mut tool_calls = Vec::new();
@@ -507,6 +481,47 @@ impl MessageRenderer {
     /// Render a message into a structured `MessageRenderEntry`.
     pub fn render_entry(&self, msg: &Message) -> MessageRenderEntry {
         render_message_entry(msg, self.current_palette())
+    }
+
+    /// Render a message into one or more `MessageRenderEntry`s.
+    ///
+    /// For assistant messages that carry reasoning/thinking content this
+    /// produces two entries (body + reasoning) so the conversation widget
+    /// can render them as separate bordered blocks.  All other messages
+    /// produce a single entry identical to `render_entry`.
+    pub fn render_entries(&self, msg: &Message) -> Vec<MessageRenderEntry> {
+        let main = render_message_entry(msg, self.current_palette());
+        let Some(refining) = main.reasoning.clone() else { return vec![main]; };
+        if refining.is_empty() { return vec![main]; }
+
+        let reasoning_color = if msg.role == MessageRole::Assistant {
+            self.current_palette().muted
+        } else {
+            self.current_palette().info
+        };
+
+        let reasoning_lines: Vec<StyledLine> = refining
+            .lines()
+            .map(|line| StyledLine {
+                content: Line::styled(
+                    line.to_string(),
+                    Style::default()
+                        .fg(reasoning_color)
+                        .add_modifier(Modifier::DIM),
+                ),
+                role_color: None,
+            })
+            .collect();
+
+        let reasoning_entry = MessageRenderEntry {
+            role: msg.role.clone(),
+            is_tool_result: false,
+            body_lines: reasoning_lines,
+            tool_calls: vec![],
+            reasoning: Some(refining),
+        };
+
+        vec![reasoning_entry, main]
     }
 }
 

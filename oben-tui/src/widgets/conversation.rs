@@ -1167,7 +1167,7 @@ impl ConversationWidget {
         );
         let entries: Vec<MessageRenderEntry> = messages
             .iter()
-            .map(|m| renderer.render_entry(m))
+            .flat_map(|m| renderer.render_entries(m))
             .collect();
         // LOG: preview body lines count and preview text per entry to catch accumulation
         for (i, e) in entries.iter().enumerate() {
