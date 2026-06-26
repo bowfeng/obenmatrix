@@ -159,6 +159,9 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     hooks.register_agent_loop(Box::new(
                         oben_agent::TuiAgentLoopAdapter::new(ts)
                     ));
+                    hooks.register_turn(Box::new(
+                        oben_agent::TuiTurnLifecycleAdapter::new(Arc::clone(&a.turn_state))
+                    ));
                 }
             }
             let _ = tx.send(result);
@@ -1199,8 +1202,10 @@ impl TuiCoordinator {
             hooks
         };
 
+        // Fire loop-start hooks once (before any turn) — matches CLI pattern.
+        hook_engine.emit_loop_start();
+
         loop {
-            hook_engine.emit_loop_start();
             hook_engine.emit_pre_turn();
 
             let input = match self.chat_rx.recv().await {
@@ -1303,11 +1308,6 @@ impl TuiCoordinator {
                 messages: messages_from_agent,
             };
             let _ = self.done_tx.send(completion);
-
-            // Signal loop end after sending completion so Phase 2.5 can still
-            // render the accumulated streaming_text on the next draw before
-            // done_rx rebuilds Phase 1 from the session.
-            hook_engine.emit_loop_end("completed");
 
             // Store input in history (via command, not direct App access)
             self.send(TuiCommand::AppendInputHistory {
