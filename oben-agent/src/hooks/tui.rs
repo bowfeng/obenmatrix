@@ -182,12 +182,15 @@ impl Hook for TuiTurnLifecycleAdapter {
 
 impl TurnLifecycleHooks for TuiTurnLifecycleAdapter {
     fn on_pre_turn(&self) {
-        // Pre-turn is handled inside execute_turn; we start turn state
-        // only when on_loop_start fires (which happens before).
+        // Per-turn reset — mirroring the old behavior where emit_loop_start()
+        // was called inside the loop.  Sets phase to Streaming so the TUI's
+        // update_from_turn_state() sees the Idle → Streaming transition.
+        let mut ts = self.state.state.lock();
+        ts.phase = TurnPhase::Streaming;
     }
 
-    fn on_post_turn(&self, _response: &str, _success: bool) {
-        // Post-turn completion is handled by on_loop_end (success) and
-        // error paths. Both already update TurnState.
+    fn on_post_turn(&self, response: &str, _success: bool) {
+        let mut ts = self.state.state.lock();
+        ts.on_completed(response);
     }
 }
