@@ -14,14 +14,18 @@ use oben_sessions::SessionManager;
 /// Execute a session rename with the given new name.
 /// Called from `App::handle_key` when a `/rename` command arrives with args.
 pub async fn execute_session_rename(app: &mut App, new_name: &str) {
-    let agent = match &app.agent {
-        Some(a) => Arc::clone(a),
-        None => {
-            app.show_toast(
-                "Rename failed: agent not initialized",
-                ratatui_toaster::ToastType::Error,
-            );
-            return;
+    let agent = {
+        let ss = app.shared_state.lock();
+        match ss.agent.clone() {
+            Some(a) => Arc::clone(&a),
+            None => {
+                drop(ss);
+                app.show_toast(
+                    "Rename failed: agent not initialized",
+                    ratatui_toaster::ToastType::Error,
+                );
+                return;
+            }
         }
     };
 

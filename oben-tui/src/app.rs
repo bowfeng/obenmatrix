@@ -1,6 +1,6 @@
 //! Application state and core logic.
-
 use crate::commands;
+use crate::history;
 use crate::panels::chat::ChatPanel;
 use crate::panels::config::ConfigPanel;
 use crate::panels::sessions::SessionsPanel;
@@ -16,13 +16,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
-
-use crate::history;
-use oben_agent::delegate::{build_spawn_fn_wrapper, SubagentSpawner};
-use oben_agent::{Agent, TurnState};
+use oben_agent::TurnState;
 use oben_config::AppConfig;
-use oben_tools::delegate::DelegateTool;
-use oben_tools::ToolRegistry;
+use super::shared::SharedAgentState;
 
 /// Payload carried by TurnDone completion event from spawned task.
 pub(super) struct TurnCompletion {
@@ -40,27 +36,6 @@ pub struct App {
     pub config: AppConfig,
     /// Timestamp when splash was first created. Used to enforce minimum 5s display.
     pub splash_started: std::time::Instant,
-    /// If agent init failed, stores the error. Splash stays visible.
-    pub agent_init_error: Option<anyhow::Error>,
-    /// Agent protected by TokioMutex — guard is Send, needed for spawn()
-    /// where we hold the lock across .await in agent.turn().
-    pub agent: Option<Arc<tokio::sync::Mutex<Agent>>>,
-    /// Message count in the session before the current turn's user message
-    /// is inserted.  Used to truncate orphaned in-memory messages on abort
-    /// (the spawn task calls `insert_message` before `execute_turn_with_options`,
-    /// so the message survives if the task is aborted).
-    pub turn_message_count: usize,
-    pub turn_handle: Option<tokio::task::JoinHandle<()>>,
-    pub session_id: Option<String>,
-    pub tools: std::sync::Arc<ToolRegistry>,
-    pub tool_names: Vec<String>,
-    pub input_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::TuiEvent>>,
-    pub input_history: history::InputHistory,
-    pub paste_mode: bool,
-    /// Shared `Arc<Mutex<TurnState>>` — owns all turn lifecycle state.
-    /// TUI polls this directly during draw loop (32ms interval).
-    /// HookEngine adapters (TuiStreamingAdapter, etc.) write to this state.
-    pub turn_state: Arc<PlMutex<TurnState>>,
     /// Pending session name to load on startup (from CLI `-s` argument).
     pub pending_session: Option<String>,
     /// Whether step-by-step reasoning mode is enabled.
@@ -77,6 +52,18 @@ pub struct App {
     /// Cleared by draw_ui after rendering. When false, the 32ms timer
     /// skips the terminal.draw() call entirely during idle.
     pub needs_redraw: bool,
+    /// Shared `Arc<Mutex<TurnState>>` — owns all turn lifecycle state.
+    /// TUI polls this directly during draw loop (32ms interval).
+    /// HookEngine adapters (TuiStreamingAdapter, etc.) write to this state.
+    pub turn_state: Arc<PlMutex<TurnState>>,
+    /// Shared agent state (agent, tools, session data).
+    pub shared_state: Arc<PlMutex<super::shared::SharedAgentState>>,
+    /// Sender for TuiEvents to the event loop.
+    pub input_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::TuiEvent>>,
+    /// Input history for arrow key navigation.
+    pub input_history: history::InputHistory,
+    /// Whether paste mode is enabled.
+    pub paste_mode: bool,
 }
 
 impl App {
@@ -105,7 +92,11 @@ impl App {
     pub async fn execute_command(&mut self, name: &str) {
         match name {
             "clear" => {
-                if self.turn_handle.is_some() {
+                let has_turn = {
+                    let ss = self.shared_state.lock();
+                    ss.turn_handle.is_some()
+                };
+                if has_turn {
                     self.show_toast(
                         "Cannot clear: turn in progress",
                         ratatui_toaster::ToastType::Error,
@@ -113,25 +104,19 @@ impl App {
                     return;
                 }
                 tracing::info!("[clear] START");
-                if let Some(agent) = &self.agent {
-                    let result = {
-                        let mut guard = agent.lock().await;
-                        let has_session = guard.active_session_name().await.is_some();
-                        if has_session {
-                            tracing::info!("[clear] deleting active session");
+                {
+                    let ss_arc = Arc::clone(&self.shared_state);
+                    let ss = ss_arc.lock();
+                    if let Some(ref agent) = ss.agent {
+                        let result = agent.lock().await.reset().await;
+                        if let Err(e) = result {
+                            self.show_toast(
+                                format!("Clear failed: {e}"),
+                                ratatui_toaster::ToastType::Error,
+                            );
+                            return;
                         }
-                        guard.reset().await
-                    };
-                    if let Err(e) = result {
-                        self.show_toast(
-                            format!("Clear failed: {e}"),
-                            ratatui_toaster::ToastType::Error,
-                        );
-                        return;
                     }
-                    tracing::info!("[clear] session reset complete, agent has no active session");
-                } else {
-                    tracing::info!("[clear] no agent, skipping reset");
                 }
                 let chat_panel_present = self.panels.contains_key(&PanelId::Chat);
                 tracing::info!("[clear] panels contain Chat key: {}", chat_panel_present);
@@ -175,7 +160,10 @@ impl App {
                     ts.reset();
                 }
                 tracing::info!("[clear] turn state cleared");
-                self.session_id = None;
+                {
+                    let mut ss = self.shared_state.lock();
+                    ss.session_id = None;
+                }
                 // Refresh SessionsPanel so cleared session list stays in sync.
                 if let Some(sp) = self
                     .panels
@@ -194,14 +182,16 @@ impl App {
                 tracing::info!("[clear] DONE");
             }
             "compact" => {
-                if self.agent.is_none() {
+                let has_agent = self.shared_state.lock().agent.is_some();
+                let has_turn = self.shared_state.lock().turn_handle.is_some();
+                if !has_agent {
                     self.show_toast(
                         "Cannot compact: agent not initialized",
                         ratatui_toaster::ToastType::Error,
                     );
                     return;
                 }
-                if self.turn_handle.is_some() {
+                if has_turn {
                     self.show_toast(
                         "Cannot compact: turn in progress",
                         ratatui_toaster::ToastType::Warning,
@@ -220,42 +210,47 @@ impl App {
                 }
             }
             "new" => {
-                if self.turn_handle.is_some() {
+                let has_turn = self.shared_state.lock().turn_handle.is_some();
+                if has_turn {
                     self.show_toast(
                         "Cannot create new session: turn in progress",
                         ratatui_toaster::ToastType::Error,
                     );
                     return;
                 }
-                if let Some(agent) = &self.agent {
-                    let result = {
-                        let mut guard = agent.lock().await;
-                        guard.new_session().await
-                    };
-                    match result {
-                        Ok(new_id) => {
-                            tracing::info!("[new] created session: {}", new_id);
-                            if let Some(chat) = self.get_chat_mut() {
-                                // Set the new session (empty messages)
-                                chat.session_name = Some(new_id.clone());
-                                chat.message_count = 0;
-                                chat.clear_display();
+                {
+                    let ss_arc = Arc::clone(&self.shared_state);
+                    let ss = ss_arc.lock();
+                    if let Some(agent) = &ss.agent {
+                        let result = {
+                            let mut guard = agent.lock().await;
+                            guard.new_session().await
+                        };
+                        match result {
+                            Ok(new_id) => {
+                                tracing::info!("[new] created session: {}", new_id);
+                                if let Some(chat) = self.get_chat_mut() {
+                                    // Set the new session (empty messages)
+                                    chat.session_name = Some(new_id.clone());
+                                    chat.message_count = 0;
+                                    chat.clear_display();
+                                }
+                                // Refresh SessionsPanel so the new session appears in the list.
+                                if let Some(sp) =
+                                    self.panels.get_mut(&PanelId::Sessions).and_then(|p| {
+                                        p.downcast_mut::<crate::panels::sessions::SessionsPanel>()
+                                    })
+                                {
+                                    sp.refresh_list(None).await;
+                                }
                             }
-                            // Refresh SessionsPanel so the new session appears in the list.
-                            if let Some(sp) =
-                                self.panels.get_mut(&PanelId::Sessions).and_then(|p| {
-                                    p.downcast_mut::<crate::panels::sessions::SessionsPanel>()
-                                })
-                            {
-                                sp.refresh_list(None).await;
+                            Err(e) => {
+                                self.show_toast(
+                                    format!("New session failed: {e}"),
+                                    ratatui_toaster::ToastType::Error,
+                                );
+                                return;
                             }
-                        }
-                        Err(e) => {
-                            self.show_toast(
-                                format!("New session failed: {e}"),
-                                ratatui_toaster::ToastType::Error,
-                            );
-                            return;
                         }
                     }
                 }
@@ -323,10 +318,11 @@ impl App {
         if let Some(mut boxed_panel) = self.panels.remove(&panel) {
             if panel == PanelId::Chat {
                 if let Some(s) = boxed_panel.downcast_mut::<ChatPanel>() {
-                    if let Some(agent) = &self.agent {
-                        let guard = agent.lock().await;
-                        let session_name = guard.active_session_name().await.map(|n| n.clone());
-                        let messages = guard.loaded_session_messages().await.unwrap_or_default();
+                    let ss_arc = Arc::clone(&self.shared_state);
+                    let ss = ss_arc.lock();
+                    if let Some(_agent) = &ss.agent {
+                        let session_name = ss.active_session_name();
+                        let messages = ss.loaded_session_messages().await;
                         let msg_roles: Vec<String> = messages.iter().map(|m| format!("{:?}", m.role)).collect();
                         tracing::info!(
                             "[activate_panel/Chat] session_name={:?} messages={:?} message_count={} roles={:?}",
@@ -349,9 +345,6 @@ impl App {
 
     pub fn new() -> Result<Self> {
         let config = AppConfig::load()?;
-        let mut tools = ToolRegistry::new();
-        oben_tools::discover_builtin_tools(&mut tools);
-        let tool_names: Vec<String> = tools.list_tools().iter().map(|t| t.name.clone()).collect();
         // Placeholder toast engine — area is set dynamically in draw_ui.
         let toast_engine = ToastEngine::new(ToastEngine::<()>::from_builder(
             ToastEngineBuilder::<()>::new(Rect::new(0, 0, 0, 0))
@@ -366,16 +359,12 @@ impl App {
             active_panel: PanelId::Splash,
             panels,
             splash_started: std::time::Instant::now(),
-            agent_init_error: None,
             status: String::new(),
             config,
-            agent: None,
-            turn_message_count: 0,
-            turn_handle: None,
-            session_id: None,
-            tools: std::sync::Arc::new(tools),
-            tool_names,
             input_tx: None,
+            shared_state: Arc::new(PlMutex::new(
+                crate::shared::SharedAgentState::new_empty(),
+            )),
             input_history: history::InputHistory::new(),
             paste_mode: false,
             turn_state: Arc::new(PlMutex::new(TurnState::new())),
@@ -395,62 +384,15 @@ impl App {
     }
 
     pub async fn init_agent(&mut self) -> Result<()> {
-        let identity = oben_config::defaults::default_system_prompt();
-        let skills_dirs: Vec<std::path::PathBuf> = vec![];
-        let volatile = oben_agent::system_prompt::build_volatile_block(
-            None,
-            None,
-            Some(&self.config.model.model),
-        );
-        let assembled = oben_agent::system_prompt::build_system_prompt(
-            &identity,
-            &self.tool_names,
-            &skills_dirs,
-            None,
-            None,
-            Some(&volatile),
-        );
-
-        // Build delegate tool transport before creating the agent (we need
-        // exclusive access to self.tools for delegate registration, and after
-        // Agent::new() clones self.tools so Arc::get_mut would fail).
-        let delegate_transport =
-            oben_transport::Transport::from_config_with_tools_via_registry(
-                &self.config.model,
-                &assembled.prompt,
-                &self
-                    .tools
-                    .list_tools()
-                    .iter()
-                    .map(|t| (*t).clone())
-                    .collect::<Vec<oben_models::ToolMeta>>(),
-            );
-
-        let spawner = SubagentSpawner::new(
-            Arc::new(delegate_transport),
-            Arc::new(ToolRegistry::clone(&*self.tools)),
-            self.config.clone(),
-            oben_agent::compact::CompactCofig {
-                context_length: self.config.context.context_length,
-                threshold_percent: self.config.context.threshold_percent,
-                ..oben_agent::compact::CompactCofig::default()
-            },
-            self.config.max_iterations.unwrap_or(50),
-            self.config.context.max_messages.unwrap_or(100),
-            self.config.max_spawn_depth.unwrap_or(3),
-        );
-        let spawn_fn = build_spawn_fn_wrapper(spawner, assembled.prompt.clone());
-        let registry = Arc::get_mut(&mut self.tools).unwrap();
-        registry.register(DelegateTool::new(
-            spawn_fn,
-            self.config.max_concurrent_tasks.unwrap_or(5),
-        ));
-
-        self.agent = Some(Arc::new(tokio::sync::Mutex::new(
-            Agent::new(self.config.clone(), assembled.prompt.clone(), Arc::clone(&self.tools))
-                .await?,
-        )));
-
+        let shared = SharedAgentState::init(&self.config).await?;
+        let mut ss = self.shared_state.lock();
+        ss.agent = shared.agent;
+        ss.turn_message_count = shared.turn_message_count;
+        ss.turn_handle = shared.turn_handle;
+        ss.session_id = shared.session_id;
+        ss.tools = shared.tools;
+        ss.tool_names = shared.tool_names;
+        ss.turn_state = shared.turn_state;
         Ok(())
     }
 
@@ -482,7 +424,7 @@ impl App {
 
     pub async fn create_sessions_panel(&mut self) -> Result<()> {
         tracing::info!("[panel] Creating SessionsPanel");
-        if let Some(agent) = &self.agent {
+        if let Some(agent) = &self.shared_state.lock().agent {
             self.panels.insert(
                 PanelId::Sessions,
                 Box::new(SessionsPanel::new_shared(Arc::clone(agent))),
@@ -751,15 +693,15 @@ impl App {
             if let Some(ref session_name) = pending_name {
                 // Extract session data in a scoped block so guard is dropped
                 // before we mutably borrow self for get_chat_mut().
-                let (load_id, load_messages) = {
-                    if let Some(agent) = &self.agent {
-                        let mut agent = agent.lock().await;
-                        // Ensure session manager is initialized so find_key()
+                let ss_arc = Arc::clone(&self.shared_state);
+                let (load_id, load_messages): (Option<String>, Vec<oben_models::Message>) = {
+                    if ss_arc.lock().agent.is_some() {
+                        // Ensure session manager is initialized so find_session_key
                         // can look up sessions by name in the in-memory cache.
-                        let _ = agent.init_session_manager().await;
-                        let id = agent.find_session_key(session_name).await;
+                        ss_arc.lock().init_session_manager().await.ok();
+                        let id = ss_arc.lock().find_session_key(session_name).await;
                         let msgs = if let Some(ref id) = id {
-                            agent.get_session_messages(id).await.unwrap_or_default()
+                            ss_arc.lock().get_session_messages(id).await
                         } else {
                             Vec::new()
                         };
@@ -770,12 +712,7 @@ impl App {
                 };
 
                 if let Some(ref id) = load_id {
-                    if let Some(agent) = &self.agent {
-                        let mut g = agent.lock().await;
-                        if let Err(e) = g.switch_session_to(id).await {
-                            tracing::error!("Failed to switch session '{id}': {e}");
-                        }
-                    }
+                    ss_arc.lock().switch_session_to(id).await.ok();
                     let chat = self.get_chat_mut();
                     if let Some(chat) = chat {
                         info!(

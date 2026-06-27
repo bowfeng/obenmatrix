@@ -9,6 +9,7 @@ pub mod commands;
 pub mod history;
 pub mod image;
 pub mod panels;
+pub mod shared;
 pub mod widgets;
 
 pub use app::App;
@@ -88,18 +89,20 @@ pub enum TuiEvent {
     Quit,
 }
 
-/// Commands sent from TuiCoordinator to the event loop.
-///
-/// The coordinator (a compute-only actor) never holds `Arc<App>`.
-/// Instead it sends these commands, which the event loop applies
-/// to its sole copy of `Arc<App>`.
+/// Commands from the TUI coordinator to the event loop.
+/// The coordinator is a pure compute actor — it NEVER locks `Arc<App>`.
+/// Instead it sends `TuiCommand` messages via `command_tx`, and the event
+/// loop (which owns `Arc<App>`) applies them.
 pub enum TuiCommand {
-    /// Coordinator needs the UI ready for a new streaming turn.
-    StartTurn { input: String, session_name: Option<String> },
-    /// Append user input to history.
-    AppendInputHistory { input: String },
-    /// Coordinator wants shutdown (e.g. error).
-    Shutdown { reason: String },
+    /// Signal the event loop to prepare ChatPanel for streaming.
+    StartTurn {
+        input: String,
+        session_name: Option<String>,
+    },
+    /// Append the user input to the session history.
+    AppendInputHistory {
+        input: String,
+    },
 }
 
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
@@ -147,9 +150,15 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                 // Register TUI adapters on the agent's internal HookEngine.
                 // This follows the same pattern as CLI: Agent::new() creates
                 // HookEngine internally, then we register adapters via Agent::hooks().
-                if let Some(agent) = &a.agent {
+                let ts = a.turn_state.clone();
+                // Clone the agent arc before the lock is dropped, to avoid
+                // holding a borrow from the lock guard across the .await below.
+                let agent_opt = {
+                    let guard = a.shared_state.lock();
+                    guard.agent.clone()
+                };
+                if let Some(agent) = agent_opt {
                     let hooks = Arc::clone(agent.lock().await.hooks());
-                    let ts = Arc::clone(&a.turn_state);
                     hooks.register_streaming(Box::new(
                         oben_agent::TuiStreamingAdapter::new(Arc::clone(&ts))
                     ));
@@ -157,10 +166,10 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         oben_agent::TuiToolLifecycleAdapter::new(Arc::clone(&ts))
                     ));
                     hooks.register_agent_loop(Box::new(
-                        oben_agent::TuiAgentLoopAdapter::new(ts)
+                        oben_agent::TuiAgentLoopAdapter::new(ts.clone())
                     ));
                     hooks.register_turn(Box::new(
-                        oben_agent::TuiTurnLifecycleAdapter::new(Arc::clone(&a.turn_state))
+                        oben_agent::TuiTurnLifecycleAdapter::new(ts)
                     ));
                 }
             }
@@ -268,22 +277,15 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     }
 
     // --- MAIN EVENT LOOP SETUP ---
-    // Keep arc_app shared — coordinator and event loop both need mutable access.
-    #[allow(unexpected_cfgs)]
-    #[cfg(not(feature = "cli-wired"))]
-    {
-        // Tracing already initialized
-    }
-
     let (chat_tx, chat_rx) = unbounded_channel();
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
     let (command_tx, mut command_rx) = unbounded_channel::<TuiCommand>();
 
-    // Extract agent reference, config, interrupt_state, and hooks from arc_app.
-    // The coordinator holds Arc<Mutex<Agent>> (not Arc<App>) to avoid lock contention.
+
+
     let (agent, config, interrupt_state) = {
         let a = arc_app.lock().await;
-        let agent = Arc::clone(a.agent.as_ref().unwrap());
+        let agent = Arc::clone(a.shared_state.lock().agent.as_ref().unwrap());
         let cfg = a.config.clone();
         let interrupt = Arc::clone(&agent.lock().await.get_interrupt_state());
         (agent, cfg, interrupt)
@@ -297,11 +299,9 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         }
     }
 
-    // Create the TUI coordinator to drive the agent conversation loop.
-    // The coordinator is a pure compute actor: it holds Arc<Mutex<Agent>>
-    // and sends TuiCommand messages via command_tx. It never holds Arc<App>.
+    // Create TuiCoordinator and run it in its own task.
     let tui_coordinator = TuiCoordinator::new(
-        command_tx,
+        command_tx.clone(),
         chat_rx,
         done_tx,
         interrupt_state,
@@ -309,8 +309,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         config.clone(),
     );
     let coordinator_handle = tokio::spawn(async move {
-        let result = tui_coordinator.drive().await;
-        let _ = result;
+        let _ = tui_coordinator.drive().await;
     });
 
     // --- SPAWN KEYBOARD READER TASK ---
@@ -378,11 +377,54 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
 
     // --- MAIN EVENT LOOP (pure UI: keyboard/mouse -> display) ---
     loop {
+        // Use `select!` with a default_delay arm so the loop yields to `terminal.draw()`
+        // even when no channel fires. All arms set `app.needs_redraw = true`; the
+        // default arm checks the flag and renders if true, then re-enters select!.
         tokio::select! {
             _ = redraw_interval.tick() => {
                 let mut app = arc_app.lock().await;
-                 
                 app.needs_redraw = true;
+            }
+            Some(cmd) = command_rx.recv() => {
+                let mut app = arc_app.lock().await;
+                match cmd {
+                    TuiCommand::StartTurn { input, session_name } => {
+                        tracing::info!("[event_loop] TuiCommand::StartTurn, input.len()={}", input.len());
+                        if let Some(chat) = app.get_chat_mut() {
+                            chat.streaming = true;
+                            chat.append_user_message(&input);
+                        }
+                        app.status = "Streaming...".into();
+                        app.needs_redraw = true;
+                    }
+                    TuiCommand::AppendInputHistory { input } => {
+                        tracing::info!("[event_loop] TuiCommand::AppendInputHistory");
+                        app.input_history.append(&input);
+                        app.needs_redraw = true;
+                    }
+                }
+            }
+            completion = done_rx.recv() => {
+                if let Some(completion) = completion {
+                    tracing::info!(
+                        "[event_loop] done_rx: success={} session_name={} msgs={}",
+                        completion.success,
+                        completion.session_name.as_deref().unwrap_or("<none>"),
+                        completion.messages.len(),
+                    );
+                    let mut app = arc_app.lock().await;
+                    if let Some(chat) = app.get_chat_mut() {
+                        chat.streaming = false;
+                        chat.update_from_messages(&completion.messages, completion.session_name.clone());
+                    }
+                    if completion.success {
+                        app.status = "Ready".into();
+                    } else {
+                        app.status = format!("Error: {}", completion.status);
+                        tracing::error!("[event_loop] Turn error: {}", completion.status);
+                    }
+                    app.needs_redraw = true;
+                }
             }
             event = event_rx.recv() => {
                 match event {
@@ -399,7 +441,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     Some(TuiEvent::Mouse(mouse_event)) => {
                         let (term_w, term_h) = size().unwrap_or((80, 24));
                         let body_area = Rect::new(0, 1, term_w, term_h.saturating_sub(2));
-                        // Check for expired toasts on mouse move
                         {
                             let mut app = arc_app.lock().await;
                             if let Some(expiry) = app.toast_expires_at {
@@ -410,7 +451,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                 }
                             }
                         }
-                        // Tab clicking (needs row check, done outside panel lock)
                         let click_on_tabs = matches!(
                             mouse_event.kind,
                             MouseEventKind::Down(crossterm::event::MouseButton::Left)
@@ -524,10 +564,12 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     Some(TuiEvent::Interrupt) => {
                         let is = {
                             let a_guard = arc_app.lock().await;
-                            if let Some(agent) = &a_guard.agent {
-                                Some(Arc::clone(&agent.lock().await.get_interrupt_state()))
-                            } else {
-                                None
+                            let agent = a_guard.shared_state.lock().agent.clone();
+                            match agent {
+                                Some(agent) => {
+                                    Some(Arc::clone(&agent.blocking_lock().get_interrupt_state()))
+                                }
+                                None => None,
                             }
                         };
                         if let Some(is) = is {
@@ -545,14 +587,15 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                     }
                     Some(TuiEvent::Steer(text)) => {
-                        // Inject a mid-run message into the next tool result.
-                        if let Some(agent) = {
+                        let agent_opt = {
                             let a = arc_app.lock().await;
-                            a.agent.clone()
-                        } {
+                            let ss = a.shared_state.lock();
+                            ss.agent.clone()
+                        };
+                        if let Some(agent) = agent_opt {
                             let accepted = agent.lock().await.steer(&text);
                             if accepted {
-                                tracing::info!("[steer] queued: {text}");
+                                tracing::info!("[steer] queued: %text");
                                 let mut app = arc_app.lock().await;
                                 app.show_toast(
                                     "Steer queued - arrives after next tool call",
@@ -569,7 +612,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             if let Some(chat) = arc_app.lock().await.get_chat_mut() {
                                 chat.input.enqueue_msg(text.clone());
                                 tracing::info!(
-                                    "[steer] no agent - queued message instead: {text}"
+                                    "[steer] no agent - queued message instead: %text"
                                 );
                                 let mut app = arc_app.lock().await;
                                 app.show_toast(
@@ -590,30 +633,36 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                     }
                     Some(TuiEvent::CompactSession) => {
-                        if let Some(agent_arc) = {
+                        let agent_arc = {
                             let a = arc_app.lock().await;
-                            a.agent.clone()
-                        } {
+                            let ss = a.shared_state.lock();
+                            ss.agent.clone()
+                        };
+                        if let Some(agent_arc) = agent_arc {
                             let outcome = agent_arc.lock().await.compact_session().await;
                             let sid = {
                                 let a = arc_app.lock().await;
-                                a.session_id.clone()
+                                let ss = a.shared_state.lock();
+                                ss.session_id.clone()
                             };
-                            let messages = if let Some(agent_arc) = {
+                            let messages = {
                                 let a = arc_app.lock().await;
-                                a.agent.clone()
-                            } {
-                                let guard = agent_arc.lock().await;
-                                let sm_arc = guard.session_manager();
-                                let sm = sm_arc.lock().await;
-                                guard
-                                    .context_window_manager()
-                                    .session_id()
-                                    .and_then(|s| sm.session(&s))
-                                    .map(|s| s.messages.clone())
-                                    .unwrap_or_default()
-                            } else {
-                                Vec::new()
+                                let ss = a.shared_state.lock();
+                                let agent_opt = ss.agent.clone();
+                                match agent_opt {
+                                    Some(agent_arc) => {
+                                        let guard = agent_arc.lock().await;
+                                        let sm_arc = guard.session_manager();
+                                        let sm = sm_arc.lock().await;
+                                        guard
+                                            .context_window_manager()
+                                            .session_id()
+                                            .and_then(|s| sm.session(&s))
+                                            .map(|s| s.messages.clone())
+                                            .unwrap_or_default()
+                                    }
+                                    None => Vec::new(),
+                                }
                             };
                             if let Some(chat) = arc_app.lock().await.get_chat_mut() {
                                 chat.update_from_messages(&messages, sid);
@@ -661,143 +710,17 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                         }
                     }
                     Some(TuiEvent::Quit) => {
-                        // Signal reader task to exit — close chat channel to tell coordinator
-                        // to finish its current turn (if any), then exit.
                         tracing::info!("[event_loop] Quit event received, signaling shutdown");
                         running.store(false, Ordering::SeqCst);
+                        tracing::info!("[event_loop] Dropping chat_tx to shut down coordinator");
                         drop(chat_tx);
                         break;
                     }
                     None => break,
                 }
             }
-                    maybe_completion = done_rx.recv() => {
-                        if let Some(completion) = maybe_completion {
-                            let msg_roles: Vec<String> = completion.messages.iter()
-                                .map(|m| format!("{:?}", m.role))
-                                .collect();
-                            tracing::info!("[done_rx] success={}, session_name={:?}, messages.len={}, msg_types={:?}, first_msg_preview_len={}",
-                                completion.success,
-                                completion.session_name,
-                                completion.messages.len(),
-                                msg_roles,
-                                completion.messages.first()
-                                    .and_then(|m| match &m.content {
-                                        oben_models::MessageContent::Text(t) => Some(t.chars().take(40).collect::<String>()),
-                                        _ => None,
-                                    })
-                                    .unwrap_or_else(|| "non-text".into()),
-                            );
-                             tracing::info!("[done_rx] session_data_before_rebuild session_name={:?}",
-                                 completion.session_name,
-                             );
-                             // Fetch the freshest session messages directly —
-                             // completion.messages may be stale if the session changed
-                             // between turn completion and event loop processing.
-                             let fresh_messages: Vec<Message> = {
-                                 let a = arc_app.lock().await;
-                                 let agent_arc = a.agent.clone();
-                                 drop(a);
-                                 if let Some(arc_agent) = agent_arc {
-                                     let guard = arc_agent.lock().await;
-                                     let sm_arc = guard.session_manager();
-                                     let sid = guard
-                                         .context_window_manager()
-                                         .session_id()
-                                         .map(|s| s.to_string());
-                                     drop(guard);
-                                     let sm = sm_arc.lock().await;
-                                     sid.and_then(|s| sm.session(&s))
-                                         .map(|s| s.messages.clone())
-                                         .unwrap_or_default()
-                                 } else {
-                                     Vec::new()
-                                 }
-                             };
-                             let fresh_msg_roles: Vec<String> = fresh_messages.iter()
-                                 .map(|m| format!("{:?}", m.role)).collect();
-                             tracing::info!(
-                                 "[done_rx] fetched fresh session msgs={} roles={:?}",
-                                 fresh_messages.len(),
-                                 fresh_msg_roles
-                             );
-                             /* Log first 120 chars of each text message to catch accumulation */
-                             for (i, m) in fresh_messages.iter().enumerate() {
-                                 let preview = match &m.content {
-                                     oben_models::MessageContent::Text(t) => {
-                                         t.chars().take(120).collect::<String>()
-                                     }
-                                     _ => "(non-text)".into(),
-                                 };
-                                 tracing::info!(
-                                     "[done_rx] msg[{}] role={:?} content={}",
-                                     i, m.role, preview
-                                 );
-                             }
-                             let mut app = arc_app.lock().await;
-                             if completion.success {
-                                 if let Some(chat) = app.get_chat_mut() {
-                                     chat.streaming = false;
-                                     chat.input.streaming = false;
-                                     chat.update_from_messages(&fresh_messages, completion.session_name);
-                                     app.needs_redraw = true;
-                                 }
-                             } else {
-                        if !completion.status.is_empty() {
-                            app.status = completion.status.into();
-                        } else {
-                            app.status = "Turn completed with errors".into();
-                        }
-                        if let Some(chat) = app.get_chat_mut() {
-                            chat.streaming = false;
-                            chat.input.streaming = false;
-                            chat.update_from_turn_state();
-                            app.needs_redraw = true;
-                        }
-                    }
-                } else {
-                    // Coordinator dropped done_tx - loop is finished.
-                    tracing::info!("[event_loop] done_rx closed, coordinator exited");
-                    break;
-                }
-            }
-            cmd = command_rx.recv() => {
-                match cmd {
-                    Some(TuiCommand::StartTurn { .. }) => {
-                        // StartTurn only resets streaming state and triggers redraw.
-                        // The user message is added to the session by the coordinator's
-                        // turn execution, and `done_rx` rebuilds display from session
-                        // — no need to append user message here, preventing duplicates.
-                        let mut app = arc_app.lock().await;
-                        if let Some(chat) = app.get_chat_mut() {
-                            chat.message_state.stream_info.lock().unwrap().clear();
-                            chat.message_state
-                                .scroll_to_bottom
-                                .store(true, Ordering::SeqCst);
-                            chat.input.streaming = true;
-                            chat.streaming = true;
-                        }
-                        app.needs_redraw = true;
-                    }
-                    Some(TuiCommand::AppendInputHistory { input }) => {
-                        let mut app = arc_app.lock().await;
-                        app.input_history.append(&input);
-                    }
-                    Some(TuiCommand::Shutdown { reason }) => {
-                        // Signal reader task to exit — close chat channel to tell coordinator
-                        // to finish its current turn (if any), then exit.
-                        tracing::info!("[event_loop] Shutdown command received: {reason}");
-                        running.store(false, Ordering::SeqCst);
-                        drop(chat_tx);
-                        break;
-                    }
-                    None => {
-                        // Command channel closed — shouldn't happen, but handle gracefully.
-                        tracing::info!("[event_loop] command_rx closed, exiting main loop");
-                        running.store(false, Ordering::SeqCst);
-                        break;
-                    }
-                }
+            default_delay = async { tokio::time::sleep(std::time::Duration::from_millis(16)).await } => {
+                // Yield periodically so the `terminal.draw()` below executes even during idle.
             }
         }
 
@@ -807,16 +730,8 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         }
     }
 
-    // Reader task and coordinator should both complete by now.
-    // Use a timeout for the reader — if poll() blocks on the terminal fd
-    // without returning (e.g. on some macOS terminal configurations), we
-    // still need the process to exit gracefully.
-    let reader_timeout = tokio::time::timeout(
-        Duration::from_secs(2),
-        reader_handle,
-    ).await;
-    let _ = reader_timeout;
     let _ = coordinator_handle.await;
+    let _ = reader_handle.await;
     drop(terminal);
     io::stdout().execute(LeaveAlternateScreen)?;
     io::stdout().execute(DisableMouseCapture)?;
@@ -1113,15 +1028,15 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
             None => (String::new(), 0),
         },
         _ => match app.get_chat() {
-            Some(chat) => {
-                if let Some(ref sid) = chat.session_name {
-                    (sid.clone(), chat.message_count)
-                } else {
-                    (
-                        app.session_id.clone().unwrap_or_default(),
-                        chat.message_count,
-                    )
-                }
+                    Some(chat) => {
+                        if let Some(ref sid) = chat.session_name {
+                            (sid.clone(), chat.message_count)
+                        } else {
+                            (
+                                app.shared_state.lock().session_id.clone().unwrap_or_default(),
+                                chat.message_count,
+                            )
+                        }
             }
             None => (String::new(), 0),
         },
