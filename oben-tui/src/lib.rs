@@ -6,6 +6,7 @@
 pub mod app;
 pub mod clipboard;
 pub mod commands;
+pub mod coordinator;
 pub mod history;
 pub mod image;
 pub mod panels;
@@ -13,6 +14,7 @@ pub mod shared;
 pub mod widgets;
 
 pub use app::App;
+pub use coordinator::{TuiCommand, TuiCoordinator};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -38,12 +40,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::app::TurnCompletion;
-use oben_agent::coordinator::{ConversationConfig, ConversationResult};
-use oben_agent::context::ContextWindowManager;
-use anyhow::anyhow;
-use oben_models::Message;
-use oben_models::MessageContent;
-use oben_models::MessagePart;
 use oben_models::SessionManager;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::MissedTickBehavior;
@@ -87,22 +83,6 @@ pub enum TuiEvent {
     QueueDrain,
     /// Signal shutdown — sent when the keyboard reader task exits.
     Quit,
-}
-
-/// Commands from the TUI coordinator to the event loop.
-/// The coordinator is a pure compute actor — it NEVER locks `Arc<App>`.
-/// Instead it sends `TuiCommand` messages via `command_tx`, and the event
-/// loop (which owns `Arc<App>`) applies them.
-pub enum TuiCommand {
-    /// Signal the event loop to prepare ChatPanel for streaming.
-    StartTurn {
-        input: String,
-        session_name: Option<String>,
-    },
-    /// Append the user input to the session history.
-    AppendInputHistory {
-        input: String,
-    },
 }
 
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
@@ -281,8 +261,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
     let (command_tx, mut command_rx) = unbounded_channel::<TuiCommand>();
 
-
-
     let (agent, config, interrupt_state) = {
         let a = arc_app.lock().await;
         let agent = Arc::clone(a.shared_state.lock().agent.as_ref().unwrap());
@@ -299,17 +277,18 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         }
     }
 
-    // Create TuiCoordinator and run it in its own task.
-    let tui_coordinator = TuiCoordinator::new(
-        command_tx.clone(),
+    // Create TuiCoordinator and call run_tui() directly — avoids the
+    // unnecessary `Agent::run()` / `Arc<Mutex>` lock.
+    let mut tui_coordinator = TuiCoordinator::new(
+        command_tx,
         chat_rx,
         done_tx,
         interrupt_state,
-        agent,
+        Arc::clone(&agent),
         config.clone(),
     );
     let coordinator_handle = tokio::spawn(async move {
-        let _ = tui_coordinator.drive().await;
+        let _ = tui_coordinator.run_tui().await;
     });
 
     // --- SPAWN KEYBOARD READER TASK ---
@@ -370,7 +349,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     // Periodic redraw timer — ensures UI updates during streaming when no
     // keyboard/mouse events fire. Without this, `TurnState.streaming_text`
     // gets populated by transport callbacks but never reaches the screen.
-    // Use 50ms interval for ~20fps — fast enough for smooth streaming, 
+    // Use 50ms interval for ~20fps — fast enough for smooth streaming,
     // avoids fighting the terminal with 16ms redraws.
     let mut redraw_interval = tokio::time::interval(Duration::from_millis(50));
     redraw_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -740,192 +719,8 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Detect image URLs and local image file paths in the input text, then build
-/// the appropriate [`Message`].
-fn build_image_message(input: &str) -> oben_models::Message {
-    // 1. Collect local image paths (tokens that start with `/` and end with an
-    // image extension, e.g. `/Users/foo/photo.png`).
-    let known_exts = [
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".tiff", ".tif", ".ico", ".avif",
-    ];
-
-    let tokens: Vec<&str> = input.split_whitespace().collect();
-    let mut image_tokens: Vec<String> = Vec::new();
-    let mut text_tokens: Vec<&str> = Vec::new();
-
-    for token in tokens {
-        let is_image = known_exts
-            .iter()
-            .any(|ext| token.to_lowercase().ends_with(ext));
-        if is_image && token.starts_with('/') {
-            // Try to read and encode the image
-            if let Some((msg, _)) = image::path_to_image_message(token, "") {
-                let url = match &msg.content {
-                    MessageContent::Image { url, .. } => url.clone(),
-                    MessageContent::Parts(parts) => parts
-                        .iter()
-                        .find_map(|p| match p {
-                            MessagePart::Image { url, .. } => Some(url.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| String::new()),
-                    _ => String::new(),
-                };
-                if !url.is_empty() {
-                    image_tokens.push(url);
-                }
-            }
-        } else {
-            text_tokens.push(token);
-        }
-    }
-
-    if !image_tokens.is_empty() {
-        // Mix of text and/or images — collect any non-image text
-        let text: String = text_tokens.join(" ");
-        let text_trimmed = text.trim();
-
-        if text_trimmed.is_empty() && image_tokens.len() == 1 {
-            // Just one image, no surrounding text — use Image variant
-            return Message {
-                role: oben_models::MessageRole::User,
-                content: MessageContent::Image {
-                    url: image_tokens[0].clone(),
-                    detail: None,
-                },
-                id: None,
-                tool_call_ids: vec![],
-                tool_calls: None,
-                reasoning: None,
-            };
-        }
-
-        // Build Parts: text (if any) followed by images
-        let mut parts: Vec<MessagePart> = Vec::new();
-        if !text_trimmed.is_empty() {
-            parts.push(MessagePart::Text(text_trimmed.to_string()));
-        }
-        for url in image_tokens {
-            parts.push(MessagePart::Image { url, detail: None });
-        }
-
-        return Message {
-            role: oben_models::MessageRole::User,
-            content: MessageContent::Parts(parts),
-            id: None,
-            tool_call_ids: vec![],
-            tool_calls: None,
-            reasoning: None,
-        };
-    }
-
-    // 2. Check for image URLs (http/https)
-    static IMAGE_URL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-        // Match http/https URLs ending with image extensions.
-        // We deliberately do not include quotes or angle brackets in the
-        // negated set — URLs never contain them, and keeping them out
-        // avoids Rust raw-string escaping issues.
-        Regex::new(r"https?://[^\s'(),]+(?:\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff?|ico|avif))([^\s'()]*)?").unwrap()
-    });
-
-    let urls: Vec<(usize, String)> = IMAGE_URL_RE
-        .captures_iter(input)
-        .filter_map(|cap| cap.get(0).map(|m| (m.start(), m.as_str().to_string())))
-        .collect();
-
-    if urls.is_empty() {
-        // No images — fall back to plain text message
-        return oben_models::Message::user(input);
-    }
-
-    // Strip URLs from text, leaving text-only content
-    let remaining: String = {
-        let mut out = String::with_capacity(input.len());
-        let mut last = 0;
-        for (start, _) in &urls {
-            out.push_str(&input[last..*start]);
-            last = *start;
-            // skip past the URL
-            let mut i = *start;
-            while i < input.len() {
-                let ch = input[i..].chars().next().unwrap();
-                i += ch.len_utf8();
-                if !ch.is_ascii_alphanumeric()
-                    && !matches!(
-                        ch,
-                        '.' | '/'
-                            | '?'
-                            | '='
-                            | '&'
-                            | '%'
-                            | '-'
-                            | '_'
-                            | '~'
-                            | '#'
-                            | '+'
-                            | ','
-                            | ';'
-                            | ':'
-                            | '@'
-                            | '!'
-                    )
-                {
-                    break;
-                }
-            }
-        }
-        out.push_str(&input[last..]);
-        out.trim().to_string()
-    };
-
-    if urls.len() == 1 && remaining.is_empty() {
-        // Single image, no surrounding text — use Image variant
-        Message {
-            role: oben_models::MessageRole::User,
-            content: MessageContent::Image {
-                url: urls[0].1.clone(),
-                detail: None,
-            },
-            id: None,
-            tool_call_ids: vec![],
-            tool_calls: None,
-            reasoning: None,
-        }
-    } else {
-        // Multiple images or text + images — use Parts variant
-        let mut parts: Vec<MessagePart> = if !remaining.is_empty() {
-            vec![MessagePart::Text(remaining)]
-        } else {
-            Vec::new()
-        };
-
-        for (i, (_, url)) in urls.iter().enumerate() {
-            // Add separator before each image if there's preceding content
-            if i == 0 && !parts.is_empty() {
-                parts.push(MessagePart::Text(" ".into()));
-            } else if i > 0 {
-                parts.push(MessagePart::Text(" ".into()));
-            }
-            parts.push(MessagePart::Image {
-                url: url.clone(),
-                detail: None,
-            });
-        }
-
-        Message {
-            role: oben_models::MessageRole::User,
-            content: MessageContent::Parts(parts),
-            id: None,
-            tool_call_ids: vec![],
-            tool_calls: None,
-            reasoning: None,
-        }
-    }
-}
-
 /// Parse input text and return (text_without_images, image_urls).
 fn parse_input_for_images(input: &str) -> (String, Vec<(String, Option<String>)>) {
-    use regex::Regex;
     let re = Regex::new(
         r"https?://[^\s'(),]+(?:\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff?|ico|avif))([^\s'()]*)?",
     )
@@ -1028,15 +823,18 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
             None => (String::new(), 0),
         },
         _ => match app.get_chat() {
-                    Some(chat) => {
-                        if let Some(ref sid) = chat.session_name {
-                            (sid.clone(), chat.message_count)
-                        } else {
-                            (
-                                app.shared_state.lock().session_id.clone().unwrap_or_default(),
-                                chat.message_count,
-                            )
-                        }
+            Some(chat) => {
+                if let Some(ref sid) = chat.session_name {
+                    (sid.clone(), chat.message_count)
+                } else {
+                    (
+                        app.shared_state.lock()
+                            .session_id
+                            .clone()
+                            .unwrap_or_default(),
+                        chat.message_count,
+                    )
+                }
             }
             None => (String::new(), 0),
         },
@@ -1052,7 +850,8 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         (_, s) if !s.is_empty() && s != " No session" => "Info",
         _ => "Ready",
     };
-    let status_lines: Vec<Line> = vec![Line::from(format!(" [{}]  {}", mode_text, session_text))];
+    let status_lines: Vec<Line> =
+        vec![Line::from(format!(" [{}]  {}", mode_text, session_text))];
     let status_para = Paragraph::new(status_lines);
     let status_area = Rect::new(
         layout.statusbar.x,
@@ -1061,299 +860,4 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         layout.statusbar.height,
     );
     frame.render_widget(status_para, status_area);
-}
-
-// ── TUI Coordinator ──────────────────────────────────────────────────────
-
-/// TUI conversation coordinator — drives the TUI turn lifecycle.
-///
-/// A pure compute actor. It holds NO reference to `Arc<App>`. Instead it
-/// sends `TuiCommand` messages via `command_tx`, and the event loop applies
-/// them to its exclusive copy of `Arc<App>`.
-///
-/// This eliminates the deadlock / render-storm where coordinator and event
-/// loop contended for the same mutex.
-pub struct TuiCoordinator {
-    command_tx: tokio::sync::mpsc::UnboundedSender<TuiCommand>,
-    chat_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
-    done_tx: tokio::sync::mpsc::UnboundedSender<TurnCompletion>,
-    interrupt_state: Arc<oben_agent::interrupt::InterruptState>,
-    agent: Arc<tokio::sync::Mutex<oben_agent::Agent>>,
-    config: oben_config::AppConfig,
-    call_mode: Option<oben_models::CallMode>,
-}
-
-impl TuiCoordinator {
-    pub fn new(
-        command_tx: tokio::sync::mpsc::UnboundedSender<TuiCommand>,
-        chat_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
-        done_tx: tokio::sync::mpsc::UnboundedSender<TurnCompletion>,
-        interrupt_state: Arc<oben_agent::interrupt::InterruptState>,
-        agent: Arc<tokio::sync::Mutex<oben_agent::Agent>>,
-        config: oben_config::AppConfig,
-    ) -> Self {
-        Self {
-            command_tx,
-            chat_rx,
-            done_tx,
-            interrupt_state,
-            agent,
-            config,
-            call_mode: None,
-        }
-    }
-
-    async fn send(&self, cmd: TuiCommand) {
-        // If the command receiver was dropped, the event loop is dead —
-        // nothing we can do but continue without it.
-        let _ = self.command_tx.send(cmd);
-    }
-
-    pub async fn drive(mut self) -> Result<ConversationResult> {
-        let hook_engine = {
-            let a = self.agent.lock().await;
-            let hooks = Arc::clone(a.hooks());
-            drop(a);
-            hooks
-        };
-
-        // Fire loop-start hooks once (before any turn) — matches CLI pattern.
-        hook_engine.emit_loop_start();
-
-        loop {
-            hook_engine.emit_pre_turn();
-
-            let input = match self.chat_rx.recv().await {
-                Some(text) => text,
-                None => {
-                    tracing::info!("coordinator: chat channel closed, exiting");
-                    hook_engine.emit_loop_end("chat_channel_closed");
-                    return Ok(ConversationResult::Exit);
-                }
-            };
-
-            // Clone agent reference and config — release App lock (we never hold it).
-            let agent_arc = Arc::clone(&self.agent);
-            let config = self.config.clone();
-
-            // Signal the event loop to prepare ChatPanel for streaming.
-            // The event loop is the sole owner of Arc<App> and applies this.
-            self.send(TuiCommand::StartTurn {
-                input: input.clone(),
-                session_name: None, // event loop gets this from arc_app
-            }).await;
-
-            // Send the turn — ONLY `agent_arc` locked, NO App contention.
-            let input_msg = build_image_message(&input);
-            let interrupt_clone = Arc::clone(&self.interrupt_state);
-
-            let response = if matches!(
-                input_msg.content,
-                MessageContent::Image { .. } | MessageContent::Parts(_)
-            ) {
-                agent_arc
-                    .lock()
-                    .await
-                    .turn_with_message(input_msg, Some(Arc::clone(&interrupt_clone)))
-                    .await
-            } else {
-                agent_arc
-                    .lock()
-                    .await
-                    .turn(&input, true, Some(Arc::clone(&interrupt_clone)))
-                    .await
-            };
-            let _ = self.interrupt_state.drain_interrupt_message();
-
-            // Fetch session data from agent (no App lock needed)
-            let (turn_session_name, messages_from_agent) = {
-                let guard = agent_arc.lock().await;
-                let sm_arc = guard.session_manager();
-                let sm = sm_arc.lock().await;
-                let sid = guard
-                    .context_window_manager()
-                    .session_id();
-                let name = sid.as_ref().and_then(|s| sm.session(s)).map(|s| s.name.clone());
-                let msgs = sid.and_then(|sid| sm.session(&sid)).map(|s| s.messages.clone()).unwrap_or_default();
-                (name, msgs)
-            };
-
-            if let Err(e) = response {
-                let err_str = format!("Turn error: {}", e);
-                hook_engine.emit_loop_end(&err_str);
-                // Single completion channel — sends error status to event loop.
-                let completion = TurnCompletion {
-                    success: false,
-                    status: err_str.clone(),
-                    session_name: turn_session_name.clone(),
-                    messages: messages_from_agent,
-                };
-                let _ = self.done_tx.send(completion);
-                return Err(anyhow!(err_str));
-            }
-
-            // Post-turn hooks
-            let msg_roles_coordinator: Vec<String> = messages_from_agent.iter()
-                .map(|m| format!("{:?}", m.role)).collect();
-            let msg_preview: Vec<String> = messages_from_agent.iter()
-                .filter_map(|m| match &m.content {
-                    MessageContent::Text(t) => Some(t.chars().take(40).collect::<String>()),
-                    _ => None,
-                }).collect();
-            tracing::info!(
-                "[coordinator/turn_done] sending completion success=true session_name=? msgs={} roles={:?} previews={:?}",
-                messages_from_agent.len(),
-                msg_roles_coordinator,
-                msg_preview,
-            );
-            let final_text = messages_from_agent.last().and_then(|m| {
-                if let MessageContent::Text(ref t) = m.content {
-                    Some(t.clone())
-                } else {
-                    None
-                }
-            }).unwrap_or_default();
-            hook_engine.emit_turn_complete(&final_text, messages_from_agent.len());
-
-            // Single completion channel — no duplicate channel.
-            let completion = TurnCompletion {
-                success: true,
-                status: String::new(),
-                session_name: turn_session_name.clone(),
-                messages: messages_from_agent,
-            };
-            let _ = self.done_tx.send(completion);
-
-            // Store input in history (via command, not direct App access)
-            self.send(TuiCommand::AppendInputHistory {
-                input,
-            }).await;
-        }
-    }
-
-    /// Run the coordinator loop (via `agent.run(coordinator)` interface).
-    pub async fn run(
-        self,
-        _context_window_manager: &mut dyn ContextWindowManager,
-        _transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
-        _tools: Arc<oben_tools::ToolRegistry>,
-        _session_manager: &mut dyn SessionManager,
-    ) -> Result<ConversationResult> {
-        self.drive().await
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    fn write_test_image(path: &std::path::Path) {
-        let mut file = std::fs::File::create(path).unwrap();
-        file.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
-            .unwrap();
-    }
-
-    #[test]
-    fn test_build_image_message_single_local_path() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oben_single_test.png");
-        write_test_image(&path);
-
-        let msg = build_image_message(&path.to_string_lossy());
-        assert!(matches!(msg.content, MessageContent::Image { .. }));
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_build_image_message_multiple_local_paths() {
-        let dir = std::env::temp_dir();
-        let path1 = dir.join("oben_multi_test_1.png");
-        let path2 = dir.join("oben_multi_test_2.jpg");
-        write_test_image(&path1);
-        // .jpg is a valid image extension
-        let mut file2 = std::fs::File::create(&path2).unwrap();
-        file2.write_all(&[0xFF, 0xD8, 0xFF, 0xE0]).unwrap();
-        drop(file2);
-
-        let combined = format!(
-            "{} 分析 {}",
-            path1.to_string_lossy(),
-            path2.to_string_lossy()
-        );
-        let msg = build_image_message(&combined);
-
-        // Should produce a Parts message with both images
-        if let MessageContent::Parts(parts) = msg.content {
-            let image_count = parts
-                .iter()
-                .filter(|p| matches!(p, MessagePart::Image { .. }))
-                .count();
-            assert_eq!(image_count, 2, "expected 2 image parts");
-            // First part should be text (the Chinese phrase)
-            if let MessagePart::Text(t) = &parts[0] {
-                assert!(t.contains("分析"), "first part should be text");
-            }
-        } else {
-            panic!("expected Parts variant for multi-image");
-        }
-
-        let _ = std::fs::remove_file(&path1);
-        let _ = std::fs::remove_file(&path2);
-    }
-
-    #[test]
-    fn test_build_image_message_images_only() {
-        let dir = std::env::temp_dir();
-        let path1 = dir.join("oben_only_1.png");
-        let path2 = dir.join("oben_only_2.jpg");
-        write_test_image(&path1);
-        let mut file2 = std::fs::File::create(&path2).unwrap();
-        file2.write_all(&[0xFF, 0xD8, 0xFF, 0xE0]).unwrap();
-
-        let combined = format!("{} {}", path1.to_string_lossy(), path2.to_string_lossy());
-        let msg = build_image_message(&combined);
-
-        if let MessageContent::Parts(parts) = msg.content {
-            let image_count = parts
-                .iter()
-                .filter(|p| matches!(p, MessagePart::Image { .. }))
-                .count();
-            assert_eq!(image_count, 2, "expected 2 image parts with no text");
-        } else {
-            panic!("expected Parts variant for multi-image");
-        }
-
-        let _ = std::fs::remove_file(&path1);
-        let _ = std::fs::remove_file(&path2);
-    }
-
-    #[test]
-    fn test_build_image_message_single_with_text() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("oben_single_text.png");
-        write_test_image(&path);
-
-        let input = format!("{} 分析下这个图片", path.to_string_lossy());
-        let msg = build_image_message(&input);
-
-        if let MessageContent::Parts(parts) = msg.content {
-            assert_eq!(parts.len(), 2);
-            if let MessagePart::Text(t) = &parts[0] {
-                assert!(t.contains("分析下这个图片"));
-            } else {
-                panic!("expected first part to be text");
-            }
-        } else {
-            panic!("expected Parts variant for image+text");
-        }
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_build_image_message_no_images_fallback() {
-        let msg = build_image_message("just some regular text");
-        assert!(matches!(msg.content, MessageContent::Text(_)));
-    }
 }
