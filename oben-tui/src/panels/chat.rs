@@ -84,6 +84,12 @@ impl ChatPanel {
 
     /// Update message display state from session messages.
     pub fn update_from_messages(&mut self, messages: &[Message], session_name: Option<String>) {
+        if messages.is_empty() {
+            // No messages from coordinator — entries were built during
+            // the turn via TuiStreamingAdapter + append_user_message.
+            // Don't wipe them.
+            return;
+        }
         self.message_display.rebuild_from_messages(
             &mut self.message_state,
             messages,
@@ -116,13 +122,17 @@ impl ChatPanel {
 
     /// Update from turn state and sync stream_info in display.
     pub fn update_from_turn_state(&mut self) {
-        let ts = self.turn_state_ref.lock();
-        self.message_display
-            .update_stream_info(&mut self.message_state, &ts);
+        // Use try_lock to avoid deadlock: during LLM streaming the callback
+        // holds turn_state_ref.lock() and subsequently needs arc_app.async_lock();
+        // the draw closure holds arc_app.async_lock() and needs turn_state_ref —
+        // try_lock breaks the cycle by skipping the draw instead of blocking.
+        let ts = self.turn_state_ref.try_lock();
+        let current = ts.as_ref().map(|ts| ts.phase.clone()).unwrap_or(TurnPhase::Idle);
+        let agent_idle = ts.as_ref().map(|ts| !ts.is_active()).unwrap_or(true);
+        // Drop ts before we start using &mut self to avoid borrow conflicts
+        drop(ts);
 
         let prev = self.prev_phase.clone();
-        let current = ts.phase.clone();
-
         let settled = matches!(
             current,
             TurnPhase::Completed | TurnPhase::Error(_)
@@ -132,10 +142,7 @@ impl ChatPanel {
             TurnPhase::Completed | TurnPhase::Error(_)
         );
 
-        // Only drain when transitioned INTO settled AND agent is truly idle
-        // (no pending delta callbacks from the just-finished turn) AND
-        // we haven't already drained this completion.
-        let agent_idle = !ts.is_active();
+        self.prev_phase = current.clone();
 
         let drain_trigger = settled && transitioning && agent_idle && !self.drained_this_turn;
         if settled || transitioning {
@@ -177,11 +184,71 @@ impl ChatPanel {
             }
             self.drained_this_turn = true;
         } else if !settled || !transitioning {
+            // Reset on any non-transition, but more importantly reset when we
+            // start a fresh turn (idle / completed → idle → streaming).
             self.drained_this_turn = false;
         }
 
-        // Always keep prev_phase and streaming flag in sync.
-        self.streaming = matches!(current, TurnPhase::Streaming);
+        // Flush accumulated streaming_text to permanent entries when the turn
+        // completes. `streaming_text` is rendered in-place while `is_streaming`
+        // but vanishes once the phase changes — commit it to message_entries
+        // so the assistant response persists after the draw cycle.
+        //
+        // Guard against repeated flushes: we only enter this block on the
+        // transition into a settled state (prev=Streaming, current=Completed).
+        // Once `prev` is set to Completed, steady-state draws hit
+        // `transitioning = false` and won't fire again.
+        // Flush when transitioning FROM Streaming into a settled state only.
+        // Completed must not be included here — it would re-flush on the first
+        // completed draw of a subsequent turn, duplicating all prior text.
+        let was_streaming = matches!(prev, TurnPhase::Streaming);
+        if was_streaming && settled && transitioning {
+            if let Some(ref arc) = self.message_state.turn_state_ref {
+                let mut ts = arc.lock();
+                let text = ts.streaming_text.clone();
+                ts.streaming_text.clear();
+                drop(ts);
+                if !text.is_empty() {
+                    let body_lines = vec![crate::widgets::message_renderer::StyledLine {
+                        content: Line::from(text.clone()),
+                        role_color: None,
+                    }];
+                    self.message_state
+                        .message_entries
+                        .lock()
+                        .unwrap()
+                        .push(crate::widgets::message_renderer::MessageRenderEntry {
+                            role: oben_models::MessageRole::Assistant,
+                            body_lines,
+                            is_tool_result: false,
+                            tool_calls: Vec::new(),
+                            reasoning: None,
+                        });
+                    tracing::info!(
+                        "[chat_panel] flushed streaming_text to entries: len={}",
+                        text.len()
+                    );
+                }
+            }
+        }
+
+        // Only update streaming flag on phase transition to avoid overriding
+        // the StartTurn flag before the LLM actually starts streaming.
+        // prev can be Idle (first turn) or Completed (subsequent turns)
+        // since on_completed() sets phase=Completed rather than Idle.
+        let is_entering_streaming = matches!(current, TurnPhase::Streaming)
+            && (matches!(prev, TurnPhase::Idle)
+                || matches!(prev, TurnPhase::Completed)
+                || matches!(prev, TurnPhase::Error(_)));
+        if is_entering_streaming {
+            self.streaming = true;
+            self.input.streaming = true;
+        } else if matches!(prev, TurnPhase::Streaming)
+            && !matches!(current, TurnPhase::Streaming)
+        {
+            self.streaming = false;
+            self.input.streaming = false;
+        }
         self.prev_phase = current;
     }
 
