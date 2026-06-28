@@ -565,15 +565,7 @@ impl App {
                 KeyAction::SessionChanged => {
                     self.activate_panel(PanelId::Chat).await;
                 }
-                KeyAction::Clear
-                | KeyAction::New
-                | KeyAction::Compact
-                | KeyAction::Reasoning
-                | KeyAction::Theme
-                | KeyAction::Command { .. }
-                | KeyAction::SwitchPanel(_)
-                | KeyAction::SessionChanged => {}
-                // Pass-through to event loop: ChatInput, Steer, Quit, Interrupt, None
+                // Pass-through: ChatInput, Steer, Quit, Interrupt, None go to event loop
                 _ => {}
             }
             action
