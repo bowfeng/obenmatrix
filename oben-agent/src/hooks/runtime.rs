@@ -199,7 +199,6 @@ impl HookEngine {
             },
             dispatch_config: conversation_config.dispatch_config.clone(),
             max_iterations: conversation_config.max_iterations,
-            turn_state_delta_callback: None,
         };
         let result = crate::turn_executor::TurnExecutor::execute_turn_with_config(
             ctx, transport, tools, session_manager, session_id,

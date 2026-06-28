@@ -51,7 +51,6 @@ pub async fn execute_turn(
         },
         dispatch_config: conversation_config.dispatch_config.clone(),
         max_iterations: conversation_config.max_iterations,
-        turn_state_delta_callback: None,
     };
 
     let result = TurnExecutor::execute_turn_with_config(
@@ -83,7 +82,6 @@ pub async fn execute_turn_full(
     conversation_config: &ConversationConfig,
     hooks: Option<Arc<HookEngine>>,
     interrupt: Option<SharedInterrupt>,
-    turn_state_delta_callback: Option<Arc<parking_lot::Mutex<super::turn_executor::TurnStateDeltaCallback>>>,
 ) -> Result<String> {
     let turn_config = crate::turn_executor::TurnConfig {
         retry_config: conversation_config.retry_config.clone(),
@@ -106,7 +104,6 @@ pub async fn execute_turn_full(
         },
         dispatch_config: conversation_config.dispatch_config.clone(),
         max_iterations: conversation_config.max_iterations,
-        turn_state_delta_callback,
     };
 
     let result = TurnExecutor::execute_turn_with_config(

@@ -69,10 +69,6 @@ pub struct Agent {
     fallback_chain: Option<crate::fallback::FallbackChain>,
     system_prompt: String,
     hooks: Arc<super::hooks::HookEngine>,
-    /// Direct callback to update TurnState during streaming, bypassing the hook chain.
-    /// Stored as an Arc-wrapped callback so it can be cloned for each turn execution.
-    pub turn_state_delta_callback:
-        Option<Arc<parking_lot::Mutex<super::turn_executor::TurnStateDeltaCallback>>>,
 }
 
 impl Agent {
@@ -108,7 +104,6 @@ impl Agent {
             fallback_chain: None,
             system_prompt,
             hooks,
-            turn_state_delta_callback: None,
         };
 
         agent.eager_load_active_session().await;
@@ -144,7 +139,6 @@ impl Agent {
             fallback_chain: None,
             system_prompt: String::new(),
             hooks: Arc::new(super::hooks::HookEngine::new()),
-            turn_state_delta_callback: None,
         }
     }
 
@@ -321,16 +315,6 @@ impl Agent {
         self.hooks = hooks;
     }
 
-    /// Register a direct TurnState write callback for streaming text.
-    ///
-    /// This callback bypasses the hook chain entirely, ensuring streaming
-    /// text always reaches the TUI even if hooks are broken.
-    pub fn set_turn_state_delta_callback(
-        &mut self,
-        callback: Arc<parking_lot::Mutex<super::turn_executor::TurnStateDeltaCallback>>,
-    ) {
-        self.turn_state_delta_callback = Some(callback);
-    }
 
     // ── Tier 2: System Prompt ──────────────────────────────────────────────
 
@@ -405,7 +389,6 @@ impl Agent {
             &conversation,
             Some(Arc::clone(&self.hooks)),
             interrupt.map(|x| Arc::clone(&x)),
-            self.turn_state_delta_callback.clone(),
         )
         .await?;
 
@@ -450,7 +433,6 @@ impl Agent {
             &conversation,
             Some(Arc::clone(&self.hooks)),
             interrupt.map(|x| Arc::clone(&x)),
-            self.turn_state_delta_callback.clone(),
         )
         .await?;
 
@@ -786,7 +768,6 @@ impl Agent {
             review_msg,
             &call_mode,
             &nudge_config,
-            None,
             None,
             None,
         )
