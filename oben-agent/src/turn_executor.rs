@@ -21,7 +21,7 @@ use crate::retry::{retry_with_backoff, RetryConfig};
 use crate::stream_processor;
 use oben_models::{
     Message, MessageContent, MessageRole, Session, SessionManager, StreamDeltaCallback,
-    TransportProvider, TransportToolCall,
+    TransportProvider,
 };
 
 // ---------------------------------------------------------------------------
@@ -378,8 +378,12 @@ impl TurnExecutor {
                     hooks.emit_status("lifecycle", "api_call_start");
                 }
                 let cb: StreamDeltaCallback = Box::new(move |delta: &str| {
+                    // Hook engine broadcast — the TuiStreamingAdapter writes
+                    // directly to TurnState so only ONE write path is needed.
                     if let Some(ref hooks) = hooks {
                         hooks.emit_stream_delta(delta);
+                    } else {
+                        tracing::warn!("stream_callback: hooks is None");
                     }
                 });
                 transport.stream_chat(&messages, &mode, cb).await.map_err(|e| e.into())

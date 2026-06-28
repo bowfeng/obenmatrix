@@ -29,11 +29,6 @@ const DISPLAY_ICON: &str = concat!("\u{1F5BC}");
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Unescape a path: replace `\ ` and `\u{202F}` (narrow no-break space) with space.
-fn unescape_path(input: &str) -> String {
-    input.replace("\\ ", " ").replace('\u{202F}', " ")
-}
-
 /// Detect MIME type from a file path extension.
 pub fn detect_mime(path: &str) -> String {
     let ext = Path::new(path)
@@ -125,12 +120,6 @@ pub fn path_to_image_message(path: &str, prompt_text: &str) -> Option<(Message, 
 mod tests {
     use super::*;
     use std::io::Write;
-
-    #[test]
-    fn test_unescape_path() {
-        assert_eq!(unescape_path("/path/a\\ b.png"), "/path/a b.png");
-        assert_eq!(unescape_path("/path/normal.png"), "/path/normal.png");
-    }
 
     #[test]
     fn test_detect_mime_png() {

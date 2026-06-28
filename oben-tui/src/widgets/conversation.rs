@@ -668,28 +668,28 @@ impl ConversationWidget {
         // ─── Phase 1.5: Stream block estimation & wrapping (shared between phases) ──────
         // Parse stream text once, reuse for both scroll_offset and rendering.
         let stream_parsed = if is_streaming {
-            if let Some(ref ts) = state.turn_state_ref {
-                let ts = ts.lock();
-                let ts_len = ts.streaming_text.len();
-                // Log every frame when streaming to debug why text isn't accumulating
-                if ts_len % 10 == 0 {
-                    tracing::info!(
-                        total_len = ts_len,
-                        stream_preview = ?ts.streaming_text.chars().take(60).collect::<String>(),
-                        "TUI: stream_text_len at draw"
-                    );
-                }
+            if let Some(ref ts_arc) = state.turn_state_ref {
+                let ts_ref = &*ts_arc.lock();
+                let ts_len = ts_ref.streaming_text.len();
+                // DIAG: Arc::strong_count tells us if adapter+draw share SAME TurnState.
+                let refs = Arc::strong_count(ts_arc);
+                tracing::info!(
+                    arc_refs = refs,
+                    total_len = ts_len,
+                    "DIAG: arc_refs={} streaming_text_len={} [draw_read]",
+                    refs, ts_len
+                );
                 if ts_len > 0 {
                     // Log streaming_text length every ~10 draws during streaming
                     // to avoid log flooding while still capturing growth pattern.
                     if ts_len % 20 == 0 {
                         tracing::trace!(
                             ts_len,
-                            stream_preview = ?ts.streaming_text.chars().take(60).collect::<String>(),
+                            stream_preview = ?ts_ref.streaming_text.chars().take(60).collect::<String>(),
                             "TUI: streaming_text at draw"
                         );
                     }
-                    let raw = ts
+                    let raw = ts_ref
                         .streaming_text
                         .trim_start_matches(|c: char| c.is_whitespace());
                     let stream_lines: Vec<Line<'static>> = raw

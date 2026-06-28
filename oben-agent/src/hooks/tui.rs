@@ -149,11 +149,13 @@ impl Hook for TuiAgentLoopAdapter {
 
 impl AgentLoopHooks for TuiAgentLoopAdapter {
     fn on_loop_start(&self) {
+        tracing::debug!("[tui_agent_loop] on_loop_start: phase -> Idle");
         let mut ts = self.state.state.lock();
-        ts.on_turn_start();
+        ts.phase = TurnPhase::Idle;
     }
 
     fn on_loop_end(&self, outcome: &str) {
+        tracing::debug!("[tui_agent_loop] on_loop_end: outcome={}", outcome);
         let mut ts = self.state.state.lock();
         ts.on_completed(outcome);
     }
@@ -182,6 +184,7 @@ impl Hook for TuiTurnLifecycleAdapter {
 
 impl TurnLifecycleHooks for TuiTurnLifecycleAdapter {
     fn on_pre_turn(&self) {
+        tracing::info!("[tui_turn] on_pre_turn: phase -> Streaming");
         // Per-turn reset — mirroring the old behavior where emit_loop_start()
         // was called inside the loop.  Sets phase to Streaming so the TUI's
         // update_from_turn_state() sees the Idle → Streaming transition.
@@ -190,6 +193,7 @@ impl TurnLifecycleHooks for TuiTurnLifecycleAdapter {
     }
 
     fn on_post_turn(&self, response: &str, _success: bool) {
+        tracing::info!("[tui_turn] on_post_turn: response.len={}, success={}", response.len(), _success);
         let mut ts = self.state.state.lock();
         ts.on_completed(response);
     }

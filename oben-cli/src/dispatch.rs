@@ -132,7 +132,8 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         tracing::info!("Session: {}", name);
     }
 
-    chat.run(coordinator).await?;
+    let agent = std::sync::Arc::new(tokio::sync::Mutex::new(chat));
+    oben_agent::Agent::run(agent, coordinator).await?;
     Ok(())
 }
 

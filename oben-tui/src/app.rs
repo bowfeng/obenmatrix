@@ -16,16 +16,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
-use oben_agent::TurnState;
 use oben_config::AppConfig;
 use super::shared::SharedAgentState;
 
 /// Payload carried by TurnDone completion event from spawned task.
-pub(super) struct TurnCompletion {
-    pub(super) success: bool,
-    pub(super) status: String,
-    pub(super) session_name: Option<String>,
-    pub(super) messages: Vec<oben_models::Message>,
+pub struct TurnCompletion {
+    pub success: bool,
+    pub status: String,
+    pub session_name: Option<String>,
+    pub messages: Vec<oben_models::Message>,
 }
 
 pub struct App {
@@ -52,10 +51,6 @@ pub struct App {
     /// Cleared by draw_ui after rendering. When false, the 32ms timer
     /// skips the terminal.draw() call entirely during idle.
     pub needs_redraw: bool,
-    /// Shared `Arc<Mutex<TurnState>>` — owns all turn lifecycle state.
-    /// TUI polls this directly during draw loop (32ms interval).
-    /// HookEngine adapters (TuiStreamingAdapter, etc.) write to this state.
-    pub turn_state: Arc<PlMutex<TurnState>>,
     /// Shared agent state (agent, tools, session data).
     pub shared_state: Arc<PlMutex<super::shared::SharedAgentState>>,
     /// Sender for TuiEvents to the event loop.
@@ -156,7 +151,8 @@ impl App {
                 }
                 // Clear turn state to prevent stale streaming text from being redrawn
                 {
-                    let mut ts = self.turn_state.lock();
+                    let ss = self.shared_state.lock();
+                    let mut ts = ss.turn_state.lock();
                     ts.reset();
                 }
                 tracing::info!("[clear] turn state cleared");
@@ -320,9 +316,11 @@ impl App {
                 if let Some(s) = boxed_panel.downcast_mut::<ChatPanel>() {
                     let ss_arc = Arc::clone(&self.shared_state);
                     let ss = ss_arc.lock();
-                    if let Some(_agent) = &ss.agent {
-                        let session_name = ss.active_session_name();
-                        let messages = ss.loaded_session_messages().await;
+                    let agent_initialized = ss.agent.is_some();
+                    let session_name = ss.active_session_name();
+                    drop(ss);
+                    if agent_initialized {
+                        let messages = self.loaded_session_messages_safe().await;
                         let msg_roles: Vec<String> = messages.iter().map(|m| format!("{:?}", m.role)).collect();
                         tracing::info!(
                             "[activate_panel/Chat] session_name={:?} messages={:?} message_count={} roles={:?}",
@@ -367,7 +365,6 @@ impl App {
             )),
             input_history: history::InputHistory::new(),
             paste_mode: false,
-            turn_state: Arc::new(PlMutex::new(TurnState::new())),
             pending_session: None,
             reasoning_enabled: false,
             toast_engine,
@@ -397,19 +394,23 @@ impl App {
     }
 
     pub fn begin_turn(&self) {
-        let mut ts = self.turn_state.lock();
+        let ss = self.shared_state.lock();
+        let mut ts = ss.turn_state.lock();
         ts.on_turn_start();
     }
 
     pub fn finalize_turn(&self, outcome: &str) {
-        let mut ts = self.turn_state.lock();
+        let ss = self.shared_state.lock();
+        let mut ts = ss.turn_state.lock();
         ts.on_completed(outcome);
     }
 
     pub async fn create_chat_panel(&mut self) -> Result<()> {
         tracing::info!("[panel] Creating ChatPanel");
         let theme = self.config.display.theme.clone();
-        let state_ref = Arc::clone(&self.turn_state);
+        // CRITICAL: use shared_state.turn_state (written by adapters) not
+        // AppState::turn_state (a stale empty TurnState from App::new).
+        let state_ref = Arc::clone(&self.shared_state.lock().turn_state);
         tracing::info!("[panel] Using theme: {}", theme);
         self.panels.insert(
             PanelId::Chat,
@@ -441,7 +442,8 @@ impl App {
         Ok(())
     }
 
-    pub async fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
+    pub async fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> KeyAction {
+        tracing::info!("[app] handle_key: code={:?} active_panel={:?}", key.code, self.active_panel);
         match key.code {
             crossterm::event::KeyCode::Char('w')
                 if key
@@ -457,7 +459,7 @@ impl App {
                     if let Some(chat) = self.get_chat_mut() {
                         chat.copy_selection_to_clipboard();
                     }
-                    return;
+                    return KeyAction::None;
                 }
             }
             crossterm::event::KeyCode::Char('c')
@@ -466,7 +468,7 @@ impl App {
                     .contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
                 self.running = false;
-                return;
+                return KeyAction::Quit;
             }
             crossterm::event::KeyCode::Char('1')
                 if key
@@ -474,7 +476,7 @@ impl App {
                     .contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
                 self.activate_panel(PanelId::Chat).await;
-                return;
+                return KeyAction::None;
             }
             crossterm::event::KeyCode::Char('2')
                 if key
@@ -482,16 +484,16 @@ impl App {
                     .contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
                 self.activate_panel(PanelId::Sessions).await;
-                return;
+                return KeyAction::None;
             }
 
             crossterm::event::KeyCode::F(1) => {
                 self.activate_panel(PanelId::Chat).await;
-                return;
+                return KeyAction::None;
             }
             crossterm::event::KeyCode::F(2) => {
                 self.activate_panel(PanelId::Sessions).await;
-                return;
+                return KeyAction::None;
             }
 
             crossterm::event::KeyCode::Tab => {
@@ -507,7 +509,7 @@ impl App {
                     _ => unreachable!(),
                 };
                 self.activate_panel(next).await;
-                return;
+                return KeyAction::None;
             }
             crossterm::event::KeyCode::Char('t')
                 if key
@@ -534,79 +536,41 @@ impl App {
             _ => {}
         }
 
-        // Call panel handle_key and process returned action
-        let action = if let Some(panel) = self.panels.get_mut(&self.active_panel) {
-            panel.handle_key(key).await
+        // Delegate to active panel; return the action for the event loop to route.
+        // ChatInput / Steer / Quit are dispatched by the event loop in lib.rs
+        // so channel ownership is unambiguous (app has input_tx but event loop
+        // owns chat_tx and the shutdown flag).
+        if let Some(panel) = self.panels.get_mut(&self.active_panel) {
+            let action = panel.handle_key(key).await;
+            match action {
+                KeyAction::Clear => self.execute_command("clear").await,
+                KeyAction::New => self.execute_command("new").await,
+                KeyAction::Compact => self.execute_command("compact").await,
+                KeyAction::Reasoning => self.execute_command("reasoning").await,
+                KeyAction::Theme => self.execute_command("theme").await,
+                KeyAction::Command { ref cmd_name, ref extra } => match cmd_name.as_str() {
+                    "rename" => {
+                        if extra.is_empty() {
+                            self.show_toast(
+                                "Usage: /rename [new_name]",
+                                ratatui_toaster::ToastType::Error,
+                            );
+                        } else {
+                            commands::execute_session_rename(self, extra).await;
+                        }
+                    }
+                    _ => self.execute_command(cmd_name).await,
+                },
+                KeyAction::SwitchPanel(panel_id) => self.active_panel = panel_id,
+                KeyAction::SessionChanged => {
+                    self.activate_panel(PanelId::Chat).await;
+                }
+                // Pass-through: ChatInput, Steer, Quit, Interrupt, None go to event loop
+                _ => {}
+            }
+            action
         } else {
             KeyAction::None
-        };
-
-        // Process the action
-        match action {
-            KeyAction::Clear => {
-                self.execute_command("clear").await;
-            }
-            KeyAction::New => {
-                self.execute_command("new").await;
-            }
-            KeyAction::Compact => {
-                self.execute_command("compact").await;
-            }
-            KeyAction::Quit => {
-                self.execute_command("quit").await;
-            }
-            KeyAction::Reasoning => {
-                self.execute_command("reasoning").await;
-            }
-            KeyAction::Theme => {
-                self.execute_command("theme").await;
-            }
-            KeyAction::Command { cmd_name, extra } => match cmd_name.as_str() {
-                "rename" => {
-                    if extra.is_empty() {
-                        self.show_toast(
-                            "Usage: /rename [new_name]",
-                            ratatui_toaster::ToastType::Error,
-                        );
-                    } else {
-                        commands::execute_session_rename(self, &extra).await;
-                    }
-                }
-                _ => {
-                    self.execute_command(&cmd_name).await;
-                }
-            },
-            KeyAction::ChatInput(text) => {
-                tracing::info!(
-                    "[app] KeyAction::ChatInput: text.len={}, text='{}'",
-                    text.len(),
-                    text
-                );
-                if let Some(tx) = &self.input_tx {
-                    let _ = tx.send(crate::TuiEvent::ChatInput(text));
-                } else {
-                    tracing::warn!("[app] KeyAction::ChatInput: input_tx is None");
-                }
-            }
-            KeyAction::Interrupt => {
-                if let Some(tx) = &self.input_tx {
-                    let _ = tx.send(crate::TuiEvent::Interrupt);
-                }
-            }
-            KeyAction::Steer(text) => {
-                if let Some(tx) = &self.input_tx {
-                    let _ = tx.send(crate::TuiEvent::Steer(text));
-                }
-            }
-            KeyAction::SwitchPanel(panel_id) => {
-                self.active_panel = panel_id;
-            }
-            KeyAction::SessionChanged => {
-                // Reload session messages into ChatPanel after switching sessions.
-                // Re-use activate_panel which already knows how to fetch messages.
-                self.activate_panel(PanelId::Chat).await;
-            }
-            KeyAction::None => {}
         }
     }
 
@@ -733,5 +697,12 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Load session messages without holding shared_state guard across await.
+    /// This is needed when called from a spawned future where Send is required.
+    pub async fn loaded_session_messages_safe(&self) -> Vec<oben_models::Message> {
+        let ss = self.shared_state.lock();
+        ss.loaded_session_messages().await
     }
 }
