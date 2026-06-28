@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::app::TurnCompletion;
+use oben_agent::Agent;
 use oben_models::SessionManager;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::MissedTickBehavior;
@@ -130,7 +131,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                 // Register TUI adapters on the agent's internal HookEngine.
                 // This follows the same pattern as CLI: Agent::new() creates
                 // HookEngine internally, then we register adapters via Agent::hooks().
-                let ts = a.turn_state.clone();
+                let ts = a.shared_state.lock().turn_state.clone();
                 // Clone the agent arc before the lock is dropped, to avoid
                 // holding a borrow from the lock guard across the .await below.
                 let agent_opt = {
@@ -277,22 +278,20 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         }
     }
 
-    // Create TuiCoordinator and call run_tui() directly — avoids the
-    // unnecessary `Agent::run()` / `Arc<Mutex>` lock.
-    let mut tui_coordinator = TuiCoordinator::new(
-        command_tx,
+    // Create TuiCoordinator — the bridge between Agent::run() and the TUI event loop.
+    let tui_coordinator = TuiCoordinator::new(
         chat_rx,
+        command_tx,
         done_tx,
-        interrupt_state,
-        Arc::clone(&agent),
-        config.clone(),
     );
     let coordinator_handle = tokio::spawn(async move {
-        let _ = tui_coordinator.run_tui().await;
+        // Agent::run() consumes the coordinator and drives the conversation loop.
+        let _ = Agent::run(agent.clone(), tui_coordinator).await;
     });
 
     // --- SPAWN KEYBOARD READER TASK ---
     let (event_tx, mut event_rx) = unbounded_channel();
+    let _event_tx_clone = event_tx.clone(); // For event loop (reader moves original)
     let input_tx = event_tx.clone(); // For command events from app.handle_key()
 
     let running = Arc::new(AtomicBool::new(true));
@@ -408,13 +407,33 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
             event = event_rx.recv() => {
                 match event {
                     Some(TuiEvent::Key(key)) => {
-                        {
-                            let mut app = arc_app.lock().await;
-                            app.handle_key(key).await;
-                        }
-                        {
-                            let mut app = arc_app.lock().await;
-                            app.needs_redraw = true;
+                        let mut app = arc_app.lock().await;
+                        let action = app.handle_key(key).await;
+                        match action {
+                            panels::KeyAction::ChatInput(text) => {
+                                drop(app);
+                                tracing::debug!("[event_loop] KeyAction::ChatInput sending to chat_tx, len={}", text.len());
+                                let _ = chat_tx.send(text);
+                                {
+                                    let mut app = arc_app.lock().await;
+                                    app.needs_redraw = true;
+                                }
+                            }
+                            panels::KeyAction::Quit => {
+                                let _ = _event_tx_clone.send(TuiEvent::Quit);
+                            }
+                            panels::KeyAction::Steer(text) => {
+                                let _ = input_tx.send(TuiEvent::Steer(text));
+                            }
+                            panels::KeyAction::Interrupt => {
+                                let _ = _event_tx_clone.send(TuiEvent::Interrupt);
+                            }
+                            panels::KeyAction::None => {
+                                // No action — redraw handled above or by next timer tick.
+                            }
+                            // Other actions (Clear, New, Compact, etc.) are handled
+                            // inside app.handle_key() via execute_command() calls.
+                            _ => {}
                         }
                     }
                     Some(TuiEvent::Mouse(mouse_event)) => {
