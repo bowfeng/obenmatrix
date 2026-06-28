@@ -24,6 +24,10 @@ use oben_models::{
     TransportProvider, TransportToolCall,
 };
 
+/// Closure type for directly updating TurnState during streaming, in addition
+/// to hook engine broadcasting.
+pub type TurnStateDeltaCallback = Box<dyn FnMut(&str) + Send + 'static>;
+
 // ---------------------------------------------------------------------------
 // TurnConfig
 // ---------------------------------------------------------------------------
@@ -34,6 +38,11 @@ pub struct TurnConfig {
     pub fallback_chain: Option<FallbackChain>,
     pub dispatch_config: Option<ConcurrentDispatchConfig>,
     pub max_iterations: usize,
+    /// Direct callback to update TurnState during streaming, bypassing the
+    /// hook engine entirely.  Set by the TUI layer so streaming text always
+    /// reaches the UI even if the hook dispatch chain is broken.
+    /// Uses `Arc<Mutex>` so the callback survives across retry boundary clones.
+    pub turn_state_delta_callback: Option<Arc<parking_lot::Mutex<TurnStateDeltaCallback>>>,
 }
 
 impl Default for TurnConfig {
@@ -44,6 +53,7 @@ impl Default for TurnConfig {
             fallback_chain: None,
             dispatch_config: None,
             max_iterations: 50,
+            turn_state_delta_callback: None,
         }
     }
 }
@@ -378,8 +388,12 @@ impl TurnExecutor {
                     hooks.emit_status("lifecycle", "api_call_start");
                 }
                 let cb: StreamDeltaCallback = Box::new(move |delta: &str| {
+                    // Hook engine broadcast — the TuiStreamingAdapter writes
+                    // directly to TurnState so only ONE write path is needed.
                     if let Some(ref hooks) = hooks {
                         hooks.emit_stream_delta(delta);
+                    } else {
+                        tracing::warn!("stream_callback: hooks is None");
                     }
                 });
                 transport.stream_chat(&messages, &mode, cb).await.map_err(|e| e.into())

@@ -1,15 +1,14 @@
 /// The main conversation loop that all modes implement.
-use std::pin::Pin;
+
 use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::hooks::HookEngine;
 use crate::context::ContextWindowManager;
+use crate::hooks::HookEngine;
 use crate::interrupt::SharedInterrupt;
 use crate::turn_executor::TurnExecutor;
 use oben_models::{SessionManager, TransportProvider};
-use oben_tools::ToolRegistry;
 
 /// Shared config for both CLI and TUI conversation loops.
 pub mod config;
@@ -17,9 +16,6 @@ pub use config::*;
 
 /// Pluggable termination policies used by concrete coordinators.
 pub mod termination;
-
-/// Subagent tree management and interrupt propagation hub.
-pub mod tree;
 
 // -- Shared turn execution utilities --
 
@@ -55,6 +51,7 @@ pub async fn execute_turn(
         },
         dispatch_config: conversation_config.dispatch_config.clone(),
         max_iterations: conversation_config.max_iterations,
+        turn_state_delta_callback: None,
     };
 
     let result = TurnExecutor::execute_turn_with_config(
@@ -86,6 +83,7 @@ pub async fn execute_turn_full(
     conversation_config: &ConversationConfig,
     hooks: Option<Arc<HookEngine>>,
     interrupt: Option<SharedInterrupt>,
+    turn_state_delta_callback: Option<Arc<parking_lot::Mutex<super::turn_executor::TurnStateDeltaCallback>>>,
 ) -> Result<String> {
     let turn_config = crate::turn_executor::TurnConfig {
         retry_config: conversation_config.retry_config.clone(),
@@ -108,6 +106,7 @@ pub async fn execute_turn_full(
         },
         dispatch_config: conversation_config.dispatch_config.clone(),
         max_iterations: conversation_config.max_iterations,
+        turn_state_delta_callback,
     };
 
     let result = TurnExecutor::execute_turn_with_config(
@@ -147,26 +146,27 @@ pub enum ConversationResult {
 }
 
 /// The conversation coordinator.
+///
+/// The agent owns the turn loop. Coordinators only provide I/O callbacks:
+/// - `on_loop_start` / `on_loop_end` for lifecycle events
+/// - `on_turn_complete` to handle turn results and decide loop continuation
 #[async_trait::async_trait]
 pub trait ConversationCoordinator: Send + Sync {
-    async fn run(
-        &mut self,
-        context_window_manager: &mut dyn ContextWindowManager,
-        transport: Arc<dyn TransportProvider + Send + Sync>,
-        tools: Arc<ToolRegistry>,
-        session_manager: &mut dyn SessionManager,
-    ) -> Result<ConversationResult>;
+    /// Called once at loop start.
+    /// Implementations should emit pre-turn hooks, set up state, etc.
+    fn on_loop_start(&mut self) {}
 
-    fn send_message(
-        &self,
-        _text: String,
-    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
-        Box::pin(async {})
-    }
+    /// Read next user turn input.
+    /// Returns `Some(input)` with user text on success, `None` when no more input is available.
+    async fn next_turn(&mut self) -> Option<String> { None }
 
-    fn request_interrupt(
-        &self,
-        _message: Option<String>,
-    ) {
-    }
+    /// Called after each turn completes.
+    /// Returns `true` to continue the loop, `false` to exit.
+    ///
+    /// For streaming mode, the coordinator should handle output formatting.
+    /// For non-streaming mode, it should print the full response.
+    fn on_turn_complete(&mut self, response: &str, msg_count: usize, success: bool) -> bool;
+
+    /// Called when the loop exits (no more input, user quit, etc.).
+    fn on_loop_end(&mut self, _outcome: &ConversationResult) {}
 }

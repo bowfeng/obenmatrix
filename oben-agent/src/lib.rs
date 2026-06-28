@@ -27,7 +27,6 @@ pub mod error_classifier;
 pub mod fallback;
 pub mod hooks;
 pub mod interrupt;
-pub mod interrupt_hub;
 pub mod interaction;
 pub mod message_sanitize;
 pub mod nudge;

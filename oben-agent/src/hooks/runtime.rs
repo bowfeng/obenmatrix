@@ -131,7 +131,18 @@ impl HookEngine {
     pub fn emit_tool_complete(&self, n: &str, a: &str, r: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_complete(n, a, r); } }
     pub fn emit_tool_error(&self, n: &str, a: &str, e: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_error(n, a, e); } }
     pub fn emit_stream_delta(&self, t: &str) {
-        for h in self.streaming_hooks.read().unwrap().iter() {
+        let streaming_hooks = self.streaming_hooks.read().unwrap();
+        tracing::info!(
+            "[emit_stream_delta] streaming_hooks_count={}, delta_len={}",
+            streaming_hooks.len(),
+            t.chars().count(),
+        );
+        for h in streaming_hooks.iter() {
+            tracing::info!(
+                "[emit_stream_delta] emitting to hook={} (total {} registered)",
+                h.id(),
+                streaming_hooks.len(),
+            );
             h.on_stream_delta(t);
         }
     }
@@ -188,6 +199,7 @@ impl HookEngine {
             },
             dispatch_config: conversation_config.dispatch_config.clone(),
             max_iterations: conversation_config.max_iterations,
+            turn_state_delta_callback: None,
         };
         let result = crate::turn_executor::TurnExecutor::execute_turn_with_config(
             ctx, transport, tools, session_manager, session_id,

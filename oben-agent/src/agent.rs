@@ -31,7 +31,7 @@ pub fn generate_session_name() -> String {
     let r = rand::random::<u64>() % 1_000_000;
     format!("{}-{:06}", ts, r)
 }
-use oben_models::{CallMode, Message, StreamDeltaCallback};
+use oben_models::{CallMode, Message};
 use oben_sessions::{SessionManager, SessionStore};
 
 
@@ -51,15 +51,10 @@ impl Default for DummyCoordinator {
 
 #[::async_trait::async_trait]
 impl ConversationCoordinator for DummyCoordinator {
-    async fn run(
-        &mut self,
-        _context_window_manager: &mut dyn crate::context::ContextWindowManager,
-        _transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
-        _tools: Arc<oben_tools::ToolRegistry>,
-        _session_manager: &mut dyn SessionManager,
-    ) -> Result<ConversationResult> {
-        Ok(ConversationResult::Exit)
-    }
+    fn on_loop_start(&mut self) {}
+    fn on_turn_complete(&mut self, _response: &str, _msg_count: usize, _success: bool) -> bool { false }
+    fn on_loop_end(&mut self, _outcome: &ConversationResult) {}
+    async fn next_turn(&mut self) -> Option<String> { None }
 }
 
 /// An interactive agent — owns all resources, delegates turns to shared execute_turn_full.
@@ -74,6 +69,10 @@ pub struct Agent {
     fallback_chain: Option<crate::fallback::FallbackChain>,
     system_prompt: String,
     hooks: Arc<super::hooks::HookEngine>,
+    /// Direct callback to update TurnState during streaming, bypassing the hook chain.
+    /// Stored as an Arc-wrapped callback so it can be cloned for each turn execution.
+    pub turn_state_delta_callback:
+        Option<Arc<parking_lot::Mutex<super::turn_executor::TurnStateDeltaCallback>>>,
 }
 
 impl Agent {
@@ -109,6 +108,7 @@ impl Agent {
             fallback_chain: None,
             system_prompt,
             hooks,
+            turn_state_delta_callback: None,
         };
 
         agent.eager_load_active_session().await;
@@ -118,38 +118,6 @@ impl Agent {
     /// Create a minimal Agent for testing. Does NOT call real transport or LLMs.
     pub async fn new_for_test() -> Self {
         use oben_models::providers::TransportProvider;
-        use oben_models::{CallMode, TransportResponse};
-
-        struct TestTransport;
-        #[::async_trait::async_trait]
-        impl TransportProvider for TestTransport {
-            fn name(&self) -> &str { "test" }
-            async fn chat(
-                &self,
-                _messages: &[Message],
-                _mode: &CallMode,
-            ) -> Result<TransportResponse> {
-                Ok(TransportResponse {
-                    text: String::new(),
-                    tool_calls: Vec::new(),
-                    tokens_used: None,
-                    reasoning: None,
-                })
-            }
-            async fn stream_chat(
-                &self,
-                _messages: &[Message],
-                _mode: &CallMode,
-                _callback: StreamDeltaCallback,
-            ) -> Result<TransportResponse> {
-                Ok(TransportResponse {
-                    text: String::new(),
-                    tool_calls: Vec::new(),
-                    tokens_used: None,
-                    reasoning: None,
-                })
-            }
-        }
 
         let session_manager = Arc::new(Mutex::new(SessionStore::new(
             oben_models::SessionStoreKind::Memory,
@@ -176,23 +144,69 @@ impl Agent {
             fallback_chain: None,
             system_prompt: String::new(),
             hooks: Arc::new(super::hooks::HookEngine::new()),
+            turn_state_delta_callback: None,
         }
     }
 
     /// Run a conversation loop driven by the given coordinator.
     ///
-    /// The agent provides all runtime resources (ContextWindowManager, Transport, Tools,
-    /// SessionManager). The coordinator owns its own I/O provider and turn loop.
+    /// The agent provides all runtime resources. The mutex is released during
+    /// `coordinator.next_turn().await` to prevent deadlocks with other tasks
+    /// accessing agent-derived state from the TUI event loop.
     pub async fn run(
-        &mut self,
+        agent: Arc<Mutex<Self>>,
         mut coordinator: impl ConversationCoordinator,
     ) -> Result<ConversationResult> {
-        let sm = Arc::clone(&self.session_manager);
-        let trp = self.transport();
-        let tlr = self.tools_arc();
-        let ctx = self.context_window_manager.as_mut();
-        let mut guard = sm.lock().await;
-        coordinator.run(ctx, trp, tlr, &mut *guard).await
+        let my = agent.lock().await;
+        let max_iterations = my.config.max_iterations;
+        let hooks = Arc::clone(&my.hooks);
+        drop(my);
+
+        hooks.emit_loop_start();
+        coordinator.on_loop_start();
+
+        let mut turn_count = 0usize;
+
+        loop {
+            // Release the agent lock during next_turn().await so the TUI event
+            // loop can access agent-derived state (turn_state, session manager)
+            // without deadlocking.
+            let user_input = coordinator.next_turn().await;
+            let user_input = match user_input {
+                Some(input) => input,
+                None => {
+                    hooks.emit_loop_end("input_end");
+                    return Ok(ConversationResult::Exit);
+                }
+            };
+
+            {
+                let mut me = agent.lock().await;
+                me.hooks.emit_pre_turn();
+                let response = me.turn(&user_input, true, None).await;
+                let msg_count = me.session_manager.lock().await
+                    .session(&me.context_window_manager.session_id().unwrap_or_default())
+                    .map(|s| s.messages.len()).unwrap_or(0);
+                let turn_success = response.is_ok();
+                let turn_text = response.as_deref().unwrap_or("");
+                if !coordinator.on_turn_complete(turn_text, msg_count, turn_success) {
+                    me.hooks.emit_loop_end("user_exit");
+                    return Ok(ConversationResult::Exit);
+                }
+                if turn_success {
+                    me.hooks.post_turn(turn_text, msg_count);
+                } else {
+                    me.hooks.emit_turn_error(&response.unwrap_err());
+                }
+                turn_count += 1;
+                if let Some(max) = max_iterations {
+                    if turn_count >= max {
+                        me.hooks.emit_loop_end("max_turns_reached");
+                        return Ok(ConversationResult::BudgetExhausted);
+                    }
+                }
+            }
+        }
     }
 
     async fn eager_load_active_session(&mut self) {
@@ -307,6 +321,17 @@ impl Agent {
         self.hooks = hooks;
     }
 
+    /// Register a direct TurnState write callback for streaming text.
+    ///
+    /// This callback bypasses the hook chain entirely, ensuring streaming
+    /// text always reaches the TUI even if hooks are broken.
+    pub fn set_turn_state_delta_callback(
+        &mut self,
+        callback: Arc<parking_lot::Mutex<super::turn_executor::TurnStateDeltaCallback>>,
+    ) {
+        self.turn_state_delta_callback = Some(callback);
+    }
+
     // ── Tier 2: System Prompt ──────────────────────────────────────────────
 
     /// Update the cached system prompt after building a new one.
@@ -380,15 +405,15 @@ impl Agent {
             &conversation,
             Some(Arc::clone(&self.hooks)),
             interrupt.map(|x| Arc::clone(&x)),
+            self.turn_state_delta_callback.clone(),
         )
         .await?;
-
-        sm.lock().await.incremental_save(None)?;
 
         Ok(response)
     }
 
     /// Variant of [`Self::turn`] that accepts a pre-built [`Message`].
+    ///
     ///
     /// Used by the TUI layer to send image messages when the user drags an
     /// image into the input bar — the URL is detected and wrapped in
@@ -425,10 +450,9 @@ impl Agent {
             &conversation,
             Some(Arc::clone(&self.hooks)),
             interrupt.map(|x| Arc::clone(&x)),
+            self.turn_state_delta_callback.clone(),
         )
         .await?;
-
-        sm.lock().await.incremental_save(None)?;
 
         Ok(response)
     }
@@ -702,6 +726,9 @@ impl Agent {
             return;
         }
 
+        let memory_enabled = memory_interval > 0;
+        let skill_enabled = skill_interval > 0;
+
         let sm = Arc::clone(&self.session_manager);
         let has_memory_tool = {
             let guard = sm.lock().await;
@@ -721,7 +748,7 @@ impl Agent {
         }
 
         // Build the nudge prompt (mirrors Hermes _MEMORY_REVIEW_PROMPT).
-        let prompt = self.build_nudge_prompt(memory_interval > 0, skill_interval > 0);
+        let prompt = self.build_nudge_prompt(memory_enabled, skill_enabled);
 
         let nudge_config = crate::coordinator::ConversationConfigBuilder::from_app_config(&self.config)
             .with_max_iterations(16)
@@ -759,6 +786,7 @@ impl Agent {
             review_msg,
             &call_mode,
             &nudge_config,
+            None,
             None,
             None,
         )
@@ -830,31 +858,100 @@ impl Agent {
     }
 }
 
-fn print_session_messages(messages: &[Message], max_show: usize) {
-    if messages.is_empty() {
-        tracing::info!(message_count = 0, "(no messages)");
-        return;
+/// Shared agent handle for the TUI layer.
+///
+/// Wraps `Arc<tokio::sync::Mutex<Agent>>`, releasing the lock during
+/// `coordinator.next_turn().await` so the event loop can access the agent
+/// without deadlocking (e.g. `/clear`, `/new`, Interrupt).
+///
+/// The CLI continues to use `Agent::run(&mut self)` directly.
+pub struct AgentHandle {
+    inner: Arc<tokio::sync::Mutex<Agent>>,
+}
+
+impl AgentHandle {
+    pub fn new(inner: Arc<tokio::sync::Mutex<Agent>>) -> Self {
+        Self { inner }
     }
-    let show_count = messages.len().min(max_show);
-    let show = &messages[..show_count];
-    let overflow = messages.len().saturating_sub(max_show);
-    for msg in show {
-        let role = match msg.role {
-            oben_models::MessageRole::User => "📝 你",
-            oben_models::MessageRole::Assistant => "🤖 agent",
-            oben_models::MessageRole::System => "📋 system",
-            oben_models::MessageRole::Tool => "⚙️ tool",
-        };
-        let text = msg.content.to_text_ref().unwrap_or("<non-text>");
-        let text_display: String = if text.chars().count() > 120 {
-            text.chars().take(117).collect::<String>() + "..."
-        } else {
-            text.to_string()
-        };
-        tracing::info!(role, display = %text_display, "message preview");
-    }
-    if overflow > 0 {
-        tracing::info!(overflow, more_messages = true, "... more messages");
+
+    /// Run the conversation loop with automatic lock management.
+    ///
+    /// Locks the inner agent only while executing `turn()` and hook
+    /// lifecycle calls. During `coordinator.next_turn().await`, the
+    /// mutex is unlocked so other tasks can access the agent.
+    pub async fn run(
+        &self,
+        mut coordinator: impl crate::coordinator::ConversationCoordinator,
+    ) -> anyhow::Result<crate::coordinator::ConversationResult> {
+        let hooks = self.inner.lock().await.hooks().clone();
+        let max_turns = self.inner.lock().await.config().max_iterations;
+
+        {
+            let me = self.inner.lock().await;
+            me.hooks().emit_loop_start();
+        }
+        coordinator.on_loop_start();
+
+        let mut turn_count = 0usize;
+
+        loop {
+            tracing::debug!("[agent_loop] next_turn: waiting for input");
+            let user_input = match coordinator.next_turn().await {
+                Some(input) => {
+                    tracing::debug!("[agent_loop] next_turn: received input (len={})", input.len());
+                    input
+                },
+                None => {
+                    tracing::debug!("[agent_loop] next_turn: returned None (no more input)");
+                    hooks.emit_loop_end("input_end");
+                    return Ok(crate::coordinator::ConversationResult::Exit);
+                }
+            };
+
+            let (response, msg_count) = {
+                let mut me = self.inner.lock().await;
+                tracing::debug!("[agent_loop] emitting pre_turn hooks");
+                me.hooks().emit_pre_turn();
+                let response = me.turn(&user_input, true, None).await;
+                let msg_count = me
+                    .session_manager()
+                    .lock()
+                    .await
+                    .session(
+                        &me.context_window_manager()
+                            .session_id()
+                            .unwrap_or_default(),
+                    )
+                    .map(|s| s.messages.len())
+                    .unwrap_or(0);
+                (response, msg_count)
+            };
+
+            let turn_success = response.is_ok();
+            let turn_text = response.as_deref().unwrap_or("").to_string();
+
+            if !coordinator.on_turn_complete(&turn_text, msg_count, turn_success) {
+                hooks.emit_loop_end("user_exit");
+                return Ok(crate::coordinator::ConversationResult::Exit);
+            }
+
+            {
+                let me = self.inner.lock().await;
+                if turn_success {
+                    me.hooks().post_turn(&turn_text, msg_count);
+                } else {
+                    me.hooks().emit_turn_error(&response.unwrap_err());
+                }
+            }
+
+            turn_count += 1;
+            if let Some(max) = max_turns {
+                if turn_count >= max {
+                    hooks.emit_loop_end("max_turns_reached");
+                    return Ok(crate::coordinator::ConversationResult::BudgetExhausted);
+                }
+            }
+        }
     }
 }
 
@@ -902,5 +999,4 @@ mod tests {
         assert!(*called.lock().unwrap(), "on_tool_error should have been called");
     }
 }
-
 
