@@ -5,6 +5,8 @@
 
 use anyhow::Result;
 use std::sync::Arc;
+use tracing::info;
+use uuid::Uuid;
 
 use crate::cli::{
     Cli, Commands, ConfigCommand, CronCommand, GatewayCommand, GoalCommand, ModelsCommand, SessionsCommand,
@@ -13,9 +15,8 @@ use clap::Parser;
 use crate::coordinator::CliCoordinator;
 use oben_agent::coordinator::ConversationConfig;
 use oben_cron::{CronJob, CronStore};
-use oben_goals::{GoalStore, JsonGoalStore};
+use oben_goals::GoalStore;
 use oben_models::TransportProvider;
-use oben_sessions::DBSessionManager;
 
 /// Entry point: parse CLI args and dispatch to the appropriate handler.
 pub async fn run_cli() -> Result<()> {
