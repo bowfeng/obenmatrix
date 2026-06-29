@@ -18,3 +18,12 @@ serde_json.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+reqwest.workspace = true
+tungstenite = "0.24"
+
+# Tokio-tungstenite for async WebSocket client
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+
+# AES-256-GCM for decrypting QQ bot encrypted secrets (QR onboarding)
+aes-gcm = { version = "0.10", features = ["std"] }
+base64 = "0.22"
