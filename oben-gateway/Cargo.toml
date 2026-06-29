@@ -22,6 +22,7 @@ reqwest.workspace = true
 tungstenite = "0.24"
 
 # Tokio-tungstenite for async WebSocket client
+# rustls-tls-native-roots enables rustls + native certs
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 
 # Tracing subscriber for init_logging in main.rs
@@ -32,7 +33,3 @@ tracing-appender = "0.2"
 
 # AES-256-GCM for decrypting QQ bot encrypted secrets (QR onboarding)
 aes-gcm = { version = "0.10", features = ["std"] }
-
-# TLS crypto provider — required by rustls 0.23+ (enable ring feature on rustls)
-# so the default CryptoProvider is installed before any TLS handshake.
-rustls = { version = "0.23", features = ["ring"] }
