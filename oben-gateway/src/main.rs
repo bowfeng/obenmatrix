@@ -131,6 +131,14 @@ fn create_tool_registry() -> ToolRegistry {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install ring crypto provider BEFORE any other code runs.
+    // hyper-rustls (via reqwest) has its own direct rustls dependency with aws-lc-rs.
+    // Since Cargo merges both ring and aws-lc-rs into one binary, rustls 0.23+ would
+    // panic on auto-detection. Explicitly installing ring avoids this.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install ring crypto provider");
+
     init_logging();
     info!("=== Oben Gateway Starting ===");
 

@@ -2564,6 +2564,7 @@ dependencies = [
  "oben-sessions",
  "oben-tools",
  "reqwest 0.12.28",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",

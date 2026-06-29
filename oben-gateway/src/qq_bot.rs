@@ -379,9 +379,17 @@ impl SharedState {
 
     fn dispatch_message(&self, event_type: &EventType, data: &serde_json::Value) {
         let incoming = match event_to_incoming(event_type, data) {
-            Ok(msg) => msg,
+            Ok(msg) => {
+                debug!(
+                    platform = %msg.platform,
+                    user_id = %msg.user_id,
+                    event_type = ?event_type,
+                    "Incoming message from QQ Bot"
+                );
+                msg
+            }
             Err(e) => {
-                warn!("Failed to convert event: {}", e);
+                warn!(event_type = ?event_type, "Failed to convert event: {}", e);
                 return;
             }
         };
