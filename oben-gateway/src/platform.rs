@@ -42,10 +42,9 @@ pub trait PlatformAdapter: Send + Sync {
     async fn health_check(&self) -> bool;
 }
 
-/// Handler for incoming messages from a platform.
 #[async_trait]
 pub trait MessageHandler: Send + Sync {
-    async fn handle(&self, msg: IncomingMessage) -> Result<()>;
+    async fn handle(&self, msg: IncomingMessage) -> Result<Option<String>>;
 }
 
 #[cfg(test)]

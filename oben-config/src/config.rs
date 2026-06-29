@@ -262,12 +262,61 @@ impl Default for SkillsConfig {
     }
 }
 
+/// QQ Bot intents as user-facing enum variants (bitflags mapping happens internally).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum QQBotIntent {
+    #[serde(rename = "g_build_in_guilds")]
+    #[default]
+    Guilds,
+    #[serde(rename = "g_build_in_c2c_message")]
+    C2cMessage,
+    #[serde(rename = "g_build_in_group_at_message")]
+    GroupAtMessage,
+}
+
+/// QQ Bot gateway configuration.
+///
+/// Connects to QQ Open Platform via WebSocket Gateway (wss://gw.open.q.qq.com)
+/// and routes bi-directional messages through the agent system.
+///
+/// YAML example:
+/// ```yaml
+/// gateway:
+///   qq_bot:
+///     enabled: true
+///     app_id: "123456"
+///     app_secret: "secret_key"
+///     intents:
+///       - g_build_in_guilds
+///       - g_build_in_c2c_message
+///       - g_build_in_group_at_message
+///     sandbox: true
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QQBotConfig {
+    pub enabled: bool,
+    /// QQ Open Platform AppID (bot application ID).
+    pub app_id: String,
+    /// QQ Open Platform AppSecret (bot application secret).
+    pub app_secret: String,
+    /// Event intents to subscribe to (comma-separated bitflags internally).
+    #[serde(default)]
+    pub intents: Vec<QQBotIntent>,
+    /// Shard info: `shard_id` and `num_shards`. `None` means single-instance mode.
+    #[serde(default)]
+    pub shard: Option<[usize; 2]>,
+    /// Use sandbox (testing) endpoints. Default: false.
+    #[serde(default)]
+    pub sandbox: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GatewayConfig {
     pub telegram: Option<PlatformConfig>,
     pub discord: Option<PlatformConfig>,
     pub slack: Option<PlatformConfig>,
     pub whatsapp: Option<PlatformConfig>,
+    pub qq_bot: Option<QQBotConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
