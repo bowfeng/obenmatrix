@@ -4,11 +4,7 @@
 //! CLI parsing, wiring crates together, and user-facing output.
 
 use anyhow::Result;
-use daemonize::Daemonize;
-use std::io::Write;
 use std::sync::Arc;
-use tracing::info;
-use uuid::Uuid;
 
 use crate::cli::{
     Cli, Commands, ConfigCommand, CronCommand, GatewayCommand, GoalCommand, ModelsCommand, SessionsCommand,
