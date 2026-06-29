@@ -33,3 +33,9 @@ uuid = { workspace = true, features = ["v4"] }
 serde_json = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
+dialoguer = { workspace = true }
+dirs = { workspace = true }
+daemonize = "0.5"
+
+[dev-dependencies]
+tempfile = { workspace = true }

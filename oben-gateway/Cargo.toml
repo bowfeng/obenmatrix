@@ -24,6 +24,11 @@ tungstenite = "0.24"
 # Tokio-tungstenite for async WebSocket client
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 
+# Tracing subscriber for init_logging in main.rs
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Log file writing (for gateway.log)
+tracing-appender = { version = "0.2", features = ["rolling"] }
+
 # AES-256-GCM for decrypting QQ bot encrypted secrets (QR onboarding)
 aes-gcm = { version = "0.10", features = ["std"] }
-base64 = "0.22"

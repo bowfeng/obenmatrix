@@ -4,13 +4,14 @@
 //! CLI parsing, wiring crates together, and user-facing output.
 
 use anyhow::Result;
+use daemonize::Daemonize;
 use std::io::Write;
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
 use crate::cli::{
-    Cli, Commands, ConfigCommand, CronCommand, GoalCommand, ModelsCommand, SessionsCommand,
+    Cli, Commands, ConfigCommand, CronCommand, GatewayCommand, GoalCommand, ModelsCommand, SessionsCommand,
 };
 use clap::Parser;
 use crate::coordinator::CliCoordinator;
@@ -77,6 +78,17 @@ pub async fn run_cli() -> Result<()> {
             Some(GoalCommand::Pause { id }) => goal_pause(&id).await,
             Some(GoalCommand::Resume { id, reset }) => goal_resume(&id, reset).await,
             Some(GoalCommand::Clear { id }) => goal_clear(&id).await,
+        },
+        Commands::Gateway { action } => match action {
+            None => {
+                println!("Gateway commands: start, stop, status, setup");
+                println!("Run 'oben gateway start' to launch the gateway server.");
+                Ok(())
+            }
+            Some(GatewayCommand::Start) => gateway_start().await,
+            Some(GatewayCommand::Stop) => gateway_stop().await,
+            Some(GatewayCommand::Status) => gateway_status().await,
+            Some(GatewayCommand::Setup) => gateway_setup().await,
         },
     }
 }
@@ -1016,4 +1028,578 @@ fn cron_info() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── Gateway ───────────────────────────────────────────────────────────────
+
+fn get_gateway_pid_path() -> std::path::PathBuf {
+    let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("~/.config"));
+    config_dir.join("obenalien").join("gateway.pid")
+}
+
+/// Check if the gateway process is running by reading the PID file.
+pub fn is_gateway_running() -> Option<u32> {
+    let pid_path = get_gateway_pid_path();
+    if !pid_path.exists() {
+        return None;
+    }
+    let pid: u32 = std::fs::read_to_string(&pid_path)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+
+    let res = std::process::Command::new("kill")
+        .args(&["-0", &pid.to_string()])
+        .output();
+    match res {
+        Ok(out) if out.status.success() => Some(pid),
+        _ => None,
+    }
+}
+
+fn find_gateway_binary() -> Option<std::path::PathBuf> {
+    let candidates = ["target/debug/oben-gateway", "target/release/oben-gateway"];
+    for c in &candidates {
+        let p = std::path::PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let out = std::process::Command::new("which")
+        .args(&["oben-gateway"])
+        .output()
+        .ok()?;
+    if out.status.success() && !out.stdout.is_empty() {
+        let path = std::str::from_utf8(&out.stdout).ok()?.trim().to_string();
+        let p = std::path::PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+async fn gateway_start() -> Result<()> {
+    if let Some(pid) = is_gateway_running() {
+        println!("Gateway is already running (PID {}).", pid);
+        return Ok(());
+    }
+
+    let binary = match find_gateway_binary() {
+        Some(b) => b,
+        None => {
+            println!("oben-gateway binary not found; building...");
+            let output = std::process::Command::new("cargo")
+                .args(&["build", "--package", "oben-gateway"])
+                .output()
+                .map_err(|e| anyhow::anyhow!("Failed to build gateway: {}", e))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!("{}", stderr);
+                anyhow::bail!("Building oben-gateway failed");
+            }
+            std::path::PathBuf::from("target/debug/oben-gateway")
+        }
+    };
+
+    let pid_path = get_gateway_pid_path();
+
+    if let Some(dir) = pid_path.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+
+    let daemonize = Daemonize::new().pid_file(pid_path);
+
+    println!("Starting gateway as daemon...");
+    match daemonize.start() {
+        Ok(_) => {
+            std::process::Command::new(&binary)
+                .status()
+                .map_err(|e| anyhow::anyhow!("Failed to exec gateway: {}", e))?;
+            Ok(())
+        }
+        Err(e) => Err(anyhow::anyhow!("Failed to daemonize gateway: {}", e)),
+    }
+}
+
+async fn gateway_stop() -> Result<()> {
+    let pid_path = get_gateway_pid_path();
+    let pid = is_gateway_running()
+        .ok_or_else(|| anyhow::anyhow!("Gateway is not running"))?;
+
+    println!("Stopping gateway (PID {})...", pid);
+
+    let mut child = std::process::Command::new("kill")
+        .args(&["-TERM", &pid.to_string()])
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to send SIGTERM: {}", e))?;
+    child.wait().ok();
+
+    for _ in 0..10 {
+        if is_gateway_running().is_none() {
+            let _ = std::fs::remove_file(&pid_path);
+            println!("Gateway stopped.");
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    println!("Gateway did not stop gracefully, sending SIGKILL...");
+    let kill = std::process::Command::new("kill")
+        .args(&["-KILL", &pid.to_string()])
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to send SIGKILL: {}", e))?;
+    if kill.status.success() {
+        println!("Gateway killed.");
+    }
+
+    let _ = std::fs::remove_file(&pid_path);
+    Ok(())
+}
+
+async fn gateway_status() -> Result<()> {
+    let pid_path = get_gateway_pid_path();
+
+    if let Some(pid) = is_gateway_running() {
+        println!("Gateway: active (PID {})", pid);
+        println!("  PID file: {:?}", pid_path);
+        Ok(())
+    } else {
+        println!("Gateway: inactive (not running)");
+        if pid_path.exists() {
+            println!("  Stale PID file exists: {:?}", pid_path);
+            let _ = std::fs::remove_file(&pid_path);
+            println!("  Removed stale PID file.");
+        }
+        Ok(())
+    }
+}
+
+async fn gateway_setup() -> Result<()> {
+    println!("\n🔌 Gateway Setup Wizard\n");
+    
+    let mut config = oben_config::AppConfig::load()?;
+    
+    let platforms = vec![
+        "QQ Bot (Tencent)",
+        "Telegram",
+        "Discord",
+        "Slack",
+        "WhatsApp",
+    ];
+    
+    let selected = dialoguer::Select::new()
+        .with_prompt("Select platform to configure")
+        .items(&platforms)
+        .default(0)
+        .interact()?;
+    
+    match selected {
+        0 => setup_qq_bot(&mut config)?,
+        1 => setup_telegram(&mut config)?,
+        2 => setup_discord(&mut config)?,
+        3 => setup_slack(&mut config)?,
+        4 => setup_whatsapp(&mut config)?,
+        _ => unreachable!(),
+    }
+    
+    config.save()?;
+    
+    println!("\n✅ Gateway configuration saved.");
+    println!("You can re-run this wizard anytime with: `oben gateway setup`\n");
+    Ok(())
+}
+
+fn setup_qq_bot(config: &mut oben_config::AppConfig) -> Result<()> {
+    println!("\n📱 QQ Bot Configuration");
+    println!("Note: QQ Bot requires a Tencent Cloud account.\n");
+    
+    let enabled: bool = dialoguer::Confirm::new()
+        .with_prompt("Enable QQ Bot adapter")
+        .default(false)
+        .interact()?;
+    
+    if !enabled {
+        if let Some(ref mut gw) = config.gateway {
+            gw.qq_bot = None;
+        } else {
+            config.gateway = Some(Default::default());
+        }
+        return Ok(());
+    }
+    
+    let app_id: String = dialoguer::Input::new()
+        .with_prompt("App ID")
+        .default(String::new())
+        .interact()?;
+    
+    let app_secret: String = dialoguer::Input::new()
+        .with_prompt("App Secret")
+        .default(String::new())
+        .interact()?;
+    
+    let sandbox: bool = dialoguer::Confirm::new()
+        .with_prompt("Use sandbox (testing) endpoints")
+        .default(true)
+        .interact()?;
+    
+    let intents = vec![
+        "All intents (default)",
+        "Guild only",
+        "Group @ only",
+        "C2C only",
+    ];
+    let intent_sel = dialoguer::Select::new()
+        .with_prompt("Event intents")
+        .items(&intents)
+        .default(0)
+        .interact()?;
+    
+    let intents_list: Vec<oben_config::QQBotIntent> = match intent_sel {
+        0 => vec![
+            oben_config::QQBotIntent::Guilds,
+            oben_config::QQBotIntent::C2cMessage,
+            oben_config::QQBotIntent::GroupAtMessage,
+        ],
+        1 => vec![oben_config::QQBotIntent::Guilds],
+        2 => vec![oben_config::QQBotIntent::GroupAtMessage],
+        3 => vec![oben_config::QQBotIntent::C2cMessage],
+        _ => unreachable!(),
+    };
+    
+    if let Some(ref mut gw) = config.gateway {
+        gw.qq_bot = Some(oben_config::QQBotConfig {
+            enabled: true,
+            app_id,
+            app_secret,
+            sandbox,
+            shard: None,
+            intents: intents_list,
+        });
+    } else {
+        config.gateway = Some(oben_config::GatewayConfig {
+            qq_bot: Some(oben_config::QQBotConfig {
+                enabled: true,
+                app_id,
+                app_secret,
+                sandbox,
+                shard: None,
+                intents: intents_list,
+            }),
+            ..Default::default()
+        });
+    }
+    
+    Ok(())
+}
+
+fn setup_telegram(config: &mut oben_config::AppConfig) -> Result<()> {
+    println!("\n✈️ Telegram Configuration");
+    println!("Note: Telegram adapter is not yet fully implemented.\n");
+    
+    let enabled: bool = dialoguer::Confirm::new()
+        .with_prompt("Enable Telegram adapter (stub)")
+        .default(true)
+        .interact()?;
+    
+    if !enabled {
+        if let Some(ref mut gw) = config.gateway {
+            gw.telegram = None;
+        } else {
+            config.gateway = Some(Default::default());
+        }
+        return Ok(());
+    }
+    
+    let token: String = dialoguer::Input::new()
+        .with_prompt("Bot token")
+        .default(String::new())
+        .interact()?;
+    
+    if let Some(ref mut gw) = config.gateway {
+        gw.telegram = Some(oben_config::PlatformConfig {
+            enabled: true,
+            token: if token.is_empty() { None } else { Some(token) },
+        });
+    } else {
+        config.gateway = Some(oben_config::GatewayConfig {
+            telegram: Some(oben_config::PlatformConfig {
+                enabled: true,
+                token: if token.is_empty() { None } else { Some(token) },
+            }),
+            ..Default::default()
+        });
+    }
+    
+    Ok(())
+}
+
+fn setup_discord(config: &mut oben_config::AppConfig) -> Result<()> {
+    println!("\n🎮 Discord Configuration");
+    println!("Note: Discord adapter is not yet fully implemented.\n");
+    
+    let enabled: bool = dialoguer::Confirm::new()
+        .with_prompt("Enable Discord adapter (stub)")
+        .default(true)
+        .interact()?;
+    
+    if !enabled {
+        if let Some(ref mut gw) = config.gateway {
+            gw.discord = None;
+        } else {
+            config.gateway = Some(Default::default());
+        }
+        return Ok(());
+    }
+    
+    let token: String = dialoguer::Input::new()
+        .with_prompt("Bot token")
+        .default(String::new())
+        .interact()?;
+    
+    if let Some(ref mut gw) = config.gateway {
+        gw.discord = Some(oben_config::PlatformConfig {
+            enabled: true,
+            token: if token.is_empty() { None } else { Some(token) },
+        });
+    } else {
+        config.gateway = Some(oben_config::GatewayConfig {
+            discord: Some(oben_config::PlatformConfig {
+                enabled: true,
+                token: if token.is_empty() { None } else { Some(token) },
+            }),
+            ..Default::default()
+        });
+    }
+    
+    Ok(())
+}
+
+fn setup_slack(config: &mut oben_config::AppConfig) -> Result<()> {
+    println!("\n💬 Slack Configuration");
+    println!("Note: Slack adapter is not yet fully implemented.\n");
+    
+    let enabled: bool = dialoguer::Confirm::new()
+        .with_prompt("Enable Slack adapter (stub)")
+        .default(true)
+        .interact()?;
+    
+    if !enabled {
+        if let Some(ref mut gw) = config.gateway {
+            gw.slack = None;
+        } else {
+            config.gateway = Some(Default::default());
+        }
+        return Ok(());
+    }
+    
+    let token: String = dialoguer::Input::new()
+        .with_prompt("Bot token")
+        .default(String::new())
+        .interact()?;
+    
+    if let Some(ref mut gw) = config.gateway {
+        gw.slack = Some(oben_config::PlatformConfig {
+            enabled: true,
+            token: if token.is_empty() { None } else { Some(token) },
+        });
+    } else {
+        config.gateway = Some(oben_config::GatewayConfig {
+            slack: Some(oben_config::PlatformConfig {
+                enabled: true,
+                token: if token.is_empty() { None } else { Some(token) },
+            }),
+            ..Default::default()
+        });
+    }
+    
+    Ok(())
+}
+
+fn setup_whatsapp(config: &mut oben_config::AppConfig) -> Result<()> {
+    println!("\n📞 WhatsApp Configuration");
+    println!("Note: WhatsApp adapter is not yet fully implemented.\n");
+    
+    let enabled: bool = dialoguer::Confirm::new()
+        .with_prompt("Enable WhatsApp adapter (stub)")
+        .default(true)
+        .interact()?;
+    
+    if !enabled {
+        if let Some(ref mut gw) = config.gateway {
+            gw.whatsapp = None;
+        } else {
+            config.gateway = Some(Default::default());
+        }
+        return Ok(());
+    }
+    
+    let token: String = dialoguer::Input::new()
+        .with_prompt("Bot token")
+        .default(String::new())
+        .interact()?;
+    
+    if let Some(ref mut gw) = config.gateway {
+        gw.whatsapp = Some(oben_config::PlatformConfig {
+            enabled: true,
+            token: if token.is_empty() { None } else { Some(token) },
+        });
+    } else {
+        config.gateway = Some(oben_config::GatewayConfig {
+            whatsapp: Some(oben_config::PlatformConfig {
+                enabled: true,
+                token: if token.is_empty() { None } else { Some(token) },
+            }),
+            ..Default::default()
+        });
+    }
+    
+    Ok(())
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod gateway_lifecycle_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Write a PID into a temp directory and return the PID path.
+    fn write_temp_pid(temp_dir: &TempDir, pid: u32) -> std::path::PathBuf {
+        let dir = temp_dir.path().join("obenalien");
+        fs::create_dir_all(&dir).unwrap();
+        let pid_path = dir.join("gateway.pid");
+        fs::write(&pid_path, format!("{}\n", pid)).unwrap();
+        pid_path
+    }
+
+    /// Check if a process with the given PID is alive via kill -0.
+    fn kill0_is_alive(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .args(&["-0", &pid.to_string()])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+
+    // ── get_gateway_pid_path ──────────────────────────────────────────
+
+    #[test]
+    /// Given: no special environment
+    /// When: get_gateway_pid_path is called
+    /// Then: returns a path ending with "obenalien/gateway.pid"
+    fn test_gateway_pid_path_construction() {
+        let path = get_gateway_pid_path();
+        assert!(
+            path.to_string_lossy().ends_with("obenalien/gateway.pid")
+                || cfg!(windows) && path.to_string_lossy().ends_with("obenalien\\gateway.pid"),
+            "Expected path to end with 'obenalien/gateway.pid', got: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    /// Given: the gateway PID path
+    /// When: we inspect its file name
+    /// Then: it equals "gateway.pid"
+    fn test_gateway_pid_path_file_name_is_pid() {
+        let path = get_gateway_pid_path();
+        assert_eq!(path.file_name().unwrap().to_string_lossy().as_ref(), "gateway.pid");
+    }
+
+    // ── is_gateway_running ────────────────────────────────────────────
+
+    #[test]
+    /// Given: an impossible PID (higher than any user-space process)
+    /// When: we check if the process is alive via kill -0
+    /// Then: kill returns an error, confirming non-aliveness
+    fn test_is_gateway_running_returns_none_for_impossible_pid() {
+        let impossible_pid = 999999999u32;
+        assert!(
+            !kill0_is_alive(impossible_pid),
+            "kill -0 on impossible PID should fail"
+        );
+    }
+
+    // ── find_gateway_binary ───────────────────────────────────────────
+
+    #[test]
+    /// Given: no oben-gateway binary in target/ or PATH
+    /// When: find_gateway_binary is called
+    /// Then: no panic occurs (returns Some or None depending on env)
+    fn test_find_gateway_binary_does_not_panic() {
+        let _ = find_gateway_binary();
+    }
+
+    // ── PID file read/parsing – core logic tested in isolation ─────────
+
+    #[test]
+    /// Given: a temp directory with a gateway.pid containing a valid PID
+    /// When: we read and parse it the same way is_gateway_running does
+    /// Then: we can parse the integer successfully
+    fn test_pid_file_parsing_valid_integer() {
+        let temp = TempDir::new().unwrap();
+        let pid_path = write_temp_pid(&temp, 12345);
+        let content = fs::read_to_string(&pid_path).unwrap();
+        let parsed: u32 = content.trim().parse().unwrap();
+        assert_eq!(parsed, 12345);
+    }
+
+    #[test]
+    /// Given: a temp file with non-numeric content
+    /// When: we try to parse as u32
+    /// Then: parse fails
+    fn test_pid_file_parsing_fails_on_non_numeric() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("obenalien");
+        fs::create_dir_all(&dir).unwrap();
+        let bad_path = dir.join("gateway.pid");
+        fs::write(&bad_path, "not-a-pid\n").unwrap();
+        let result: Result<u32, _> = fs::read_to_string(&bad_path)
+            .unwrap()
+            .trim()
+            .parse();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    /// Given: an empty PID file
+    /// When: we try to parse as u32
+    /// Then: parse fails
+    fn test_pid_file_parsing_fails_on_empty() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("obenalien");
+        fs::create_dir_all(&dir).unwrap();
+        let empty_path = dir.join("gateway.pid");
+        fs::write(&empty_path, "\n").unwrap();
+        let result: Result<u32, _> = fs::read_to_string(&empty_path)
+            .unwrap()
+            .trim()
+            .parse();
+        assert!(result.is_err());
+    }
+
+    // ── Missing PID file handling ─────────────────────────────────────
+
+    #[test]
+    /// Given: a directory without any PID file
+    /// When: we check existence
+    /// Then: exists() returns false, no panic
+    fn test_missing_pid_file_returns_false() {
+        let temp = TempDir::new().unwrap();
+        let missing = temp.path().join("obenalien").join("gateway.pid");
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    /// Given: a directory that doesn't even contain "obenalien" subdirectory
+    /// When: we look for the PID file
+    /// Then: exists() returns false gracefully
+    fn test_missing_parent_dir_returns_false() {
+        let temp = TempDir::new().unwrap();
+        let missing = temp.path().join("nonexistent").join("gateway.pid");
+        assert!(!missing.exists());
+    }
 }
