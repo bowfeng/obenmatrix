@@ -32,3 +32,7 @@ tracing-appender = "0.2"
 
 # AES-256-GCM for decrypting QQ bot encrypted secrets (QR onboarding)
 aes-gcm = { version = "0.10", features = ["std"] }
+
+# TLS crypto provider — required by rustls 0.23+ when ring-based crypto is used
+# (default crypto provider for native-roots feature)
+ring = "0.17"
