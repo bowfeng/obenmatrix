@@ -1080,6 +1080,7 @@ fn find_gateway_binary() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Start the gateway binary in the background and record its PID.
 async fn gateway_start() -> Result<()> {
     if let Some(pid) = is_gateway_running() {
         println!("Gateway is already running (PID {}).", pid);
@@ -1104,23 +1105,26 @@ async fn gateway_start() -> Result<()> {
     };
 
     let pid_path = get_gateway_pid_path();
-
     if let Some(dir) = pid_path.parent() {
         std::fs::create_dir_all(dir).ok();
     }
 
-    let daemonize = Daemonize::new().pid_file(pid_path);
+    println!("Starting gateway in the background...");
 
-    println!("Starting gateway as daemon...");
-    match daemonize.start() {
-        Ok(_) => {
-            std::process::Command::new(&binary)
-                .status()
-                .map_err(|e| anyhow::anyhow!("Failed to exec gateway: {}", e))?;
-            Ok(())
-        }
-        Err(e) => Err(anyhow::anyhow!("Failed to daemonize gateway: {}", e)),
-    }
+    let child = std::process::Command::new(&binary)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to start gateway: {}", e))?;
+
+    let pid = child.id();
+
+    // Write PID file immediately so status/stop can find it
+    std::fs::write(&pid_path, pid.to_string())
+        .map_err(|e| anyhow::anyhow!("Failed to write PID file: {}", e))?;
+
+    println!("Gateway started (PID {})", pid);
+    Ok(())
 }
 
 async fn gateway_stop() -> Result<()> {

@@ -28,7 +28,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Log file writing (for gateway.log)
-tracing-appender = { version = "0.2", features = ["rolling"] }
+tracing-appender = "0.2"
 
 # AES-256-GCM for decrypting QQ bot encrypted secrets (QR onboarding)
 aes-gcm = { version = "0.10", features = ["std"] }

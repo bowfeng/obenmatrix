@@ -68,6 +68,7 @@ use oben_tools::ToolRegistry;
 
 /// Directory where gateway logs are persisted, so daemonized child processes
 /// (stdout/stderr are disconnected by `daemonize`) retain a full log history.
+/// Using absolute path to work regardless of working directory.
 pub const LOG_DIR: &str = ".config/obenalien/logs";
 pub const LOG_FILE_PREFIX: &str = "gateway";
 
@@ -193,12 +194,12 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Start the gateway (non-async, blocks until Ctrl+C)
+    // Start the gateway (async, blocks until Ctrl+C via tokio::signal::ctrl_c)
     info!("Gateway initialized — calling start_blocking()");
     info!("Press Ctrl+C to shut down");
 
     let gateway = Gateway::new(session_manager, gateway_config, dispatcher);
-    gateway.start_blocking()?;
+    gateway.start_blocking().await?;
 
     info!("Gateway shut down cleanly");
     Ok(())

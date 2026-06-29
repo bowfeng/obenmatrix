@@ -689,6 +689,7 @@ mod tests {
             discord: None,
             slack: None,
             whatsapp: None,
+            qq_bot: None,
         });
         let yaml = serde_yaml::to_string(&config).unwrap();
         let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
@@ -747,6 +748,73 @@ mod tests {
         let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
         assert!(restored.providers.is_empty());
         assert!(restored.custom_providers.is_empty());
+    }
+
+    #[test]
+    fn test_gateway_config_roundtrip_qq_bot() {
+        let mut config = AppConfig::default();
+        config.gateway = Some(GatewayConfig {
+            telegram: Some(PlatformConfig {
+                enabled: true,
+                token: Some("telegram-token-123".to_string()),
+            }),
+            discord: Some(PlatformConfig {
+                enabled: true,
+                token: Some("discord-token-456".to_string()),
+            }),
+            ..Default::default()
+        });
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+
+        assert!(restored.gateway.is_some());
+        let gw = restored.gateway.unwrap();
+
+        let tg = gw.telegram.unwrap();
+        assert!(tg.enabled);
+        assert_eq!(tg.token, Some("telegram-token-123".to_string()));
+
+        let dc = gw.discord.unwrap();
+        assert!(dc.enabled);
+        assert_eq!(dc.token, Some("discord-token-456".to_string()));
+    }
+
+    #[test]
+    fn test_gateway_config_qq_bot_serialization() {
+        let mut config = AppConfig::default();
+        config.gateway = Some(GatewayConfig {
+            telegram: None,
+            discord: None,
+            slack: None,
+            whatsapp: None,
+            qq_bot: Some(QQBotConfig {
+                enabled: true,
+                app_id: "12345".to_string(),
+                app_secret: "super-secret-key".to_string(),
+                sandbox: true,
+                shard: None,
+                intents: vec![
+                    QQBotIntent::Guilds,
+                    QQBotIntent::C2cMessage,
+                    QQBotIntent::GroupAtMessage,
+                ],
+            }),
+        });
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+
+        assert!(restored.gateway.is_some());
+        let gw = restored.gateway.unwrap();
+
+        let qq = gw.qq_bot.unwrap();
+        assert!(qq.enabled);
+        assert_eq!(qq.app_id, "12345");
+        assert_eq!(qq.app_secret, "super-secret-key");
+        assert!(qq.sandbox);
+        assert!(qq.intents.iter().any(|i| matches!(i, QQBotIntent::Guilds)));
+        assert!(qq.intents.iter().any(|i| matches!(i, QQBotIntent::C2cMessage)));
     }
 }
 

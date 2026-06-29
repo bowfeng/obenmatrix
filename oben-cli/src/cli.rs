@@ -73,6 +73,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<GoalCommand>,
     },
+    /// Manage the gateway process
+    Gateway {
+        #[command(subcommand)]
+        #[command(name = "gateway")]
+        action: Option<GatewayCommand>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -206,4 +212,12 @@ pub enum GoalCommand {
         /// Goal ID or "active" to clear the current active goal
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum GatewayCommand {
+    Start,
+    Stop,
+    Status,
+    Setup,
 }

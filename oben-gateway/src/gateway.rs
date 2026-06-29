@@ -65,29 +65,22 @@ impl Gateway {
     }
 
     /// Start the gateway — run all enabled platform adapter listeners.
-    /// Spawns a tokio runtime then blocks until Ctrl-C.
-    pub fn start_blocking(&self) -> Result<()> {
+    /// Block until Ctrl-C. Called from #[tokio::main], so no nested runtime.
+    pub async fn start_blocking(&self) -> Result<()> {
         info!("Gateway starting with configured platforms...");
 
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build tokio runtime: {}", e))?;
+        let handles = self.start_platforms().await?;
 
-        rt.block_on(async {
-            let handles = self.start_platforms().await?;
+        // Store handles for shutdown
+        {
+            let mut h = self.platform_handles.lock().unwrap();
+            h.extend(handles.into_iter().map(|h| h.abort_handle()));
+        }
 
-            // Store handles for shutdown
-            {
-                let mut h = self.platform_handles.lock().unwrap();
-                h.extend(handles.into_iter().map(|h| h.abort_handle()));
-            }
-
-            // Keep running until Ctrl-C
-            tokio::signal::ctrl_c().await?;
-            info!("Shutting down gateway...");
-            Ok::<_, anyhow::Error>(())
-        })
+        // Keep running until Ctrl-C
+        tokio::signal::ctrl_c().await?;
+        info!("Shutting down gateway...");
+        Ok(())
     }
 
     async fn start_platforms(&self) -> Result<Vec<tokio::task::JoinHandle<()>>> {
