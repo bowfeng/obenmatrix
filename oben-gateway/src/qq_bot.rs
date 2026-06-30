@@ -14,7 +14,7 @@ use tungstenite::Message as WSMessage;
 use crate::platform::{IncomingMessage, MessageHandler, OutgoingMessage, PlatformAdapter};
 
 use super::qq_protocol::{
-    HeartbeatPayload, IdentifyPayload, Intents, MsgType, Properties, SendMessageRequest,
+    HeartbeatPayload, IdentifyEvent, Intents, MsgType, Properties, SendMessageRequest,
     WsIncomingMessage,
 };
 
@@ -228,15 +228,21 @@ impl SharedState {
 
         // Identify
         let token = self.token_mgr.get().await?;
-        let identify = IdentifyPayload {
-            token: format!("QQBot {}", token),
-            intents: self.intents.to_u64(),
-            shard: self.shard,
-            properties: Properties::default(),
-        };
+        let intents_val = self.intents.to_u64();
+        let shard_val = self.shard.unwrap_or([0, 1]);
+        let identify_event = IdentifyEvent::new(
+            format!("QQBot {}", token),
+            intents_val,
+            Some(shard_val),
+            Properties::default(),
+        );
+        let identify_json = serde_json::to_string(&identify_event)
+            .context("Failed to serialize Identify event")?;
+        debug!("Identify payload: {}", identify_json);
         write
-            .send(WSMessage::text(serde_json::to_string(&identify)?))
+            .send(WSMessage::text(identify_json))
             .await?;
+        info!("Identify sent (intents={}, shard={:?})", intents_val, shard_val);
 
         // Wait for READY
         let ready_data = self.wait_for_dispatch(&mut read, "READY").await?;
@@ -263,8 +269,9 @@ impl SharedState {
             let raw = read
                 .next()
                 .await
-                .context("WS closed before Hello")??; // Option -> Result<Message, E>
+                .context("WS closed before Hello")??;
             let text = raw.into_text()?;
+            debug!("WS recv: {}", text);
             if let Ok(msg) = serde_json::from_str::<WsIncomingMessage>(&text) {
                 if msg.op == OpCode::Hello {
                     let interval: u64 = serde_json::from_value(msg.d)
@@ -273,7 +280,9 @@ impl SharedState {
                     info!(interval_ms = interval, "Received Hello");
                     return Ok(());
                 }
-                debug!("Non-Hello frame on connect: {:?}", msg.op);
+                debug!(op = ?msg.op, "Non-Hello frame on connect, skipping");
+            } else {
+                warn!("WS recv: failed to parse as WsIncomingMessage: {}", &text[..text.len().min(200)]);
             }
         }
     }
@@ -282,28 +291,54 @@ impl SharedState {
     where
         S: futures::StreamExt<Item = Result<WSMessage, tungstenite::Error>> + Unpin,
     {
+        let mut attempts = 0usize;
         loop {
             let raw = read
                 .next()
                 .await
                 .context("WS closed waiting for event")??;
             let text = raw.into_text()?;
-            let msg = serde_json::from_str::<WsIncomingMessage>(&text).with_context(|| {
-                format!("Parse error: {}", &text[..text.len().min(100)])
-            })?;
+            attempts += 1;
+            debug!(attempt = attempts, "WS recv: {}", text);
+
+            let msg = match serde_json::from_str::<WsIncomingMessage>(&text) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("WS recv: parse error (attempt {}): {} — raw: {}"
+                        , attempts, e, &text[..text.len().min(200)]);
+                    continue;
+                }
+            };
+            debug!(attempt = attempts, op = ?msg.op, t = ?msg.t, s = ?msg.s
+                , "WS dispatch frame decoded");
 
             match msg.op {
                 OpCode::Dispatch => {
                     let t = msg.t.as_deref().unwrap_or("");
                     if t == expected {
+                        info!(attempt = attempts, "Got expected event '{}' after {} frames", expected, attempts);
                         return Ok(msg.d);
                     }
+                    debug!(expected = expected, got = t, "Non-matching dispatch, waiting...");
                     if let Some(s) = msg.s {
                         let mut seq = self.last_seq.lock().unwrap();
                         *seq = s;
                     }
                 }
-                _ => {}
+                OpCode::InvalidSession => {
+                    warn!(attempt = attempts, "Got op:9 InvalidSession — server rejected us, clearing session");
+                    self.session_id.lock().unwrap().take();
+                    *self.last_seq.lock().unwrap() = 0;
+                }
+                OpCode::Reconnect => {
+                    warn!(attempt = attempts, "Got op:7 Reconnect from server");
+                }
+                OpCode::Hello => {
+                    warn!(attempt = attempts, "Got unexpected op:10 Hello during READY wait");
+                }
+                _ => {
+                    debug!(attempt = attempts, op = ?msg.op, t = ?msg.t, "Unhandled opcode, ignoring");
+                }
             }
         }
     }
@@ -327,6 +362,7 @@ impl SharedState {
 
                 _ = heartbeat.tick() => {
                     let payload = serde_json::to_string(&HeartbeatPayload(Some(last_seq))).unwrap_or_default();
+                    debug!(seq = last_seq, "WS send heartbeat");
                     if write.send(WSMessage::text(payload)).await.is_err() {
                         break;
                     }
@@ -360,7 +396,7 @@ impl SharedState {
                             let event_type = msg.t.as_deref().unwrap_or("");
                             if let Some(en) = EventType::from_str(event_type) {
                                 if en.is_message_event() {
-                                    self.dispatch_message(&en, &msg.d);
+                                    self.dispatch_message(&en, &msg.d).await;
                                 }
                             }
                         }
@@ -377,7 +413,7 @@ impl SharedState {
         Ok(())
     }
 
-    fn dispatch_message(&self, event_type: &EventType, data: &serde_json::Value) {
+    async fn dispatch_message(&self, event_type: &EventType, data: &serde_json::Value) {
         let incoming = match event_to_incoming(event_type, data) {
             Ok(msg) => {
                 debug!(
@@ -393,7 +429,7 @@ impl SharedState {
                 return;
             }
         };
-        if let Err(e) = self.dispatcher.dispatch(incoming) {
+        if let Err(e) = self.dispatcher.dispatch(incoming).await {
             error!("Dispatcher error: {}", e);
         }
     }
@@ -506,44 +542,93 @@ impl PlatformAdapter for QQBotAdapter {
             return Err(anyhow!("Cannot send empty message"));
         }
 
-        let endpoint = match &msg.thread_id {
+        let (endpoint, guild_channel) = match &msg.thread_id {
             Some(thread) if thread.starts_with("group/") => {
                 let gid = &thread["group/".len()..];
-                format!("{}/v2/groups/{}/messages", self.state.base_url, gid)
+                (
+                    format!("{}/v2/groups/{}/messages", self.state.base_url, gid),
+                    false,
+                )
             }
-            None => format!(
-                "{}/v2/users/{}/messages",
-                self.state.base_url, msg.user_id
+            None => (
+                format!(
+                    "{}/v2/users/{}/messages",
+                    self.state.base_url, msg.user_id
+                ),
+                false,
             ),
-            Some(thread) => format!(
-                "{}/channels/{}/messages",
-                self.state.base_url, thread
+            Some(thread) => (
+                format!(
+                    "{}/channels/{}/messages",
+                    self.state.base_url, thread
+                ),
+                true,
             ),
         };
 
         let request = SendMessageRequest {
             content: Some(content.clone()),
-            msg_type: Some(MsgType::Text),
+            msg_type: if guild_channel { None } else { Some(MsgType::Text) },
             msg_id: None,
             event_id: None,
-            msg_seq: Some(1),
+            msg_seq: if guild_channel { None } else { Some(1) },
             markdown: None,
             reply: None,
         };
 
+        let request_json = serde_json::to_string(&request).unwrap_or_else(|e| {
+            error!("QQ Bot serialize request failed: {e}");
+            "serialize_error".to_string()
+        });
+        debug!("QQ Bot REST payload: {}", request_json);
+
         let token = self.state.token_mgr.get().await?;
-        let status = Client::new()
+        let resp = Client::new()
             .post(&endpoint)
             .header("Authorization", format!("QQBot {}", token))
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
-            .await?
-            .status();
+            .await
+            .map_err(|e| {
+                error!("QQ REST request failed: {e}");
+                e
+            })?;
 
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            warn!("Send failed {}", status);
+            warn!("Send failed status={} endpoint={} body={}", status, endpoint, body);
+            return Err(anyhow!("QQ send failed {}: {}", status, body));
         }
+        info!("Send ok endpoint={}", endpoint);
+        Ok(())
+    }
+
+    async fn health_check(&self) -> bool {
+        self.state.token_mgr.get().await.is_ok()
+    }
+}
+        let token = self.state.token_mgr.get().await?;
+        let resp = Client::new()
+            .post(&endpoint)
+            .header("Authorization", format!("QQBot {}", token))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                error!("QQ REST request failed: {e}");
+                e
+            })?;
+
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            warn!("Send failed status={} endpoint={} body={}", status, endpoint, body);
+            return Err(anyhow!("QQ send failed {}: {}", status, body));
+        }
+        info!("Send ok endpoint={}", endpoint);
         Ok(())
     }
 

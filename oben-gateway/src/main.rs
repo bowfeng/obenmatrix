@@ -56,13 +56,12 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
-use tracing::info;
+use anyhow::{anyhow, Result};
+use futures::future::join_all;
+use tracing::{error, info, warn};
 
-use oben_gateway::{
-    Dispatcher, Gateway, PlatformAdapter, QQBotAdapter, ResponseRouter,
-};
 use oben_config::{AppConfig, QQBotIntent};
+use oben_gateway::{Dispatcher, Gateway, QQBotAdapter, ResponseRouter};
 use oben_sessions::DBSessionManager;
 use oben_tools::ToolRegistry;
 
@@ -129,6 +128,76 @@ fn create_tool_registry() -> ToolRegistry {
     registry
 }
 
+/// Discover enabled platform adapters from config and attempt to create them concurrently.
+///
+/// Runs Telegram, Discord, Slack, WhatsApp, and QQ Bot creation tasks in parallel.
+/// Failed adapters are logged but don't prevent others from starting.
+/// On success, registers the adapter with the response router.
+async fn discover_platforms(
+    gateway_config: &oben_config::GatewayConfig,
+    _dispatcher: Arc<oben_gateway::Dispatcher>,
+    _response_router: Arc<oben_gateway::ResponseRouter>,
+) -> Vec<(String, anyhow::Result<()>)> {
+    let mut tasks = Vec::new();
+
+    // Telegram — adapter not yet implemented
+    if let Some(ref tg_cfg) = gateway_config.telegram {
+        if tg_cfg.enabled {
+            tasks.push(tokio::spawn(async move {
+                warn!("Telegram platform enabled but adapter not yet implemented");
+                ("telegram".to_string(), Err(anyhow!("Telegram adapter not implemented")))
+            }));
+        }
+    }
+
+    // Discord — adapter not yet implemented
+    if let Some(ref dc_cfg) = gateway_config.discord {
+        if dc_cfg.enabled {
+            tasks.push(tokio::spawn(async move {
+                warn!("Discord platform enabled but adapter not yet implemented");
+                ("discord".to_string(), Err(anyhow!("Discord adapter not implemented")))
+            }));
+        }
+    }
+
+    // Slack — adapter not yet implemented
+    if let Some(ref sl_cfg) = gateway_config.slack {
+        if sl_cfg.enabled {
+            tasks.push(tokio::spawn(async move {
+                warn!("Slack platform enabled but adapter not yet implemented");
+                ("slack".to_string(), Err(anyhow!("Slack adapter not implemented")))
+            }));
+        }
+    }
+
+    // WhatsApp — adapter not yet implemented
+    if let Some(ref wa_cfg) = gateway_config.whatsapp {
+        if wa_cfg.enabled {
+            tasks.push(tokio::spawn(async move {
+                warn!("WhatsApp platform enabled but adapter not yet implemented");
+                ("whatsapp".to_string(), Err(anyhow!("WhatsApp adapter not implemented")))
+            }));
+        }
+    }
+
+    // Run all discovery tasks concurrently; empty task list yields empty result
+    let discovered = join_all(tasks).await;
+
+    // Collect results, handling task panics gracefully
+    let mut results = Vec::new();
+    for discovery in discovered {
+        match discovery {
+            Ok((name, result)) => results.push((name, result)),
+            Err(join_err) => {
+                error!("Platform discovery task panicked: {join_err}");
+                results.push(("unknown".to_string(), Err(anyhow::anyhow!("Task panicked: {join_err}"))));
+            }
+        }
+    }
+
+    results
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install ring crypto provider BEFORE any other code runs.
@@ -175,32 +244,32 @@ async fn main() -> Result<()> {
     ));
     info!("Dispatcher created");
 
-    // Create and register platform adapters
-    if let Some(ref qq_config) = gateway_config.qq_bot {
-        if qq_config.enabled {
-            info!(
-                app_id = %qq_config.app_id,
-                sandbox = qq_config.sandbox,
-                "QQ Bot config found — creating adapter"
-            );
+    // Discover enabled platforms (Telegram, Discord, Slack, WhatsApp placeholders).
+    let platforms_enabled = discover_platforms(&gateway_config, dispatcher.clone(), response_router.clone()).await;
 
-            let intents = parse_qq_intents(&qq_config.intents);
-
-            let adapter: Box<dyn PlatformAdapter + Send + Sync> = Box::new(QQBotAdapter::new(
-                &qq_config.app_id,
-                &qq_config.app_secret,
-                qq_config.sandbox,
-                qq_config.shard,
+    // QQ Bot — create and register synchronously (NOT in spawn_blocking).
+    // QQBotAdapter::new() needs tokio runtime context for WebSocket connections,
+    // so it must be called on the main async task, not in spawn_blocking.
+    if let Some(ref qq_cfg) = gateway_config.qq_bot {
+        if qq_cfg.enabled {
+            let intents = parse_qq_intents(&qq_cfg.intents);
+            let adapter = QQBotAdapter::new(
+                &qq_cfg.app_id,
+                &qq_cfg.app_secret,
+                qq_cfg.sandbox,
+                qq_cfg.shard,
                 intents,
                 dispatcher.clone(),
-            ));
-
-            // Register with response router (takes ownership of the Box)
-            response_router.register("qq_bot", adapter).await;
-
-            info!("QQ Bot adapter registered with response router");
+            );
+            response_router.register("qq_bot", Box::new(adapter)).await;
+            info!("QQ Bot adapter created and registered");
         }
     }
+
+    info!(
+        platforms_found = platforms_enabled.len(),
+        "Platform discovery complete"
+    );
 
     // Start the gateway (async, blocks until Ctrl+C via tokio::signal::ctrl_c)
     info!("Gateway initialized — calling start_blocking()");
@@ -211,4 +280,33 @@ async fn main() -> Result<()> {
 
     info!("Gateway shut down cleanly");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Given: GatewayConfig with no platforms enabled (all None/default)
+    /// When: discover_platforms is called with empty config
+    /// Then: Returns empty results with no adapters registered, no panics
+    #[tokio::test]
+    async fn test_discover_platforms_empty() {
+        let empty_config =oben_config::GatewayConfig {
+            telegram: None,
+            discord: None,
+            slack: None,
+            whatsapp: None,
+            qq_bot: None,
+        };
+        let response_router = Arc::new(super::ResponseRouter::new());
+        let dispatcher = Arc::new(super::Dispatcher::new(
+            oben_config::AppConfig::default(),
+            Arc::new(ToolRegistry::new()),
+            response_router.clone(),
+        ));
+
+        let results = discover_platforms(&empty_config, dispatcher, response_router).await;
+
+        assert!(results.is_empty(), "Expected no platforms with empty config");
+    }
 }

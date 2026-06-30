@@ -2,22 +2,78 @@
 /// Maps to `gateway/gateway.py` in Hermes.
 use anyhow::Result;
 use super::qq_protocol::Intents as QQIntents;
+use std::collections::HashMap;
 
 use crate::dispatcher::Dispatcher;
-use crate::platform::{IncomingMessage, PlatformAdapter};
+use crate::platform::{IncomingMessage, PlatformAdapter, PlatformInfo, PlatformStatus};
 use crate::qq_bot::QQBotAdapter;
 
 use oben_config::GatewayConfig;
 use oben_sessions::DBSessionManager;
-use tracing::info;
+use tracing::{info, warn};
+
+/// Thread-safe registry of platform adapter states.
+pub struct PlatformRegistry {
+    /// Map from platform name to its info + status.
+    state: tokio::sync::RwLock<HashMap<String, PlatformInfo>>,
+}
+
+impl PlatformRegistry {
+    pub fn new() -> Self {
+        Self {
+            state: tokio::sync::RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Register a platform with its initial info.
+    pub async fn register(&self, info: PlatformInfo) {
+        let mut state = self.state.write().await;
+        state.insert(info.name.clone(), info);
+    }
+
+    /// Update platform status. Transitions to the given status.
+    pub async fn set_status(&self, name: &str, status: PlatformStatus, error: Option<String>) {
+        let mut state = self.state.write().await;
+        if let Some(info) = state.get_mut(name) {
+            info.status = status;
+            info.error = error;
+        }
+    }
+
+    /// Get a snapshot of all platform names.
+    pub async fn names(&self) -> Vec<String> {
+        let state = self.state.read().await;
+        state.keys().cloned().collect()
+    }
+
+    /// Get a snapshot of all platform info.
+    pub async fn snapshot(&self) -> HashMap<String, PlatformInfo> {
+        let state = self.state.read().await;
+        state.clone()
+    }
+
+    /// Check if a platform is registered.
+    pub async fn has(&self, name: &str) -> bool {
+        let state = self.state.read().await;
+        state.contains_key(name)
+    }
+}
+
+impl Default for PlatformRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// The gateway process — listens on multiple platforms and routes to the agent.
 pub struct Gateway {
     session_manager: DBSessionManager,
     config: GatewayConfig,
     dispatcher: std::sync::Arc<Dispatcher>,
-    /// Handles running platform listeners; dropped to abort.
-    platform_handles: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
+    /// Handles running platform listeners keyed by name; dropped to abort.
+    platform_handles: std::sync::Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    /// Thread-safe registry of platform adapter states.
+    platform_registry: std::sync::Arc<PlatformRegistry>,
 }
 
 impl Gateway {
@@ -30,7 +86,8 @@ impl Gateway {
             session_manager,
             config,
             dispatcher,
-            platform_handles: std::sync::Mutex::new(Vec::new()),
+            platform_handles: std::sync::Mutex::new(HashMap::new()),
+            platform_registry: std::sync::Arc::new(PlatformRegistry::new()),
         }
     }
 
@@ -69,12 +126,14 @@ impl Gateway {
     pub async fn start_blocking(&self) -> Result<()> {
         info!("Gateway starting with configured platforms...");
 
-        let handles = self.start_platforms().await?;
+        let (handles, platform_names) = self.start_platforms().await?;
 
-        // Store handles for shutdown
+        // Store handles for shutdown (keyed by platform name)
         {
             let mut h = self.platform_handles.lock().unwrap();
-            h.extend(handles.into_iter().map(|h| h.abort_handle()));
+            for (name, handle) in platform_names.iter().zip(handles.iter()) {
+                h.insert(name.clone(), handle.abort_handle());
+            }
         }
 
         // Keep running until Ctrl-C
@@ -83,19 +142,99 @@ impl Gateway {
         Ok(())
     }
 
-    async fn start_platforms(&self) -> Result<Vec<tokio::task::JoinHandle<()>>> {
+    async fn start_platforms(&self) -> Result<(Vec<tokio::task::JoinHandle<()>>, Vec<String>)> {
         let mut handles = Vec::new();
+        let mut platform_names = Vec::new();
+        let config = &self.config;
+        let registry = self.registry();
 
-        // ── QQ Bot ─────────────────────────────────────────────────────
-        if let Some(ref qq_config) = self.config.qq_bot {
+        // ── Telegram ──────────────────────────────────────────────────
+        if let Some(ref tg_config) = config.telegram {
+            if tg_config.enabled {
+                let name = "telegram".to_string();
+                platform_names.push(name.clone());
+                info!("Starting Telegram platform adapter");
+                registry.register(PlatformInfo {
+                    name: name.clone(),
+                    status: PlatformStatus::Connecting,
+                    started_at: None,
+                    error: None,
+                }).await;
+                registry.set_status("telegram", PlatformStatus::Failed("Not implemented yet".into()), Some("platform adapter not implemented".to_string())).await;
+                warn!("Telegram platform placeholder — no adapter implemented yet");
+            }
+        }
+
+        // ── Discord ───────────────────────────────────────────────────
+        if let Some(ref dc_config) = config.discord {
+            if dc_config.enabled {
+                let name = "discord".to_string();
+                platform_names.push(name.clone());
+                info!("Starting Discord platform adapter");
+                registry.register(PlatformInfo {
+                    name: name.clone(),
+                    status: PlatformStatus::Connecting,
+                    started_at: None,
+                    error: None,
+                }).await;
+                registry.set_status("discord", PlatformStatus::Failed("Not implemented yet".into()), Some("platform adapter not implemented".to_string())).await;
+                warn!("Discord platform placeholder — no adapter implemented yet");
+            }
+        }
+
+        // ── Slack ─────────────────────────────────────────────────────
+        if let Some(ref sl_config) = config.slack {
+            if sl_config.enabled {
+                let name = "slack".to_string();
+                platform_names.push(name.clone());
+                info!("Starting Slack platform adapter");
+                registry.register(PlatformInfo {
+                    name: name.clone(),
+                    status: PlatformStatus::Connecting,
+                    started_at: None,
+                    error: None,
+                }).await;
+                registry.set_status("slack", PlatformStatus::Failed("Not implemented yet".into()), Some("platform adapter not implemented".to_string())).await;
+                warn!("Slack platform placeholder — no adapter implemented yet");
+            }
+        }
+
+        // ── WhatsApp ──────────────────────────────────────────────────
+        if let Some(ref wa_config) = config.whatsapp {
+            if wa_config.enabled {
+                let name = "whatsapp".to_string();
+                platform_names.push(name.clone());
+                info!("Starting WhatsApp platform adapter");
+                registry.register(PlatformInfo {
+                    name: name.clone(),
+                    status: PlatformStatus::Connecting,
+                    started_at: None,
+                    error: None,
+                }).await;
+                registry.set_status("whatsapp", PlatformStatus::Failed("Not implemented yet".into()), Some("platform adapter not implemented".to_string())).await;
+                warn!("WhatsApp platform placeholder — no adapter implemented yet");
+            }
+        }
+
+        // ── QQ Bot ────────────────────────────────────────────────────
+        if let Some(ref qq_config) = config.qq_bot {
             if qq_config.enabled {
+                let name = "qq_bot".to_string();
+                platform_names.push(name.clone());
+                registry.register(PlatformInfo {
+                    name: name.clone(),
+                    status: PlatformStatus::Connecting,
+                    started_at: None,
+                    error: None,
+                }).await;
+
+                let intents = Self::parse_qq_intents(qq_config);
                 info!(
                     app_id = %qq_config.app_id,
                     sandbox = qq_config.sandbox,
+                    intents_value = %intents.to_u64(),
                     "Starting QQ Bot adapter"
                 );
-
-                let intents = Self::parse_qq_intents(qq_config);
 
                 let adapter = QQBotAdapter::new(
                     &qq_config.app_id,
@@ -113,14 +252,17 @@ impl Gateway {
                     }
                 });
                 handles.push(handle);
+
+                registry.set_status("qq_bot", PlatformStatus::Running, None).await;
+                info!("QQ Bot adapter started successfully");
             }
         }
 
         if handles.is_empty() {
-            info!("No platform adapters enabled in config; gateway will block.");
+            info!("No platform adapters enabled in config; gateway will block on ctrl-c");
         }
 
-        Ok(handles)
+        Ok((handles, platform_names))
     }
 
     pub fn session_manager(&self) -> &DBSessionManager {
@@ -129,8 +271,36 @@ impl Gateway {
 
     pub fn platform_handles(
         &self,
-    ) -> std::sync::MutexGuard<'_, Vec<tokio::task::AbortHandle>> {
+    ) -> std::sync::MutexGuard<'_, HashMap<String, tokio::task::AbortHandle>> {
         self.platform_handles.lock().unwrap()
+    }
+
+    /// Register a platform adapter in the registry.
+    pub async fn register_platform(&self, info: PlatformInfo) {
+        self.platform_registry.register(info).await;
+    }
+
+    /// Update a platform's status.
+    pub async fn update_platform_status(
+        &self,
+        name: &str,
+        status: PlatformStatus,
+        error: Option<String>,
+    ) {
+        self.platform_registry
+            .set_status(name, status, error)
+            .await;
+    }
+
+    /// Get a snapshot of all platform statuses.
+    /// Uses async snapshot to avoid blocking the runtime.
+    pub async fn platform_status(&self) -> HashMap<String, PlatformInfo> {
+        self.platform_registry.snapshot().await
+    }
+
+    /// Get the PlatformRegistry reference for use by start_platforms.
+    pub fn registry(&self) -> std::sync::Arc<PlatformRegistry> {
+        self.platform_registry.clone()
     }
 }
 
@@ -221,5 +391,58 @@ mod tests {
         };
         let result = gateway.handle_message(msg).await.unwrap();
         assert_eq!(result, "Echo: ");
+    }
+
+    /// Given: A newly created gateway with an empty platform registry
+    /// When: A platform is registered with Running status via register_platform()
+    /// Then: platform_status() returns a map containing that platform
+    #[tokio::test]
+    async fn test_platform_registry_register() {
+        let gateway = make_gateway();
+        let info = PlatformInfo {
+            name: "test".to_string(),
+            status: PlatformStatus::Running,
+            started_at: None,
+            error: None,
+        };
+        gateway.register_platform(info).await;
+        let status = gateway.platform_status().await;
+        assert!(status.contains_key("test"));
+        assert_eq!(status["test"].status, PlatformStatus::Running);
+    }
+
+    /// Given: A gateway with a registered platform in Idle status
+    /// When: The platform status is updated to Failed with an error message
+    /// Then: platform_status() reflects the new status and error text
+    #[tokio::test]
+    async fn test_platform_registry_update_status() {
+        let gateway = make_gateway();
+        let info = PlatformInfo {
+            name: "test".to_string(),
+            status: PlatformStatus::Idle,
+            started_at: None,
+            error: None,
+        };
+        gateway.register_platform(info).await;
+        gateway
+            .update_platform_status(
+                "test",
+                PlatformStatus::Failed("auth_expired".to_string()),
+                Some("auth_expired".to_string()),
+            )
+            .await;
+        let status = gateway.platform_status().await;
+        assert_eq!(status["test"].status, PlatformStatus::Failed("auth_expired".to_string()));
+        assert_eq!(status["test"].error, Some("auth_expired".to_string()));
+    }
+
+    /// Given: A gateway with default (empty) config — no platforms enabled
+    /// When: start_platforms() is called
+    /// Then: Returns empty handles list and logs warning
+    #[tokio::test]
+    async fn test_start_platforms_empty_config() {
+        let gateway = make_gateway();
+        let (handles, _names) = gateway.start_platforms().await.unwrap();
+        assert!(handles.is_empty());
     }
 }

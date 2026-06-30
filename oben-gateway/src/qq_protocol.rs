@@ -110,7 +110,24 @@ pub struct ResumedPayload(pub String);
 // Client-to-server messages
 // ---------------------------------------------------------------------------
 
-/// Identify payload (op:2) — authenticates the bot.
+/// Identify event (op:2) — full WS frame for authenticating the bot.
+#[derive(Debug, Clone, Serialize)]
+pub struct IdentifyEvent {
+    pub op: u8,
+    #[serde(rename = "d")]
+    pub d: IdentifyPayload,
+}
+
+impl IdentifyEvent {
+    pub fn new(token: String, intents: u64, shard: Option<[usize; 2]>, properties: Properties) -> Self {
+        Self {
+            op: 2,
+            d: IdentifyPayload { token, intents, shard, properties },
+        }
+    }
+}
+
+/// Identify payload (inner `d` object, op:2) — authenticates the bot.
 #[derive(Debug, Clone, Serialize)]
 pub struct IdentifyPayload {
     pub token: String,
@@ -134,9 +151,26 @@ pub struct Properties {
 impl Default for Properties {
     fn default() -> Self {
         Self {
-            os: "linux",
-            browser: "bot",
-            device: "bot",
+            os: "hermes-agent",
+            browser: "hermes-agent",
+            device: "hermes-agent",
+        }
+    }
+}
+
+/// Resume event (op:6) — reconnect with last known position.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResumeEvent {
+    pub op: u8,
+    #[serde(rename = "d")]
+    pub d: ResumePayload,
+}
+
+impl ResumeEvent {
+    pub fn new(token: String, session_id: String, seq: i64) -> Self {
+        Self {
+            op: 6,
+            d: ResumePayload { token, session_id, seq },
         }
     }
 }
@@ -277,13 +311,14 @@ impl Intents {
         Self(0)
     }
 
-    pub fn with_guilds(mut self) -> Self {
-        self.0 |= Self::GUILDS;
-        self
+    /// Default intents matching reference implementation:
+    /// C2C/GROUP_AT (1<<25) + AUDIO_ACTION (1<<30) + DIRECT_MESSAGE (1<<12) + INTERACTION (1<<26)
+    pub fn default_for_bot() -> Self {
+        Self(Self::GROUP_AND_C2C | Self::AUDIO_ACTION | Self::DIRECT_MESSAGE | Self::INTERACTION)
     }
 
-    pub fn with_guild_members(mut self) -> Self {
-        self.0 |= Self::GUILD_MEMBERS;
+    pub fn with_guilds(mut self) -> Self {
+        self.0 |= Self::GUILDS;
         self
     }
 
@@ -302,21 +337,6 @@ impl Intents {
         self
     }
 
-    pub fn with_message_audit(mut self) -> Self {
-        self.0 |= Self::MESSAGE_AUDIT;
-        self
-    }
-
-    pub fn with_guild_messages(mut self) -> Self {
-        self.0 |= Self::GUILD_MESSAGES;
-        self
-    }
-
-    pub fn with_guild_message_reactions(mut self) -> Self {
-        self.0 |= Self::GUILD_MESSAGE_REACTIONS;
-        self
-    }
-
     pub fn with_audio_action(mut self) -> Self {
         self.0 |= Self::AUDIO_ACTION;
         self
@@ -329,7 +349,7 @@ impl Intents {
 
 impl Default for Intents {
     fn default() -> Self {
-        Self::new()
+        Self::default_for_bot()
     }
 }
 
@@ -446,10 +466,9 @@ impl EventType {
 // ---------------------------------------------------------------------------
 
 /// Message type for REST send.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MsgType {
-    #[serde(rename = "0")]
     Text = 0,
     Markdown = 2,
     Ark = 3,
@@ -457,14 +476,61 @@ pub enum MsgType {
     Media = 7,
 }
 
+impl serde::Serialize for MsgType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_i32(*self as i32)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for MsgType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = i32::deserialize(deserializer)?;
+        Ok(match value {
+            0 => Self::Text,
+            2 => Self::Markdown,
+            3 => Self::Ark,
+            4 => Self::Embed,
+            7 => Self::Media,
+            v => panic!("Unknown MsgType variant: {v}"),
+        })
+    }
+}
+
 /// Reply mode for REST send.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReplyMode {
-    #[serde(rename = "0")]
     AtSender = 0,
-    #[serde(rename = "1")]
     AtAndReply = 1,
+}
+
+impl serde::Serialize for ReplyMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_i32(*self as i32)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ReplyMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = i32::deserialize(deserializer)?;
+        Ok(match value {
+            0 => Self::AtSender,
+            1 => Self::AtAndReply,
+            v => panic!("Unknown ReplyMode variant: {v}"),
+        })
+    }
 }
 
 /// Markdown payload for `msg_type: 2`.

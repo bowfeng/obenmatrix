@@ -50,7 +50,7 @@ impl Dispatcher {
     /// If the session already exists, sends the message through the existing channel.
     /// Otherwise, creates a new channel, registers the sender, and spawns a
     /// coordinator task to process the message stream.
-    pub fn dispatch(&self, msg: IncomingMessage) -> Result<(), String> {
+    pub async fn dispatch(&self, msg: IncomingMessage) -> Result<(), String> {
         let session_key = format!(
             "{}/{}/{}",
             msg.platform,
@@ -58,7 +58,7 @@ impl Dispatcher {
             msg.thread_id.as_deref().unwrap_or("global")
         );
 
-        let mut session_map = self.session_map.blocking_lock();
+        let mut session_map = self.session_map.lock().await;
 
         if let Some(channel) = session_map.get(&session_key) {
             // Session already exists — try to send via the established channel
@@ -100,6 +100,7 @@ impl Dispatcher {
     /// Spawn a coordinator task that runs the agent conversation loop for a session.
     ///
     /// Creates a GatewayCoordinator and Agent, then runs them together.
+    /// Also starts a response routing loop to send agent replies back to the platform.
     fn spawn_coordinator_task(
         &self,
         session_key: String,
@@ -110,12 +111,25 @@ impl Dispatcher {
     ) -> tokio::task::JoinHandle<()> {
         let app_config = self.app_config.clone();
         let tools = self.tools.clone();
-        let _response_router = self.response_router.clone();
+        let response_router = self.response_router.clone();
 
         tokio::spawn(async move {
             info!(session_key = %session_key, "Coordinator task started");
 
             let (response_tx, mut response_rx) = mpsc::channel::<crate::coordinator::ResponseMessage>(128);
+
+            // Concurrently route responses back to the platform
+            let response_router_task = {
+                let response_router = response_router.clone();
+                tokio::spawn(async move {
+                    while let Some(resp) = response_rx.recv().await {
+                        info!(reply_len = resp.content.len(), "Routing response to platform");
+                        if let Err(e) = response_router.dispatch_response(resp).await {
+                            warn!(error = %e, "Failed to dispatch response to platform");
+                        }
+                    }
+                })
+            };
 
             // Build the coordinator with the response channel
             let coordinator = GatewayCoordinator::new(
@@ -141,16 +155,16 @@ impl Dispatcher {
 
             // Run the conversation loop (blocks until exit)
             let result = agent_handle.run(coordinator).await;
-            
+
+            // coordinator ended — response_tx is dropped, response_rx loop will exit
             if let Err(e) = &result {
                 tracing::error!(error = %e, session_key = %session_key, "Agent run ended with error");
             } else {
                 info!(session_key = %session_key, "Agent conversation loop completed");
             }
-
-            // Drain and discard remaining response messages
-            while let Some(_resp) = response_rx.recv().await {
-                // Responses already consumed by dispatch_response
+            // Wait for response router to finish
+            if let Err(e) = response_router_task.await {
+                warn!(session_key = %session_key, "response_router task join failed: {e}");
             }
         })
     }

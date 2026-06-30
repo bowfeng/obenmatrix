@@ -132,13 +132,13 @@ impl HookEngine {
     pub fn emit_tool_error(&self, n: &str, a: &str, e: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_error(n, a, e); } }
     pub fn emit_stream_delta(&self, t: &str) {
         let streaming_hooks = self.streaming_hooks.read().unwrap();
-        tracing::info!(
+        tracing::debug!(
             "[emit_stream_delta] streaming_hooks_count={}, delta_len={}",
             streaming_hooks.len(),
             t.chars().count(),
         );
         for h in streaming_hooks.iter() {
-            tracing::info!(
+            tracing::debug!(
                 "[emit_stream_delta] emitting to hook={} (total {} registered)",
                 h.id(),
                 streaming_hooks.len(),
