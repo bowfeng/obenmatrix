@@ -112,10 +112,10 @@ impl Gateway {
     fn parse_qq_intents(config: &oben_config::QQBotConfig) -> QQIntents {
         let intents = QQIntents::new().with_guilds().with_group_and_c2c();
         for intent in &config.intents {
-            match intent {
-                oben_config::QQBotIntent::Guilds => { /* already included */ }
-                oben_config::QQBotIntent::C2cMessage => { /* included in GROUP_AND_C2C */ }
-                oben_config::QQBotIntent::GroupAtMessage => { /* included in GROUP_AND_C2C */ }
+match intent {
+    oben_config::QQBotIntent::DirectMessage => {}
+    oben_config::QQBotIntent::C2CAndGroup => {}
+    oben_config::QQBotIntent::Interaction => {}
             }
         }
         intents

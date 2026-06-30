@@ -609,33 +609,6 @@ impl PlatformAdapter for QQBotAdapter {
         self.state.token_mgr.get().await.is_ok()
     }
 }
-        let token = self.state.token_mgr.get().await?;
-        let resp = Client::new()
-            .post(&endpoint)
-            .header("Authorization", format!("QQBot {}", token))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| {
-                error!("QQ REST request failed: {e}");
-                e
-            })?;
-
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            warn!("Send failed status={} endpoint={} body={}", status, endpoint, body);
-            return Err(anyhow!("QQ send failed {}: {}", status, body));
-        }
-        info!("Send ok endpoint={}", endpoint);
-        Ok(())
-    }
-
-    async fn health_check(&self) -> bool {
-        self.state.token_mgr.get().await.is_ok()
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Message conversion

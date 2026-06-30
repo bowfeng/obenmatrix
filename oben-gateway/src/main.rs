@@ -113,9 +113,9 @@ fn parse_qq_intents(intents: &[QQBotIntent]) -> oben_gateway::Intents {
         .with_group_and_c2c();
     for intent in intents {
         match intent {
-            QQBotIntent::Guilds => { /* already included by default */ }
-            QQBotIntent::C2cMessage => { /* already included */ }
-            QQBotIntent::GroupAtMessage => { /* already included */ }
+            QQBotIntent::DirectMessage => { /* already included by default */ }
+            QQBotIntent::C2CAndGroup => { /* already included */ }
+            QQBotIntent::Interaction => { /* already included */ }
         }
     }
     result

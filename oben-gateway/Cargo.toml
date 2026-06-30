@@ -32,9 +32,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
 # AES-256-GCM for decrypting QQ bot encrypted secrets (QR onboarding)
-aes-gcm = { version = "0.10", features = ["std"] }
+aes-gcm = { version = "0.10", features = ["std", "getrandom"] }
+# base64 decoding for encrypted secrets from QQ portal API
+base64 = "0.22"
+# PRNG for bind key generation
+rand.workspace = true
+
+# QR code ASCII rendering for terminal display
+qrcode = "0.14"
 
 # Direct rustls dependency with ring crypto provider for explicit installation
 # hyper-rustls (via tokio-tungstenite) pulls in its own rustls with aws-lc-rs by default.
 # Without explicit installation, rustls 0.23+ panics on provider auto-detection.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+qr2term = "0.3.3"

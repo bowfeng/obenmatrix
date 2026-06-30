@@ -292,19 +292,23 @@ impl Intents {
     pub const GUILDS: u64 = 1 << 0;
     /// GUILD_MEMBER_ADD/UPDATE/REMOVE
     pub const GUILD_MEMBERS: u64 = 1 << 1;
-    /// GUILD_MESSAGES (private-domain bots): MESSAGE_CREATE/DELETE
+    /// GUILD_MESSAGES_CREATE/DELETE
     pub const GUILD_MESSAGES: u64 = 1 << 9;
-    /// MESSAGE_REACTION_ADD/REMOVE
-    pub const GUILD_MESSAGE_REACTIONS: u64 = 1 << 10;
-    /// DIRECT_MESSAGE_CREATE/DELETE
+    /// PUBLIC_GUILD_MESSAGES (QQ official default intent)
+    pub const PUBLIC_GUILD_MESSAGES: u64 = 1 << 10;
+    /// Message reaction add/remove
+    pub const GUILD_MESSAGE_REACTIONS: u64 = 1 << 17;
+    /// Direct message create/delete
     pub const DIRECT_MESSAGE: u64 = 1 << 12;
-    /// C2C/GROUP/C2C_MSG_RECEIVE/C2C_MSG_REJECT/GROUP_*_ROBOT/***_MSG_RECEIVE
+    /// Message reaction add/remove (alternative)
+    pub const MESSAGE_REACTION: u64 = 1 << 18;
+    /// C2C group add/remove
     pub const GROUP_AND_C2C: u64 = 1 << 25;
-    /// INTERACTION_CREATE
+    /// Interaction event
     pub const INTERACTION: u64 = 1 << 26;
-    /// MESSAGE_AUDIT_PASS/REJECT
+    /// Audit result
     pub const MESSAGE_AUDIT: u64 = 1 << 27;
-    /// AUDIO_START/FINISH/ON_MIC/OFF_MIC
+    /// Audio event
     pub const AUDIO_ACTION: u64 = 1 << 30;
 
     pub fn new() -> Self {

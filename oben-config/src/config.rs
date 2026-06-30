@@ -262,16 +262,20 @@ impl Default for SkillsConfig {
     }
 }
 
-/// QQ Bot intents as user-facing enum variants (bitflags mapping happens internally).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// QQ Bot intents as user-facing enum variants.
+/// The serde rename + aliases ensure backward compatibility with old Hermes-style
+/// `g_build_in_*` intent names.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QQBotIntent {
-    #[serde(rename = "g_build_in_guilds")]
-    #[default]
-    Guilds,
-    #[serde(rename = "g_build_in_c2c_message")]
-    C2cMessage,
-    #[serde(rename = "g_build_in_group_at_message")]
-    GroupAtMessage,
+    /// Direct message create/delete (1<<12)
+    #[serde(rename = "direct_message", alias = "direct_message_create", alias = "g_build_in_direct_message", alias = "g_build_in_c2c_message")]
+    DirectMessage,
+    /// C2C and group add/remove, robot add/remove, etc. (1<<25)
+    #[serde(rename = "c2c_and_group", alias = "c_c_and_group", alias = "group_and_c2c", alias = "g_build_in_guilds", alias = "g_build_in_group_at_message")]
+    C2CAndGroup,
+    /// Interactive message create/delete (1<<26)
+    #[serde(rename = "interaction", alias = "interaction_create", alias = "i_interaction")]
+    Interaction,
 }
 
 /// QQ Bot gateway configuration.

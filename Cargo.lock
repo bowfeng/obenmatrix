@@ -2557,12 +2557,16 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "async-trait",
+ "base64",
  "futures",
  "oben-agent",
  "oben-config",
  "oben-models",
  "oben-sessions",
  "oben-tools",
+ "qr2term",
+ "qrcode",
+ "rand 0.8.6",
  "reqwest 0.12.28",
  "rustls",
  "serde",
@@ -3251,6 +3255,25 @@ name = "pxfm"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
+
+[[package]]
+name = "qr2term"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6867c60b38e9747a079a19614dbb5981a53f21b9a56c265f3bfdf6011a50a957"
+dependencies = [
+ "crossterm 0.28.1",
+ "qrcode",
+]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+dependencies = [
+ "image",
+]
 
 [[package]]
 name = "quick-error"

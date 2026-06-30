@@ -1197,7 +1197,7 @@ async fn gateway_setup() -> Result<()> {
         .interact()?;
     
     match selected {
-        0 => setup_qq_bot(&mut config)?,
+        0 => setup_qq_bot(&mut config).await?,
         1 => setup_telegram(&mut config)?,
         2 => setup_discord(&mut config)?,
         3 => setup_slack(&mut config)?,
@@ -1212,61 +1212,83 @@ async fn gateway_setup() -> Result<()> {
     Ok(())
 }
 
-fn setup_qq_bot(config: &mut oben_config::AppConfig) -> Result<()> {
-    println!("\n📱 QQ Bot Configuration");
-    println!("Note: QQ Bot requires a Tencent Cloud account.\n");
-    
-    let enabled: bool = dialoguer::Confirm::new()
-        .with_prompt("Enable QQ Bot adapter")
-        .default(false)
-        .interact()?;
-    
-    if !enabled {
-        if let Some(ref mut gw) = config.gateway {
-            gw.qq_bot = None;
-        } else {
-            config.gateway = Some(Default::default());
-        }
-        return Ok(());
-    }
-    
-    let app_id: String = dialoguer::Input::new()
-        .with_prompt("App ID")
-        .default(String::new())
-        .interact()?;
-    
-    let app_secret: String = dialoguer::Input::new()
-        .with_prompt("App Secret")
-        .default(String::new())
-        .interact()?;
-    
-    let sandbox: bool = dialoguer::Confirm::new()
-        .with_prompt("Use sandbox (testing) endpoints")
-        .default(true)
-        .interact()?;
-    
+async fn setup_qq_bot(config: &mut oben_config::AppConfig) -> Result<()> {
+    // ── Step 1: Select intents ──
     let intents = vec![
-        "All intents (default)",
-        "Guild only",
-        "Group @ only",
-        "C2C only",
+        "default (Direct+C2C+Interaction)",
+        "DirectMessage only",
+        "C2C+Group At only",
+        "Interaction only",
     ];
     let intent_sel = dialoguer::Select::new()
-        .with_prompt("Event intents")
+        .with_prompt("Select intents")
         .items(&intents)
         .default(0)
         .interact()?;
     
     let intents_list: Vec<oben_config::QQBotIntent> = match intent_sel {
         0 => vec![
-            oben_config::QQBotIntent::Guilds,
-            oben_config::QQBotIntent::C2cMessage,
-            oben_config::QQBotIntent::GroupAtMessage,
+            oben_config::QQBotIntent::DirectMessage,
+            oben_config::QQBotIntent::C2CAndGroup,
+            oben_config::QQBotIntent::Interaction,
         ],
-        1 => vec![oben_config::QQBotIntent::Guilds],
-        2 => vec![oben_config::QQBotIntent::GroupAtMessage],
-        3 => vec![oben_config::QQBotIntent::C2cMessage],
+        1 => vec![oben_config::QQBotIntent::DirectMessage],
+        2 => vec![oben_config::QQBotIntent::C2CAndGroup],
+        3 => vec![oben_config::QQBotIntent::Interaction],
         _ => unreachable!(),
+    };
+    
+    // ── Step 2: Acquire App ID & Secret (QR scan or manual) ──
+    let method_choices = [
+        "Scan QR code with phone QQ — auto-creates app (recommended)",
+        "Enter existing App ID and App Secret manually",
+    ];
+    let method_idx = dialoguer::Select::new()
+        .with_prompt("How would you like to set up QQ Bot?")
+        .items(&method_choices)
+        .default(0)
+        .interact()?;
+    
+    let (app_id, app_secret) = if method_idx == 0 {
+        println!("\n🔍 Starting QR scan...");
+        match oben_gateway::onboard_qq_bot().await {
+            Ok(result) => {
+                println!("✅ QR scan successful!");
+                (result.app_id, result.client_secret)
+            }
+            Err(e) => {
+                eprintln!("❌ QR scan failed: {e}");
+                println!("   (QR URL server not reachable — falling back to manual input)\n");
+                let manual_id: String = dialoguer::Input::new()
+                    .with_prompt("App ID")
+                    .default(String::new())
+                    .interact()?;
+                let manual_secret: String = dialoguer::Input::new()
+                    .with_prompt("App Secret")
+                    .default(String::new())
+                    .interact()?;
+                (manual_id, manual_secret)
+            }
+        }
+    } else {
+        println!("\n  Go to https://q.qq.com to register a QQ Bot application.");
+        let app_id: String = dialoguer::Input::new()
+            .with_prompt("App ID")
+            .default(String::new())
+            .interact()?;
+        if app_id.is_empty() {
+            println!("  Skipped — QQ Bot won't work without an App ID.");
+            return Ok(());
+        }
+        let app_secret: String = dialoguer::Input::new()
+            .with_prompt("App Secret")
+            .default(String::new())
+            .interact()?;
+        if app_secret.is_empty() {
+            println!("  Skipped — QQ Bot won't work without an App Secret.");
+            return Ok(());
+        }
+        (app_id, app_secret)
     };
     
     if let Some(ref mut gw) = config.gateway {
@@ -1274,7 +1296,7 @@ fn setup_qq_bot(config: &mut oben_config::AppConfig) -> Result<()> {
             enabled: true,
             app_id,
             app_secret,
-            sandbox,
+            sandbox: false,
             shard: None,
             intents: intents_list,
         });
@@ -1284,7 +1306,7 @@ fn setup_qq_bot(config: &mut oben_config::AppConfig) -> Result<()> {
                 enabled: true,
                 app_id,
                 app_secret,
-                sandbox,
+                sandbox: false,
                 shard: None,
                 intents: intents_list,
             }),
