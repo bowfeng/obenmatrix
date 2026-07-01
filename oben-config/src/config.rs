@@ -495,6 +495,10 @@ pub struct GatewayConfig {
     pub slack: Option<SlackConfig>,
     pub whatsapp: Option<WhatsAppConfig>,
     pub qq_bot: Option<QQBotConfig>,
+    /// Directory containing WASM platform plugins (.wasm files).
+    /// If not set, defaults to ~/.obenalien/plugins/wasm.
+    #[serde(default)]
+    pub plugin_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -14,7 +14,7 @@ members = [
     "oben-tui",
     "oben-cli",
     "oben-scenario-test",
-    "oben-plugin",
+    "oben-wasm",
     "oben-cron",
     "oben-platform-sdk",
 ]
@@ -61,6 +61,9 @@ indicatif = "0.17"
 textwrap = "0.16"
 tempfile = "3"
 ctor = "0.2"
+wasmtime = { version = "44.0.3", features = ["component-model"] }
+wasmtime-wasi = "44.0.3"
+semver = "1.0"
 
 [package]
 name = "obenalien"

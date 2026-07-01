@@ -98,7 +98,8 @@ async fn main() -> Result<()> {
     // eliminating the hardcoded if/elif chain from the startup flow.
     // QQBotConfig is built from gateway config and converted to internal types in factory.
     let mut registry = oben_gateway::platform::PlatformRegistry::new();
-    let platform_handles = {
+    #[allow(unused_mut)]
+    let mut platform_handles = {
         if let Some(ref qq_cfg) = gateway_config.qq_bot {
             if qq_cfg.enabled {
                 let config = oben_config::QQBotConfig {
@@ -204,6 +205,60 @@ async fn main() -> Result<()> {
 
         registry.start_all()?
     };
+    // Load WASM platform plugins from the configured directory
+    #[cfg(feature = "wasm-plugins")]
+    {
+        use std::path::PathBuf;
+
+        let plugin_dir = gateway_config
+            .plugin_dir
+            .clone()
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".obenalien").join("plugins").join("wasm"))
+            });
+
+        if let Some(ref plugin_dir) = plugin_dir {
+            if plugin_dir.exists() && plugin_dir.is_dir() {
+                tracing::info!(?plugin_dir, "Loading WASM platform plugins");
+                if let Ok(entries) = std::fs::read_dir(plugin_dir) {
+                    let mut stub_handles: Vec<(String, oben_gateway::platform::PlatformHandle)> =
+                        Vec::new();
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
+                            continue;
+                        }
+                        let file_stem = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown");
+                        tracing::info!(plugin = %file_stem, source = ?path, "Found WASM platform plugin");
+
+                        // Full WASM instantiation TBD in a future version.
+                        // For now register a stub handle so the gateway lifecycle
+                        // tracking includes it.
+                        let abort = tokio::spawn(async {
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_secs(86_400))
+                                    .await;
+                            }
+                        })
+                        .abort_handle();
+                        stub_handles.push((
+                            format!("wasm_{}", file_stem),
+                            oben_gateway::platform::PlatformHandle::new(abort),
+                        ));
+                    }
+                    for (name, handle) in stub_handles {
+                        platform_handles.insert(name, handle);
+                    }
+                }
+            }
+        }
+    }
+
     info!("Platforms started via factory pipeline");
 
     info!("Gateway initialized — calling start_blocking()");

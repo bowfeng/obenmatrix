@@ -1,0 +1,26 @@
+[package]
+name = "oben-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "WASM execution layer for platform adapters using wasmtime"
+
+[dependencies]
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+semver = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+oben-platform-sdk = { path = "../oben-platform-sdk" }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }
