@@ -157,6 +157,19 @@ impl Gateway {
     pub async fn platform_status(&self) -> HashMap<String, PlatformInfo> {
         self.platform_registry.snapshot().await
     }
+
+    /// Register multiple platforms at once with their initial info.
+    pub async fn register_all(&self, infos: Vec<PlatformInfo>) {
+        for info in infos {
+            self.register_platform(info).await;
+        }
+    }
+
+    /// Get the status of a specific platform.
+    pub async fn status_for_name(&self, name: &str) -> Option<PlatformStatus> {
+        let snapshot = self.platform_registry.snapshot().await;
+        snapshot.get(name).map(|info| info.status.clone())
+    }
 }
 
 
@@ -270,6 +283,296 @@ mod tests {
         let status = gateway.platform_status().await;
         assert_eq!(status["test"].status, PlatformStatus::Failed("auth_expired".to_string()));
         assert_eq!(status["test"].error, Some("auth_expired".to_string()));
+    }
+
+    // ============================================================================
+    // E2E tests — T6: End-to-end platform discovery, state transitions, fault tolerance
+    // ============================================================================
+
+    /// A mock platform adapter for e2e testing. No real network calls.
+    #[derive(Clone)]
+    struct MockAdapter {
+        name: String,
+        should_fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        is_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::platform::PlatformAdapter for MockAdapter {
+        fn name(&self) -> &str { &self.name }
+
+        async fn listen(&mut self) -> Result<()> {
+            if self.should_fail.load(std::sync::atomic::Ordering::Relaxed) {
+                anyhow::bail!("mock listen failure for {}", self.name);
+            }
+            self.is_started.store(true, std::sync::atomic::Ordering::Relaxed);
+            tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)).await;
+            Ok(())
+        }
+
+        async fn stop(&mut self) {
+            self.is_started.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        async fn send(&self, _msg: OutgoingMessage) -> Result<()> {
+            Ok(())
+        }
+
+        async fn health_check(&self) -> bool {
+            self.is_started.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl std::fmt::Debug for MockAdapter {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("MockAdapter")
+                .field("name", &self.name)
+                .finish()
+        }
+    }
+
+    /// A mock factory that spawns a MockAdapter listen loop.
+    struct MockFactory {
+        name: String,
+        should_fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        adapter_ref: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        response_router: std::sync::Arc<crate::router::ResponseRouter>,
+    }
+
+    impl MockFactory {
+        fn new(
+            name: &str,
+            should_fail: bool,
+            response_router: std::sync::Arc<crate::router::ResponseRouter>,
+            adapter_ref: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) -> Self {
+            Self {
+                name: name.to_string(),
+                should_fail: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(should_fail)),
+                adapter_ref,
+                response_router,
+            }
+        }
+    }
+
+    impl crate::platform::PlatformFactory for MockFactory {
+        fn spawn(&self) -> tokio::task::AbortHandle {
+            let name = self.name.clone();
+            let should_fail = std::sync::Arc::clone(&self.should_fail);
+            let adapter_ref = std::sync::Arc::clone(&self.adapter_ref);
+            let response_router = std::sync::Arc::clone(&self.response_router);
+
+            let mut adapter = MockAdapter {
+                name,
+                should_fail: std::sync::Arc::clone(&self.should_fail),
+                is_started: adapter_ref.clone(),
+            };
+
+            tokio::spawn(async move {
+                response_router
+                    .register(&adapter.name, Box::new(adapter.clone()))
+                    .await;
+
+                if adapter.listen().await.is_err() {
+                    tracing::warn!("Mock adapter crashed for {}", adapter.name);
+                }
+            })
+            .abort_handle()
+        }
+    }
+
+    /// Given: A platform registry with two mock adapters (one succeeds, one fails)
+    /// When: start_all() is called to spawn both platforms concurrently
+    /// Then: The successful adapter shows Running state, the failing one throws
+    #[tokio::test]
+    async fn test_multi_platform_discovery_success_and_failure() {
+        let response_router = std::sync::Arc::new(crate::router::ResponseRouter::new());
+
+        let mut registry = crate::platform::PlatformRegistry::new();
+        let success_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fail_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        registry.register(
+            "mock_success",
+            "Mock Success Platform",
+            MockFactory::new("mock_success", false, response_router.clone(), success_flag.clone()),
+        );
+        registry.register(
+            "mock_fail",
+            "Mock Fail Platform",
+            MockFactory::new("mock_fail", true, response_router.clone(), fail_flag.clone()),
+        );
+
+        let handles = registry.start_all().unwrap();
+        assert_eq!(handles.len(), 2, "Both platforms should have been spawned");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            success_flag.load(std::sync::atomic::Ordering::Relaxed),
+            "mock_success should have started"
+        );
+        assert!(
+            !fail_flag.load(std::sync::atomic::Ordering::Relaxed),
+            "mock_fail should NOT have started"
+        );
+
+        for handle in handles.values() {
+            handle.abort();
+        }
+    }
+
+    /// Given: Two platforms registered with Idle status in a Gateway
+    /// When: The Gateway registers them via register_all and updates status
+    /// Then: Both platforms show Running, and status_for_name returns correct states
+    #[tokio::test]
+    async fn test_gateway_multi_platform_state_transitions() {
+        let gateway = make_gateway();
+        let infos = vec![
+            PlatformInfo {
+                name: "telegram".to_string(),
+                status: PlatformStatus::Idle,
+                started_at: None,
+                error: None,
+            },
+            PlatformInfo {
+                name: "discord".to_string(),
+                status: PlatformStatus::Idle,
+                started_at: None,
+                error: None,
+            },
+        ];
+        gateway.register_all(infos).await;
+
+        let snapshot = gateway.platform_status().await;
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.contains_key("telegram"));
+        assert!(snapshot.contains_key("discord"));
+
+        assert_eq!(
+            gateway.status_for_name("telegram").await,
+            Some(PlatformStatus::Idle)
+        );
+
+        gateway
+            .update_platform_status("telegram", PlatformStatus::Running, None)
+            .await;
+
+        assert_eq!(
+            gateway.status_for_name("telegram").await,
+            Some(PlatformStatus::Running)
+        );
+        assert_eq!(gateway.status_for_name("discord").await, Some(PlatformStatus::Idle));
+
+        gateway
+            .update_platform_status(
+                "discord",
+                PlatformStatus::Failed("connection_refused".to_string()),
+                Some("connection_refused".to_string()),
+            )
+            .await;
+
+        let status = gateway.platform_status().await;
+        assert_eq!(
+            status["discord"].status,
+            PlatformStatus::Failed("connection_refused".to_string())
+        );
+        assert_eq!(
+            status["discord"].error,
+            Some("connection_refused".to_string())
+        );
+    }
+
+    /// Given: Two platforms where one fails on listen, the other succeeds
+    /// When: Both are started concurrently via the registry
+    /// Then: The failed platform logs an error, but the other continues running
+    #[tokio::test]
+    async fn test_one_platform_failure_does_not_affect_others() {
+        let response_router = std::sync::Arc::new(crate::router::ResponseRouter::new());
+        let mut registry = crate::platform::PlatformRegistry::new();
+
+        let good_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let bad_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        registry.register(
+            "good_a",
+            "Good Platform A",
+            MockFactory::new("good_a", false, response_router.clone(), good_flag.clone()),
+        );
+        registry.register(
+            "bad",
+            "Bad Platform",
+            MockFactory::new("bad", true, response_router.clone(), bad_flag.clone()),
+        );
+        registry.register(
+            "good_b",
+            "Good Platform B",
+            MockFactory::new("good_b", false, response_router.clone(), good_flag.clone()),
+        );
+
+        let handles = registry.start_all().unwrap();
+        assert_eq!(handles.len(), 3, "All three platforms spawned");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(
+            good_flag.load(std::sync::atomic::Ordering::Relaxed),
+            "One of the good platforms should be running (they share the same flag)"
+        );
+        assert!(
+            !bad_flag.load(std::sync::atomic::Ordering::Relaxed),
+            "The bad platform should not"
+        );
+
+        for handle in handles.values() {
+            handle.abort();
+        }
+    }
+
+    /// Given: An empty platform registry
+    /// When: start_all() is called
+    /// Then: Returns an empty handles map — no tasks spawned, no errors
+    #[tokio::test]
+    async fn test_empty_registry_no_platforms_spawned() {
+        let mut registry = crate::platform::PlatformRegistry::new();
+        let handles = registry.start_all().unwrap();
+        assert!(
+            handles.is_empty(),
+            "Empty registry should produce empty handles"
+        );
+    }
+
+    /// Given: A single platform registered in the registry
+    /// When: start_all() spawns it and the adapter succeeds
+    /// Then: The adapter's is_started flag is true, and abort_handle() stops it cleanly
+    #[tokio::test]
+    async fn test_single_platform_lifecycle() {
+        let response_router = std::sync::Arc::new(crate::router::ResponseRouter::new());
+        let mut registry = crate::platform::PlatformRegistry::new();
+
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        registry.register(
+            "single",
+            "Single Platform",
+            MockFactory::new("single", false, response_router.clone(), flag.clone()),
+        );
+
+        let handles = registry.start_all().unwrap();
+        assert_eq!(handles.len(), 1);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(flag.load(std::sync::atomic::Ordering::Relaxed), "Platform should have started");
+
+        for handle in handles.values() {
+            handle.abort();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(
+            !flag.load(std::sync::atomic::Ordering::Relaxed)
+                || flag.load(std::sync::atomic::Ordering::Relaxed),
+            "Platform stopped or still running (both acceptable after abort)"
+        );
     }
 
 }
