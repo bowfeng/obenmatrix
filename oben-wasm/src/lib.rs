@@ -8,6 +8,9 @@ pub mod runtime;
 pub mod loader;
 pub mod bridge;
 pub mod host;
+pub mod hook_bridge;
+pub mod hook_registry;
+pub mod wasm_hooks;
 
 // Re-export key public types (wasmtime::Result shadows error::Result, so export WasmError explicitly)
 pub use error::WasmError;
@@ -17,6 +20,12 @@ pub use bridge::*;
 
 // wasmtime re-exports for convenience
 pub use wasmtime::*;
+
+// Re-export hook types from oben-agent so adapters can implement the same traits
+pub use oben_agent::hooks::kind;
+
+// Re-export registry types for gateway main.rs
+pub use hook_registry::WasmHookRegistry;
 
 /// WIT world definition for platform plugins.
 ///

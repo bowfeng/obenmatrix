@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tracing::info;
+use oben_agent::hooks::HookBuilder;
 use oben_config::AppConfig;
 use oben_gateway::{Dispatcher, Gateway, ResponseRouter};
 use oben_sessions::DBSessionManager;
@@ -54,6 +55,59 @@ fn create_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut registry);
     registry
+}
+
+/// Load WASM hook adapters from the plugin directory.
+///
+/// Returns an empty Vec when no plugins are found or the feature is disabled.
+#[cfg(feature = "wasm-plugins")]
+async fn load_wasm_hooks(plugin_dir: &Option<std::path::PathBuf>) -> Vec<Box<dyn oben_wasm::kind::Hook>> {
+    use std::path::PathBuf;
+    use oben_wasm::{WasmHookRegistry, WasmRuntime, WasmRuntimeConfig};
+
+    let plugin_path = plugin_dir
+        .clone()
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".obenalien").join("plugins").join("wasm"))
+        });
+
+    let Some(pdir) = plugin_path.as_ref()
+        .filter(|p| p.exists() && p.is_dir())
+    else {
+        return Vec::new();
+    };
+
+    tracing::info!(?pdir, "Loading WASM hook components");
+
+    let runtime = match WasmRuntime::new(WasmRuntimeConfig::default()) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "WASM runtime creation failed");
+            return Vec::new();
+        }
+    };
+
+    let registry = WasmHookRegistry::new(runtime, pdir.clone());
+    let components = match registry.load_hooks().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "WASM hook loading failed");
+            return Vec::new();
+        }
+    };
+
+    match registry.instantiate_hooks(components).await {
+        Ok(hooks) => {
+            tracing::info!(hook_count = hooks.len(), "Instantiated WASM hook adapters");
+            hooks
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "WASM adapter instantiation failed");
+            Vec::new()
+        }
+    }
 }
 
 #[tokio::main]
@@ -261,6 +315,18 @@ async fn main() -> Result<()> {
 
     info!("Platforms started via factory pipeline");
 
+    // Build HookEngine with NudgeHook + WASM hook adapters
+    #[cfg(feature = "wasm-plugins")]
+    let wasm_hooks = load_wasm_hooks(&gateway_config.plugin_dir).await;
+    #[cfg(not(feature = "wasm-plugins"))]
+    let wasm_hooks = Vec::new();
+
+    let hook_engine = HookBuilder::from_config(&app_config.hooks)
+        .with_wasm_hooks(wasm_hooks)
+        .build();
+    tracing::info!("HookEngine built");
+
+    let _hook_engine = hook_engine;
     info!("Gateway initialized — calling start_blocking()");
     info!("Press Ctrl+C to shut down");
 

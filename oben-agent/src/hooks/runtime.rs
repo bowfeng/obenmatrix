@@ -6,6 +6,58 @@ use super::kind::*;
 use crate::ContextWindowManager;
 use crate::nudge::NudgeConfig;
 
+// ──────────────────────
+// Trait object casting helpers — SAFETY: all queues contain only types that
+// implement every subset of Hook traits iterated over by the dispatcher.
+// Casting from &dyn Base to &dyn Sub re-binds the fat pointer to a
+// more-specific vtable. The underlying vtable pointer layout is identical
+// because Rust stores only a single `&self` pointer + vtable pointer in
+// every trait object; the vtable contents happen to be compatible when
+// the concrete type implements the superset of traits.
+// ──────────────────────
+
+#[inline]
+unsafe fn cast_agent_loop(hook: &dyn super::kind::Hook) -> &dyn AgentLoopHooks {
+    // SAFETY: All hooks in agent_loop_hooks implement AgentLoopHooks.
+    std::mem::transmute::<&dyn super::kind::Hook, &dyn AgentLoopHooks>(hook)
+}
+
+#[inline]
+unsafe fn cast_turn(hook: &dyn super::kind::Hook) -> &dyn TurnLifecycleHooks {
+    // SAFETY: All hooks in turn_hooks implement TurnLifecycleHooks.
+    std::mem::transmute::<&dyn super::kind::Hook, &dyn TurnLifecycleHooks>(hook)
+}
+
+#[inline]
+unsafe fn cast_tool(hook: &dyn super::kind::Hook) -> &dyn ToolLifecycleHooks {
+    // SAFETY: All hooks in tool_hooks implement ToolLifecycleHooks.
+    std::mem::transmute::<&dyn super::kind::Hook, &dyn ToolLifecycleHooks>(hook)
+}
+
+#[inline]
+unsafe fn cast_streaming(hook: &dyn super::kind::Hook) -> &dyn StreamingHooks {
+    // SAFETY: All hooks in streaming_hooks implement StreamingHooks.
+    std::mem::transmute::<&dyn super::kind::Hook, &dyn StreamingHooks>(hook)
+}
+
+#[inline]
+unsafe fn cast_system(hook: &dyn super::kind::Hook) -> &dyn SystemEventsHooks {
+    // SAFETY: All hooks in system_hooks implement SystemEventsHooks.
+    std::mem::transmute::<&dyn super::kind::Hook, &dyn SystemEventsHooks>(hook)
+}
+
+#[inline]
+unsafe fn cast_session(hook: &dyn super::kind::Hook) -> &dyn SessionLifecycleHooks {
+    // SAFETY: All hooks in session_hooks implement SessionLifecycleHooks.
+    std::mem::transmute::<&dyn super::kind::Hook, &dyn SessionLifecycleHooks>(hook)
+}
+
+#[inline]
+unsafe fn cast_interrupt(hook: &dyn super::kind::Hook) -> &dyn InterruptLifecycleHooks {
+    // SAFETY: All hooks in interrupt_hooks implement InterruptLifecycleHooks.
+    std::mem::transmute::<&dyn super::kind::Hook, &dyn InterruptLifecycleHooks>(hook)
+}
+
 // ---------------------------------------------------------------------------
 // NudgeHook — concrete hook that triggers memory/skill reviews
 // ---------------------------------------------------------------------------
@@ -88,13 +140,13 @@ impl TurnLifecycleHooks for NudgeHook {
 // ---------------------------------------------------------------------------
 
 pub struct HookEngine {
-    pub(crate) agent_loop_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn AgentLoopHooks>>>>,
-    pub(crate) turn_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn TurnLifecycleHooks>>>>,
-    pub(crate) tool_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn ToolLifecycleHooks>>>>,
-    pub(crate) streaming_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn StreamingHooks>>>>,
-    pub(crate) system_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn SystemEventsHooks>>>>,
-    pub(crate) session_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn SessionLifecycleHooks>>>>,
-    pub(crate) interrupt_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn InterruptLifecycleHooks>>>>,
+    pub(crate) agent_loop_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn super::kind::Hook>>>>,
+    pub(crate) turn_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn super::kind::Hook>>>>,
+    pub(crate) tool_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn super::kind::Hook>>>>,
+    pub(crate) streaming_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn super::kind::Hook>>>>,
+    pub(crate) system_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn super::kind::Hook>>>>,
+    pub(crate) session_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn super::kind::Hook>>>>,
+    pub(crate) interrupt_hooks: std::sync::Arc<std::sync::RwLock<Vec<Box<dyn super::kind::Hook>>>>,
 }
 
 impl HookEngine {
@@ -116,20 +168,76 @@ impl HookEngine {
     pub fn register_system(&self, hook: Box<dyn SystemEventsHooks>) { self.system_hooks.write().unwrap().push(hook); }
     pub fn register_session(&self, hook: Box<dyn SessionLifecycleHooks>) { self.session_hooks.write().unwrap().push(hook); }
     pub fn register_interrupt(&self, hook: Box<dyn InterruptLifecycleHooks>) { self.interrupt_hooks.write().unwrap().push(hook); }
+    /// Inject pre-constructed hook trait objects into the engine.
+    ///
+    /// WASM plugins register their hooks here. Hooks are dispatched to the
+    /// correct queue based on their `id()` prefix (e.g. "wasm-tool-*" goes to
+    /// the tool_hooks queue).
+    pub fn insert_wasm_hooks(&self, hooks: impl IntoIterator<Item = Box<dyn super::kind::Hook>>) {
+        for hook in hooks {
+            let id = hook.id().to_string();
+            match id.as_str() {
+                id if id.starts_with("wasm-agent-loop-") => self.agent_loop_hooks.write().unwrap().push(hook),
+                id if id.starts_with("wasm-turn-") => self.turn_hooks.write().unwrap().push(hook),
+                id if id.starts_with("wasm-tool-") => self.tool_hooks.write().unwrap().push(hook),
+                id if id.starts_with("wasm-streaming-") => self.streaming_hooks.write().unwrap().push(hook),
+                id if id.starts_with("wasm-system-") => self.system_hooks.write().unwrap().push(hook),
+                id if id.starts_with("wasm-session-") => self.session_hooks.write().unwrap().push(hook),
+                id if id.starts_with("wasm-interrupt-") => self.interrupt_hooks.write().unwrap().push(hook),
+                _ => tracing::warn!(id, "unrecognized WASM hook ID pattern"),
+            }
+        }
+    }
     pub fn count(&self) -> usize {
         self.agent_loop_hooks.read().unwrap().len() + self.turn_hooks.read().unwrap().len() + self.tool_hooks.read().unwrap().len()
             + self.streaming_hooks.read().unwrap().len() + self.system_hooks.read().unwrap().len() + self.session_hooks.read().unwrap().len()
             + self.interrupt_hooks.read().unwrap().len()
     }
-    pub fn emit_loop_start(&self) { for h in self.agent_loop_hooks.read().unwrap().iter() { h.on_loop_start(); } }
-    pub fn emit_loop_end(&self, outcome: &str) { for h in self.agent_loop_hooks.read().unwrap().iter() { h.on_loop_end(outcome); } }
-    pub fn emit_pre_turn(&self) { for h in self.turn_hooks.read().unwrap().iter() { h.on_pre_turn(); } }
-    pub fn emit_turn_complete(&self, response: &str, _msg_count: usize) { for h in self.turn_hooks.read().unwrap().iter() { h.on_post_turn(response, true); } }
-    pub fn emit_turn_error(&self, error: &anyhow::Error) { for h in self.turn_hooks.read().unwrap().iter() { h.on_post_turn(&error.to_string(), false); } }
-    pub fn emit_tool_gen(&self, n: &str, c: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_gen(n, c); } }
-    pub fn emit_tool_start(&self, n: &str, a: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_start(n, a); } }
-    pub fn emit_tool_complete(&self, n: &str, a: &str, r: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_complete(n, a, r); } }
-    pub fn emit_tool_error(&self, n: &str, a: &str, e: &str) { for h in self.tool_hooks.read().unwrap().iter() { h.on_tool_error(n, a, e); } }
+    pub fn emit_loop_start(&self) {
+        for raw in self.agent_loop_hooks.read().unwrap().iter() {
+            unsafe { cast_agent_loop(raw.as_ref()).on_loop_start(); }
+        }
+    }
+    pub fn emit_loop_end(&self, outcome: &str) {
+        for raw in self.agent_loop_hooks.read().unwrap().iter() {
+            unsafe { cast_agent_loop(raw.as_ref()).on_loop_end(outcome); }
+        }
+    }
+    pub fn emit_pre_turn(&self) {
+        for raw in self.turn_hooks.read().unwrap().iter() {
+            unsafe { cast_turn(raw.as_ref()).on_pre_turn(); }
+        }
+    }
+    pub fn emit_turn_complete(&self, response: &str, _msg_count: usize) {
+        for raw in self.turn_hooks.read().unwrap().iter() {
+            unsafe { cast_turn(raw.as_ref()).on_post_turn(response, true); }
+        }
+    }
+    pub fn emit_turn_error(&self, error: &anyhow::Error) {
+        for raw in self.turn_hooks.read().unwrap().iter() {
+            unsafe { cast_turn(raw.as_ref()).on_post_turn(&error.to_string(), false); }
+        }
+    }
+    pub fn emit_tool_gen(&self, n: &str, c: &str) {
+        for raw in self.tool_hooks.read().unwrap().iter() {
+            unsafe { cast_tool(raw.as_ref()).on_tool_gen(n, c); }
+        }
+    }
+    pub fn emit_tool_start(&self, n: &str, a: &str) {
+        for raw in self.tool_hooks.read().unwrap().iter() {
+            unsafe { cast_tool(raw.as_ref()).on_tool_start(n, a); }
+        }
+    }
+    pub fn emit_tool_complete(&self, n: &str, a: &str, r: &str) {
+        for raw in self.tool_hooks.read().unwrap().iter() {
+            unsafe { cast_tool(raw.as_ref()).on_tool_complete(n, a, r); }
+        }
+    }
+    pub fn emit_tool_error(&self, n: &str, a: &str, e: &str) {
+        for raw in self.tool_hooks.read().unwrap().iter() {
+            unsafe { cast_tool(raw.as_ref()).on_tool_error(n, a, e); }
+        }
+    }
     pub fn emit_stream_delta(&self, t: &str) {
         let streaming_hooks = self.streaming_hooks.read().unwrap();
         tracing::debug!(
@@ -137,26 +245,64 @@ impl HookEngine {
             streaming_hooks.len(),
             t.chars().count(),
         );
-        for h in streaming_hooks.iter() {
+        for raw in streaming_hooks.iter() {
             tracing::debug!(
                 "[emit_stream_delta] emitting to hook={} (total {} registered)",
-                h.id(),
+                raw.id(),
                 streaming_hooks.len(),
             );
-            h.on_stream_delta(t);
+            unsafe { cast_streaming(raw.as_ref()).on_stream_delta(t); }
         }
     }
-    pub fn emit_thinking(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_thinking(t); } }
-    pub fn emit_reasoning(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_reasoning(t); } }
-    pub fn emit_interim_assistant(&self, t: &str) { for h in self.streaming_hooks.read().unwrap().iter() { h.on_interim_assistant(t); } }
-    pub fn emit_status(&self, l: &str, m: &str) { for h in self.system_hooks.read().unwrap().iter() { h.on_status(l, m); } }
-    pub fn emit_session_rotate(&self, p: &str, c: &str) { for h in self.session_hooks.read().unwrap().iter() { h.on_session_rotate(p, c); } }
-    pub fn emit_compression_start(&self, n: usize) { for h in self.session_hooks.read().unwrap().iter() { h.on_compression_start(n); } }
-    pub fn emit_compression_complete(&self, s: &str) { for h in self.session_hooks.read().unwrap().iter() { h.on_compression_complete(s); } }
-    pub fn emit_interrupt_requested(&self) { for h in self.interrupt_hooks.read().unwrap().iter() { h.on_interrupt_requested(); } }
-    pub fn emit_interrupted(&self, r: &str) { for h in self.interrupt_hooks.read().unwrap().iter() { h.on_interrupted(r); } }
-    pub fn emit_turn_complete_with_count(&self, response: &str, _turn_count: usize, _msg_count: usize) {
-        for h in self.turn_hooks.read().unwrap().iter() { h.on_post_turn(response, true); }
+    pub fn emit_thinking(&self, t: &str) {
+        for raw in self.streaming_hooks.read().unwrap().iter() {
+            unsafe { cast_streaming(raw.as_ref()).on_thinking(t); }
+        }
+    }
+    pub fn emit_reasoning(&self, t: &str) {
+        for raw in self.streaming_hooks.read().unwrap().iter() {
+            unsafe { cast_streaming(raw.as_ref()).on_reasoning(t); }
+        }
+    }
+    pub fn emit_interim_assistant(&self, t: &str) {
+        for raw in self.streaming_hooks.read().unwrap().iter() {
+            unsafe { cast_streaming(raw.as_ref()).on_interim_assistant(t); }
+        }
+    }
+    pub fn emit_status(&self, l: &str, m: &str) {
+        for raw in self.system_hooks.read().unwrap().iter() {
+            unsafe { cast_system(raw.as_ref()).on_status(l, m); }
+        }
+    }
+    pub fn emit_session_rotate(&self, p: &str, c: &str) {
+        for raw in self.session_hooks.read().unwrap().iter() {
+            unsafe { cast_session(raw.as_ref()).on_session_rotate(p, c); }
+        }
+    }
+    pub fn emit_compression_start(&self, n: usize) {
+        for raw in self.session_hooks.read().unwrap().iter() {
+            unsafe { cast_session(raw.as_ref()).on_compression_start(n); }
+        }
+    }
+    pub fn emit_compression_complete(&self, s: &str) {
+        for raw in self.session_hooks.read().unwrap().iter() {
+            unsafe { cast_session(raw.as_ref()).on_compression_complete(s); }
+        }
+    }
+    pub fn emit_interrupt_requested(&self) {
+        for raw in self.interrupt_hooks.read().unwrap().iter() {
+            unsafe { cast_interrupt(raw.as_ref()).on_interrupt_requested(); }
+        }
+    }
+    pub fn emit_interrupted(&self, r: &str) {
+        for raw in self.interrupt_hooks.read().unwrap().iter() {
+            unsafe { cast_interrupt(raw.as_ref()).on_interrupted(r); }
+        }
+    }
+    pub fn emit_turn_complete_with_count(&self, response: &str, _turn_count:usize, _msg_count: usize) {
+        for raw in self.turn_hooks.read().unwrap().iter() {
+            unsafe { cast_turn(raw.as_ref()).on_post_turn(response, true); }
+        }
     }
     pub fn post_turn(&self, response: &str, msg_count: usize) {
         self.emit_turn_complete(response, msg_count);

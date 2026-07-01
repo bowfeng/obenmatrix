@@ -29,13 +29,13 @@ pub use kind::{TurnState, TurnPhase, ActiveTool, CompletedTool, ActivityKind, Ac
 ///     .build();
 /// ```
 pub struct HookBuilder {
-    agent_loop_hooks: Vec<Box<dyn AgentLoopHooks>>,
-    turn_hooks: Vec<Box<dyn TurnLifecycleHooks>>,
-    tool_hooks: Vec<Box<dyn ToolLifecycleHooks>>,
-    streaming_hooks: Vec<Box<dyn StreamingHooks>>,
-    system_hooks: Vec<Box<dyn SystemEventsHooks>>,
-    session_hooks: Vec<Box<dyn SessionLifecycleHooks>>,
-    interrupt_hooks: Vec<Box<dyn InterruptLifecycleHooks>>,
+    agent_loop_hooks: Vec<Box<dyn super::kind::Hook>>,
+    turn_hooks: Vec<Box<dyn super::kind::Hook>>,
+    tool_hooks: Vec<Box<dyn super::kind::Hook>>,
+    streaming_hooks: Vec<Box<dyn super::kind::Hook>>,
+    system_hooks: Vec<Box<dyn super::kind::Hook>>,
+    session_hooks: Vec<Box<dyn super::kind::Hook>>,
+    interrupt_hooks: Vec<Box<dyn super::kind::Hook>>,
 }
 
 impl HookBuilder {
@@ -47,9 +47,9 @@ impl HookBuilder {
             .and_then(|v| serde_yaml::from_value::<NudgeConfig>(v.clone()).ok())
             .unwrap_or_default();
 
-        let mut turn_hooks: Vec<Box<dyn TurnLifecycleHooks>> = Vec::new();
+        let mut turn_hooks: Vec<Box<dyn super::kind::Hook>> = Vec::new();
         if nudge_config.enabled() {
-            let nudge: Box<dyn TurnLifecycleHooks> = Box::new(NudgeHook::from_config(&nudge_config));
+            let nudge: Box<dyn super::kind::Hook> = Box::new(NudgeHook::from_config(&nudge_config));
             turn_hooks.push(nudge);
         }
 
@@ -109,6 +109,27 @@ impl HookBuilder {
 
     pub fn register_interrupt(mut self, hook: Box<dyn InterruptLifecycleHooks>) -> Self {
         self.interrupt_hooks.push(hook);
+        self
+    }
+
+    /// Inject pre-constructed hook trait objects into the builder.
+    ///
+    /// Typically called by outside systems (e.g. WASM plugin system) to
+    /// batch-register hooks before building the final HookEngine.
+    pub fn with_wasm_hooks(mut self, wasm_hooks: Vec<Box<dyn super::kind::Hook>>) -> Self {
+        for hook in wasm_hooks {
+            let id = hook.id().to_string();
+            match id.as_str() {
+                id if id.starts_with("wasm-agent-loop-") => self.agent_loop_hooks.push(hook),
+                id if id.starts_with("wasm-turn-") => self.turn_hooks.push(hook),
+                id if id.starts_with("wasm-tool-") => self.tool_hooks.push(hook),
+                id if id.starts_with("wasm-streaming-") => self.streaming_hooks.push(hook),
+                id if id.starts_with("wasm-system-") => self.system_hooks.push(hook),
+                id if id.starts_with("wasm-session-") => self.session_hooks.push(hook),
+                id if id.starts_with("wasm-interrupt-") => self.interrupt_hooks.push(hook),
+                _ => tracing::warn!(id, "unrecognized WASM hook ID"),
+            }
+        }
         self
     }
 
