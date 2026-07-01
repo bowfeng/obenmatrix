@@ -703,7 +703,7 @@ impl StreamingContextScrubber {
     }
 
     /// Return the length of the longest buf-suffix that is a tag-prefix (partial or complete).
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_macros)]
     fn max_partial_suffix(buf: &str, tag: &str) -> usize {
         let tag_lower = tag.to_lowercase();
         let buf_lower = buf.to_lowercase();

@@ -26,13 +26,13 @@ pub enum BlockType<'a> {
     ToolResult,
 }
 
-/// Cache for layout computation (wrapped lines + heights).
-///
-/// Messages are append-only — content never changes. When entry count + window
-/// dimensions + streaming state are the same as last render, we can skip the
-/// whole wrap loop and reuse cached heights/ranges/flat-lines.
-#[derive(Clone)]
-struct CachedLayout {
+    /// Cache for layout computation (wrapped lines + heights).
+    ///
+    /// Messages are append-only — content never changes. When entry count + window
+    /// dimensions + streaming state are the same as last render, we can skip the
+    /// whole wrap loop and reuse cached heights/ranges/flat-lines.
+    #[derive(Clone)]
+    pub struct CachedLayout {
     /// Entry count at cache time.
     entry_count: usize,
     /// Window height/width at cache time.
@@ -513,7 +513,7 @@ impl ConversationWidget {
         // ─── Phase 1: Layout calculation (skip wrap if cache valid) ────────
         // Messages are append-only — content never changes. On scroll events,
         // when entry count + window size + streaming haven't changed, reuse cache.
-        let inner_wrap_w = inner_width.saturating_sub(is_streaming as usize);
+        let _inner_wrap_w = inner_width.saturating_sub(is_streaming as usize);
         let (layout_entries, block_heights, content_height) = {
             let entry_count = entries.len();
             // Check cache: same entries + same window + same streaming?
@@ -563,7 +563,7 @@ impl ConversationWidget {
 
             if layout_entries.is_empty() {
                 // Full compute: wrap ALL entries
-                let mut flat_accum = 0usize;
+                let mut _flat_accum = 0usize;
                 for (i, entry) in entries.iter().enumerate() {
                     let plain_lines: Vec<Line<'static>> = entry
                         .body_lines
@@ -583,7 +583,7 @@ impl ConversationWidget {
                     let wrapped = layout::wrap_styled_lines_to_lines(&plain_lines, wrap_w);
                     let h = (wrapped.len().max(1) as u16) + layout::BODY_HEIGHT_ADJUSTER as u16;
                     layout_entries.push((i, bt, wrapped));
-                    flat_accum += layout_entries.last().unwrap().2.len();
+                    _flat_accum += layout_entries.last().unwrap().2.len();
                     block_heights.push(h);
                 }
             }
@@ -662,8 +662,8 @@ impl ConversationWidget {
             *body_to_flat = mapping;
         }
         let scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
-        let user_offset = state.user_scroll_offset.load(Ordering::SeqCst);
-        let at_bottom = state.scroll_to_bottom.load(Ordering::SeqCst);
+        let _user_offset = state.user_scroll_offset.load(Ordering::SeqCst);
+        let _at_bottom = state.scroll_to_bottom.load(Ordering::SeqCst);
 
         // ─── Phase 1.5: Stream block estimation & wrapping (shared between phases) ──────
         // Parse stream text once, reuse for both scroll_offset and rendering.
@@ -847,7 +847,7 @@ impl ConversationWidget {
         // ─── Phase 2.5: Streaming block (rendered after regular entries) ─
         let mut total_height = total_height;
         let mut streaming_rendered = false;
-        if let Some((stream_lines, wrapped, _stream_body_lines, stream_height)) = stream_parsed {
+        if let Some((_stream_lines, wrapped, _stream_body_lines, stream_height)) = stream_parsed {
             // Phase 1 already added stream_estimate_height (= stream_height) to total_height.
             // No double-add needed — total_height is already correct.
 
@@ -951,7 +951,8 @@ impl ConversationWidget {
         let prev_user_offset = state.user_scroll_offset.load(Ordering::SeqCst);
         let offset = state.user_scroll_offset.swap(0, Ordering::SeqCst);
         let prev_scroll_pos = scroll_pos;
-        let mut scroll_pos = 0usize;
+        #[allow(unused_assignments)]
+        let mut scroll_pos = prev_scroll_pos;
         let scrollable_range = (total_height as i64 - inner_height as i64).max(0) as usize;
         let prev_scrollable_range = state
             .prev_scrollable_range

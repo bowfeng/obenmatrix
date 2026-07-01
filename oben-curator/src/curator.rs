@@ -93,22 +93,20 @@ impl CuratorState {
 
 /// Curator — orchestrates skill maintenance tasks.
 pub struct Curator {
-    #[allow(dead_code)]
-    config: CuratorConfig,
+    _config: CuratorConfig,
     lifecycle_manager: LifecycleManager,
     state: CuratorState,
 }
 
 impl Curator {
-    pub fn new(config: CuratorConfig) -> Self {
+    pub fn new(_config: CuratorConfig) -> Self {
         let lifecycle_config = LifecycleConfig {
             stale_after_days: 30,
             archive_after_days: 90,
         };
-        let mut state = CuratorState::new();
-        state.interval_hours = config.interval_hours;
+        let state = CuratorState::new();
         Self {
-            config,
+            _config,
             lifecycle_manager: LifecycleManager::new(lifecycle_config),
             state,
         }

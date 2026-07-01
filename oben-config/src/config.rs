@@ -799,9 +799,9 @@ mod tests {
                 sandbox: true,
                 shard: None,
                 intents: vec![
-                    QQBotIntent::Guilds,
-                    QQBotIntent::C2cMessage,
-                    QQBotIntent::GroupAtMessage,
+                    QQBotIntent::DirectMessage,
+                    QQBotIntent::C2CAndGroup,
+                    QQBotIntent::Interaction,
                 ],
             }),
         });
@@ -817,8 +817,8 @@ mod tests {
         assert_eq!(qq.app_id, "12345");
         assert_eq!(qq.app_secret, "super-secret-key");
         assert!(qq.sandbox);
-        assert!(qq.intents.iter().any(|i| matches!(i, QQBotIntent::Guilds)));
-        assert!(qq.intents.iter().any(|i| matches!(i, QQBotIntent::C2cMessage)));
+        assert!(qq.intents.iter().any(|i| matches!(i, QQBotIntent::DirectMessage)));
+        assert!(qq.intents.iter().any(|i| matches!(i, QQBotIntent::C2CAndGroup)));
     }
 }
 

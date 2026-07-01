@@ -41,8 +41,7 @@ const ENV_OPENAI: &str = "OPENAI_API_KEY";
 // TTS Constants
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-const DEFAULT_VOICE: &str = "en-US-Standard-C";
+
 const OPENAI_BASE: &str = "https://api.openai.com/v1";
 const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
 const XAI_TTS_BASE: &str = "https://api.x.ai/v1";

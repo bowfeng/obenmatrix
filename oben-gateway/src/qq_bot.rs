@@ -160,7 +160,6 @@ pub struct QQBotConfig {
     pub app_secret: String,
     pub sandbox: bool,
     pub shard: Option<[usize; 2]>,
-    #[allow(dead_code)]
     pub intents: Intents,
 }
 

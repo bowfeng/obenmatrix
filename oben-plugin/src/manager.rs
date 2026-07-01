@@ -227,7 +227,7 @@ impl PluginContext {
         &self,
         name: &str,
         path: std::path::PathBuf,
-        description: &str,
+        _description: &str,
     ) -> Result<()> {
         if name.contains(':') {
             return Err(anyhow!(
@@ -266,9 +266,7 @@ impl PluginContext {
                 qualified,
                 PluginSkill {
                     path,
-                    plugin: self.manifest.name.clone(),
                     bare_name,
-                    description: description.to_string(),
                 },
             );
         }
@@ -567,7 +565,6 @@ impl PluginContext {
 }
 
 /// Inner state for PluginManager (hidden behind Mutex).
-#[allow(dead_code)]
 pub struct ManagerInner {
     /// All discovered/loaded plugins.
     plugins: std::collections::HashMap<String, LoadedPlugin>,
@@ -644,22 +641,12 @@ pub struct LoadedPlugin {
 
 /// Metadata about a registered plugin skill.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct PluginSkill {
     path: std::path::PathBuf,
-    plugin: String,
     bare_name: String,
-    description: String,
 }
 
 /// Metadata about a registered CLI command.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct PluginCliCommand {
-    name: String,
-    description: String,
-    plugin: String,
-}
 
 /// PluginManager — singleton manager for plugin discovery, loading, and invocation.
 ///
@@ -887,7 +874,7 @@ impl PluginManager {
     /// List all skills registered by a plugin.
     pub fn list_plugin_skills(&self, plugin_name: &str) -> Vec<String> {
         let mgr = self.inner.lock().unwrap();
-        let prefix = format!("{}:", plugin_name);
+        let prefix = format!("{plugin_name}:");
         mgr.plugin_skills
             .iter()
             .filter(|(qn, _)| qn.starts_with(&prefix))
@@ -895,84 +882,7 @@ impl PluginManager {
             .collect::<Vec<_>>()
     }
 
-    /// Register a hook callback for a plugin.
-    #[allow(dead_code)]
-    pub(crate) fn register_hook(
-        &mut self,
-        hook_type: &HookType,
-        callback: HookCallback,
-        _manifest: &PluginManifest,
-    ) {
-        let mut mgr = self.inner.lock().unwrap();
-        mgr.hooks
-            .entry(hook_type.clone())
-            .or_default()
-            .push(callback);
-    }
-
-    /// Track a registered tool for a plugin.
-    #[allow(dead_code)]
-    pub(crate) fn track_registered_tools_for_plugin(
-        &mut self,
-        manifest: &PluginManifest,
-        tool_name: &str,
-    ) {
-        let mut mgr = self.inner.lock().unwrap();
-        if let Some(loaded) = mgr.plugins.get_mut(manifest.lookup_key()) {
-            loaded.tools_registered.push(tool_name.to_string());
-        }
-    }
-
-    /// Track a registered command for a plugin.
-    #[allow(dead_code)]
-    pub(crate) fn track_command_for_plugin(
-        &mut self,
-        manifest: &PluginManifest,
-        name: &str,
-        _description: &str,
-        _args_hint: &str,
-    ) {
-        let mut mgr = self.inner.lock().unwrap();
-        if let Some(loaded) = mgr.plugins.get_mut(manifest.lookup_key()) {
-            loaded.commands_registered.push(name.to_string());
-        }
-    }
-
-    /// Track a registered CLI command for a plugin.
-    #[allow(dead_code)]
-    pub(crate) fn track_cli_command_for_plugin(
-        &mut self,
-        manifest: &PluginManifest,
-        name: &str,
-        _description: &str,
-    ) {
-        // Phase 2: Store CLI command metadata
-        let _ = (manifest, name, _description);
-    }
-
     /// Register a plugin skill.
-    #[allow(dead_code)]
-    pub(crate) fn register_plugin_skill(
-        &mut self,
-        qualified_name: &str,
-        path: std::path::PathBuf,
-        description: &str,
-        plugin: &str,
-    ) {
-        let mut mgr = self.inner.lock().unwrap();
-        mgr.plugin_skills.insert(
-            qualified_name.to_string(),
-            PluginSkill {
-                path,
-                plugin: plugin.to_string(),
-                bare_name: qualified_name.split(':').last().unwrap_or("").to_string(),
-                description: description.to_string(),
-            },
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Phase 3: Slash commands
     // -----------------------------------------------------------------------
 
     /// Register a slash command from a plugin.

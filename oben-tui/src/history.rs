@@ -40,19 +40,6 @@ impl InputHistory {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn new_at(path: PathBuf) -> Self {
-        let entries = Self::load_entries(&path);
-        Self {
-            path,
-            inner: Mutex::new(InputHistoryInner {
-                entries,
-                history_idx: None,
-                current_draft: String::new(),
-            }),
-        }
-    }
-
     fn load_entries(path: &PathBuf) -> Vec<String> {
         if !path.exists() {
             return Vec::new();
@@ -179,7 +166,14 @@ mod tests {
                 writeln!(file, "{}", line).unwrap();
             }
         }
-        let history = InputHistory::new_at(path);
+        let history = InputHistory {
+            path,
+            inner: Mutex::new(InputHistoryInner {
+                entries: vec![],
+                history_idx: None,
+                current_draft: String::new(),
+            }),
+        };
         (dir, history)
     }
 
@@ -315,8 +309,14 @@ mod tests {
             fs::write(&path, "line1\nline2\nline3\n").unwrap();
         }
 
-        let mut h = InputHistory::new_at(path.clone());
-        assert_eq!(h.history(), ["line1", "line2", "line3"]);
+        let mut h = InputHistory {
+            path: path.clone(),
+            inner: Mutex::new(InputHistoryInner {
+                entries: vec![],
+                history_idx: None,
+                current_draft: String::new(),
+            }),
+        };
         h.append("line4");
 
         drop(h);

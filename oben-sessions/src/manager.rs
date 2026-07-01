@@ -368,8 +368,7 @@ fn row_to_message(row: &rusqlite::Row) -> std::result::Result<Message, rusqlite:
 }
 
 pub struct SessionDB {
-    #[allow(dead_code)]
-    db_path: std::path::PathBuf,
+    _db_path: std::path::PathBuf,
     conn: std::sync::Mutex<Option<Connection>>,
     /// Write serialization lock — separates WAL write-lock acquisition
     /// from connection locking, so concurrent async tasks don't hold
@@ -392,10 +391,10 @@ const CHECKPOINT_EVERY_N_WRITES: usize = 50;
 
 impl SessionDB {
     pub fn new<P: AsRef<std::path::Path>>(db_path: P) -> Result<Self> {
-        let db_path = db_path.as_ref().to_path_buf();
-        let db_dir = db_path.parent().unwrap_or(db_path.as_ref());
+        let path = db_path.as_ref().to_path_buf();
+        let db_dir = path.parent().unwrap_or(path.as_ref());
         std::fs::create_dir_all(db_dir)?;
-        let conn = Connection::open(&db_path)?;
+        let conn = Connection::open(&path)?;
 
         // WAL mode with short timeout — application-level retry handles
         // contention instead of sitting in SQLite's busy handler (deterministic
@@ -427,12 +426,12 @@ impl SessionDB {
         };
         info!(
             "Opened session DB at {} [journal_mode={}]",
-            db_path.display(),
+            path.display(),
             mode_label
         );
 
         Ok(Self {
-            db_path,
+            _db_path: path,
             conn: std::sync::Mutex::new(Some(conn)),
             write_lock: std::sync::Mutex::new(()),
             write_count: std::sync::atomic::AtomicUsize::new(0),

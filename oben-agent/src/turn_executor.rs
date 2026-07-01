@@ -67,7 +67,7 @@ pub enum TurnResultReason {
 enum CompactionResult {
     Continue,
     Rotated(String, Vec<Message>),
-    Complete(Vec<Message>),
+    Complete(()),
 }
 
     // ---------------------------------------------------------------------------
@@ -115,7 +115,7 @@ impl TurnExecutor {
         remedy_policy: Option<TurnRemedyPolicyGroup>,
         mut config: TurnConfig,
     ) -> Result<TurnResult> {
-        let (mut term, mut rem) = match (termination_policy, remedy_policy) {
+        let (term, mut rem) = match (termination_policy, remedy_policy) {
             (Some(t), Some(r)) => (t, r),
             (Some(t), None) => {
                 let rem = Self::build_default_remedy(config.max_iterations);
@@ -135,6 +135,7 @@ impl TurnExecutor {
         let (mut session, mut current_session_id) =
             Self::pre_turn_setup(context_window_manager, session_manager, session_id, user_message, &mut config)?;
         let mut consecutive_empty: u32 = 0;
+        #[allow(unused_assignments)]
         let mut decision_result: Option<TurnResult> = None;
         'turn_loop: loop {
             // Interrupt
@@ -418,7 +419,7 @@ impl TurnExecutor {
             Ok((cid, msgs)) => Ok(CompactionResult::Rotated(cid, msgs)),
             Err(e) => {
                 tracing::warn!("Rotation failed: {e}");
-                Ok(CompactionResult::Complete(session.messages.clone()))
+                Ok(CompactionResult::Complete(()))
             }
         }
     }
@@ -578,7 +579,6 @@ impl TurnExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_utf8_char_slice_does_not_panic_with_chinese() {

@@ -454,14 +454,6 @@ mod tests {
         fs::write(&skill_file, frontmatter).ok();
     }
 
-    #[allow(dead_code)]
-    fn cleanup_test_skills() {
-        let skills_dir = get_skills_dir();
-        if skills_dir.exists() {
-            let _ = fs::remove_dir_all(&skills_dir);
-        }
-    }
-
     fn get_unique_test_category() -> String {
         // Generate a unique category per test to avoid parallel test interference
         // on the shared skills directory.

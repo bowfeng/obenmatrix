@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
     info!("Gateway initialized — calling start_blocking()");
     info!("Press Ctrl+C to shut down");
 
-    let gateway = Gateway::new(session_manager, gateway_config, dispatcher, platform_handles);
+    let gateway = Gateway::new(session_manager, platform_handles);
     gateway.start_blocking().await?;
 
     info!("Gateway shut down cleanly");

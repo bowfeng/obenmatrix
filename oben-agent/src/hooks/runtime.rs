@@ -155,7 +155,7 @@ impl HookEngine {
     pub fn emit_compression_complete(&self, s: &str) { for h in self.session_hooks.read().unwrap().iter() { h.on_compression_complete(s); } }
     pub fn emit_interrupt_requested(&self) { for h in self.interrupt_hooks.read().unwrap().iter() { h.on_interrupt_requested(); } }
     pub fn emit_interrupted(&self, r: &str) { for h in self.interrupt_hooks.read().unwrap().iter() { h.on_interrupted(r); } }
-    pub fn emit_turn_complete_with_count(&self, response: &str, turn_count: usize, msg_count: usize) {
+    pub fn emit_turn_complete_with_count(&self, response: &str, _turn_count: usize, _msg_count: usize) {
         for h in self.turn_hooks.read().unwrap().iter() { h.on_post_turn(response, true); }
     }
     pub fn post_turn(&self, response: &str, msg_count: usize) {

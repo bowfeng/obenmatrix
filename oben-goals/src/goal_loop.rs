@@ -403,7 +403,7 @@ mod tests {
         plan.add_node(n2);
 
         // All nodes done → judge says done
-        let verdict = call_judge_sync("deploy app", &plan);
+        let verdict = _call_judge_sync("deploy app", &plan);
         assert!(matches!(verdict, JudgeVerdict::Done(_)));
     }
 
@@ -417,7 +417,7 @@ mod tests {
         plan.add_node(n1);
         plan.add_node(n2);
 
-        let verdict = call_judge_sync("deploy app", &plan);
+        let verdict = _call_judge_sync("deploy app", &plan);
         assert!(matches!(verdict, JudgeVerdict::Continue(_)));
     }
 
@@ -429,13 +429,12 @@ mod tests {
         plan.add_node(n1);
         plan.add_node(PlanNode::new("test")); // still pending
 
-        let verdict = call_judge_sync("deploy app", &plan);
+        let verdict = _call_judge_sync("deploy app", &plan);
         assert!(matches!(verdict, JudgeVerdict::Continue(_)));
     }
 
     // Synchronous helper for tests (simulates the judge logic)
-    #[allow(dead_code)]
-    fn call_judge_sync(_goal: &str, plan: &PlanState) -> JudgeVerdict {
+    fn _call_judge_sync(_goal: &str, plan: &PlanState) -> JudgeVerdict {
         let all_done = plan
             .nodes
             .iter()

@@ -1,16 +1,12 @@
 /// Gateway — manages platform connections and routes messages to the agent.
 /// Maps to `gateway/gateway.py` in Hermes.
 use anyhow::Result;
-use super::qq_protocol::Intents as QQIntents;
 use std::collections::HashMap;
 
-use crate::dispatcher::Dispatcher;
-use crate::platform::{IncomingMessage, PlatformAdapter, PlatformInfo, PlatformStatus};
-use crate::qq_bot::QQBotAdapter;
+use crate::platform::{IncomingMessage, PlatformInfo, PlatformStatus};
 
-use oben_config::GatewayConfig;
 use oben_sessions::DBSessionManager;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Thread-safe registry of platform adapter states.
 pub struct PlatformRegistry {
@@ -68,8 +64,6 @@ impl Default for PlatformRegistry {
 /// The gateway process — listens on multiple platforms and routes to the agent.
 pub struct Gateway {
     session_manager: DBSessionManager,
-    config: GatewayConfig,
-    dispatcher: std::sync::Arc<Dispatcher>,
     /// Handles running platform listeners keyed by name; dropped to abort.
     platform_handles: std::sync::Mutex<HashMap<String, tokio::task::AbortHandle>>,
     /// Factory handles from startup pipeline — dropped to stop platforms on drop.
@@ -81,8 +75,6 @@ pub struct Gateway {
 impl Gateway {
     pub fn new(
         session_manager: DBSessionManager,
-        config: GatewayConfig,
-        dispatcher: std::sync::Arc<Dispatcher>,
         platform_handles: HashMap<String, crate::platform::PlatformHandle>,
     ) -> Self {
         let mut abort_handles = HashMap::new();
@@ -91,8 +83,6 @@ impl Gateway {
         }
         Self {
             session_manager,
-            config,
-            dispatcher,
             platform_handles: std::sync::Mutex::new(abort_handles),
             _factory_handles: platform_handles,
             platform_registry: std::sync::Arc::new(PlatformRegistry::new()),
@@ -116,19 +106,6 @@ impl Gateway {
         Ok(format!("Echo: {}", msg.content))
     }
 
-    /// Parse QQBot intents from config into Intents bitflags.
-    fn parse_qq_intents(config: &oben_config::QQBotConfig) -> QQIntents {
-        let intents = QQIntents::new().with_guilds().with_group_and_c2c();
-        for intent in &config.intents {
-match intent {
-    oben_config::QQBotIntent::DirectMessage => {}
-    oben_config::QQBotIntent::C2CAndGroup => {}
-    oben_config::QQBotIntent::Interaction => {}
-            }
-        }
-        intents
-    }
-
     /// Start the gateway — run all enabled platform adapter listeners.
     /// Block until Ctrl-C. Called from #[tokio::main], so no nested runtime.
     ///
@@ -146,129 +123,6 @@ match intent {
         tokio::signal::ctrl_c().await?;
         info!("Shutting down gateway...");
         Ok(())
-    }
-
-    async fn start_platforms(&self) -> Result<(Vec<tokio::task::JoinHandle<()>>, Vec<String>)> {
-        let mut handles = Vec::new();
-        let mut platform_names = Vec::new();
-        let config = &self.config;
-        let registry = self.registry();
-
-        // ── Telegram ──────────────────────────────────────────────────
-        if let Some(ref tg_config) = config.telegram {
-            if tg_config.enabled {
-                let name = "telegram".to_string();
-                platform_names.push(name.clone());
-                info!("Starting Telegram platform adapter");
-                registry.register(PlatformInfo {
-                    name: name.clone(),
-                    status: PlatformStatus::Connecting,
-                    started_at: None,
-                    error: None,
-                }).await;
-                registry.set_status("telegram", PlatformStatus::Failed("Not implemented yet".into()), Some("platform adapter not implemented".to_string())).await;
-                warn!("Telegram platform placeholder — no adapter implemented yet");
-            }
-        }
-
-        // ── Discord ───────────────────────────────────────────────────
-        if let Some(ref dc_config) = config.discord {
-            if dc_config.enabled {
-                let name = "discord".to_string();
-                platform_names.push(name.clone());
-                info!("Starting Discord platform adapter");
-                registry.register(PlatformInfo {
-                    name: name.clone(),
-                    status: PlatformStatus::Connecting,
-                    started_at: None,
-                    error: None,
-                }).await;
-                registry.set_status("discord", PlatformStatus::Failed("Not implemented yet".into()), Some("platform adapter not implemented".to_string())).await;
-                warn!("Discord platform placeholder — no adapter implemented yet");
-            }
-        }
-
-        // ── Slack ─────────────────────────────────────────────────────
-        if let Some(ref sl_config) = config.slack {
-            if sl_config.enabled {
-                let name = "slack".to_string();
-                platform_names.push(name.clone());
-                info!("Starting Slack platform adapter");
-                registry.register(PlatformInfo {
-                    name: name.clone(),
-                    status: PlatformStatus::Connecting,
-                    started_at: None,
-                    error: None,
-                }).await;
-                registry.set_status("slack", PlatformStatus::Failed("Not implemented yet".into()), Some("platform adapter not implemented".to_string())).await;
-                warn!("Slack platform placeholder — no adapter implemented yet");
-            }
-        }
-
-        // ── WhatsApp ──────────────────────────────────────────────────
-        if let Some(ref wa_config) = config.whatsapp {
-            if wa_config.enabled {
-                let name = "whatsapp".to_string();
-                platform_names.push(name.clone());
-                info!("Starting WhatsApp platform adapter");
-                registry.register(PlatformInfo {
-                    name: name.clone(),
-                    status: PlatformStatus::Connecting,
-                    started_at: None,
-                    error: None,
-                }).await;
-                registry.set_status("whatsapp", PlatformStatus::Failed("Not implemented yet".into()), Some("platform adapter not implemented".to_string())).await;
-                warn!("WhatsApp platform placeholder — no adapter implemented yet");
-            }
-        }
-
-        // ── QQ Bot ────────────────────────────────────────────────────
-        if let Some(ref qq_config) = config.qq_bot {
-            if qq_config.enabled {
-                let name = "qq_bot".to_string();
-                platform_names.push(name.clone());
-                registry.register(PlatformInfo {
-                    name: name.clone(),
-                    status: PlatformStatus::Connecting,
-                    started_at: None,
-                    error: None,
-                }).await;
-
-                let intents = Self::parse_qq_intents(qq_config);
-                info!(
-                    app_id = %qq_config.app_id,
-                    sandbox = qq_config.sandbox,
-                    intents_value = %intents.to_u64(),
-                    "Starting QQ Bot adapter"
-                );
-
-                let adapter = QQBotAdapter::new(
-                    &qq_config.app_id,
-                    &qq_config.app_secret,
-                    qq_config.sandbox,
-                    qq_config.shard,
-                    intents,
-                    self.dispatcher.clone(),
-                );
-
-                let handle = tokio::spawn(async move {
-                    let mut a = adapter;
-                    if let Err(e) = a.listen().await {
-                        tracing::error!("QQ Bot adapter crashed: {}", e);
-                    }
-                });
-                handles.push(handle);
-
-                registry.set_status("qq_bot", PlatformStatus::Running, None).await;
-                info!("QQ Bot adapter started successfully");
-            }
-        }
-
-        if handles.is_empty() {
-            info!("No platform adapters enabled in config; gateway will block on ctrl-c");
-        }
-
-        Ok((handles, platform_names))
     }
 
     pub fn session_manager(&self) -> &DBSessionManager {
@@ -303,11 +157,6 @@ match intent {
     pub async fn platform_status(&self) -> HashMap<String, PlatformInfo> {
         self.platform_registry.snapshot().await
     }
-
-    /// Get the PlatformRegistry reference for use by start_platforms.
-    pub fn registry(&self) -> std::sync::Arc<PlatformRegistry> {
-        self.platform_registry.clone()
-    }
 }
 
 
@@ -315,17 +164,10 @@ match intent {
 mod tests {
     use super::*;
     use crate::platform::*;
-    use crate::router::ResponseRouter;
 
     fn make_gateway() -> Gateway {
         Gateway::new(
             DBSessionManager::new().unwrap(),
-            oben_config::GatewayConfig::default(),
-            std::sync::Arc::new(Dispatcher::new(
-                oben_config::AppConfig::default(),
-                std::sync::Arc::new(oben_tools::ToolRegistry::new()),
-                std::sync::Arc::new(ResponseRouter::new()),
-            )),
             HashMap::new(),
         )
     }
@@ -430,13 +272,4 @@ mod tests {
         assert_eq!(status["test"].error, Some("auth_expired".to_string()));
     }
 
-    /// Given: A gateway with default (empty) config — no platforms enabled
-    /// When: start_platforms() is called
-    /// Then: Returns empty handles list and logs warning
-    #[tokio::test]
-    async fn test_start_platforms_empty_config() {
-        let gateway = make_gateway();
-        let (handles, _names) = gateway.start_platforms().await.unwrap();
-        assert!(handles.is_empty());
-    }
 }

@@ -5,11 +5,8 @@
 //! trait methods — no custom loop (`drive()` / `run_tui()`) needed. The event
 //! loop receives status updates on `done_tx`.
 
-use std::sync::Arc;
-
 use super::app::TurnCompletion;
 use oben_agent::coordinator::{ConversationCoordinator, ConversationResult};
-use oben_models::SessionManager;
 
 // ── TUI Commands ──────────────────────────────────────────────────────────
 
@@ -19,7 +16,6 @@ pub enum TuiCommand {
     /// Signal the event loop to prepare ChatPanel for streaming.
     StartTurn {
         input: String,
-        #[allow(dead_code)]
         session_name: Option<String>,
     },
     /// Append the user input to the session history.

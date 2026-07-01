@@ -44,8 +44,6 @@ struct TransportRegistry {
 
 struct RegistryEntry {
     factory: TransportFactory,
-    #[allow(dead_code)]
-    source: TransportSource,
 }
 
 impl TransportRegistry {
@@ -59,10 +57,10 @@ impl TransportRegistry {
         &mut self,
         name: impl Into<String>,
         factory: TransportFactory,
-        source: TransportSource,
+        _source: TransportSource,
     ) {
         self.transports
-            .insert(name.into(), RegistryEntry { factory, source });
+            .insert(name.into(), RegistryEntry { factory });
     }
 
     fn unregister(&mut self, name: &str) -> bool {
@@ -406,6 +404,7 @@ mod tests {
             id: None,
             tool_call_ids: vec![],
             tool_calls: None,
+            reasoning: None,
         }];
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

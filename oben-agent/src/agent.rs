@@ -971,7 +971,7 @@ mod tests {
             fn id(&self) -> &str { "test_error" }
         }
 
-        let mut engine = super::super::hooks::HookEngine::new();
+        let engine = super::super::hooks::HookEngine::new();
         engine.register_tool(Box::new(ErrorCapturingHook {
             called: called_clone,
         }));

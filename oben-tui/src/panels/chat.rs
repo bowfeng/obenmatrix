@@ -6,7 +6,6 @@ use crate::widgets::input_bar::{InputBarResult, InputBarWidget, InputState};
 use crate::widgets::message_renderer::MessageRenderer;
 use crossterm::event::KeyEvent;
 use parking_lot::Mutex as PlMutex;
-use parking_lot::RwLock;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
 use std::sync::atomic::Ordering;

@@ -19,45 +19,41 @@ struct OSVPackage {
     ecosystem: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct OSVResponse {
     vulns: Vec<OSVVuln>,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[derive(Deserialize)]
 struct OSVVuln {
     id: String,
     summary: Option<String>,
     aliases: Vec<String>,
     references: Vec<OSVReference>,
-    affected: Vec<OSVAffected>,
+    _affected: Vec<OSVAffected>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct OSVReference {
     url: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[derive(Deserialize)]
 struct OSVAffected {
-    package: OSVPackage,
-    ranges: Vec<OSVRange>,
+    _package: OSVPackage,
+    _ranges: Vec<OSVRange>,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[derive(Deserialize)]
 struct OSVRange {
-    r#type: String,
-    events: Vec<OSVEvent>,
+    _type: String,
+    _events: Vec<OSVEvent>,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[derive(Deserialize)]
 struct OSVEvent {
-    introduced: Option<String>,
-    fixed: Option<String>,
+    _introduced: Option<String>,
+    _fixed: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

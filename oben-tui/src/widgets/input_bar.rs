@@ -269,7 +269,7 @@ impl InputBarWidget {
 
         // Queue indicator — show queued input count during streaming.
         if !state.input_queue.is_empty() {
-            y_offset += self.render_queue_indicator(frame, area, y_offset, state, palette);
+            let _ = self.render_queue_indicator(frame, area, y_offset, state, palette);
         }
 
         // Tab completion overlay.

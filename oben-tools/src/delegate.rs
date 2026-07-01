@@ -621,15 +621,6 @@ fn mock_spawn_fn(sr: crate::registry::SubagentResult) -> SpawnFn {
     })
 }
 
-/// Helper: build a SpawnFn that returns an error.
-#[allow(dead_code)]
-fn error_spawn_fn(msg: String) -> SpawnFn {
-    Arc::new(move |_pid, _goal, _depth, _role| {
-        let msg = msg.clone();
-        tokio::spawn(async move { Err(anyhow::anyhow!("{}", msg)) })
-    })
-}
-
 /// Given: Valid single-task args with goal
 /// When: DelegateTool.validate is called
 /// Then: Returns Ok(())

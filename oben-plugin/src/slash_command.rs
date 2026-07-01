@@ -153,8 +153,6 @@ impl SlashCommandRegistry {
         }
     }
 
-    /// List all registered slash commands (owned clones).
-    #[allow(dead_code)]
     pub fn list(&self) -> Vec<SlashCommand> {
         self.commands.read().unwrap().values().cloned().collect()
     }

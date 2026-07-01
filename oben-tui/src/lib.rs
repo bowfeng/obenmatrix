@@ -33,7 +33,6 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Paragraph, Tabs};
 use ratatui::{Frame, Terminal};
 use ratatui_toaster::ToastType;
-use regex::Regex;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -262,7 +261,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
     let (command_tx, mut command_rx) = unbounded_channel::<TuiCommand>();
 
-    let (agent, config, interrupt_state) = {
+    let (agent, _config, _interrupt_state) = {
         let a = arc_app.lock().await;
         let agent = Arc::clone(a.shared_state.lock().agent.as_ref().unwrap());
         let cfg = a.config.clone();
@@ -366,7 +365,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
             Some(cmd) = command_rx.recv() => {
                 let mut app = arc_app.lock().await;
                 match cmd {
-                    TuiCommand::StartTurn { input, session_name } => {
+                    TuiCommand::StartTurn { input, session_name: _ } => {
                         tracing::info!("[event_loop] TuiCommand::StartTurn, input.len()={}", input.len());
                         if let Some(chat) = app.get_chat_mut() {
                             chat.streaming = true;
@@ -717,7 +716,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     None => break,
                 }
             }
-            default_delay = async { tokio::time::sleep(std::time::Duration::from_millis(16)).await } => {
+            _default_delay = async { tokio::time::sleep(std::time::Duration::from_millis(16)).await } => {
                 // Yield periodically so the `terminal.draw()` below executes even during idle.
             }
         }
@@ -736,22 +735,6 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     disable_raw_mode()?;
     info!("TUI exited normally.");
     Ok(())
-}
-
-/// Parse input text and return (text_without_images, image_urls).
-fn parse_input_for_images(input: &str) -> (String, Vec<(String, Option<String>)>) {
-    let re = Regex::new(
-        r"https?://[^\s'(),]+(?:\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff?|ico|avif))([^\s'()]*)?",
-    )
-    .unwrap();
-
-    let urls: Vec<(String, Option<String>)> = re
-        .captures_iter(input)
-        .filter_map(|cap| cap.get(0).map(|m| (m.as_str().to_string(), None)))
-        .collect();
-
-    let text = re.replace_all(input, "").trim().to_string();
-    (text, urls)
 }
 
 fn draw_ui(frame: &mut Frame, app: &mut App) {

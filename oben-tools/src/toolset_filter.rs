@@ -15,7 +15,7 @@ use oben_models::ToolResult;
 use serde_json::Value;
 use tracing::warn;
 
-use super::registry::{ToolCall, ToolRegistry};
+use super::registry::ToolRegistry;
 
 /// A filter that wraps a [ToolRegistry] and blocks specific tools from
 /// being executed.
@@ -77,7 +77,7 @@ impl BlockedToolFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{Tool, ToolRegistry};
+    use crate::registry::{Tool, ToolCall, ToolRegistry};
 
     // -----------------------------------------------------------------------
     // Test helpers

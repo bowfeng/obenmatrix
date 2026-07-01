@@ -233,9 +233,9 @@ impl SubagentSpawner {
         let transport = Arc::clone(&self.transport);
         let tools = Arc::clone(&self.tools);
         let config = self.config.clone();
-        let context_config = self.context_config.clone();
-        let max_iterations = self.max_iterations;
-        let max_messages = self.max_messages;
+        let _context_config = self.context_config.clone();
+        let _max_iterations = self.max_iterations;
+        let _max_messages = self.max_messages;
         let max_spawn_depth = self.max_spawn_depth;
         let child_session_id_clone = child_session_id.clone();
 
@@ -460,10 +460,10 @@ pub fn build_spawn_fn_wrapper(
 
             let transport = Arc::clone(&transport);
             let tools = Arc::clone(&tools);
-            let context_config = context_config.clone();
-            let max_iterations = max_iterations;
-            let max_messages = max_messages;
-            let max_spawn_depth = max_spawn_depth;
+            let _context_config = context_config.clone();
+            let _max_iterations = max_iterations;
+            let _max_messages = max_messages;
+            let _max_spawn_depth = max_spawn_depth;
 
             // Build child toolset: exclude delegate_task if depth >= max_spawn_depth
             let child_tool_registry = build_child_toolset(&tools, depth, max_spawn_depth);

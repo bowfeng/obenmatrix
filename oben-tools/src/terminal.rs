@@ -24,10 +24,8 @@ use oben_utils::path_security::is_path_safe;
 
 /// Status of a background task.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 enum TaskStatus {
     Running,
-    Finished,
     Stopped,
 }
 
@@ -300,8 +298,7 @@ async fn handle_task_status<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResul
     if let Some(task) = tasks.get(task_id) {
         let status_str = match task.status {
             TaskStatus::Running => "running",
-            TaskStatus::Finished => "finished",
-            TaskStatus::Stopped => "stopped",
+            _ => "other",
         };
 
         Ok(ToolResult {
@@ -365,12 +362,7 @@ async fn handle_task_output<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResul
                 "(task {} is still running, command: {})",
                 task_id, task.command
             ),
-            TaskStatus::Finished => {
-                format!("(task {} has finished, command: {})", task_id, task.command)
-            }
-            TaskStatus::Stopped => {
-                format!("(task {} was stopped, command: {})", task_id, task.command)
-            }
+            _ => format!("(task {} completed, command: {})", task_id, task.command),
         };
 
         Ok(ToolResult {
@@ -402,8 +394,7 @@ async fn handle_task_list(call_id: &str) -> anyhow::Result<ToolResult> {
     for (task_id, task) in tasks.iter() {
         let status_str = match task.status {
             TaskStatus::Running => "running",
-            TaskStatus::Finished => "finished",
-            TaskStatus::Stopped => "stopped",
+            _ => "other",
         };
         task_entries.push(format!(
             "{}: {} (command: {})",

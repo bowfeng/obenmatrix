@@ -1218,6 +1218,7 @@ mod tests {
                 tool_name: "shell".to_string(),
                 arguments: json!({"command": "ls"}),
             }]),
+            reasoning: None,
         };
         let result = message_to_anthropic_json(&msg);
         assert_eq!(result["role"], "assistant");

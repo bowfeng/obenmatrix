@@ -78,18 +78,11 @@ impl BuiltinContextWindowManager {
         this
     }
 
-    #[allow(dead_code)]
-    fn context_length(&self) -> usize {
-        self.config.context_length
-    }
-
     fn is_thrashing(&self) -> bool {
         self.ineffective_compression_count >= self.config.max_ineffective_consecutive
     }
 
     // -- Model switching ----------------------------------------------------
-    #[allow(dead_code)]
-    const MINIMUM_CONTEXT_LENGTH: usize = 4096;
 }
 
 #[async_trait::async_trait]

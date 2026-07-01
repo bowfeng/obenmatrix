@@ -1,6 +1,5 @@
 //! Configurable session store — choose between SQLite persistence or in-memory.
 
-use crate::SessionManager;
 use anyhow::Result;
 pub use oben_models::SessionStoreKind;
 

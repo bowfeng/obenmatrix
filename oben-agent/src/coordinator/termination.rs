@@ -9,7 +9,7 @@
 use anyhow::Result;
 
 // Config import intentionally unused — max_iterations comes from the caller.
-use oben_models::{Message, MessageContent, MessageRole, TransportResponse};
+use oben_models::{Message, MessageRole, TransportResponse};
 
 // =========================================================================
 // TurnTerminationPolicy (phase 1: response evaluation)
@@ -281,6 +281,7 @@ impl TurnRemedyPolicy for DefaultTurnRemedyPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oben_models::MessageContent;
 
     fn mk_response(text: &str, tool_calls: Vec<oben_models::TransportToolCall>) -> TransportResponse {
         TransportResponse {

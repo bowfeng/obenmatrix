@@ -316,34 +316,30 @@ where
     }
 }
 
-/// SSE event from streaming response.
-#[derive(Debug, serde::Deserialize)]
+/// SSE event from streaming response — fields used only for serde deserialization.
+#[derive(serde::Deserialize)]
 struct StreamChunk {
     #[serde(default)]
-    #[allow(dead_code)]
-    pub id: String,
+    _id: String,
     #[serde(default)]
-    #[allow(dead_code)]
-    pub object: String,
+    _object: String,
     #[serde(default)]
-    #[allow(dead_code)]
-    pub created: u64,
+    _created: u64,
     pub choices: Vec<StreamChoice>,
     #[serde(default)]
     pub usage: Option<StreamUsage>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 struct StreamChoice {
     pub delta: StreamDelta,
     #[serde(default)]
-    #[allow(dead_code)]
-    pub index: usize,
+    _index: usize,
     #[serde(default)]
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 struct StreamDelta {
     #[serde(default)]
     pub content: Option<String>,
@@ -352,9 +348,7 @@ struct StreamDelta {
     pub reasoning_content: Option<String>,
     #[serde(default, rename = "tool_calls")]
     pub tool_calls: Option<Vec<StreamToolCallDelta>>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub role: Option<String>,
+    _role: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -375,12 +369,10 @@ struct StreamFunctionDelta {
     pub arguments: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 struct StreamUsage {
-    #[allow(dead_code)]
-    pub prompt_tokens: Option<usize>,
-    #[allow(dead_code)]
-    pub completion_tokens: Option<usize>,
+    _prompt_tokens: Option<usize>,
+    _completion_tokens: Option<usize>,
     pub total_tokens: Option<usize>,
 }
 

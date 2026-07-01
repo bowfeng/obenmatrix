@@ -586,8 +586,7 @@ impl CronStore {
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct Daemon {
-    #[allow(dead_code)]
-    store: std::sync::Arc<CronStore>,
+    _store: std::sync::Arc<CronStore>,
     running: std::sync::Arc<AtomicBool>,
 }
 
@@ -603,7 +602,7 @@ impl Daemon {
             "Cron daemon started (tick interval: {}s)",
             interval.as_secs()
         );
-        (Self { store, running }, handle)
+        (Self { _store: store, running }, handle)
     }
 
     pub fn stop(&self) {

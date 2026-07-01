@@ -1,6 +1,5 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 /// Todo tool — TODO list management with JSON persistence.
 ///
 /// Implements `Tool` trait directly.
@@ -37,22 +36,6 @@ impl TodoStore {
         Self {
             items: Vec::new(),
             next_id: 1,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn load() -> Self {
-        let path = Self::get_path();
-        if path.exists() {
-            match fs::read_to_string(&path) {
-                Ok(json) => match serde_json::from_str(&json) {
-                    Ok(store) => store,
-                    Err(_) => Self::new(),
-                },
-                Err(_) => Self::new(),
-            }
-        } else {
-            Self::new()
         }
     }
 
@@ -135,24 +118,6 @@ fn make_todo_tool() -> ToolMeta {
 // ---------------------------------------------------------------------------
 // Tool struct
 // ---------------------------------------------------------------------------
-
-/// Extract todo action from args; returns (action, call_id, remaining args).
-#[allow(dead_code)]
-fn extract_action(args: &Value) -> anyhow::Result<(String, String, &Value)> {
-    let call_id = args
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let action = args
-        .get("action")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'action' argument"))?
-        .to_string();
-
-    Ok((action, call_id, args))
-}
 
 /// Handle todo actions (add, complete, remove, list).
 async fn execute_todo<'a>(call: &ToolCall<'a>) -> anyhow::Result<ToolResult> {

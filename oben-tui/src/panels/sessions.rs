@@ -279,9 +279,8 @@ impl SessionsPanel {
         };
 
         match action {
-            Action::Switch(_) => self.handle_switch(session_id).await,
+            Action::Switch => self.handle_switch(session_id).await,
             Action::Delete => {
-                // Cannot delete the active session
                 if let Some(session) = self.get_session() {
                     let current_name = session.metadata.title.as_deref().unwrap_or(&session.name);
                     if self.active_session_name.as_deref() == Some(current_name)
@@ -291,20 +290,6 @@ impl SessionsPanel {
                     }
                 }
                 self.handle_delete(session_id).await;
-                self.refresh_list(None).await;
-            }
-            Action::New => {
-                self.handle_new().await;
-                self.refresh_list(None).await;
-            }
-            Action::Close => {
-                self.handle_close().await;
-                self.refresh_list(None).await;
-            }
-            Action::Rename => self.handle_rename(),
-            Action::Compact => self.handle_compact(session_id).await,
-            Action::Fork => {
-                self.handle_fork();
                 self.refresh_list(None).await;
             }
         }
@@ -336,39 +321,6 @@ impl SessionsPanel {
         let _ = self.agent.lock().await.delete_session(&session_id).await;
     }
 
-    async fn handle_new(&mut self) {
-        let _ = self.agent.lock().await.new_session().await;
-    }
-
-    async fn handle_close(&mut self) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        let _ = self.agent.lock().await.close_session().await;
-    }
-
-    fn handle_rename(&mut self) {
-        // Rename display only — actual rename handled via /rename command
-    }
-
-    async fn handle_compact(&mut self, session_id: String) {
-        let _ = self.agent.lock().await.switch_session(&session_id).await;
-    }
-
-    fn handle_fork(&mut self) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        let session = match self.sessions.get(self.filtered[self.selected]) {
-            Some(s) => s.clone(),
-            None => return,
-        };
-        if session.metadata.title.is_none() {
-            return;
-        }
-        // Fork is handled via /session command with app context
-    }
-
     pub fn get_session_name(&self) -> Option<String> {
         let s = *self.filtered.first()?;
         self.sessions
@@ -383,13 +335,8 @@ impl SessionsPanel {
 }
 
 enum Action {
-    Switch(KeyModifiers),
+    Switch,
     Delete,
-    New,
-    Close,
-    Rename,
-    Compact,
-    Fork,
 }
 
 #[async_trait::async_trait]
@@ -500,10 +447,10 @@ impl Panel for SessionsPanel {
                 }
             }
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
-                self.handle_action(Action::Switch(KeyModifiers::NONE)).await;
+                self.handle_action(Action::Switch).await;
             }
             // KeyCode::Enter if key.modifiers == KeyModifiers::ALT => {
-            //     self.handle_action(Action::Switch(KeyModifiers::ALT)).await;
+            //     self.handle_action(Action::Switch).await;
             // }
             // KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
             //     self.handle_action(Action::New).await;

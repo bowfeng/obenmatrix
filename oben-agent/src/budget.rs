@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_peek_does_not_increment() {
-        let mut budget = IterationBudget::new(5);
+        let budget = IterationBudget::new(5);
         assert_eq!(budget.current(), 0);
         budget.peek().unwrap();
         assert_eq!(budget.current(), 0);
