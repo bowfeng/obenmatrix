@@ -1,11 +1,10 @@
 /// Platform abstraction for messaging services.
 ///
-/// Each platform (Telegram, Discord, Slack) implements this trait.
+/// Each platform (Telegram, Discord, Slack, QQ) implements this trait.
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 use std::fmt::Display;
-use tracing::info;
 
 /// A message received from a platform.
 #[derive(Debug, Clone)]
@@ -82,7 +81,6 @@ pub trait PlatformAdapter: Send + Sync {
     /// Check if the platform is connected and healthy.
     async fn health_check(&self) -> bool;
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -171,79 +169,6 @@ mod tests {
         assert_eq!(msg1.content, msg2.content);
     }
 
-    /// Mock adapter for testing purposes
-    struct TestAdapter {
-        name_val: String,
-        send_count: std::sync::atomic::AtomicUsize,
-        health: std::sync::atomic::AtomicBool,
-    }
-
-    impl TestAdapter {
-        fn new(name: &str) -> Self {
-            Self {
-                name_val: name.to_string(),
-                send_count: std::sync::atomic::AtomicUsize::new(0),
-                health: std::sync::atomic::AtomicBool::new(true),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl PlatformAdapter for TestAdapter {
-        fn name(&self) -> &str {
-            &self.name_val
-        }
-
-        async fn listen(&mut self) -> Result<()> {
-            unimplemented!("listen not supported in test mode")
-        }
-
-        async fn stop(&mut self) {}
-
-        async fn send(&self, _msg: OutgoingMessage) -> Result<()> {
-            self.send_count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
-        }
-
-        async fn health_check(&self) -> bool {
-            self.health.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    #[test]
-    fn test_mock_adapter_name() {
-        let adapter = TestAdapter::new("test-platform");
-        assert_eq!(adapter.name(), "test-platform");
-    }
-
-    #[tokio::test]
-    async fn test_mock_adapter_health_check() {
-        let adapter = TestAdapter::new("test-platform");
-        assert!(adapter.health_check().await);
-    }
-
-    #[tokio::test]
-    async fn test_mock_adapter_send() {
-        let adapter = TestAdapter::new("test-platform");
-        let msg = OutgoingMessage {
-            platform: "test".to_string(),
-            user_id: "user-1".to_string(),
-            thread_id: None,
-            content: "test message".to_string(),
-        };
-        adapter.send(msg.clone()).await.unwrap();
-        assert_eq!(
-            adapter.send_count.load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
-        adapter.send(msg).await.unwrap();
-        assert_eq!(
-            adapter.send_count.load(std::sync::atomic::Ordering::SeqCst),
-            2
-        );
-    }
-
     /// Given: A platform status with Idle variant
     /// When: Display is called via to_string()
     /// Then: Returns "Idle"
@@ -308,128 +233,5 @@ mod tests {
         assert_eq!(info.status, PlatformStatus::Idle);
         assert_eq!(info.started_at, None);
         assert_eq!(info.error, None);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Factory-based platform registration
-// ---------------------------------------------------------------------------
-
-/// Factory for the QQ Bot platform.
-/// Accepts the config from YAML and converts to internal adapter types on spawn.
-pub struct QQBotFactory {
-    config: std::sync::Arc<oben_config::QQBotConfig>,
-    dispatcher: std::sync::Arc<crate::dispatcher::Dispatcher>,
-    response_router: std::sync::Arc<crate::router::ResponseRouter>,
-}
-
-impl QQBotFactory {
-    pub fn new(
-        config: oben_config::QQBotConfig,
-        dispatcher: std::sync::Arc<crate::dispatcher::Dispatcher>,
-        response_router: std::sync::Arc<crate::router::ResponseRouter>,
-    ) -> Self {
-        Self {
-            config: std::sync::Arc::new(config),
-            dispatcher,
-            response_router,
-        }
-    }
-
-    pub fn spawn(&self) -> tokio::task::AbortHandle {
-        let config = std::sync::Arc::clone(&self.config);
-        let dispatcher = std::sync::Arc::clone(&self.dispatcher);
-        let response_router = std::sync::Arc::clone(&self.response_router);
-        tokio::spawn(async move {
-            // Convert config intents (Vec<QQBotIntent>) to protocol Intents
-            let intents = crate::qq_protocol::Intents::new().with_guilds().with_group_and_c2c();
-            let mut adapter = crate::qq_bot::QQBotAdapter::new(
-                &config.app_id,
-                &config.app_secret,
-                config.sandbox,
-                config.shard,
-                intents,
-                dispatcher,
-            );
-            // Register a clone with the response router so outbound replies can find it.
-            response_router.register("qq_bot", Box::new(adapter.clone())).await;
-            // Start listen on the original adapter instance.
-            if let Err(e) = adapter.listen().await {
-                tracing::error!("QQ Bot adapter crashed: {e}");
-            }
-        })
-        .abort_handle()
-    }
-}
-
-/// A factory that spawns a platform adapter's listen loop.
-pub trait PlatformFactory: Send + 'static {
-    fn spawn(&self) -> tokio::task::AbortHandle;
-}
-
-impl PlatformFactory for QQBotFactory {
-    fn spawn(&self) -> tokio::task::AbortHandle {
-        QQBotFactory::spawn(self)
-    }
-}
-
-/// Wraps a tokio task abort handle for controlling a platform's background task.
-pub struct PlatformHandle {
-    inner: tokio::task::AbortHandle,
-}
-
-impl PlatformHandle {
-    pub fn new(inner: tokio::task::AbortHandle) -> Self {
-        Self { inner }
-    }
-
-    pub fn abort_handle(&self) -> tokio::task::AbortHandle {
-        self.inner.clone()
-    }
-
-    pub fn abort(&self) {
-        self.inner.abort();
-    }
-}
-
-impl Clone for PlatformHandle {
-    fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
-    }
-}
-
-/// Registry of platform factories keyed by name.
-pub struct PlatformRegistry {
-    entries: std::collections::HashMap<String, Box<dyn PlatformFactory>>,
-}
-
-impl PlatformRegistry {
-    pub fn new() -> Self {
-        Self {
-            entries: std::collections::HashMap::new(),
-        }
-    }
-
-    pub fn register<F>(&mut self, name: &str, _label: &str, factory: F)
-    where
-        F: PlatformFactory,
-    {
-        self.entries.insert(name.to_string(), Box::new(factory));
-    }
-
-    pub fn start_all(&mut self) -> Result<std::collections::HashMap<String, PlatformHandle>> {
-        let mut handles = std::collections::HashMap::new();
-        for (name, factory) in self.entries.drain() {
-            info!(platform = name, "Spawning platform adapter");
-            let handle = factory.spawn();
-            handles.insert(name, PlatformHandle::new(handle));
-        }
-        Ok(handles)
-    }
-}
-
-impl Default for PlatformRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }

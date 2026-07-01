@@ -16,6 +16,7 @@ members = [
     "oben-scenario-test",
     "oben-plugin",
     "oben-cron",
+    "oben-platform-sdk",
 ]
 resolver = "2"
 

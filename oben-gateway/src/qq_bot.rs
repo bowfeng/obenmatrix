@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use tungstenite::Message as WSMessage;
 
-use crate::platform::{IncomingMessage, MessageHandler, OutgoingMessage, PlatformAdapter};
+use crate::platform::{IncomingMessage, OutgoingMessage, PlatformAdapter};
 
 use super::qq_protocol::{
     HeartbeatPayload, IdentifyEvent, Intents, MsgType, Properties, SendMessageRequest,
@@ -439,6 +439,7 @@ impl SharedState {
 // QQBotAdapter
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct QQBotAdapter {
     state: SharedState,
 }
@@ -516,7 +517,7 @@ impl PlatformAdapter for QQBotAdapter {
         "qq_bot"
     }
 
-    async fn listen(&mut self, _handler: Box<dyn MessageHandler>) -> Result<()> {
+    async fn listen(&mut self) -> Result<()> {
         info!("QQ Bot adapter starting with dispatcher");
         self.spawn_loop();
         let (tx, mut rx) = mpsc::channel::<()>(1);

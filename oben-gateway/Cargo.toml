@@ -8,6 +8,7 @@ license = "MIT"
 oben-agent = { path = "../oben-agent" }
 oben-config = { path = "../oben-config" }
 oben-models = { path = "../oben-models" }
+oben-platform-sdk = { path = "../oben-platform-sdk" }
 oben-sessions = { path = "../oben-sessions" }
 oben-tools = { path = "../oben-tools" }
 

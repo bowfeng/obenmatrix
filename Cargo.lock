@@ -2562,6 +2562,7 @@ dependencies = [
  "oben-agent",
  "oben-config",
  "oben-models",
+ "oben-platform-sdk",
  "oben-sessions",
  "oben-tools",
  "qr2term",
@@ -2608,6 +2609,17 @@ dependencies = [
  "serde_yaml",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "oben-platform-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

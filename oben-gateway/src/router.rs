@@ -117,7 +117,7 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::platform::{MessageHandler, OutgoingMessage};
+    use crate::platform::OutgoingMessage;
 
     struct TestAdapter {
         name_val: String,
@@ -128,7 +128,7 @@ mod tests {
         fn name(&self) -> &str {
             &self.name_val
         }
-        async fn listen(&mut self, _handler: Box<dyn MessageHandler>) -> Result<()> {
+        async fn listen(&mut self) -> Result<()> {
             Ok(())
         }
         async fn stop(&mut self) {}

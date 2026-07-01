@@ -72,6 +72,8 @@ pub struct Gateway {
     dispatcher: std::sync::Arc<Dispatcher>,
     /// Handles running platform listeners keyed by name; dropped to abort.
     platform_handles: std::sync::Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    /// Factory handles from startup pipeline — dropped to stop platforms on drop.
+    _factory_handles: HashMap<String, crate::platform::PlatformHandle>,
     /// Thread-safe registry of platform adapter states.
     platform_registry: std::sync::Arc<PlatformRegistry>,
 }
@@ -81,12 +83,18 @@ impl Gateway {
         session_manager: DBSessionManager,
         config: GatewayConfig,
         dispatcher: std::sync::Arc<Dispatcher>,
+        platform_handles: HashMap<String, crate::platform::PlatformHandle>,
     ) -> Self {
+        let mut abort_handles = HashMap::new();
+        for (name, handle) in &platform_handles {
+            abort_handles.insert(name.clone(), handle.abort_handle());
+        }
         Self {
             session_manager,
             config,
             dispatcher,
-            platform_handles: std::sync::Mutex::new(HashMap::new()),
+            platform_handles: std::sync::Mutex::new(abort_handles),
+            _factory_handles: platform_handles,
             platform_registry: std::sync::Arc::new(PlatformRegistry::new()),
         }
     }
@@ -123,20 +131,18 @@ match intent {
 
     /// Start the gateway — run all enabled platform adapter listeners.
     /// Block until Ctrl-C. Called from #[tokio::main], so no nested runtime.
+    ///
+    /// Platforms are started via the factory startup pipeline (see main.rs).
+    /// The factory handles are held in _factory_handles and dropped on shutdown.
     pub async fn start_blocking(&self) -> Result<()> {
-        info!("Gateway starting with configured platforms...");
+        let handles = self.platform_handles.lock().unwrap();
+        info!(
+            platforms_active = handles.len(),
+            "Gateway starting — platforms active via factory pipeline"
+        );
+        drop(handles);
 
-        let (handles, platform_names) = self.start_platforms().await?;
-
-        // Store handles for shutdown (keyed by platform name)
-        {
-            let mut h = self.platform_handles.lock().unwrap();
-            for (name, handle) in platform_names.iter().zip(handles.iter()) {
-                h.insert(name.clone(), handle.abort_handle());
-            }
-        }
-
-        // Keep running until Ctrl-C
+        // Keep running until Ctrl-C; platforms are maintained by factory pipeline
         tokio::signal::ctrl_c().await?;
         info!("Shutting down gateway...");
         Ok(())
@@ -247,7 +253,7 @@ match intent {
 
                 let handle = tokio::spawn(async move {
                     let mut a = adapter;
-                    if let Err(e) = a.listen(Box::new(QqMessageHandler)).await {
+                    if let Err(e) = a.listen().await {
                         tracing::error!("QQ Bot adapter crashed: {}", e);
                     }
                 });
@@ -304,19 +310,6 @@ match intent {
     }
 }
 
-/// Message handler implementation for QQ Bot.
-/// Routes incoming messages into the gateway processing pipeline.
-struct QqMessageHandler;
-
-#[async_trait::async_trait]
-impl crate::platform::MessageHandler for QqMessageHandler {
-    async fn handle(&self, msg: IncomingMessage) -> Result<Option<String>> {
-        info!(platform = %msg.platform, user_id = %msg.user_id, "QQ Bot message received");
-        // TODO: Route to agent conversation loop
-        let _ = msg;
-        Ok(None)
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -333,6 +326,7 @@ mod tests {
                 std::sync::Arc::new(oben_tools::ToolRegistry::new()),
                 std::sync::Arc::new(ResponseRouter::new()),
             )),
+            HashMap::new(),
         )
     }
 
