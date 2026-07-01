@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[features]
+default = []
+whatsapp = []
+telegram = ["dep:teloxide"]
+discord = ["dep:discordrs"]
+slack = []
+
 [dependencies]
 oben-agent = { path = "../oben-agent" }
 oben-config = { path = "../oben-config" }
@@ -19,6 +26,7 @@ serde_json.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+futures-util = "0.3"
 reqwest.workspace = true
 tungstenite = "0.24"
 
@@ -47,3 +55,9 @@ qrcode = "0.14"
 # Without explicit installation, rustls 0.23+ panics on provider auto-detection.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 qr2term = "0.3.3"
+
+# Telegram Bot SDK (optional, enabled via "telegram" feature)
+teloxide = { version = "0.12", optional = true, features = ["auto-send", "macros", "rand"] }
+
+# Discord platform adapter
+discordrs = { version = "2.0", optional = true, features = ["gateway", "cache"] }

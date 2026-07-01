@@ -1319,38 +1319,75 @@ async fn setup_qq_bot(config: &mut oben_config::AppConfig) -> Result<()> {
 
 fn setup_telegram(config: &mut oben_config::AppConfig) -> Result<()> {
     println!("\n✈️ Telegram Configuration");
-    println!("Note: Telegram adapter is not yet fully implemented.\n");
-    
-    let enabled: bool = dialoguer::Confirm::new()
-        .with_prompt("Enable Telegram adapter (stub)")
-        .default(true)
-        .interact()?;
-    
-    if !enabled {
-        if let Some(ref mut gw) = config.gateway {
-            gw.telegram = None;
-        } else {
-            config.gateway = Some(Default::default());
-        }
-        return Ok(());
-    }
-    
+
     let token: String = dialoguer::Input::new()
         .with_prompt("Bot token")
         .default(String::new())
         .interact()?;
     
+    let webhook_url: Option<String> = {
+        let url: String = dialoguer::Input::new()
+            .with_prompt("Webhook URL (optional, press Enter to skip)")
+            .default(String::new())
+            .interact()?;
+        if url.is_empty() { None } else { Some(url) }
+    };
+
+    // Security: restrict who can use the bot
+    println!("\n  🔒 Security: restrict who can use your bot");
+    println!("  To find your Telegram user ID, message @userinfobot on Telegram.");
+    let allowed_users_input: String = dialoguer::Input::new()
+        .with_prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+        .default(String::new())
+        .interact()?;
+    let allowed_users: Vec<String> = allowed_users_input
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Home channel: where cron jobs and notifications are delivered
+    println!("\n  📬 Home channel: where cron results and notifications are delivered.");
+    println!("  For DMs, this is your user ID (same as above).");
+    let home_channel: Option<String> = if !allowed_users.is_empty() {
+        let default_user = &allowed_users[0];
+        if dialoguer::Confirm::new()
+            .with_prompt(&format!("Use your user ID ({}) as the home channel?", default_user))
+            .default(true)
+            .interact()?
+        {
+            Some(default_user.clone())
+        } else {
+            let hc: String = dialoguer::Input::new()
+                .with_prompt("Home channel ID (or leave empty to set later with /set-home)")
+                .default(String::new())
+                .interact()?;
+            if hc.is_empty() { None } else { Some(hc) }
+        }
+    } else {
+        let hc: String = dialoguer::Input::new()
+            .with_prompt("Home channel ID (leave empty to set later with /set-home)")
+            .default(String::new())
+            .interact()?;
+        if hc.is_empty() { None } else { Some(hc) }
+    };
+
+    let cfg = oben_config::TelegramConfig {
+        enabled: true,
+        token: if token.is_empty() { None } else { Some(token) },
+        webhook_url,
+        webhook_secret: None,
+        allowed_users,
+        allowed_chats: Vec::new(),
+        forum_topics: false,
+        home_channel,
+    };
+    
     if let Some(ref mut gw) = config.gateway {
-        gw.telegram = Some(oben_config::PlatformConfig {
-            enabled: true,
-            token: if token.is_empty() { None } else { Some(token) },
-        });
+        gw.telegram = Some(cfg);
     } else {
         config.gateway = Some(oben_config::GatewayConfig {
-            telegram: Some(oben_config::PlatformConfig {
-                enabled: true,
-                token: if token.is_empty() { None } else { Some(token) },
-            }),
+            telegram: Some(cfg),
             ..Default::default()
         });
     }
@@ -1360,38 +1397,38 @@ fn setup_telegram(config: &mut oben_config::AppConfig) -> Result<()> {
 
 fn setup_discord(config: &mut oben_config::AppConfig) -> Result<()> {
     println!("\n🎮 Discord Configuration");
-    println!("Note: Discord adapter is not yet fully implemented.\n");
-    
-    let enabled: bool = dialoguer::Confirm::new()
-        .with_prompt("Enable Discord adapter (stub)")
-        .default(true)
-        .interact()?;
-    
-    if !enabled {
-        if let Some(ref mut gw) = config.gateway {
-            gw.discord = None;
-        } else {
-            config.gateway = Some(Default::default());
-        }
-        return Ok(());
-    }
-    
+
     let token: String = dialoguer::Input::new()
         .with_prompt("Bot token")
         .default(String::new())
         .interact()?;
     
+    let slash: bool = dialoguer::Confirm::new()
+        .with_prompt("Enable slash commands")
+        .default(true)
+        .interact()?;
+    
+    let voice: bool = dialoguer::Confirm::new()
+        .with_prompt("Enable voice channel support")
+        .default(false)
+        .interact()?;
+    
+    let cfg = oben_config::DiscordConfig {
+        enabled: true,
+        token: if token.is_empty() { None } else { Some(token) },
+        intents: vec![],
+        allowed_guilds: Vec::new(),
+        allowed_users: Vec::new(),
+        slash_commands: slash,
+        voice,
+        dm_role_auth_guild: None,
+    };
+    
     if let Some(ref mut gw) = config.gateway {
-        gw.discord = Some(oben_config::PlatformConfig {
-            enabled: true,
-            token: if token.is_empty() { None } else { Some(token) },
-        });
+        gw.discord = Some(cfg);
     } else {
         config.gateway = Some(oben_config::GatewayConfig {
-            discord: Some(oben_config::PlatformConfig {
-                enabled: true,
-                token: if token.is_empty() { None } else { Some(token) },
-            }),
+            discord: Some(cfg),
             ..Default::default()
         });
     }
@@ -1401,38 +1438,30 @@ fn setup_discord(config: &mut oben_config::AppConfig) -> Result<()> {
 
 fn setup_slack(config: &mut oben_config::AppConfig) -> Result<()> {
     println!("\n💬 Slack Configuration");
-    println!("Note: Slack adapter is not yet fully implemented.\n");
-    
-    let enabled: bool = dialoguer::Confirm::new()
-        .with_prompt("Enable Slack adapter (stub)")
-        .default(true)
-        .interact()?;
-    
-    if !enabled {
-        if let Some(ref mut gw) = config.gateway {
-            gw.slack = None;
-        } else {
-            config.gateway = Some(Default::default());
-        }
-        return Ok(());
-    }
-    
-    let token: String = dialoguer::Input::new()
-        .with_prompt("Bot token")
+
+    let app_token: String = dialoguer::Input::new()
+        .with_prompt("Slack App-level token (xapp-...)")
         .default(String::new())
         .interact()?;
     
+    let bot_token: String = dialoguer::Input::new()
+        .with_prompt("Slack Bot token (xoxb-...)")
+        .default(String::new())
+        .interact()?;
+    
+    let cfg = oben_config::SlackConfig {
+        enabled: true,
+        app_token: if app_token.is_empty() { None } else { Some(app_token) },
+        bot_token: if bot_token.is_empty() { None } else { Some(bot_token) },
+        allowed_channels: Vec::new(),
+        slash_commands: Vec::new(),
+    };
+    
     if let Some(ref mut gw) = config.gateway {
-        gw.slack = Some(oben_config::PlatformConfig {
-            enabled: true,
-            token: if token.is_empty() { None } else { Some(token) },
-        });
+        gw.slack = Some(cfg);
     } else {
         config.gateway = Some(oben_config::GatewayConfig {
-            slack: Some(oben_config::PlatformConfig {
-                enabled: true,
-                token: if token.is_empty() { None } else { Some(token) },
-            }),
+            slack: Some(cfg),
             ..Default::default()
         });
     }
@@ -1442,38 +1471,43 @@ fn setup_slack(config: &mut oben_config::AppConfig) -> Result<()> {
 
 fn setup_whatsapp(config: &mut oben_config::AppConfig) -> Result<()> {
     println!("\n📞 WhatsApp Configuration");
-    println!("Note: WhatsApp adapter is not yet fully implemented.\n");
-    
-    let enabled: bool = dialoguer::Confirm::new()
-        .with_prompt("Enable WhatsApp adapter (stub)")
-        .default(true)
-        .interact()?;
-    
-    if !enabled {
-        if let Some(ref mut gw) = config.gateway {
-            gw.whatsapp = None;
-        } else {
-            config.gateway = Some(Default::default());
-        }
-        return Ok(());
-    }
-    
-    let token: String = dialoguer::Input::new()
-        .with_prompt("Bot token")
+
+    let access_token: String = dialoguer::Input::new()
+        .with_prompt("Meta Cloud API access token")
         .default(String::new())
         .interact()?;
     
+    let phone_number_id: String = dialoguer::Input::new()
+        .with_prompt("Phone Number ID")
+        .default(String::new())
+        .interact()?;
+    
+    let business_account_id: String = dialoguer::Input::new()
+        .with_prompt("Business Account ID (optional)")
+        .default(String::new())
+        .interact()?;
+    
+    let verify_token: String = dialoguer::Input::new()
+        .with_prompt("Webhook verification token")
+        .default(String::new())
+        .interact()?;
+    
+    let cfg = oben_config::WhatsAppConfig {
+        enabled: true,
+        access_token: if access_token.is_empty() { None } else { Some(access_token) },
+        phone_number_id: if phone_number_id.is_empty() { None } else { Some(phone_number_id) },
+        business_account_id: if business_account_id.is_empty() { None } else { Some(business_account_id) },
+        webhook_verify_token: if verify_token.is_empty() { None } else { Some(verify_token) },
+        api_version: "v17.0".to_string(),
+        allowed_numbers: Vec::new(),
+        default_language: "en_US".to_string(),
+    };
+    
     if let Some(ref mut gw) = config.gateway {
-        gw.whatsapp = Some(oben_config::PlatformConfig {
-            enabled: true,
-            token: if token.is_empty() { None } else { Some(token) },
-        });
+        gw.whatsapp = Some(cfg);
     } else {
         config.gateway = Some(oben_config::GatewayConfig {
-            whatsapp: Some(oben_config::PlatformConfig {
-                enabled: true,
-                token: if token.is_empty() { None } else { Some(token) },
-            }),
+            whatsapp: Some(cfg),
             ..Default::default()
         });
     }

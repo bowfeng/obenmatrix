@@ -116,7 +116,92 @@ async fn main() -> Result<()> {
                 );
                 registry.register("qq_bot", "Tencent QQ Bot", factory);
             }
-        };
+        }
+
+        #[cfg(feature = "telegram")]
+        if let Some(ref tg_cfg) = gateway_config.telegram {
+            if tg_cfg.enabled {
+                let config = oben_config::TelegramConfig {
+                    enabled: tg_cfg.enabled,
+                    token: tg_cfg.token.clone(),
+                    webhook_url: tg_cfg.webhook_url.clone(),
+                    webhook_secret: tg_cfg.webhook_secret.clone(),
+                    allowed_users: tg_cfg.allowed_users.clone(),
+                    allowed_chats: tg_cfg.allowed_chats.clone(),
+                    forum_topics: tg_cfg.forum_topics,
+                };
+                let factory = oben_gateway::platform::TelegramPlatformFactory::new(
+                    config,
+                    dispatcher.clone(),
+                    response_router.clone(),
+                );
+                registry.register("telegram", "Telegram Bot", factory);
+            }
+        }
+
+        #[cfg(feature = "discord")]
+        if let Some(ref dc_cfg) = gateway_config.discord {
+            if dc_cfg.enabled {
+                let config = oben_config::DiscordConfig {
+                    enabled: dc_cfg.enabled,
+                    token: dc_cfg.token.clone(),
+                    intents: dc_cfg.intents.clone(),
+                    allowed_guilds: dc_cfg.allowed_guilds.clone(),
+                    allowed_users: dc_cfg.allowed_users.clone(),
+                    slash_commands: dc_cfg.slash_commands,
+                    voice: dc_cfg.voice,
+                    dm_role_auth_guild: dc_cfg.dm_role_auth_guild.clone(),
+                };
+                let factory = oben_gateway::platform::DiscordPlatformFactory::new(
+                    config,
+                    dispatcher.clone(),
+                    response_router.clone(),
+                );
+                registry.register("discord", "Discord Bot", factory);
+            }
+        }
+
+        #[cfg(feature = "whatsapp")]
+        if let Some(ref wa_cfg) = gateway_config.whatsapp {
+            if wa_cfg.enabled {
+                let config = oben_config::WhatsAppConfig {
+                    enabled: wa_cfg.enabled,
+                    access_token: wa_cfg.access_token.clone(),
+                    phone_number_id: wa_cfg.phone_number_id.clone(),
+                    business_account_id: wa_cfg.business_account_id.clone(),
+                    webhook_verify_token: wa_cfg.webhook_verify_token.clone(),
+                    api_version: wa_cfg.api_version.clone(),
+                    allowed_numbers: wa_cfg.allowed_numbers.clone(),
+                    default_language: wa_cfg.default_language.clone(),
+                };
+                let factory = oben_gateway::platform::WhatsAppPlatformFactory::new(
+                    config,
+                    dispatcher.clone(),
+                    response_router.clone(),
+                );
+                registry.register("whatsapp", "WhatsApp Bot", factory);
+            }
+        }
+
+        #[cfg(feature = "slack")]
+        if let Some(ref sl_cfg) = gateway_config.slack {
+            if sl_cfg.enabled {
+                let config = oben_config::SlackConfig {
+                    enabled: sl_cfg.enabled,
+                    app_token: sl_cfg.app_token.clone(),
+                    bot_token: sl_cfg.bot_token.clone(),
+                    allowed_channels: sl_cfg.allowed_channels.clone(),
+                    slash_commands: sl_cfg.slash_commands.clone(),
+                };
+                let factory = oben_gateway::platform::SlackPlatformFactory::new(
+                    config,
+                    dispatcher.clone(),
+                    response_router.clone(),
+                );
+                registry.register("slack", "Slack Bot", factory);
+            }
+        }
+
         registry.start_all()?
     };
     info!("Platforms started via factory pipeline");

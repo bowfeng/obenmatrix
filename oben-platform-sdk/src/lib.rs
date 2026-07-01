@@ -5,6 +5,7 @@
 /// on it without importing gateway internals.
 
 mod platform;
+pub mod common;
 pub mod qq_protocol;
 
 pub use platform::*;

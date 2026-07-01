@@ -314,12 +314,186 @@ pub struct QQBotConfig {
     pub sandbox: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Gateway platform-specific config structs
+// ---------------------------------------------------------------------------
+
+/// Telegram platform configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramConfig {
+    pub enabled: bool,
+    /// Telegram bot token.
+    pub token: Option<String>,
+    /// Webhook URL (for webhook mode). None = use long polling.
+    pub webhook_url: Option<String>,
+    /// Webhook secret (for webhook mode).
+    pub webhook_secret: Option<String>,
+    /// Allowed user IDs (empty = all).
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    /// Allowed chat IDs (empty = all).
+    #[serde(default)]
+    pub allowed_chats: Vec<String>,
+    /// Forum topics support (auto-create topics for DMs on Telegram).
+    #[serde(default)]
+    pub forum_topics: bool,
+    /// Home channel for cron job and notification delivery.
+    #[serde(default)]
+    pub home_channel: Option<String>,
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token: None,
+            webhook_url: None,
+            webhook_secret: None,
+            allowed_users: Vec::new(),
+            allowed_chats: Vec::new(),
+            forum_topics: false,
+            home_channel: None,
+        }
+    }
+}
+
+/// Discord intents that can be enabled for gateway connections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DiscordIntent {
+    #[serde(rename = "guild_messages")]
+    GuildMessages,
+    #[serde(rename = "guild_message_typing")]
+    GuildMessageTyping,
+    #[serde(rename = "direct_messages")]
+    DirectMessages,
+    #[serde(rename = "direct_message_typing")]
+    DirectMessageTyping,
+    #[serde(rename = "guild_messages_reactions")]
+    GuildMessagesReactions,
+    #[serde(rename = "message_content")]
+    MessageContent,
+}
+
+/// Discord platform configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordConfig {
+    pub enabled: bool,
+    /// Discord bot token (from Discord Developer Portal).
+    pub token: Option<String>,
+    /// Gateway intents to enable.
+    #[serde(default)]
+    pub intents: Vec<DiscordIntent>,
+    /// Guild IDs to restrict to (empty = all).
+    #[serde(default)]
+    pub allowed_guilds: Vec<String>,
+    /// User IDs allowed to interact (empty = all).
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    /// Slash commands to register.
+    #[serde(default)]
+    pub slash_commands: bool,
+    /// Voice channel support.
+    #[serde(default)]
+    pub voice: bool,
+    /// DM role auth gateway guild ID.
+    pub dm_role_auth_guild: Option<String>,
+}
+
+impl Default for DiscordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token: None,
+            intents: Vec::new(),
+            allowed_guilds: Vec::new(),
+            allowed_users: Vec::new(),
+            slash_commands: false,
+            voice: false,
+            dm_role_auth_guild: None,
+        }
+    }
+}
+
+/// Slack platform configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackConfig {
+    pub enabled: bool,
+    /// Slack App-level token (xapp-...) for Socket Mode.
+    pub app_token: Option<String>,
+    /// Slack Bot token (xoxb-...) for REST API calls.
+    pub bot_token: Option<String>,
+    /// Allowed channel IDs (empty = all channels).
+    #[serde(default)]
+    pub allowed_channels: Vec<String>,
+    /// Slash command prefixes to recognize.
+    #[serde(default)]
+    pub slash_commands: Vec<String>,
+}
+
+impl Default for SlackConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            app_token: None,
+            bot_token: None,
+            allowed_channels: Vec::new(),
+            slash_commands: Vec::new(),
+        }
+    }
+}
+
+/// WhatsApp platform configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhatsAppConfig {
+    pub enabled: bool,
+    /// Meta Cloud API access token.
+    pub access_token: Option<String>,
+    /// Phone number ID from Meta dashboard.
+    pub phone_number_id: Option<String>,
+    /// WhatsApp Business Account ID.
+    pub business_account_id: Option<String>,
+    /// Webhook verification token for validating incoming webhooks.
+    pub webhook_verify_token: Option<String>,
+    /// API version (default: "v17.0").
+    #[serde(default = "default_api_version")]
+    pub api_version: String,
+    /// Allowed phone numbers (empty = all).
+    #[serde(default)]
+    pub allowed_numbers: Vec<String>,
+    /// Template message default language.
+    #[serde(default = "default_lang")]
+    pub default_language: String,
+}
+
+fn default_api_version() -> String {
+    "v17.0".to_string()
+}
+
+fn default_lang() -> String {
+    "en_US".to_string()
+}
+
+impl Default for WhatsAppConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            access_token: None,
+            phone_number_id: None,
+            business_account_id: None,
+            webhook_verify_token: None,
+            api_version: default_api_version(),
+            allowed_numbers: Vec::new(),
+            default_language: default_lang(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GatewayConfig {
-    pub telegram: Option<PlatformConfig>,
-    pub discord: Option<PlatformConfig>,
-    pub slack: Option<PlatformConfig>,
-    pub whatsapp: Option<PlatformConfig>,
+    pub telegram: Option<TelegramConfig>,
+    pub discord: Option<DiscordConfig>,
+    pub slack: Option<SlackConfig>,
+    pub whatsapp: Option<WhatsAppConfig>,
     pub qq_bot: Option<QQBotConfig>,
 }
 
@@ -686,9 +860,10 @@ mod tests {
     fn test_config_yaml_roundtrip_with_gateway() {
         let mut config = AppConfig::default();
         config.gateway = Some(GatewayConfig {
-            telegram: Some(PlatformConfig {
+            telegram: Some(TelegramConfig {
                 enabled: true,
                 token: Some("tg-secret-token".to_string()),
+                ..Default::default()
             }),
             discord: None,
             slack: None,
@@ -758,13 +933,15 @@ mod tests {
     fn test_gateway_config_roundtrip_qq_bot() {
         let mut config = AppConfig::default();
         config.gateway = Some(GatewayConfig {
-            telegram: Some(PlatformConfig {
+            telegram: Some(TelegramConfig {
                 enabled: true,
                 token: Some("telegram-token-123".to_string()),
+                ..Default::default()
             }),
-            discord: Some(PlatformConfig {
+            discord: Some(DiscordConfig {
                 enabled: true,
                 token: Some("discord-token-456".to_string()),
+                ..Default::default()
             }),
             ..Default::default()
         });

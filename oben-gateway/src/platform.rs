@@ -7,6 +7,18 @@ pub use oben_platform_sdk::*;
 
 use tracing::info;
 
+#[cfg(feature = "discord")]
+pub use super::discord_adapter::DiscordPlatformFactory;
+
+#[cfg(feature = "telegram")]
+pub use super::telegram_adapter::TelegramPlatformFactory;
+
+#[cfg(feature = "whatsapp")]
+pub use super::whatsapp_adapter::WhatsAppPlatformFactory;
+
+#[cfg(feature = "slack")]
+pub use super::slack_adapter::SlackPlatformFactory;
+
 // ---------------------------------------------------------------------------
 // Factory-based platform registration
 // ---------------------------------------------------------------------------
