@@ -8,14 +8,15 @@ pub mod gateway;
 pub mod platform;
 pub mod qq_bot;
 pub mod qq_onboard;
-pub mod qq_protocol;
 pub mod router;
+
+// Re-export shared platform SDK types into gateway's public API
+pub use oben_platform_sdk::*;
 
 pub use coordinator::{GatewayCoordinator, ResponseMessage};
 pub use dispatcher::Dispatcher;
 pub use gateway::Gateway;
-pub use platform::*;
+pub use platform::*; // QQBotFactory, PlatformFactory, PlatformHandle, PlatformRegistry
 pub use qq_bot::*;
 pub use qq_onboard::*;
-pub use qq_protocol::*;
 pub use router::ResponseRouter;

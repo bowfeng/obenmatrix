@@ -151,10 +151,11 @@ mod tests {
     #[tokio::test]
     async fn test_platform_registry_qq_factory() {
         let mut registry = oben_gateway::platform::PlatformRegistry::new();
+        let response_router = Arc::new(super::ResponseRouter::new());
         let dispatcher = Arc::new(Dispatcher::new(
             AppConfig::default(),
             Arc::new(ToolRegistry::new()),
-            Arc::new(super::ResponseRouter::new()),
+            response_router.clone(),
         ));
         let config = oben_config::QQBotConfig {
             enabled: true,
@@ -164,7 +165,7 @@ mod tests {
             shard: None,
             sandbox: false,
         };
-        let factory = oben_gateway::platform::QQBotFactory::new(config, dispatcher);
+        let factory = oben_gateway::platform::QQBotFactory::new(config, dispatcher, response_router);
         registry.register("qq_bot", "Tencent QQ Bot", factory);
 
         let handles = registry.start_all().unwrap();
