@@ -29,13 +29,13 @@ pub use kind::{TurnState, TurnPhase, ActiveTool, CompletedTool, ActivityKind, Ac
 ///     .build();
 /// ```
 pub struct HookBuilder {
-    agent_loop_hooks: Vec<Box<dyn super::kind::Hook>>,
-    turn_hooks: Vec<Box<dyn super::kind::Hook>>,
-    tool_hooks: Vec<Box<dyn super::kind::Hook>>,
-    streaming_hooks: Vec<Box<dyn super::kind::Hook>>,
-    system_hooks: Vec<Box<dyn super::kind::Hook>>,
-    session_hooks: Vec<Box<dyn super::kind::Hook>>,
-    interrupt_hooks: Vec<Box<dyn super::kind::Hook>>,
+    agent_loop_hooks: Vec<Box<dyn AgentLoopHooks>>,
+    turn_hooks: Vec<Box<dyn TurnLifecycleHooks>>,
+    tool_hooks: Vec<Box<dyn ToolLifecycleHooks>>,
+    streaming_hooks: Vec<Box<dyn StreamingHooks>>,
+    system_hooks: Vec<Box<dyn SystemEventsHooks>>,
+    session_hooks: Vec<Box<dyn SessionLifecycleHooks>>,
+    interrupt_hooks: Vec<Box<dyn InterruptLifecycleHooks>>,
 }
 
 impl HookBuilder {
@@ -47,9 +47,9 @@ impl HookBuilder {
             .and_then(|v| serde_yaml::from_value::<NudgeConfig>(v.clone()).ok())
             .unwrap_or_default();
 
-        let mut turn_hooks: Vec<Box<dyn super::kind::Hook>> = Vec::new();
+        let mut turn_hooks: Vec<Box<dyn TurnLifecycleHooks>> = Vec::new();
         if nudge_config.enabled() {
-            let nudge: Box<dyn super::kind::Hook> = Box::new(NudgeHook::from_config(&nudge_config));
+            let nudge: Box<dyn TurnLifecycleHooks> = Box::new(NudgeHook::from_config(&nudge_config));
             turn_hooks.push(nudge);
         }
 
@@ -112,24 +112,45 @@ impl HookBuilder {
         self
     }
 
-    /// Inject pre-constructed hook trait objects into the builder.
-    ///
-    /// Typically called by outside systems (e.g. WASM plugin system) to
-    /// batch-register hooks before building the final HookEngine.
-    pub fn with_wasm_hooks(mut self, wasm_hooks: Vec<Box<dyn super::kind::Hook>>) -> Self {
-        for hook in wasm_hooks {
-            let id = hook.id().to_string();
-            match id.as_str() {
-                id if id.starts_with("wasm-agent-loop-") => self.agent_loop_hooks.push(hook),
-                id if id.starts_with("wasm-turn-") => self.turn_hooks.push(hook),
-                id if id.starts_with("wasm-tool-") => self.tool_hooks.push(hook),
-                id if id.starts_with("wasm-streaming-") => self.streaming_hooks.push(hook),
-                id if id.starts_with("wasm-system-") => self.system_hooks.push(hook),
-                id if id.starts_with("wasm-session-") => self.session_hooks.push(hook),
-                id if id.starts_with("wasm-interrupt-") => self.interrupt_hooks.push(hook),
-                _ => tracing::warn!(id, "unrecognized WASM hook ID"),
-            }
-        }
+    /// Add WASM agent-loop hook components from the given vector.
+    pub fn with_agent_loop_hooks(mut self, hooks: Vec<Box<dyn AgentLoopHooks>>) -> Self {
+        self.agent_loop_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM turn-lifecycle hook components from the given vector.
+    pub fn with_turn_hooks(mut self, hooks: Vec<Box<dyn TurnLifecycleHooks>>) -> Self {
+        self.turn_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM tool-lifecycle hook components from the given vector.
+    pub fn with_tool_hooks(mut self, hooks: Vec<Box<dyn ToolLifecycleHooks>>) -> Self {
+        self.tool_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM streaming hook components from the given vector.
+    pub fn with_streaming_hooks(mut self, hooks: Vec<Box<dyn StreamingHooks>>) -> Self {
+        self.streaming_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM system-events hook components from the given vector.
+    pub fn with_system_hooks(mut self, hooks: Vec<Box<dyn SystemEventsHooks>>) -> Self {
+        self.system_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM session-lifecycle hook components from the given vector.
+    pub fn with_session_hooks(mut self, hooks: Vec<Box<dyn SessionLifecycleHooks>>) -> Self {
+        self.session_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM interrupt-lifecycle hook components from the given vector.
+    pub fn with_interrupt_hooks(mut self, hooks: Vec<Box<dyn InterruptLifecycleHooks>>) -> Self {
+        self.interrupt_hooks.extend(hooks);
         self
     }
 

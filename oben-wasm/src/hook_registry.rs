@@ -14,7 +14,17 @@ use crate::hook_bridge::WasmHookBridge;
 use crate::runtime::PreparedComponent;
 use crate::runtime::WasmRuntime;
 use crate::wasm_hooks::*;
-use crate::kind::Hook;
+
+/// Contains typed hook components for each category.
+pub struct WasmHookComponents {
+    pub agent_loop: Vec<Box<dyn super::kind::AgentLoopHooks>>,
+    pub turn: Vec<Box<dyn super::kind::TurnLifecycleHooks>>,
+    pub tool: Vec<Box<dyn super::kind::ToolLifecycleHooks>>,
+    pub streaming: Vec<Box<dyn super::kind::StreamingHooks>>,
+    pub system: Vec<Box<dyn super::kind::SystemEventsHooks>>,
+    pub session: Vec<Box<dyn super::kind::SessionLifecycleHooks>>,
+    pub interrupt: Vec<Box<dyn super::kind::InterruptLifecycleHooks>>,
+}
 
 /// Registry of WasmHook adapters derived from WASM components.
 ///
@@ -98,12 +108,18 @@ impl WasmHookRegistry {
     /// For each `(name, component)` pair:
     /// 1. Create a `WasmHookBridge` from the component
     /// 2. Create 7 adapter trait objects (one per hook kind)
-    /// 3. Return as `Vec<Box<dyn Hook>>` for `HookBuilder::with_wasm_hooks`
+    /// 3. Return as typed `WasmHookComponents` for direct builder injection
     pub async fn instantiate_hooks(
         &self,
         components: Vec<(String, Arc<PreparedComponent>)>,
-    ) -> Result<Vec<Box<dyn Hook>>> {
-        let mut hooks = Vec::new();
+    ) -> Result<WasmHookComponents> {
+        let mut agent_loop_hooks: Vec<Box<dyn super::kind::AgentLoopHooks>> = Vec::new();
+        let mut turn_hooks: Vec<Box<dyn super::kind::TurnLifecycleHooks>> = Vec::new();
+        let mut tool_hooks: Vec<Box<dyn super::kind::ToolLifecycleHooks>> = Vec::new();
+        let mut streaming_hooks: Vec<Box<dyn super::kind::StreamingHooks>> = Vec::new();
+        let mut system_hooks: Vec<Box<dyn super::kind::SystemEventsHooks>> = Vec::new();
+        let mut session_hooks: Vec<Box<dyn super::kind::SessionLifecycleHooks>> = Vec::new();
+        let mut interrupt_hooks: Vec<Box<dyn super::kind::InterruptLifecycleHooks>> = Vec::new();
 
         for (name, component) in components {
             let bridge = Arc::new(Mutex::new(
@@ -111,19 +127,27 @@ impl WasmHookRegistry {
                     .map_err(|e| crate::error::WasmError::Instantiation(e.to_string()))?
             ));
 
-            hooks.push(Box::new(WasmAgentLoopAdapter::new(&name, bridge.clone())) as Box<dyn Hook>);
-            hooks.push(Box::new(WasmTurnLifecycleAdapter::new(&name, bridge.clone())) as Box<dyn Hook>);
-            hooks.push(Box::new(WasmToolLifecycleAdapter::new(&name, bridge.clone())) as Box<dyn Hook>);
-            hooks.push(Box::new(WasmStreamingAdapter::new(&name, bridge.clone())) as Box<dyn Hook>);
-            hooks.push(Box::new(WasmSystemEventsAdapter::new(&name, bridge.clone())) as Box<dyn Hook>);
-            hooks.push(Box::new(WasmSessionLifecycleAdapter::new(&name, bridge.clone())) as Box<dyn Hook>);
-            hooks.push(Box::new(WasmInterruptLifecycleAdapter::new(&name, bridge.clone())) as Box<dyn Hook>);
+            agent_loop_hooks.push(Box::new(WasmAgentLoopAdapter::new(&name, bridge.clone())));
+            turn_hooks.push(Box::new(WasmTurnLifecycleAdapter::new(&name, bridge.clone())));
+            tool_hooks.push(Box::new(WasmToolLifecycleAdapter::new(&name, bridge.clone())));
+            streaming_hooks.push(Box::new(WasmStreamingAdapter::new(&name, bridge.clone())));
+            system_hooks.push(Box::new(WasmSystemEventsAdapter::new(&name, bridge.clone())));
+            session_hooks.push(Box::new(WasmSessionLifecycleAdapter::new(&name, bridge.clone())));
+            interrupt_hooks.push(Box::new(WasmInterruptLifecycleAdapter::new(&name, bridge.clone())));
 
             tracing::info!(plugin = name, hooks_created = 7, "Instantiated WASM hook adapters");
         }
 
-        tracing::info!(total_hooks = hooks.len(), "Total WASM hook adapters created");
-        Ok(hooks)
+        tracing::info!(total_hooks = agent_loop_hooks.len() + turn_hooks.len() + tool_hooks.len() + streaming_hooks.len() + system_hooks.len() + session_hooks.len() + interrupt_hooks.len(), "Total WASM hook adapters created");
+        Ok(WasmHookComponents {
+            agent_loop: agent_loop_hooks,
+            turn: turn_hooks,
+            tool: tool_hooks,
+            streaming: streaming_hooks,
+            system: system_hooks,
+            session: session_hooks,
+            interrupt: interrupt_hooks,
+        })
     }
 
     /// Get the number of registered hook components.

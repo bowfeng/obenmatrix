@@ -57,15 +57,18 @@ fn create_tool_registry() -> ToolRegistry {
     registry
 }
 
-/// Load WASM hook adapters from the plugin directory.
+/// Load WASM hook adapters and inject them into a HookBuilder via typed channels.
 ///
-/// Returns an empty Vec when no plugins are found or the feature is disabled.
+/// Returns the builder unchanged when no plugins are found or the feature is disabled.
 #[cfg(feature = "wasm-plugins")]
-async fn load_wasm_hooks(plugin_dir: &Option<std::path::PathBuf>) -> Vec<Box<dyn oben_wasm::kind::Hook>> {
+async fn load_wasm_hooks(
+    builder: HookBuilder,
+    plugins_dir: &Option<std::path::PathBuf>,
+) -> HookBuilder {
     use std::path::PathBuf;
     use oben_wasm::{WasmHookRegistry, WasmRuntime, WasmRuntimeConfig};
 
-    let plugin_path = plugin_dir
+    let plugin_path = plugins_dir
         .clone()
         .or_else(|| {
             std::env::var("HOME")
@@ -76,7 +79,7 @@ async fn load_wasm_hooks(plugin_dir: &Option<std::path::PathBuf>) -> Vec<Box<dyn
     let Some(pdir) = plugin_path.as_ref()
         .filter(|p| p.exists() && p.is_dir())
     else {
-        return Vec::new();
+        return builder;
     };
 
     tracing::info!(?pdir, "Loading WASM hook components");
@@ -85,7 +88,7 @@ async fn load_wasm_hooks(plugin_dir: &Option<std::path::PathBuf>) -> Vec<Box<dyn
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "WASM runtime creation failed");
-            return Vec::new();
+            return builder;
         }
     };
 
@@ -94,20 +97,26 @@ async fn load_wasm_hooks(plugin_dir: &Option<std::path::PathBuf>) -> Vec<Box<dyn
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, "WASM hook loading failed");
-            return Vec::new();
+            return builder;
         }
     };
 
-    match registry.instantiate_hooks(components).await {
-        Ok(hooks) => {
-            tracing::info!(hook_count = hooks.len(), "Instantiated WASM hook adapters");
-            hooks
-        }
+    let hook_components = match registry.instantiate_hooks(components).await {
+        Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, "WASM adapter instantiation failed");
-            Vec::new()
+            return builder;
         }
-    }
+    };
+
+    builder
+        .with_agent_loop_hooks(hook_components.agent_loop)
+        .with_turn_hooks(hook_components.turn)
+        .with_tool_hooks(hook_components.tool)
+        .with_streaming_hooks(hook_components.streaming)
+        .with_system_hooks(hook_components.system)
+        .with_session_hooks(hook_components.session)
+        .with_interrupt_hooks(hook_components.interrupt)
 }
 
 #[tokio::main]
@@ -317,13 +326,16 @@ async fn main() -> Result<()> {
 
     // Build HookEngine with NudgeHook + WASM hook adapters
     #[cfg(feature = "wasm-plugins")]
-    let wasm_hooks = load_wasm_hooks(&gateway_config.plugin_dir).await;
-    #[cfg(not(feature = "wasm-plugins"))]
-    let wasm_hooks = Vec::new();
+    let hook_engine = load_wasm_hooks(
+        HookBuilder::from_config(&app_config.hooks),
+        &gateway_config.plugin_dir,
+    )
+    .await
+    .build();
 
-    let hook_engine = HookBuilder::from_config(&app_config.hooks)
-        .with_wasm_hooks(wasm_hooks)
-        .build();
+    #[cfg(not(feature = "wasm-plugins"))]
+    let hook_engine = HookBuilder::from_config(&app_config.hooks).build();
+
     tracing::info!("HookEngine built");
 
     let _hook_engine = hook_engine;

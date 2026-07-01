@@ -25,17 +25,28 @@ pub use wasmtime::*;
 pub use oben_agent::hooks::kind;
 
 // Re-export registry types for gateway main.rs
-pub use hook_registry::WasmHookRegistry;
+pub use hook_registry::{WasmHookRegistry, WasmHookComponents};
+
+// Re-export adapter structs for direct consumer use
+pub use wasm_hooks::{
+    WasmAgentLoopAdapter,
+    WasmTurnLifecycleAdapter,
+    WasmToolLifecycleAdapter,
+    WasmStreamingAdapter,
+    WasmSystemEventsAdapter,
+    WasmSessionLifecycleAdapter,
+    WasmInterruptLifecycleAdapter,
+};
 
 /// WIT world definition for platform plugins.
 ///
-/// Plugins should be compiled with wit-bindgen targeting the `platform-plugin-world`.
+/// Plugins should be compiled with wit-bindgen targeting the `platform-plugin_world`.
 /// The world exports the `host-api` (host-provided functions) and imports `guest` types.
 ///
 /// ```wit
 /// package oben:wasm;
 ///
-/// world platform-plugin-world {
+/// world platform-plugin_world {
 ///     export host-api;
 ///     import guest: interface { types };
 /// }
