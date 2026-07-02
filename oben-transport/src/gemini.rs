@@ -844,6 +844,7 @@ impl TransportProvider for GeminiMessagesTransport {
         messages: &[Message],
         _mode: &CallMode,
         mut delta_callback: StreamDeltaCallback,
+        _reasoning_callback: Option<oben_models::StreamReasoningCallback>,
     ) -> Result<TransportResponse> {
         let json = self.resolve(messages)?;
         let url = self.url(&self.model, true);

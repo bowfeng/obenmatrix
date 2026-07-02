@@ -185,7 +185,7 @@ data: {"type":"message_stop"}
             .push(delta.to_string());
     });
     let result = transport
-        .stream_chat(&messages, &CallMode::Fresh("test-stream-1".into()), cb)
+        .stream_chat(&messages, &CallMode::Fresh("test-stream-1".into()), cb, None)
         .await
         .unwrap();
 
@@ -253,7 +253,7 @@ data: {"type":"message_stop"}
         received_text_clone.lock().unwrap().push_str(delta);
     });
     let result = transport
-        .stream_chat(&messages, &CallMode::Fresh("test-stream-tool".into()), cb)
+        .stream_chat(&messages, &CallMode::Fresh("test-stream-tool".into()), cb, None)
         .await
         .unwrap();
 
@@ -301,7 +301,7 @@ data: {"type":"message_stop"}
     let messages = vec![Message::user("hi")];
     let cb = Box::new(|_delta: &str| {});
     let result = transport
-        .stream_chat(&messages, &CallMode::Fresh("test-stream-empty".into()), cb)
+        .stream_chat(&messages, &CallMode::Fresh("test-stream-empty".into()), cb, None)
         .await
         .unwrap();
 
@@ -329,7 +329,7 @@ async fn test_stream_chat_api_error() {
     let messages = vec![Message::user("hi")];
     let cb = Box::new(|_delta: &str| {});
     let result = transport
-        .stream_chat(&messages, &CallMode::Fresh("test-stream-error".into()), cb)
+        .stream_chat(&messages, &CallMode::Fresh("test-stream-error".into()), cb, None)
         .await;
 
     assert!(result.is_err());

@@ -119,6 +119,7 @@ async fn test_live_stream_tool_calls_response() -> Result<()> {
             &messages,
             &CallMode::Fresh("tool-call-test-2".to_string()),
             cb,
+            None,
         )
         .await?;
 

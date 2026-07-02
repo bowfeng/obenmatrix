@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthChar;
 
 use oben_agent::TurnState;
 use crate::widgets::layout;
-use crate::widgets::message_renderer::{MessageRenderEntry, MessageRenderer};
+use crate::widgets::message_renderer::{render_body_lines, MessageRenderEntry, MessageRenderer};
 use crate::widgets::role_style::role_info_for_role;
 use oben_models::{Message, MessageRole};
 
@@ -477,6 +477,7 @@ impl ConversationWidget {
         state: &ConversationState,
         palette: &ratatui_themes::ThemePalette,
         is_streaming: bool,
+        entry_titles: &[Option<Line<'static>>],
         entries: &[MessageRenderEntry],
     ) {
         // ─── Outer frame ───────────────────────────────────────────────
@@ -679,7 +680,7 @@ impl ConversationWidget {
                     "DIAG: arc_refs={} streaming_text_len={} [draw_read]",
                     refs, ts_len
                 );
-                if ts_len > 0 {
+                if ts_len > 0 || !ts_ref.reasoning_text.is_empty() {
                     // Log streaming_text length every ~10 draws during streaming
                     // to avoid log flooding while still capturing growth pattern.
                     if ts_len % 20 == 0 {
@@ -689,33 +690,67 @@ impl ConversationWidget {
                             "TUI: streaming_text at draw"
                         );
                     }
-                    let raw = ts_ref
-                        .streaming_text
-                        .trim_start_matches(|c: char| c.is_whitespace());
-                    let stream_lines: Vec<Line<'static>> = raw
-                        .lines()
-                        .map(|l| {
-                            Line::from(Span::styled(
-                                l.to_string(),
-                                Style::default()
-                                    .fg(palette.info)
-                                    .add_modifier(Modifier::DIM),
-                            ))
-                        })
-                        .collect::<Vec<_>>();
+                    let has_reasoning = !ts_ref.reasoning_text.is_empty();
+                    let has_text = !ts_ref.streaming_text.trim().is_empty();
 
-                    let wrapped = layout::wrap_styled_lines_to_lines(
-                        &stream_lines,
-                        inner_width.saturating_sub(2),
-                    );
-                    let stream_body_height = if wrapped.is_empty() {
-                        1usize
+                    if !has_reasoning && !has_text {
+                        None
                     } else {
-                        wrapped.len()
-                    };
-                    let stream_height =
-                        stream_body_height as u16 + layout::BODY_HEIGHT_ADJUSTER;
-                    Some((stream_lines, wrapped, stream_body_height, stream_height))
+                        // Render content text separately
+                        let content_wrapped = if has_text {
+                            let raw = ts_ref
+                                .streaming_text
+                                .trim_start_matches(|c: char| c.is_whitespace());
+                            let body_lines = render_body_lines(raw, palette);
+                            let plain_lines: Vec<Line<'static>> = body_lines
+                                .into_iter()
+                                .map(|sl| sl.content)
+                                .collect();
+                            Some(layout::wrap_styled_lines_to_lines(
+                                &plain_lines,
+                                inner_width.saturating_sub(2),
+                            ))
+                        } else {
+                            None
+                        };
+
+                        // Render reasoning text separately (muted, tool indent)
+                        let reasoning_wrapped = if has_reasoning {
+                            let reasoning_lines: Vec<Line<'static>> = ts_ref
+                                .reasoning_text
+                                .lines()
+                                .filter(|l| !l.trim().is_empty())
+                                .map(|line| Line::from(
+                                    Span::styled(
+                                        line.to_string(),
+                                        Style::default()
+                                            .fg(palette.muted)
+                                            .add_modifier(Modifier::DIM),
+                                    ),
+                                ))
+                                .collect();
+                            Some(layout::wrap_styled_lines_to_lines(
+                                &reasoning_lines,
+                                inner_width.saturating_sub(2),
+                            ))
+                        } else {
+                            None
+                        };
+
+                        // Compute total height: body lines + border adjuster (2 per block) + 1 blank separator
+                        let content_wr = content_wrapped.iter().map(|v| v.len()).sum::<usize>();
+                        let reasoning_wr = reasoning_wrapped.iter().map(|v| v.len()).sum::<usize>();
+                        let total_height = if content_wr > 0 && reasoning_wr > 0 {
+                            // Both: content wraps + reasoning wraps + 2 borders per block + 1 separator
+                            content_wr + reasoning_wr + 5
+                        } else {
+                            // One block only: wraps + 2 borders
+                            content_wr + reasoning_wr + 2
+                        };
+                        let total_height_u16 = total_height as u16;
+
+                        Some((content_wrapped, reasoning_wrapped, total_height_u16))
+                    }
                 } else {
                     None
                 }
@@ -725,7 +760,7 @@ impl ConversationWidget {
         } else {
             None
         };
-        let stream_estimate = stream_parsed.as_ref().map(|s| s.3);
+        let stream_estimate = stream_parsed.as_ref().map(|s| s.2);
 
         let total_height = content_height + stream_estimate.unwrap_or(0);
 
@@ -771,7 +806,7 @@ impl ConversationWidget {
             if block_rect.y.saturating_add(block_rect.height) > last_entry_vp_bottom {
                 last_entry_vp_bottom = block_rect.y.saturating_add(block_rect.height);
             }
-            let (_entry_idx, block_type, wrapped) = &layout_entries[idx];
+            let (entry_idx, block_type, wrapped) = &layout_entries[idx];
 
             // body_area = block.inner(block_area) — calculated at render time
             // using the actual Block struct (handles title, borders correctly)
@@ -791,10 +826,13 @@ impl ConversationWidget {
                     BlockType::Message(r) => r,
                     BlockType::ToolResult => unreachable!(),
                 };
+                let title = entry_titles[*entry_idx]
+                    .clone()
+                    .unwrap_or_else(|| self.role_title(role, palette));
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(self.role_border_style(role, palette))
-                    .title(self.role_title(role, palette))
+                    .title(title)
             };
 
             // Render body (Paragraph) before block (borders on top)
@@ -844,101 +882,95 @@ impl ConversationWidget {
             frame.render_widget(block, block_rect);
         }
 
-        // ─── Phase 2.5: Streaming block (rendered after regular entries) ─
+        // ─── Phase 2.5: Streaming blocks (reasoning + content as separate bordered blocks) ─
         let mut total_height = total_height;
         let mut streaming_rendered = false;
-        if let Some((_stream_lines, wrapped, _stream_body_lines, stream_height)) = stream_parsed {
-            // Phase 1 already added stream_estimate_height (= stream_height) to total_height.
-            // No double-add needed — total_height is already correct.
+        if let Some((content_wrapped, reasoning_wrapped, _total_height)) = stream_parsed {
+            let has_reasoning = reasoning_wrapped.is_some() && !reasoning_wrapped.as_ref().unwrap().is_empty();
+            let has_content = content_wrapped.is_some() && !content_wrapped.as_ref().unwrap().is_empty();
 
-            let role_info = role_info_for_role(&MessageRole::Assistant, palette);
-            let role_color = role_info.border_color;
+            if has_reasoning || has_content {
+                let role_info = role_info_for_role(&MessageRole::Assistant, palette);
+                let role_color = role_info.border_color;
 
-            if !wrapped.is_empty() && stream_height > 0 {
-                // ── Compute available space before block creation ──
+                let reasoning_lines = reasoning_wrapped.as_ref().map_or(0, |v| v.len());
+                let reasoning_height = reasoning_lines + layout::BODY_HEIGHT_ADJUSTER as usize;
+
+                // ── Compute available space and stream_y ──
                 let available_height = msg_area
                     .height
                     .saturating_sub(last_entry_vp_bottom.saturating_add(1));
                 let view_height = msg_area.height.saturating_sub(1);
                 let is_overflowing = total_height as u16 > view_height;
 
-                // Streaming block y position:
-                // - When entries fit in viewport: render stream right after the last entry.
-                // - When content overflows AND available_height is 0 (entries fill the whole
-                //   message area): position stream at the bottom of the message area and
-                //   rely on paragraph scroll to show the tail of streaming text.
                 let stream_y = if is_overflowing && available_height == 0 {
-                    // Entries overflow the message area — position stream at bottom.
                     msg_area.height.saturating_sub(1)
                 } else {
-                    // Entries fit — render stream right below the last entry.
                     last_entry_vp_bottom.saturating_add(1)
                 };
 
-                // Block height: when entries overflow, the block fills all available space below
-                // the last entry (may be 0 if entries completely fill the message area).
-                // Paragraph scroll then shows the tail of the stream content at the bottom.
-                let block_height = if is_overflowing {
-                    available_height
-                } else {
-                    msg_area.height.min(stream_height)
-                };
-                let block_area = Rect::new(
-                    msg_area.left(),
-                    stream_y,
-                    msg_area.width,
-                    block_height.max(1), // ensure at least 1 line is visible
-                );
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(role_color).add_modifier(Modifier::BOLD))
-                    .title(Line::from(vec![
-                        Span::raw(role_info.icon),
-                        Span::styled(
-                            role_info.label,
-                            Style::default().fg(role_color).add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
-                let body_area = block.inner(block_area);
+                if has_reasoning {
+                    let reasoning_block_area = Rect::new(
+                        msg_area.left(),
+                        stream_y,
+                        msg_area.width,
+                        reasoning_height.max(1) as u16,
+                    );
+                    let reasoning_block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(palette.muted))
+                        .title(Line::from(vec![
+                            Span::styled("  🤔 Thinking", Style::default()
+                                .fg(palette.muted)
+                                .add_modifier(Modifier::BOLD | Modifier::DIM)),
+                        ]));
+                    let reasoning_body = reasoning_block.inner(reasoning_block_area);
+                    let reasoning_wrap = reasoning_wrapped.as_ref().unwrap();
+                    let reasoning_vw = inner_height.min(reasoning_wrap.len());
+                    let reasoning_off = reasoning_wrap.len().saturating_sub(reasoning_vw);
 
-                // The stream block starts at: (total_height - stream_height).
-                let stream_block_start =
-                    (total_height as usize).saturating_sub(stream_height as usize);
-
-                // Calculate line_offset so content is anchored to the BOTTOM of the viewport.
-                // Always use inner_height (viewport height), NOT body_area.height, because
-                // body_area can overflow the viewport when stream_height > viewport_height.
-                let max_visible_lines = inner_height.min(wrapped.len());
-                let line_offset = wrapped.len().saturating_sub(max_visible_lines);
-
-                tracing::trace!(
-                    "[stream_render] block_area={:?} body_area={:?} wrapped_lines={} stream_block_start={} scroll_pos={} line_offset={} max_visible_lines={}",
-                    block_area, body_area, wrapped.len(), stream_block_start, scroll_pos, line_offset, max_visible_lines
-                );
-
-                if !wrapped.is_empty() {
-                    // Log last few lines to see where content ends
-                    let tail_count = wrapped.len().min(5);
-                    let tail_lines: Vec<String> = wrapped
-                        .iter()
-                        .rev()
-                        .take(tail_count)
-                        .map(|l| {
-                            l.spans
-                                .iter()
-                                .map(|s| s.content.to_string())
-                                .collect::<Vec<_>>()
-                                .join("")
-                        })
-                        .collect();
-                    tracing::trace!("[stream_render] tail_lines: {:?}", tail_lines);
-                    let mut para = Paragraph::new(wrapped);
-                    if line_offset > 0 {
-                        para = para.scroll((line_offset as u16, 0));
+                    if !reasoning_wrap.is_empty() {
+                        let mut para = Paragraph::new(reasoning_wrap.clone());
+                        if reasoning_off > 0 {
+                            para = para.scroll((reasoning_off as u16, 0));
+                        }
+                        frame.render_widget(para, reasoning_body);
                     }
-                    frame.render_widget(para, body_area);
+                    frame.render_widget(reasoning_block, reasoning_block_area);
                 }
-                frame.render_widget(block, block_area);
+
+                // Content block: render below reasoning or at stream_y
+                if has_content {
+                    let content_lines = content_wrapped.as_ref().unwrap().len();
+                    let content_height = content_lines + layout::BODY_HEIGHT_ADJUSTER as usize;
+                    let reasoning_bottom_y = if has_reasoning {
+                        stream_y.saturating_add(reasoning_height as u16).saturating_add(1)
+                    } else {
+                        stream_y
+                    };
+                    let content_block_area = Rect::new(
+                        msg_area.left(),
+                        reasoning_bottom_y,
+                        msg_area.width,
+                        content_height.max(1) as u16,
+                    );
+                    let content_block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(role_color).add_modifier(Modifier::BOLD))
+                        .title(self.role_title(&MessageRole::Assistant, palette));
+                    let content_body = content_block.inner(content_block_area);
+                    let content_wrap = content_wrapped.as_ref().unwrap();
+                    let content_vw = inner_height.min(content_wrap.len());
+                    let content_off = content_wrap.len().saturating_sub(content_vw);
+
+                    let mut para = Paragraph::new(content_wrap.clone());
+                    if content_off > 0 {
+                        para = para.scroll((content_off as u16, 0));
+                    }
+                    frame.render_widget(para, content_body);
+                    frame.render_widget(content_block, content_block_area);
+                }
+
                 streaming_rendered = true;
             }
         }
@@ -1034,39 +1066,6 @@ impl ConversationWidget {
         }
     }
 
-    fn render_turn_status(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        state: &ConversationState,
-        _palette: &ratatui_themes::ThemePalette,
-    ) {
-        let mut stream_info = String::new();
-        if let Ok(si) = state.stream_info.lock() {
-            stream_info = si.clone();
-        }
-        if stream_info.is_empty() {
-            return;
-        }
-
-        let lines: Vec<&str> = stream_info.lines().collect();
-        let height = lines.len().min(3) as u16;
-        if height == 0 {
-            return;
-        }
-
-        let displayed_lines: Vec<Line> = lines.iter().take(3).map(|l| Line::from(*l)).collect();
-        let para = Paragraph::new(displayed_lines);
-        let status_w = lines.iter().map(|l| l.len() as u16).max().unwrap_or(1) + 2;
-        let display_area = Rect::new(
-            area.x + area.width.saturating_sub(status_w + 2),
-            area.y + area.height.saturating_sub(height + 2),
-            status_w.min(area.width.saturating_sub(2)),
-            height.min(area.height.saturating_sub(2)),
-        );
-        frame.render_widget(para, display_area);
-    }
-
     /// Render the full message display widget in `area`.
     pub fn render(
         &self,
@@ -1077,27 +1076,8 @@ impl ConversationWidget {
         is_streaming: bool,
     ) {
         let entries = state.message_entries.lock().unwrap();
-        self.render_bordered_blocks(frame, area, state, palette, is_streaming, &entries);
-        self.render_turn_status(frame, area, state, palette);
-
-        // Draw streaming indicator in messages panel area
-        if is_streaming {
-            let indicator_text = " Streaming... ";
-            let w = indicator_text.len() as u16 + 2;
-            let indicator_area = Rect::new(
-                area.right()
-                    .saturating_sub(w + 2)
-                    .min(area.width.saturating_sub(2)),
-                area.y + 1,
-                w,
-                1,
-            );
-            let para = Paragraph::new(Line::from(Span::styled(
-                indicator_text,
-                Style::default().fg(palette.info),
-            )));
-            frame.render_widget(para, indicator_area);
-        }
+        let entry_titles: Vec<Option<Line<'static>>> = entries.iter().map(|e| e.title.clone()).collect();
+        self.render_bordered_blocks(frame, area, state, palette, is_streaming, &entry_titles, &entries);
     }
 
     /// Append a user message to the internal display state.
@@ -1113,6 +1093,7 @@ impl ConversationWidget {
                 is_tool_result: false,
                 tool_calls: Vec::new(),
                 reasoning: None,
+                title: None,
             },
         );
     }
@@ -1144,6 +1125,7 @@ impl ConversationWidget {
                     is_tool_result: false,
                     tool_calls: Vec::new(),
                     reasoning: None,
+                    title: None,
                 },
             );
         }

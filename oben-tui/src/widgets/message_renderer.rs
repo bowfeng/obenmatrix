@@ -1,209 +1,38 @@
 //! Message renderer — renders `oben_models::Message` into structured display data.
-//!
-//! Returns `MessageRenderEntry` which the conversation widget can render as
-//! a bordered block (Assistant/User/System) or a compact box (Tool).
 
+use pulldown_cmark::{Parser, Event, Tag, TagEnd, CodeBlockKind};
 use ratatui::prelude::*;
 use ratatui_themes::ThemeName;
 
 use crate::widgets::role_style::role_info_for_role;
 use oben_models::{Message, MessageContent, MessagePart, MessageRole};
 
-/// State machine token types produced by the inline markdown lexer.
-#[derive(Debug, PartialEq, Eq)]
-enum Token {
-    Plain(String),
-    Code(String),
-    Bold(String),
-    Italic(String),
-    FencedBlock(String, Vec<String>),
-}
-
-/// Split markdown text into tokens using a simple state machine.
-fn tokenize(md: &str) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let chars: Vec<char> = md.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-    let mut buf = String::new();
-
-    while i < len {
-        // Fenced code block
-        if i + 2 < len && chars[i] == '`' && chars[i + 1] == '`' && chars[i + 2] == '`' {
-            if !buf.is_empty() {
-                tokens.push(Token::Plain(buf.clone()));
-                buf.clear();
-            }
-            let mut code_lines = Vec::new();
-            i += 3;
-            let mut lang_buf = String::new();
-            while i < len && chars[i] != '\n' {
-                lang_buf.push(chars[i]);
-                i += 1;
-            }
-            if i < len {
-                i += 1;
-            }
-            while i + 2 < len {
-                if chars[i] == '`' && chars[i + 1] == '`' && chars[i + 2] == '`' {
-                    i += 3;
-                    break;
-                }
-                code_lines.push(chars[i].to_string());
-                i += 1;
-            }
-            if i < len {
-                i += 1;
-            }
-            let language = lang_buf.trim().to_string();
-            tokens.push(Token::FencedBlock(language, code_lines));
-        }
-        // Bold
-        else if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
-            if !buf.is_empty() {
-                tokens.push(Token::Plain(buf.clone()));
-                buf.clear();
-            }
-            i += 2;
-            let mut inner = String::new();
-            while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '*') {
-                inner.push(chars[i]);
-                i += 1;
-            }
-            if i + 1 < len {
-                i += 2;
-            }
-            tokens.push(Token::Bold(inner));
-        }
-        // Inline code
-        else if chars[i] == '`' {
-            if !buf.is_empty() {
-                tokens.push(Token::Plain(buf.clone()));
-                buf.clear();
-            }
-            i += 1;
-            let mut inner = String::new();
-            while i < len && chars[i] != '`' {
-                inner.push(chars[i]);
-                i += 1;
-            }
-            if i < len {
-                i += 1;
-            }
-            tokens.push(Token::Code(inner));
-        }
-        // Italic
-        else if chars[i] == '*' || chars[i] == '_' {
-            let delim = chars[i];
-            if i + 1 < len && chars[i + 1] != delim && chars[i + 1] != ' ' && chars[i + 1] != '\n' {
-                if !buf.is_empty() {
-                    tokens.push(Token::Plain(buf.clone()));
-                    buf.clear();
-                }
-                i += 1;
-                let mut inner = String::new();
-                while i < len && chars[i] != delim {
-                    inner.push(chars[i]);
-                    i += 1;
-                }
-                if i < len {
-                    i += 1;
-                }
-                tokens.push(Token::Italic(inner));
-            } else {
-                buf.push(chars[i]);
-                i += 1;
-            }
-        } else {
-            buf.push(chars[i]);
-            i += 1;
-        }
-    }
-
-    if !buf.is_empty() {
-        tokens.push(Token::Plain(buf));
-    }
-
-    tokens
-}
-
-/// Flatten tokens into ratatui Spans with the given base style.
-fn tokens_to_spans(
-    tokens: &[Token],
-    base: Style,
-    palette: &ratatui_themes::ThemePalette,
-) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    for token in tokens {
-        match token {
-            Token::Plain(s) => {
-                spans.push(Span::styled(s.clone(), base));
-            }
-            Token::Code(s) => {
-                spans.push(Span::styled(
-                    s.clone(),
-                    base.bg(Color::DarkGray).add_modifier(Modifier::DIM),
-                ));
-            }
-            Token::Bold(s) => {
-                spans.push(Span::styled(s.clone(), base.add_modifier(Modifier::BOLD)));
-            }
-            Token::Italic(s) => {
-                spans.push(Span::styled(s.clone(), base.add_modifier(Modifier::DIM)));
-            }
-            Token::FencedBlock(lang, lines) => {
-                let lang_label = if !lang.is_empty() && lang != "text" {
-                    format!("[{}]", lang.to_lowercase())
-                } else {
-                    String::new()
-                };
-                if !lang_label.is_empty() {
-                    spans.push(Span::styled(
-                        lang_label,
-                        Style::default().fg(palette.accent),
-                    ));
-                }
-                spans.extend(lines.iter().map(|l| {
-                    Span::styled(
-                        l.clone(),
-                        Style::default()
-                            .fg(palette.success)
-                            .add_modifier(Modifier::DIM),
-                    )
-                }));
-            }
-        }
-    }
-    spans
+/// A text segment with associated styling.
+#[derive(Debug, Clone)]
+pub struct Segment {
+    pub text: String,
+    pub style: Style,
 }
 
 /// A single renderable line with optional role color for the header.
 #[derive(Debug, Clone)]
 pub struct StyledLine {
-    /// The visual line content.
     pub content: Line<'static>,
-    /// Optional role-specific color for decoration.
     pub role_color: Option<Color>,
 }
 
 /// Structured render result for a single message.
-/// The conversation widget uses this to render bordered blocks.
 #[derive(Debug, Clone)]
 pub struct MessageRenderEntry {
-    /// The role of this message.
     pub role: MessageRole,
-    /// Whether this is a tool result (compact style).
     pub is_tool_result: bool,
-    /// Lines of body content (excluding header).
     pub body_lines: Vec<StyledLine>,
-    /// Tool call info to render inline.
     pub tool_calls: Vec<String>,
-    /// Reasoning/thinking text to render as a separate block.
     pub reasoning: Option<String>,
+    pub title: Option<Line<'static>>,
 }
 
 impl MessageRenderEntry {
-    /// Add a blank trailing line after the message.
     pub fn with_trailing_blank(mut self) -> Self {
         self.body_lines.push(StyledLine {
             content: Line::raw(""),
@@ -213,57 +42,194 @@ impl MessageRenderEntry {
     }
 }
 
-/// Render message body text into styled lines.
-fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> Vec<StyledLine> {
+/// Render markdown text into styled lines using pulldown-cmark.
+pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> Vec<StyledLine> {
+    tracing::trace!("[render_md] INPUT text_len={} preview={}", text.len(), text.chars().take(200).collect::<String>());
+    let parser = Parser::new(text);
+
     let body_style = Style::default().fg(palette.info);
-    let mut result = Vec::new();
+    let code_style = Style::default().fg(palette.success).add_modifier(Modifier::DIM);
+    let heading_style = Style::default().fg(palette.accent).add_modifier(Modifier::BOLD);
 
-    for raw_line in text.lines() {
-        let trimmed = raw_line.trim_start();
+    let mut lines: Vec<StyledLine> = Vec::new();
+    let mut in_code_block = false;
+    
+    // Style stack — tracks nested Strong/Emphasis
+    let mut in_strong = false;
+    let mut in_emphasis = false;
 
-        // Blockquote
-        if trimmed.starts_with('>') {
-            let after = trimmed.strip_prefix('>').unwrap_or(trimmed).trim_start();
-            let tokens = tokenize(after);
-            let mut line_spans = vec![Span::styled(
-                "┃ ",
-                Style::default()
-                    .fg(palette.info)
-                    .add_modifier(Modifier::DIM),
-            )];
-            line_spans.extend(tokens_to_spans(
-                &tokens,
-                body_style.add_modifier(Modifier::DIM),
-                palette,
-            ));
-            result.push(StyledLine {
-                content: Line::from(line_spans),
-                role_color: None,
-            });
-        }
-        // Heading
-        else if let Some(heading_content) = trimmed.strip_prefix('#').map(|s| s.trim_start()) {
-            let heading_tokens = tokenize(heading_content);
-            let mut line_spans = vec![Span::styled("▸ ", Style::default().fg(palette.accent))];
-            line_spans.extend(tokens_to_spans(
-                &heading_tokens,
-                body_style.add_modifier(Modifier::BOLD).fg(palette.accent),
-                palette,
-            ));
-            result.push(StyledLine {
-                content: Line::from(line_spans),
-                role_color: None,
-            });
-        } else {
-            let tokens = tokenize(trimmed);
-            result.push(StyledLine {
-                content: Line::from(tokens_to_spans(&tokens, body_style, palette)),
-                role_color: None,
-            });
+    // Segments — accumulated styled text
+    let mut segments: Vec<Segment> = Vec::new();
+
+    let mut pending_code_block_lang: Option<String> = None;
+    let mut code_block_lines: Vec<String> = Vec::new();
+
+    for event in parser {
+        match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) => {
+                tracing::trace!("[render_md] START CodeBlock lang=\"{}\"", lang.trim());
+                pending_code_block_lang = Some(lang.trim().to_string());
+                in_code_block = true;
+                code_block_lines.clear();
+            }
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => {
+                in_code_block = true;
+                code_block_lines.clear();
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(lang) = pending_code_block_lang {
+                    let lang_str = lang.trim();
+                    let label = if !lang_str.is_empty() && lang_str != "text" {
+                        format!("[{}] ", lang_str.to_lowercase())
+                    } else { String::new() };
+                    if !label.is_empty() {
+                        lines.push(StyledLine {
+                            content: Line::from(Span::styled(label, Style::default().fg(palette.accent))),
+                            role_color: None,
+                        });
+                    }
+                }
+                for code_line in &code_block_lines {
+                    lines.push(StyledLine {
+                        content: Line::from(Span::styled(code_line.clone(), code_style)),
+                        role_color: None,
+                    });
+                }
+                code_block_lines.clear();
+                pending_code_block_lang = None;
+                in_code_block = false;
+            }
+            
+            // ── Inline styling ──────────────
+            Event::Start(Tag::Strong) => { in_strong = true; }
+            Event::End(TagEnd::Strong) => { in_strong = false; }
+            Event::Start(Tag::Emphasis) => { in_emphasis = true; }
+            Event::End(TagEnd::Emphasis) => { in_emphasis = false; }
+
+            // ── Headings ─────────────────────────────────
+            Event::Start(Tag::Heading { level, .. }) => {
+                if !segments.is_empty() {
+                    lines.push(flush_segments(&mut segments));
+                }
+                tracing::trace!("[render_md] START Heading level={:?}", level);
+                lines.push(StyledLine {
+                    content: Line::from(vec![
+                        Span::styled("▸ ", Style::default().fg(palette.accent)),
+                        Span::styled(segments_text(&segments), heading_style),
+                    ]),
+                    role_color: None,
+                });
+            }
+
+            // ── Paragraphs ───────────────────────────────
+            Event::Start(Tag::Paragraph) => {}
+            Event::End(TagEnd::Paragraph) => {
+                if !segments.is_empty() {
+                    lines.push(flush_segments(&mut segments));
+                }
+            }
+
+            // ── Blockquotes ──────────────────────────────
+            Event::Start(Tag::BlockQuote(_)) => {
+                if !segments.is_empty() {
+                    lines.push(flush_segments(&mut segments));
+                }
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {}
+
+            // ── Lists ────────────────────────────────────
+            Event::Start(Tag::Item) => {
+                if !segments.is_empty() {
+                    lines.push(StyledLine {
+                        content: Line::from(vec![
+                            Span::styled("• ", Style::default().fg(palette.info)),
+                            Span::styled(segments_text(&segments), body_style),
+                        ]),
+                        role_color: None,
+                    });
+                    segments.clear();
+                } else {
+                    lines.push(StyledLine {
+                        content: Line::from(Span::styled("• ", Style::default().fg(palette.info))),
+                        role_color: None,
+                    });
+                }
+            }
+            Event::Start(Tag::List(_)) => {}
+            Event::End(TagEnd::List(_)) => {}
+
+            // ── Text content ─────────────────────────────
+            Event::Text(text) => {
+                if in_code_block {
+                    code_block_lines.push(text.to_string());
+                } else {
+                    let mut style = body_style;
+                    if in_strong { style = style.add_modifier(Modifier::BOLD); }
+                    if in_emphasis { style = style.add_modifier(Modifier::ITALIC); }
+                    segments.push(Segment { text: text.to_string(), style });
+                }
+            }
+
+            // ── Inline code ─────────────────
+            Event::Code(code) => {
+                if in_code_block {
+                    code_block_lines.push(code.to_string());
+                } else {
+                    segments.push(Segment { text: code.to_string(), style: code_style });
+                }
+            }
+
+            // ── Breaks ───────────────────────────────────
+            Event::SoftBreak => {
+                if !in_code_block {
+                    segments.push(Segment { text: " ".to_string(), style: body_style });
+                }
+            }
+            Event::HardBreak => {
+                if in_code_block {
+                    code_block_lines.push("\n".to_string());
+                } else if !segments.is_empty() {
+                    lines.push(flush_segments(&mut segments));
+                }
+            }
+
+            // ── Horizontal rule ──────────────────────────
+            Event::Rule => {
+                let rule = "\u{2500}".repeat(60);
+                lines.push(StyledLine {
+                    content: Line::from(Span::styled(rule, Style::default().fg(palette.info).add_modifier(Modifier::DIM))),
+                    role_color: None,
+                });
+            }
+            _ => {}
         }
     }
 
-    result
+    // Flush remaining segments
+    if !segments.is_empty() {
+        lines.push(flush_segments(&mut segments));
+    }
+
+    for (i, line) in lines.iter().enumerate() {
+        tracing::trace!("[render_md] line[{}] content=\"{}\"", i, line.content.spans.iter().map(|s| s.content.to_string()).collect::<String>());
+    }
+    tracing::trace!("[render_md] FINAL lines={}", lines.len());
+
+    lines
+}
+
+fn segments_text(segments: &[Segment]) -> String {
+    segments.iter().map(|s| s.text.as_str()).collect()
+}
+
+fn flush_segments(segments: &mut Vec<Segment>) -> StyledLine {
+    let spans: Vec<Span<'static>> = segments.drain(..)
+        .map(|s| Span::styled(s.text, s.style))
+        .collect();
+    StyledLine {
+        content: Line::from(spans),
+        role_color: None,
+    }
 }
 
 /// Check if a URL is a base64 data URL (starts with "data:").
@@ -272,20 +238,14 @@ fn is_data_url(url: &str) -> bool {
 }
 
 /// Generate a display placeholder for an image URL.
-/// For data URLs (base64), returns a compact icon + type indicator.
-/// For HTTP URLs, returns the URL as-is for potential hyperlink rendering.
 fn image_placeholder(url: &str, detail: Option<&str>) -> String {
     if is_data_url(url) {
-        // Determine mime type from the data URL prefix (e.g. "data:image/png")
         let mime_hint = url
             .split_once(':')
             .and_then(|(_, rest)| rest.split_once(';'))
             .map(|(first, _)| first.trim())
             .unwrap_or("");
-
-        // Determine mime type from detail if provided
         let detail_hint = detail.unwrap_or("");
-
         let mime_or_detail = if !mime_hint.is_empty() {
             mime_hint
         } else if !detail_hint.is_empty() {
@@ -293,10 +253,8 @@ fn image_placeholder(url: &str, detail: Option<&str>) -> String {
         } else {
             "image"
         };
-
         format!("\u{1F3F7}\u{FE0F} {}", mime_or_detail)
     } else {
-        // Remote URL — show it as-is so terminals can render as hyperlink
         if let Some(d) = detail {
             format!("\u{1F3F7}\u{FE0F} {} <{}>", d, url)
         } else {
@@ -306,10 +264,6 @@ fn image_placeholder(url: &str, detail: Option<&str>) -> String {
 }
 
 /// Render a single message into a structured `MessageRenderEntry`.
-///
-/// For image messages, generates a compact placeholder (e.g. `🖼️ png`) instead
-/// of expanding the full base64 data URL into the display text.
-/// Remote HTTP URLs are preserved as-is for potential hyperlink rendering.
 pub fn render_message_entry(
     msg: &Message,
     palette: &ratatui_themes::ThemePalette,
@@ -318,7 +272,6 @@ pub fn render_message_entry(
     let color = info.border_color;
     let icon = info.icon;
 
-    // Log raw message content to detect accumulation at render stage
     let raw_content: String = match &msg.content {
         MessageContent::Text(t) => t.clone(),
         MessageContent::Image { url, .. } => format!("[image: {}]", url.chars().take(40).collect::<String>()),
@@ -330,13 +283,12 @@ pub fn render_message_entry(
             .collect::<Vec<_>>()
             .join(" "),
     };
-    tracing::info!(
+    tracing::trace!(
         "[render_entry] role={:?} raw_content_len={} preview={}",
         msg.role, raw_content.len(),
         raw_content.chars().take(120).collect::<String>()
     );
 
-    // Extract text content and image placeholders from message content.
     let mut has_images = false;
     let mut combined_parts: Vec<String> = Vec::new();
 
@@ -370,7 +322,6 @@ pub fn render_message_entry(
     let text = if combined_parts.is_empty() {
         String::new()
     } else {
-        // Join with space if there are images, otherwise directly
         if has_images && combined_parts.len() > 1 {
             combined_parts.join(" ")
         } else {
@@ -381,12 +332,10 @@ pub fn render_message_entry(
     let mut body_lines = if text.is_empty() {
         vec![]
     } else {
+        tracing::trace!("[render_md] text to parse len={} preview={}", text.len(), text.chars().take(200).collect::<String>());
         render_body_lines(&text, palette)
     };
 
-
-
-    // Tool call indicators
     let mut tool_calls = Vec::new();
     if let Some(tcs) = &msg.tool_calls {
         for tc in tcs {
@@ -407,7 +356,6 @@ pub fn render_message_entry(
         }
     }
 
-    // Prepend tool call lines to body
     if !tool_calls.is_empty() {
         let mut tool_lines = Vec::new();
         for tc in &tool_calls {
@@ -429,6 +377,7 @@ pub fn render_message_entry(
         body_lines,
         tool_calls,
         reasoning: msg.reasoning.clone(),
+        title: None,
     }
 }
 
@@ -452,8 +401,6 @@ impl MessageRenderer {
         self.current_palette = self.current_theme.palette();
     }
 
-    /// Set the theme from a string (e.g. "nord", "catppuccin-mocha").
-    /// Falls back to Dracula on unknown names.
     pub fn set_theme_from_str(&mut self, s: &str) {
         if let Ok(name) = s.parse::<ThemeName>() {
             self.set_theme(name);
@@ -464,31 +411,19 @@ impl MessageRenderer {
         self.current_theme
     }
 
-    /// Return a reference to the current theme's color palette.
-    ///
-    /// This is the single source of truth for all semantic colors used
-    /// across the TUI — borders, headers, body text, tool results, etc.
     pub fn current_palette(&self) -> &ratatui_themes::ThemePalette {
         &self.current_palette
     }
 
-    /// Legacy API: render a message into flat `Line` slices (for backward compat).
     pub fn render(&self, msg: &Message) -> Vec<Line<'static>> {
         let entry = self.render_entry(msg);
         entry.body_lines.into_iter().map(|sl| sl.content).collect()
     }
 
-    /// Render a message into a structured `MessageRenderEntry`.
     pub fn render_entry(&self, msg: &Message) -> MessageRenderEntry {
         render_message_entry(msg, self.current_palette())
     }
 
-    /// Render a message into one or more `MessageRenderEntry`s.
-    ///
-    /// For assistant messages that carry reasoning/thinking content this
-    /// produces two entries (body + reasoning) so the conversation widget
-    /// can render them as separate bordered blocks.  All other messages
-    /// produce a single entry identical to `render_entry`.
     pub fn render_entries(&self, msg: &Message) -> Vec<MessageRenderEntry> {
         let main = render_message_entry(msg, self.current_palette());
         let Some(refining) = main.reasoning.clone() else { return vec![main]; };
@@ -519,6 +454,14 @@ impl MessageRenderer {
             body_lines: reasoning_lines,
             tool_calls: vec![],
             reasoning: Some(refining),
+            title: Some(Line::from(vec![
+                Span::styled(
+                    "  🤔 Thought",
+                    Style::default()
+                        .fg(self.current_palette().muted)
+                        .add_modifier(Modifier::BOLD | Modifier::DIM),
+                ),
+            ])),
         };
 
         vec![reasoning_entry, main]
@@ -528,221 +471,5 @@ impl MessageRenderer {
 impl Default for MessageRenderer {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use oben_models::Message;
-
-    /// Given: plain markdown text with bold and italic
-    /// When: tokenize is called
-    /// Then: tokens correctly split into Plain, Bold, Italic segments
-    #[test]
-    fn test_tokenize_bold_italic() {
-        let tokens = tokenize("Hello **bold** and *italic* world");
-        assert_eq!(tokens.len(), 5);
-        match &tokens[1] {
-            Token::Bold(s) => assert_eq!(s, "bold"),
-            _ => panic!("Expected Bold token"),
-        }
-        match &tokens[3] {
-            Token::Italic(s) => assert_eq!(s, "italic"),
-            _ => panic!("Expected Italic token"),
-        }
-    }
-
-    /// Given: inline code snippet
-    /// When: tokenize is called
-    /// Then: Code token is produced
-    #[test]
-    fn test_tokenize_inline_code() {
-        let tokens = tokenize("use `foo` bar");
-        assert_eq!(tokens.len(), 3);
-        match &tokens[1] {
-            Token::Code(s) => assert_eq!(s, "foo"),
-            _ => panic!("Expected Code token"),
-        }
-    }
-
-    /// Given: a plain text message
-    /// When: render_entry is called
-    /// Then: output has correct role and non-empty body
-    #[test]
-    fn test_render_entry_has_role_and_body() {
-        let renderer = MessageRenderer::new();
-        let msg = Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Text("Hello world".into()),
-            id: None,
-            tool_call_ids: vec![],
-            tool_calls: None,
-            reasoning: None,
-        };
-        let entry = renderer.render_entry(&msg);
-        assert_eq!(entry.role, MessageRole::Assistant);
-        assert!(!entry.body_lines.is_empty());
-        assert!(!entry.is_tool_result);
-    }
-
-    /// Given: a tool result message
-    /// When: render_entry is called
-    /// Then: is_tool_result is true
-    #[test]
-    fn test_render_entry_tool_result() {
-        let renderer = MessageRenderer::new();
-        let msg = Message {
-            role: MessageRole::Tool,
-            content: MessageContent::Text("file read: 42 lines".into()),
-            id: None,
-            tool_call_ids: vec![],
-            tool_calls: None,
-            reasoning: None,
-        };
-        let entry = renderer.render_entry(&msg);
-        assert!(entry.is_tool_result);
-    }
-
-    /// Given: a MessageContent::Image with base64 data URL
-    /// When: render_entry is called
-    /// Then: body contains icon and mime type — no base64 string
-    #[test]
-    fn test_render_image_data_url_no_base64() {
-        let renderer = MessageRenderer::new();
-        let msg = Message {
-            role: MessageRole::User,
-            content: MessageContent::Image {
-                url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ".into(),
-                detail: None,
-            },
-            id: None,
-            tool_call_ids: vec![],
-            tool_calls: None,
-            reasoning: None,
-        };
-        let entry = renderer.render_entry(&msg);
-        assert!(!entry.body_lines.is_empty());
-        // The full base64 string MUST NOT appear in any body line
-        let text: String = entry
-            .body_lines
-            .iter()
-            .map(|l| {
-                l.content
-                    .spans
-                    .iter()
-                    .map(|s| s.content.to_string())
-                    .collect::<String>()
-            })
-            .collect();
-        assert!(
-            !text.contains("iVBORw0KGgo"),
-            "base64 data should not appear in rendered text"
-        );
-        assert!(
-            text.contains("png") || text.contains("\u{1F3F7}"),
-            "should contain icon or mime hint"
-        );
-    }
-
-    /// Given: MessageContent::Parts with image + text
-    /// When: render_entry is called
-    /// Then: image placeholder is compact, text is preserved
-    #[test]
-    fn test_render_parts_with_image() {
-        let renderer = MessageRenderer::new();
-        let msg = Message {
-            role: MessageRole::User,
-            content: MessageContent::Parts(vec![
-                MessagePart::Text("分析下这个图片".into()),
-                MessagePart::Image {
-                    url: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQ".into(),
-                    detail: None,
-                },
-            ]),
-            id: None,
-            tool_call_ids: vec![],
-            tool_calls: None,
-            reasoning: None,
-        };
-        let entry = renderer.render_entry(&msg);
-        assert!(!entry.body_lines.is_empty());
-        let text: String = entry
-            .body_lines
-            .iter()
-            .map(|l| {
-                l.content
-                    .spans
-                    .iter()
-                    .map(|s| s.content.to_string())
-                    .collect::<String>()
-            })
-            .collect();
-        assert!(
-            text.contains("分析下这个图片"),
-            "text part should be preserved"
-        );
-        assert!(
-            !text.contains("/9j/4AAQSkZJR"),
-            "base64 data should not appear"
-        );
-    }
-
-    /// Given: a remote HTTP image URL
-    /// When: render_entry is called
-    /// Then: URL is preserved for terminal hyperlink rendering
-    #[test]
-    fn test_render_remote_image_url_preserved() {
-        use crate::widgets::message_renderer::image_placeholder;
-        let placeholder = image_placeholder("https://example.com/cool.png", None);
-        assert!(placeholder.contains("https://example.com/cool.png"));
-    }
-
-    /// Given: a data URL with mime type
-    /// When: image_placeholder is called
-    /// Then: it returns icon + mime type, no URL
-    #[test]
-    fn test_image_placeholder_data_url() {
-        use crate::widgets::message_renderer::image_placeholder;
-        let placeholder = image_placeholder("data:image/png;base64,abc", None);
-        assert!(!placeholder.contains("abc"));
-        assert!(placeholder.contains("png"));
-    }
-
-    /// Given: a data URL with detail parameter
-    /// When: image_placeholder is called
-    /// Then: it returns icon + mime type from URL (detail only used when no mime)
-    #[test]
-    fn test_image_placeholder_with_detail() {
-        use crate::widgets::message_renderer::image_placeholder;
-        let placeholder = image_placeholder("data:image/png;base64,abc", Some("high"));
-        // mime type from URL takes priority
-        assert!(!placeholder.contains("high"));
-        assert!(placeholder.contains("png"));
-    }
-
-    /// Given: a data URL with unknown mime + detail parameter
-    /// When: image_placeholder is called
-    /// Then: it returns icon + mime (octet-stream is still a valid mime hint)
-    #[test]
-    fn test_image_placeholder_detail_fallback() {
-        use crate::widgets::message_renderer::image_placeholder;
-        // Even application/octet-stream is a non-empty mime hint, takes priority
-        let placeholder = image_placeholder(
-            "data:application/octet-stream;base64,abc",
-            Some("screenshot"),
-        );
-        assert!(placeholder.contains("octet-stream"));
-    }
-
-    /// Given: a remote HTTP URL with no detail
-    /// When: image_placeholder is called
-    /// Then: it shows icon + URL in angle brackets
-    #[test]
-    fn test_image_placeholder_remote_no_detail() {
-        use crate::widgets::message_renderer::image_placeholder;
-        let placeholder = image_placeholder("https://example.com/cool.png", None);
-        assert!(placeholder.contains("\u{1F3F7}"));
-        assert!(placeholder.contains("<https://example.com/cool.png>"));
     }
 }

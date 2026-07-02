@@ -345,7 +345,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                             chat.streaming = true;
                             chat.append_user_message(&input);
                         }
-                        app.status = "Streaming...".into();
+                        app.status = "Busy".into();
                         app.needs_redraw = true;
                     }
                     TuiCommand::AppendInputHistory { input } => {
@@ -741,8 +741,6 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         );
     }
 
-    let is_streaming = app.get_chat().map(|cp| cp.streaming).unwrap_or(false);
-
     let panel_names: [&str; 2] = ["Chat", "Sessions"];
     let panel_index = match app.active_panel {
         PanelId::Chat => 0,
@@ -820,10 +818,9 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         s if !s.is_empty() => format!(" Session: {} ({} msgs)", s, msg_count),
         _ => " No session".to_string(),
     };
-    let mode_text = match (is_streaming, app.status.as_str()) {
-        (true, _) => "⏳ Streaming",
-        (_, s) if s.starts_with("Error") => "Error",
-        (_, s) if !s.is_empty() && s != " No session" => "Info",
+    let mode_text = match app.status.as_str() {
+        s if s.starts_with("Error") => "Error",
+        s if !s.is_empty() => "Streaming",
         _ => "Ready",
     };
     let status_lines: Vec<Line> =

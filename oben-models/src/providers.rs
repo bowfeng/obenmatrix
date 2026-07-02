@@ -487,6 +487,13 @@ pub struct TransportToolCall {
 /// Callback type invoked with each text delta during streaming.
 pub type StreamDeltaCallback = Box<dyn FnMut(&str) + Send>;
 
+/// Callback type invoked with each reasoning delta during streaming.
+///
+/// Emits reasoning content (e.g., OpenAI-style `reasoning_content`) that is
+/// already separated from `content` at the API level. Distinct from inline
+/// `<thinking>` tags (handled by scrub_thinking_blocks() in the text path).
+pub type StreamReasoningCallback = Box<dyn FnMut(&str) + Send>;
+
 /// Blanket impl: any `Arc<T: TransportProvider>` is also a `TransportProvider`.
 #[async_trait::async_trait]
 impl<T: TransportProvider + ?Sized + Send + Sync> TransportProvider for std::sync::Arc<T> {
@@ -507,8 +514,9 @@ impl<T: TransportProvider + ?Sized + Send + Sync> TransportProvider for std::syn
         messages: &[super::Message],
         mode: &super::CallMode,
         delta_callback: StreamDeltaCallback,
+        reasoning_callback: Option<StreamReasoningCallback>,
     ) -> Result<TransportResponse> {
-        (**self).stream_chat(messages, mode, delta_callback).await
+        (**self).stream_chat(messages, mode, delta_callback, reasoning_callback).await
     }
 
     fn estimate_tokens(&self, messages: &[super::Message]) -> usize {
@@ -540,15 +548,15 @@ pub trait TransportProvider: Send + Sync {
         mode: &super::CallMode,
     ) -> Result<TransportResponse>;
 
-    /// Send a streaming chat completion request.
-    ///
     /// Fires `delta_callback` with each text delta as it arrives.
+    /// Fires `reasoning_callback` (if Some) with each reasoning content delta.
     /// Returns the accumulated response with full text and tool calls.
     async fn stream_chat(
         &self,
         messages: &[super::Message],
         mode: &super::CallMode,
         delta_callback: StreamDeltaCallback,
+        reasoning_callback: Option<StreamReasoningCallback>,
     ) -> Result<TransportResponse>;
 
     /// Optional: estimate tokens without full API call.

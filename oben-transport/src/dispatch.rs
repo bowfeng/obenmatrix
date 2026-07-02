@@ -186,14 +186,15 @@ impl TransportProvider for Transport {
         messages: &[Message],
         mode: &CallMode,
         delta_callback: oben_models::StreamDeltaCallback,
+        reasoning_callback: Option<oben_models::StreamReasoningCallback>,
     ) -> Result<TransportResponse> {
         log_messages_debug("stream_chat", messages, mode, self.name());
         match self {
             Transport::OpenAIChat { transport } => {
-                transport.stream_chat(messages, mode, delta_callback).await
+                transport.stream_chat(messages, mode, delta_callback, reasoning_callback).await
             }
             Transport::Anthropic { transport } => {
-                transport.stream_chat(messages, mode, delta_callback).await
+                transport.stream_chat(messages, mode, delta_callback, reasoning_callback).await
             }
         }
     }

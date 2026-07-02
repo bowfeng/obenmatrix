@@ -242,6 +242,7 @@ async fn test_live_stream_chat() -> Result<()> {
             &messages,
             &CallMode::Fresh("test-session-3".to_string()),
             cb,
+            None,
         )
         .await?;
 
@@ -391,6 +392,7 @@ async fn test_live_stream_chat_with_tool_calls() -> Result<()> {
             &messages,
             &CallMode::Fresh("test-session-5".to_string()),
             cb,
+            None,
         )
         .await?;
 
@@ -433,6 +435,7 @@ async fn test_live_long_stream_response() -> Result<()> {
             &messages,
             &CallMode::Fresh("test-session-6".to_string()),
             cb,
+            None,
         )
         .await?;
 
@@ -473,6 +476,7 @@ async fn test_live_stream_with_usage() -> Result<()> {
             &messages,
             &CallMode::Fresh("test-session-7".to_string()),
             cb,
+            None,
         )
         .await?;
 
