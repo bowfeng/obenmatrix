@@ -12,7 +12,83 @@ use crate::widgets::conversation::BlockType;
 use crate::widgets::message_renderer::StyledLine;
 use ratatui::prelude::*;
 use textwrap::wrap as textwrap_wrap;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Split a `Line` into a flat stream of `(char, Style)` pairs.
+fn line_to_chars(line: &Line) -> Vec<(char, Style)> {
+    line.spans
+        .iter()
+        .flat_map(|s| {
+            let style = s.style;
+            s.content.chars().map(move |c| (c, style))
+        })
+        .collect()
+}
+
+/// Wrap a `(char, Style)` stream respecting word boundaries and a column `limit`.
+///
+/// Returns one `Vec<(char, Style)>` element per wrapped output line.  Each inner
+/// vec is a maximal text segment of at most `limit` display-columns long, split on
+/// whitespace (or mid-word when a single word itself exceeds the limit).
+fn wrap_chars(chars: &[(char, Style)], limit: usize) -> Vec<Vec<(char, Style)>> {
+    if chars.is_empty() || limit == 0 {
+        return vec![chars.to_vec()];
+    }
+
+    let mut wrap_groups: Vec<Vec<(char, Style)>> = Vec::new();
+    let mut current_group: Vec<(char, Style)> = Vec::new();
+    let mut current_width = 0usize;
+
+    for &(c, style) in chars {
+        let cw = c.width().unwrap_or(0).max(1);
+
+        // Whitespace: emit it but also act as a word-boundary sentinel.
+        let is_ws = c.is_whitespace();
+
+        if !is_ws
+            && !current_group.is_empty()
+            && current_width + cw > limit
+        {
+            // Can't fit in current line — flush and start new.
+            wrap_groups.push(std::mem::take(&mut current_group));
+            current_width = 0;
+        }
+
+        current_group.push((c, style));
+        current_width += cw;
+
+        if is_ws {
+            // After whitespace, we can safely start a new word on the next line.
+            if current_width >= limit {
+                wrap_groups.push(std::mem::take(&mut current_group));
+                current_width = 0;
+            }
+        }
+    }
+
+    if !current_group.is_empty() {
+        wrap_groups.push(current_group);
+    }
+
+    wrap_groups
+}
+
+/// Collapse a `(char, Style)` vec into `Span<'static>`s, merging consecutive
+/// chars that share the same style into a single span.
+fn chars_to_spans(chars: &[(char, Style)]) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for &(ch, style) in chars {
+        match spans.last_mut() {
+            Some(last) if last.style == style => {
+                last.content.to_mut().push(ch);
+            }
+            _ => {
+                spans.push(Span::styled(ch.to_string(), style));
+            }
+        }
+    }
+    spans
+}
 
 // ── Layout constants (single source of truth) ──────────────────────────
 
@@ -46,8 +122,10 @@ pub fn calc_wrapped_line_count(lines: &[Line<'static>], width: usize) -> usize {
     count
 }
 
-/// Wrap styled lines into actual Line<'static> vectors for rendering.
-/// Behaves identically to the old wrap_styled_lines_to_lines method.
+/// Wrap styled lines into actual `Line<'static>` vectors for rendering.
+///
+/// Preserves per-span styles through wrapping — each output span keeps the style
+/// of the characters it contains, regardless of word-boundary splits.
 pub fn wrap_styled_lines_to_lines(
     lines: &[Line<'static>],
     inner_width: usize,
@@ -60,23 +138,12 @@ pub fn wrap_styled_lines_to_lines(
         let total_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
         if total_width == 0 || total_width <= inner_width {
             result.push(line.clone());
-        } else if line.spans.len() == 1 {
-            let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-            result.extend(
-                textwrap_wrap(&text, inner_width)
-                    .into_iter()
-                    .map(|wrapped| {
-                        Line::from(Span::styled(wrapped.into_owned(), line.spans[0].style))
-                    }),
-            );
         } else {
-            let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
-            let first_style = line.spans.first().map(|s| s.style).unwrap_or_default();
-            result.extend(
-                textwrap_wrap(&text, inner_width)
-                    .into_iter()
-                    .map(|wrapped| Line::from(Span::styled(wrapped.into_owned(), first_style))),
-            );
+            let chars = line_to_chars(line);
+            for wrap_group in wrap_chars(&chars, inner_width) {
+                let spans = chars_to_spans(&wrap_group);
+                result.push(Line::from(spans));
+            }
         }
     }
     result
@@ -241,4 +308,84 @@ pub fn calc_visible_areas(
     }
 
     areas
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Given: a plain-line vec of (char, Style) with a plain segment followed
+    /// by a BOLD segment and another plain segment
+    /// When: chars_to_spans is called
+    /// Then: three spans are produced, the middle span carrying BOLD
+    #[test]
+    fn test_chars_to_spans_merges_consecutive_same_style() {
+        let plain = Style::default().fg(Color::White);
+        let bold = plain.add_modifier(Modifier::BOLD);
+        // "Hel" (plain) + "lo" (bold) + "d" (plain)
+        let input: Vec<(char, Style)> = vec![
+            ('H', plain), ('e', plain), ('l', plain),
+            ('l', bold), ('o', bold),
+            ('d', plain),
+        ];
+        let spans = chars_to_spans(&input);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[1].style, bold);
+        assert_eq!(
+            spans.iter().map(|s| s.content.to_string()).collect::<String>(),
+            "Hellod"
+        );
+    }
+
+    /// Given: multi-span styled line with bold text that exceeds wrap width
+    /// When: wrap_styled_lines_to_lines is called with a narrow width
+    /// Then: wrapped output spans preserve the BOLD modifier
+    #[test]
+    fn test_wrap_preserves_bold_modifier_on_wrapped_lines() {
+        let bold_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+        let plain = Style::default().fg(Color::White);
+
+        // "A hello B" = 9 display columns; width 5 forces wrapping
+        let line = Line::from(vec![
+            Span::styled("A ", plain),
+            Span::styled("hello", bold_style),
+            Span::styled(" B", plain),
+        ]);
+
+        let wrapped = wrap_styled_lines_to_lines(&[line], 5);
+        let flat: String = wrapped.iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
+        assert_eq!(flat, "A hello B");
+
+        let has_bold = wrapped.iter().any(|l| {
+            l.spans.iter().any(|s| s.style.add_modifier(Modifier::BOLD) == bold_style.add_modifier(Modifier::BOLD))
+        });
+        assert!(has_bold, "wrapped output must preserve BOLD modifier");
+    }
+
+    /// Given: a line containing ONLY a single styled span that exceeds wrap width
+    /// When: wrap_styled_lines_to_lines is called
+    /// Then: the char-level path preserves per-char style through wrap
+    #[test]
+    fn test_wrap_single_span_matches_char_level_path() {
+        let bold = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+        let single = Line::from(vec![Span::styled("abcdefghij", bold)]); // 10 columns
+
+        let wrapped = wrap_styled_lines_to_lines(&[single], 3);
+        assert!(!wrapped.is_empty());
+
+        let chars: String = wrapped.iter()
+            .flat_map(|l| l.spans.iter().flat_map(|s| s.content.chars()))
+            .collect();
+        assert_eq!(chars, "abcdefghij");
+
+        for line in &wrapped {
+            for span in &line.spans {
+                assert!(
+                    span.style.add_modifier(Modifier::BOLD) == bold.add_modifier(Modifier::BOLD),
+                    "span '{}' must be bold",
+                    span.content
+                );
+            }
+        }
+    }
 }
