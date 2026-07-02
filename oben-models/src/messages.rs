@@ -15,6 +15,8 @@ pub struct Message {
     /// Reasoning/thinking chain-of-thought from models that support it.
     /// Separated from content so the TUI can render it as a distinct block.
     pub reasoning: Option<String>,
+    /// Numeric parent task ID for subagent tool result messages, used by the TUI to group subagent output into visual blocks.
+    pub delegation_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +71,7 @@ impl Message {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }
     }
 
@@ -80,6 +83,7 @@ impl Message {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }
     }
 
@@ -91,6 +95,7 @@ impl Message {
             tool_call_ids: vec![],
             tool_calls: Some(tool_calls),
             reasoning: None,
+            delegation_id: None,
         }
     }
 
@@ -102,6 +107,7 @@ impl Message {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }
     }
 
@@ -113,7 +119,17 @@ impl Message {
             tool_call_ids: vec![tool_call_id.into()],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }
+    }
+
+    pub fn with_delegation_id(mut self, id: u32) -> Self {
+        self.delegation_id = Some(id);
+        self
+    }
+
+    pub fn delegation_id(&self) -> Option<u32> {
+        self.delegation_id
     }
 }
 

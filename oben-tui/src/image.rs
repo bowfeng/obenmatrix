@@ -93,6 +93,7 @@ pub fn path_to_image_message(path: &str, prompt_text: &str) -> Option<(Message, 
             tool_call_ids: Vec::new(),
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }
     } else {
         Message {
@@ -108,6 +109,7 @@ pub fn path_to_image_message(path: &str, prompt_text: &str) -> Option<(Message, 
             tool_call_ids: Vec::new(),
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }
     };
 

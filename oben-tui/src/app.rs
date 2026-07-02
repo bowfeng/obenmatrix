@@ -412,9 +412,12 @@ impl App {
         // AppState::turn_state (a stale empty TurnState from App::new).
         let state_ref = Arc::clone(&self.shared_state.lock().turn_state);
         tracing::info!("[panel] Using theme: {}", theme);
+        let mut panel = ChatPanel::new_with_theme(None, &theme, state_ref);
+        // Wire the shared state ref for subagent rendering.
+        panel.set_shared_state_ref(Arc::clone(&self.shared_state));
         self.panels.insert(
             PanelId::Chat,
-            Box::new(ChatPanel::new_with_theme(None, &theme, state_ref)),
+            Box::new(panel),
         );
         tracing::info!(
             "[panel] ChatPanel inserted, panels={:?}",
@@ -494,6 +497,21 @@ impl App {
             crossterm::event::KeyCode::F(2) => {
                 self.activate_panel(PanelId::Sessions).await;
                 return KeyAction::None;
+            }
+            crossterm::event::KeyCode::F(3) => {
+                if self.active_panel == PanelId::Chat {
+                    let subagents = {
+                        let ss = self.shared_state.lock();
+                        ss.get_subagents()
+                    };
+                    if !subagents.is_empty() {
+                        if let Some(chat) = self.get_chat_mut() {
+                            chat.toggle_first_subagent(&subagents);
+                            self.needs_redraw = true;
+                            return KeyAction::None;
+                        }
+                    }
+                }
             }
 
             crossterm::event::KeyCode::Tab => {

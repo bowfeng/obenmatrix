@@ -317,3 +317,11 @@ pub trait InterruptLifecycleHooks: Hook {
     /// Called when the turn actually responds to the interrupt.
     fn on_interrupted(&self, _reason: &str) {}
 }
+
+/// Parsed tool execution info for a subagent's tool call output.
+#[derive(Debug, Clone)]
+pub struct SubagentToolInfo {
+    pub name: String,
+    pub args: serde_json::Value,
+    pub output_preview: String,
+}

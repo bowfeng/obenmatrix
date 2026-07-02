@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use serde_json::Value;
 use tracing::info;
 
 use crate::coordinator::termination::{
@@ -395,11 +396,25 @@ impl TurnExecutor {
                     None
                 };
 
+                // Create a stateful scrubber so thinking blocks split across
+                // deltas accumulate reasoning correctly.
+                let mut scrubber = crate::stream_processor::StreamingThinkScrubber::new();
+
                 let cb: StreamDeltaCallback = Box::new(move |delta: &str| {
                     if let Some(ref hooks) = hooks {
-                        hooks.emit_stream_delta(delta);
-                    } else {
-                        tracing::warn!("stream_callback: hooks is None");
+                        let scrubbed = scrubber.scrub_delta(delta);
+
+                        // Also emit extracted reasoning from thinking blocks
+                        // when the entire open+close arrives in one delta.
+                        let (_, reasoning) =
+                            crate::stream_processor::scrub_thinking_blocks(delta);
+                        if let Some(text) = reasoning {
+                            hooks.emit_reasoning(&text);
+                        }
+
+                        if !scrubbed.is_empty() {
+                            hooks.emit_stream_delta(&scrubbed);
+                        }
                     }
                 });
                 transport
@@ -540,22 +555,32 @@ impl TurnExecutor {
             .as_ref()
             .unwrap_or(&default_dispatch);
 
-        let pending: Vec<PendingToolCall> = tool_calls.iter().map(|c| {
-            let mut args = c.arguments.clone();
-            if c.tool_name == "delegate_task" {
-                if let Some(obj) = args.as_object_mut() {
-                    obj.entry("parent_session_id").or_insert_with(|| {
-                        serde_json::Value::String(session_id.to_string())
-                    });
+        let mut delegation_counter: u32 = 0;
+        let pending: Vec<PendingToolCall> = tool_calls
+            .iter()
+            .enumerate()
+            .map(|(_idx, c)| {
+                let mut args = c.arguments.clone();
+                if c.tool_name == "delegate_task" {
+                    if let Some(obj) = args.as_object_mut() {
+                        obj.entry("parent_session_id").or_insert_with(|| {
+                            serde_json::Value::String(session_id.to_string())
+                        });
+                        // Inject a unique delegation_id into call args so result messages
+                        // can be grouped by subagent in the TUI.
+                        if !obj.contains_key("delegation_id") {
+                            obj.insert("delegation_id".into(), Value::Number(delegation_counter.into()));
+                            delegation_counter += 1;
+                        }
+                    }
                 }
-            }
-            PendingToolCall {
-                tool_name: c.tool_name.clone(),
-                arguments: args,
-                call_id: c.id.clone(),
-            }
-        })
-        .collect();
+                PendingToolCall {
+                    tool_name: c.tool_name.clone(),
+                    arguments: args,
+                    call_id: c.id.clone(),
+                }
+            })
+            .collect();
 
         if let Some(ref hooks) = config.hooks {
             for call in &pending {
@@ -571,10 +596,22 @@ impl TurnExecutor {
             if result.output.is_empty() && call.call_id != "steer" && result.error.is_none() {
                 continue;
             }
+            // Derive delegation_id for delegate_tool messages from the call
+            // arguments — the agent passes `delegation_id` alongside `goal`/`tasks`.
+            let delegation_id = if call.tool_name == "delegate_task" {
+                call.arguments
+                    .get("delegation_id")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+            } else {
+                None
+            };
             let msg = if !result.output.is_empty() {
                 Message::tool_result(&call.call_id, &result.output)
+                    .with_delegation_id(delegation_id.unwrap_or(0))
             } else if let Some(ref err) = result.error {
                 Message::tool_result(&call.call_id, err)
+                    .with_delegation_id(delegation_id.unwrap_or(0))
             } else {
                 Message {
                     role: MessageRole::Tool,
@@ -583,6 +620,7 @@ impl TurnExecutor {
                     tool_call_ids: vec![call.call_id.clone()],
                     tool_calls: None,
                     reasoning: None,
+                    delegation_id,
                 }
             };
             session.messages.push(msg);

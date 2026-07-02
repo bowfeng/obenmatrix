@@ -14,7 +14,11 @@ use crate::cli::{
 use clap::Parser;
 use crate::coordinator::CliCoordinator;
 use oben_agent::coordinator::ConversationConfig;
+use oben_agent::delegate::{build_spawn_fn_wrapper, SubagentSpawner};
+use oben_agent::hooks::HookBuilder;
 use oben_agent::AgentBuilder;
+use oben_tools::delegate::DelegateTool;
+use oben_tools::ToolRegistry;
 use oben_cron::{CronJob, CronStore};
 use oben_goals::GoalStore;
 use oben_models::TransportProvider;
@@ -119,10 +123,39 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         Some(&volatile),
     );
 
+    // Wire up delegate_task with a real SpawnFn (same pattern as TUI).
+    let shared_hooks = Arc::new(HookBuilder::from_config(&config.hooks).build());
+    let transport = oben_transport::Transport::from_config_with_tools_via_registry(
+        &config.model,
+        &assembled.prompt,
+        &tools.list_tools());
+    info!("CLI: creating SubagentSpawner for delegate_task wiring");
+    let spawner = SubagentSpawner::new(
+        Arc::new(transport),
+        Arc::new(tools.clone()),
+        config.clone(),
+        oben_agent::compact::CompactCofig {
+            context_length: config.context.context_length,
+            threshold_percent: config.context.threshold_percent,
+            ..Default::default()
+        },
+        config.max_iterations.unwrap_or(50),
+        config.context.max_messages.unwrap_or(100),
+        config.max_spawn_depth.unwrap_or(3),
+        Arc::clone(&shared_hooks),
+    );
+    let spawn_fn = build_spawn_fn_wrapper(spawner, assembled.prompt.clone());
+    let mut tools_for_agent = ToolRegistry::clone(&tools);
+    tools_for_agent.register(DelegateTool::new(
+        spawn_fn,
+        config.max_concurrent_tasks.unwrap_or(5),
+    ));
+
     let mut chat = AgentBuilder::new()
         .with_config(config)
         .with_system_prompt(assembled.prompt.clone())
-        .with_tools(Arc::new(tools))
+        .with_tools(Arc::new(tools_for_agent))
+        .with_hooks(shared_hooks)
         .build()
         .await?;
 
@@ -158,10 +191,38 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
 
     let system_prompt = oben_config::defaults::default_system_prompt();
 
+    // Build transport + spawner so delegate_tool has a real SpawnFn
+    let shared_hooks = Arc::new(HookBuilder::from_config(&config.hooks).build());
+    let transport = oben_transport::Transport::from_config_with_tools_via_registry(
+        &config.model,
+        &system_prompt,
+        &tools.list_tools());
+    let spawner = SubagentSpawner::new(
+        Arc::new(transport),
+        Arc::new(tools.clone()),
+        config.clone(),
+        oben_agent::compact::CompactCofig {
+            context_length: config.context.context_length,
+            threshold_percent: config.context.threshold_percent,
+            ..Default::default()
+        },
+        config.max_iterations.unwrap_or(50),
+        config.context.max_messages.unwrap_or(100),
+        config.max_spawn_depth.unwrap_or(3),
+        Arc::clone(&shared_hooks),
+    );
+    let spawn_fn = build_spawn_fn_wrapper(spawner, system_prompt.clone());
+    let mut tools_for_agent = ToolRegistry::clone(&tools);
+    tools_for_agent.register(DelegateTool::new(
+        spawn_fn,
+        config.max_concurrent_tasks.unwrap_or(5),
+    ));
+
     let mut agent = AgentBuilder::new()
         .with_config(config)
         .with_system_prompt(system_prompt.clone())
-        .with_tools(Arc::new(tools))
+        .with_tools(Arc::new(tools_for_agent))
+        .with_hooks(shared_hooks)
         .build()
         .await?;
 

@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    delegation_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -358,6 +359,7 @@ fn row_to_message(row: &rusqlite::Row) -> std::result::Result<Message, rusqlite:
     let tool_call_id: Option<String> = row.get("tool_call_id").ok();
     let id: Option<i64> = row.get("id").ok();
     let reasoning: Option<String> = row.get("reasoning").ok();
+    let delegation_id: Option<i32> = row.get("delegation_id").ok();
     Ok(Message {
         role,
         content: oben_models::MessageContent::Text(content),
@@ -365,6 +367,7 @@ fn row_to_message(row: &rusqlite::Row) -> std::result::Result<Message, rusqlite:
         tool_call_ids: tool_call_id.into_iter().collect(),
         tool_calls,
         reasoning,
+        delegation_id: delegation_id.map(|v| v as u32),
     })
 }
 
@@ -793,7 +796,7 @@ impl SessionDB {
     pub fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, COALESCE(title, ''), source, model, system_prompt, parent_session_id, started_at, ended_at, end_reason, title, preview, handoff_state, message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error, turn_count FROM sessions WHERE id = ?"
+                "SELECT id, COALESCE(title, ''), source, model, system_prompt, parent_session_id, started_at, ended_at, end_reason, title, preview, handoff_state, message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error, COALESCE(turn_count, 0) AS turn_count FROM sessions WHERE id = ?"
             )?;
             match stmt.query_row([session_id], |row| {
                 let source_str: String = row.get("source")?;
@@ -844,8 +847,8 @@ impl SessionDB {
         let mut stmt = conn.prepare(
             "SELECT id, COALESCE(title, ''), source, model, system_prompt, parent_session_id, \
              started_at, ended_at, end_reason, title, preview, handoff_state, \
-              message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error, turn_count \
-              FROM sessions WHERE id = ?"
+               message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error, COALESCE(turn_count, 0) AS turn_count \
+               FROM sessions WHERE id = ?"
         )?;
         let row: (
             String,
@@ -981,7 +984,7 @@ impl SessionDB {
         self.with_conn_mut(|conn| {
             // No nested transaction — with_conn_mut already manages BEGIN IMMEDIATE / COMMIT
             let mut stmt = conn.prepare(
-                "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name, reasoning) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id"
+                "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, tool_name, reasoning, delegation_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id"
             )?;
             for msg in messages.iter_mut() {
                 let role = match msg.role {
@@ -998,7 +1001,8 @@ impl SessionDB {
                     None
                 };
                 let reasoning = &msg.reasoning;
-                let mut rows = stmt.query(params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown"), reasoning])?;
+                let delegation_id = msg.delegation_id;
+                let mut rows = stmt.query(params![session_id, role, content, tool_calls, tool_call_id, now_ts(), msg.tool_calls.as_ref().map(|_| "unknown"), reasoning, delegation_id])?;
                 if let Some(row) = rows.next()? {
                     msg.id = Some(row.get(0)?);
                 }
@@ -1253,7 +1257,7 @@ impl SessionDB {
             }
             let where_clause = if conditions.is_empty() { String::new() } else { format!("WHERE {}", conditions.join(" AND ")) };
             let query = format!(
-                "SELECT id, COALESCE(title, '') AS title, source, model, COALESCE(system_prompt, '') AS system_prompt, parent_session_id, started_at, ended_at, end_reason, title AS display_title, preview, handoff_state, message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error, turn_count \
+                "SELECT id, COALESCE(title, '') AS title, source, model, COALESCE(system_prompt, '') AS system_prompt, parent_session_id, started_at, ended_at, end_reason, title AS display_title, preview, handoff_state, message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error, COALESCE(turn_count, 0) AS turn_count \
                  FROM sessions s {} ORDER BY started_at DESC LIMIT ? OFFSET ?",
                 where_clause
             );

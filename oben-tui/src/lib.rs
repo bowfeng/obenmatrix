@@ -144,6 +144,11 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                 };
                 if let Some(agent) = agent_opt {
                     let hooks = Arc::clone(agent.lock().await.hooks());
+                    hooks.register_tool(Box::new(
+                        oben_agent::TuiSubagentAdapter::new(std::sync::Arc::new(
+                            crate::shared::SubagentCallback::new(Arc::clone(&a.shared_state))
+                        ))
+                    ));
                     hooks.register_streaming(Box::new(
                         oben_agent::TuiStreamingAdapter::new(Arc::clone(&ts))
                     ));
@@ -386,11 +391,13 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
             event = event_rx.recv() => {
                 match event {
                     Some(TuiEvent::Key(key)) => {
-                        let mut app = arc_app.lock().await;
-                        let action = app.handle_key(key).await;
+                        // Compute key action (needs mutable app)
+                        let action = {
+                            let app = &mut arc_app.lock().await;
+                            app.handle_key(key).await
+                        };
                         match action {
                             panels::KeyAction::ChatInput(text) => {
-                                drop(app);
                                 tracing::debug!("[event_loop] KeyAction::ChatInput sending to chat_tx, len={}", text.len());
                                 let _ = chat_tx.send(text);
                                 {
@@ -408,10 +415,8 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                                 let _ = _event_tx_clone.send(TuiEvent::Interrupt);
                             }
                             panels::KeyAction::None => {
-                                // No action — redraw handled above or by next timer tick.
+                                // No action
                             }
-                            // Other actions (Clear, New, Compact, etc.) are handled
-                            // inside app.handle_key() via execute_command() calls.
                             _ => {}
                         }
                     }

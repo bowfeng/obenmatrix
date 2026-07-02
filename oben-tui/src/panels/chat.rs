@@ -4,11 +4,14 @@ use super::{KeyAction, Panel};
 use crate::widgets::conversation::{ConversationState, ConversationWidget};
 use crate::widgets::input_bar::{InputBarResult, InputBarWidget, InputState};
 use crate::widgets::message_renderer::{MessageRenderEntry, MessageRenderer, StyledLine, render_body_lines};
+use crate::widgets::subagent_accordion::SubagentAccordion;
+use crate::shared::SubagentInfo;
 use crossterm::event::KeyEvent;
-use parking_lot::Mutex as PlMutex;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::prelude::*;
 use std::sync::atomic::Ordering;
+use parking_lot::Mutex as PlMutex;
+use ratatui::layout::Rect;
+use ratatui::prelude::*;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use std::sync::Arc;
 use std::time::Instant;
 use oben_agent::{TurnPhase, TurnState};
@@ -25,6 +28,8 @@ pub struct ChatPanel {
     message_display: ConversationWidget,
     /// Turn state reference for polling during draw.
     turn_state_ref: Arc<PlMutex<TurnState>>,
+    /// Shared agent state reference for subagent data during draw.
+    shared_state_ref: Arc<PlMutex<crate::shared::SharedAgentState>>,
     /// Channel to send drained messages back to the event loop.  Set via
     /// `set_input_sender()` during app init.
     input_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::TuiEvent>>,
@@ -37,6 +42,8 @@ pub struct ChatPanel {
     /// but the phase hasn't yet moved from Completed (e.g., while delta
     /// callbacks are still firing for the turn that just ended).
     drained_this_turn: bool,
+    /// Subagent accordion state (track which subagents are expanded).
+    subagent_accordion: SubagentAccordion,
 }
 
 impl ChatPanel {
@@ -51,9 +58,13 @@ impl ChatPanel {
             renderer: MessageRenderer::new(),
             message_display: ConversationWidget,
             turn_state_ref: Arc::new(PlMutex::new(TurnState::new())),
+            shared_state_ref: Arc::new(PlMutex::new(
+                crate::shared::SharedAgentState::new_empty(),
+            )),
             input_tx: None,
             prev_phase: TurnPhase::Idle,
             drained_this_turn: false,
+            subagent_accordion: SubagentAccordion::new(),
         }
     }
 
@@ -65,6 +76,11 @@ impl ChatPanel {
         panel.turn_state_ref = Arc::clone(&turn_state);
         panel.set_turn_state_ref(turn_state);
         panel
+    }
+
+    /// Set the shared state reference for subagent rendering.
+    pub fn set_shared_state_ref(&mut self, state: Arc<PlMutex<crate::shared::SharedAgentState>>) {
+        self.shared_state_ref = state;
     }
 
     /// Set the input event sender for queue drain — drained messages are
@@ -212,8 +228,19 @@ impl ChatPanel {
                 ts.completed_tools.clear();
                 drop(ts);
 
-                if text.is_empty() && reasoning_text.is_empty() && completed_tools.is_empty() {
-                    return;
+                if text.is_empty()
+                    && reasoning_text.is_empty()
+                    && completed_tools.is_empty()
+                {
+                    // Still proceed if there are subagers to flush/render
+                    let has_subagers = self
+                        .shared_state_ref
+                        .try_lock()
+                        .map(|guard| !guard.get_subagents().is_empty())
+                        .unwrap_or(false);
+                    if !has_subagers {
+                        return;
+                    }
                 }
 
                 let mut new_entries: Vec<MessageRenderEntry> = Vec::new();
@@ -322,6 +349,13 @@ impl ChatPanel {
                         entry_count
                     );
                 }
+
+                // Clear subagent panel data — turn completed, subager info
+                // incorporated into messages. Prevents stale entries
+                // persisting forever across turns.
+                self.shared_state_ref.try_lock().map(|guard| {
+                    guard.clear_subagents();
+                });
             }
         }
 
@@ -387,6 +421,196 @@ impl ChatPanel {
         let palette = self.renderer.current_palette();
         InputBarWidget.render(frame, area, state, &palette);
     }
+
+    /// Render the subagers sidebar panel.
+    fn render_subagers_panel(&self, frame: &mut Frame, area: Rect, subagers: &[SubagentInfo]) {
+        let header = Line::from(vec![
+            Span::styled("\u{25c6}", Style::default().fg(Color::Cyan).bold()),
+            Span::raw(" Subagers"),
+            Span::styled(
+                format!(" ({})", subagers.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+
+        let block = Block::default()
+            .title(header)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray));
+
+        frame.render_widget(block, area);
+
+        let inner = area.inner(Margin { horizontal: 1, vertical: 1 });
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+
+        let content_width = inner.width as usize;
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        for sub in subagers.iter() {
+            let is_expanded = self.subagent_accordion.is_expanded(sub.delegation_id);
+
+            let status_color = match sub.status.as_str() {
+                "running" => Color::Yellow,
+                "completed" => Color::Green,
+                "error" => Color::Red,
+                _ => Color::Gray,
+            };
+
+            let status_marker = match sub.status.as_str() {
+                "running" => "[running]",
+                "completed" => "[done]",
+                "error" => "[failed]",
+                _ => "[?]",
+            };
+
+            let arrow = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
+            lines.push(Line::from(vec![
+                Span::styled(arrow, Style::default().fg(Color::DarkGray)),
+                Span::styled(status_marker, Style::default().fg(status_color)),
+                Span::styled(
+                    format!(" #{}", sub.delegation_id),
+                    Style::default().fg(status_color),
+                ),
+            ]));
+
+            // Split goal into lines that fit within the panel width.
+            let goal_prefix = "  goal: ";
+            let goal_text_width = content_width.saturating_sub(goal_prefix.len());
+            let goals: Vec<String> = if goal_text_width > 0 {
+                sub.goal
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(goal_text_width)
+                    .map(|c| c.iter().collect())
+                    .collect()
+            } else {
+                vec![sub.goal.clone()]
+            };
+            for (i, g) in goals.into_iter().enumerate() {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        if i == 0 { "  goal: " } else { "          " },
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        g,
+                        Style::default().fg(Color::White).add_modifier(Modifier::DIM),
+                    ),
+                ]));
+            }
+
+            if sub.status == "running" {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "⠋ executing",
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+
+                // Show tool call previews
+                for preview in sub.tool_call_previews.iter().take(2) {
+                    if !preview.is_empty() {
+                        let truncated: String = preview.chars().take(60).collect();
+                        lines.push(Line::from(vec![
+                            Span::raw("    "),
+                            Span::styled(truncated, Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM)),
+                        ]));
+                    }
+                }
+
+                // Show stats
+                if sub.stats.tool_count > 0 {
+                    let stat_text = if sub.stats.token_count > 0 {
+                        format!("{} tools, {} tokens", sub.stats.tool_count, sub.stats.token_count)
+                    } else {
+                        format!("{} tool calls", sub.stats.tool_count)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(stat_text, Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
+
+                // Show duration
+                if !sub.stats.duration.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(
+                            format!("elapsed: {}", sub.stats.duration),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]));
+                }
+            }
+
+            if is_expanded {
+                if let Some(ref t) = sub.start_time {
+                    lines.push(Line::from(vec![
+                        Span::raw("  start: "),
+                        Span::styled(t, Style::default().fg(Color::Blue)),
+                    ]));
+                }
+                if let Some(ref t) = sub.end_time {
+                    lines.push(Line::from(vec![
+                        Span::raw("  end: "),
+                        Span::styled(t, Style::default().fg(Color::Blue)),
+                    ]));
+                }
+                if !sub.summary.is_empty() {
+                    let resp = if sub.summary.chars().count() > content_width.saturating_sub(10) {
+                        sub.summary
+                            .chars()
+                            .take(content_width.saturating_sub(10))
+                            .collect::<String>()
+                    } else {
+                        sub.summary.clone()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("  summary: "),
+                        Span::styled(resp, Style::default().fg(Color::Gray)),
+                    ]));
+                }
+                if !sub.children.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("({} child subagers)", sub.children.len()),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
+                }
+
+                // Render nested children if expanded
+                for child in &sub.children {
+                    let child_expanded = self.subagent_accordion.is_expanded(child.delegation_id);
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(
+                            if child_expanded { "\u{25be}" } else { "\u{25b8}" },
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::DIM),
+                        ),
+                        Span::styled(
+                            format!(" [child] #{}", child.delegation_id),
+                            Style::default()
+                                .fg(Color::Blue)
+                                .add_modifier(Modifier::DIM),
+                        ),
+                    ]));
+                }
+            }
+        }
+
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, inner);
+    }
+
 }
 
 #[async_trait::async_trait]
@@ -399,55 +623,112 @@ impl Panel for ChatPanel {
     }
 
     fn draw(&self, frame: &mut Frame, area: Rect) {
+        let subagents = self.shared_state_ref.try_lock()
+            .map(|s| s.get_subagents())
+            .unwrap_or_default();
+
         let input_height = InputBarWidget.calculate_input_height(&self.input, area.width);
-        let chunks =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).split(area);
 
-        let palette = self.renderer.current_palette();
+        if subagents.is_empty() {
+            // Only messages + input bar
+            let msg_area = area.height.saturating_sub(input_height);
+            if msg_area > 0 {
+                self.message_display.render(
+                    frame,
+                    Rect::new(area.x, area.y, area.width, msg_area),
+                    &self.message_state,
+                    &self.renderer.current_palette(),
+                    self.streaming,
+                );
+                if self.message_state.selection_start.is_some() {
+                    self.message_display.render_selection(
+                        frame,
+                        Rect::new(area.x, area.y, area.width, msg_area),
+                        &self.message_state,
+                        &self.renderer.current_palette(),
+                    );
+                }
+            }
+            self.render_input_bar(
+                frame,
+                Rect::new(
+                    area.x,
+                    area.y + area.height.saturating_sub(input_height),
+                    area.width,
+                    input_height,
+                ),
+                &self.input,
+            );
+        } else {
+            // ── ALWAYS split: chat (left) | subager panel (right) ──
+            let right_w = std::cmp::min(45u16, area.width.saturating_sub(20));
+            let chat_area = Rect::new(area.x, area.y, area.width.saturating_sub(right_w), area.height);
+            let sidebar_area = Rect::new(
+                area.x + area.width.saturating_sub(right_w),
+                area.y,
+                right_w,
+                area.height,
+            );
 
-        // Message display widget (pass streaming state from ChatPanel)
-        self.message_display.render(
-            frame,
-            chunks[0],
-            &self.message_state,
-            &palette,
-            self.streaming,
-        );
+            // Left: messages + input
+            let msg_area = chat_area.height.saturating_sub(input_height);
+            if msg_area > 0 {
+                self.message_display.render(
+                    frame,
+                    Rect::new(chat_area.x, chat_area.y, chat_area.width, msg_area),
+                    &self.message_state,
+                    &self.renderer.current_palette(),
+                    self.streaming,
+                );
+                if self.message_state.selection_start.is_some() {
+                    self.message_display.render_selection(
+                        frame,
+                        Rect::new(chat_area.x, chat_area.y, chat_area.width, msg_area),
+                        &self.message_state,
+                        &self.renderer.current_palette(),
+                    );
+                }
+            }
+            self.render_input_bar(
+                frame,
+                Rect::new(
+                    chat_area.x,
+                    chat_area.y + chat_area.height.saturating_sub(input_height),
+                    chat_area.width,
+                    input_height,
+                ),
+                &self.input,
+            );
 
-        // Render text selection highlight (drawn on top of message blocks).
-        if self.message_state.selection_start.is_some() {
-            self.message_display
-                .render_selection(frame, chunks[0], &self.message_state, &palette);
+            // Right: subagers always rendered as sidebar
+            self.render_subagers_panel(frame, sidebar_area, &subagents);
         }
-
-        // Input bar widget
-        self.render_input_bar(frame, chunks[1], &self.input);
     }
 
-    async fn handle_key(&mut self, key: KeyEvent) -> KeyAction {
-        let result = InputBarWidget.handle_key(&mut self.input, key);
-        tracing::debug!(
-            "[chat_panel] handle_key: code={:?} result={:?}",
-            key.code,
-            result
-        );
-        match result {
-            InputBarResult::Consumed => KeyAction::None,
-            InputBarResult::PassedThrough => KeyAction::None,
-            InputBarResult::ChatInput(text) => KeyAction::ChatInput(text),
-            InputBarResult::SlashCommand { cmd_name, extra } => match cmd_name.as_str() {
-                "clear" => KeyAction::Clear,
-                "new" => KeyAction::New,
-                "compact" => KeyAction::Compact,
-                "quit" => KeyAction::Quit,
-                "reasoning" => KeyAction::Reasoning,
-                "theme" => KeyAction::Theme,
-                _ => KeyAction::Command { cmd_name, extra },
-            },
-            InputBarResult::Interrupt => KeyAction::Interrupt,
-            InputBarResult::Steer(text) => KeyAction::Steer(text),
-        }
-    }
+     async fn handle_key(&mut self, key: KeyEvent) -> KeyAction {
+         let result = InputBarWidget.handle_key(&mut self.input, key);
+         tracing::debug!(
+             "[chat_panel] handle_key: code={:?} result={:?}",
+             key.code,
+             result
+         );
+         match result {
+             InputBarResult::Consumed => KeyAction::None,
+             InputBarResult::PassedThrough => KeyAction::None,
+             InputBarResult::ChatInput(text) => KeyAction::ChatInput(text),
+             InputBarResult::SlashCommand { cmd_name, extra } => match cmd_name.as_str() {
+                 "clear" => KeyAction::Clear,
+                 "new" => KeyAction::New,
+                 "compact" => KeyAction::Compact,
+                 "quit" => KeyAction::Quit,
+                 "reasoning" => KeyAction::Reasoning,
+                 "theme" => KeyAction::Theme,
+                 _ => KeyAction::Command { cmd_name, extra },
+             },
+              InputBarResult::Interrupt => KeyAction::Interrupt,
+              InputBarResult::Steer(text) => KeyAction::Steer(text),
+          }
+      }
 
     fn handle_mouse(&mut self, area: Rect, event: &crossterm::event::MouseEvent) -> Option<String> {
         use crossterm::event::MouseButton;
@@ -556,6 +837,23 @@ impl Panel for ChatPanel {
             _ => None,
         }
     }
+}
+
+impl ChatPanel {
+    /// Toggle expansion of the first (most recent) subagent.
+    pub fn toggle_first_subagent(&mut self, subagents: &[SubagentInfo]) -> bool {
+        for sub in subagents.iter().rev() {
+            self.subagent_accordion.toggle(sub.delegation_id);
+            return true;
+        }
+        false
+    }
+
+    /// Get a mutable reference to the subagent accordion.
+    pub fn subagent_accordion_mut(&mut self) -> &mut SubagentAccordion {
+        &mut self.subagent_accordion
+    }
+
 }
 
 fn tool_name_to_title_case(name: &str) -> String {

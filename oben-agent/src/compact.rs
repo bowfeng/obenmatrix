@@ -349,6 +349,7 @@ fn prune_tool_results(messages: &[Message], _max_tokens: usize) -> (Vec<Message>
                 tool_call_ids: msg.tool_call_ids.clone(),
                 tool_calls: None,
                 reasoning: None,
+                delegation_id: msg.delegation_id,
             };
             results.push(dup_msg);
             pruned_count += 1;

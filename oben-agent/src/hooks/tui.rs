@@ -97,7 +97,6 @@ impl Hook for TuiToolLifecycleAdapter {
 
 impl ToolLifecycleHooks for TuiToolLifecycleAdapter {
     fn on_tool_gen(&self, tool_name: &str, call_id: &str) {
-        // tool_gen is informational — skip direct update, let on_tool_start handle it
         let _ = (tool_name, call_id);
     }
 
@@ -197,4 +196,126 @@ impl TurnLifecycleHooks for TuiTurnLifecycleAdapter {
         let mut ts = self.state.state.lock();
         ts.on_completed(response);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Subagent Lifecycle Adapter — intercepts delegation events via ToolLifecycleHooks
+// ---------------------------------------------------------------------------
+
+/// Trait implemented by SharedAgentState to accept subagent lifecycle events.
+pub trait SubagentLifecycleCallback: Send + Sync {
+    fn on_start(
+        &self,
+        delegation_id: u32,
+        parent_session_id: &str,
+        goal: &str,
+    );
+    fn on_complete(
+        &self,
+        delegation_id: u32,
+        result: &str,
+        status: &str,
+        tool_calls: Vec<SubagentToolInfo>,
+    );
+}
+
+/// Adapter that listens to tool hook events and updates SharedAgentState.subagents.
+///
+/// Intercepts `delegate_task` tool calls by parsing `delegation_id` from args.
+/// Registers subagents on tool start, completes them on tool complete.
+pub struct TuiSubagentAdapter {
+    callback: Arc<dyn SubagentLifecycleCallback>,
+}
+
+impl TuiSubagentAdapter {
+    pub fn new(callback: Arc<dyn SubagentLifecycleCallback>) -> Self {
+        Self {
+            callback,
+        }
+    }
+
+    fn parse_delegation_id(args: &str) -> Option<u32> {
+        serde_json::from_str::<serde_json::Value>(args)
+            .ok()
+            .and_then(|v| v.get("delegation_id").and_then(|d| d.as_u64()))
+            .map(|n| n as u32)
+    }
+
+    fn parse_field(args: &str, field: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(args)
+            .ok()
+            .and_then(|v| {
+                let s = v.get(field).and_then(|f| f.as_str());
+                s.map(|s| s.to_string())
+            })
+            .unwrap_or_default()
+    }
+}
+
+impl Hook for TuiSubagentAdapter {
+    fn id(&self) -> &str { "tui_subagent" }
+    fn priority(&self) -> u32 { 5 }
+}
+
+impl ToolLifecycleHooks for TuiSubagentAdapter {
+    fn on_tool_start(&self, tool_name: &str, args: &str) {
+        if tool_name != "delegate_task" {
+            return;
+        }
+        if let Some(delegation_id) = Self::parse_delegation_id(args) {
+            let parent = Self::parse_field(args, "parent_session_id");
+            let goal = Self::parse_field(args, "goal");
+            let callback_ref = Arc::clone(&self.callback);
+            callback_ref.on_start(delegation_id, &parent, &goal);
+        }
+    }
+
+    fn on_tool_complete(&self, tool_name: &str, args: &str, result: &str) {
+        if tool_name != "delegate_task" {
+            return;
+        }
+        let delegate_id = Self::parse_delegation_id(args).unwrap_or(0);
+
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(result) {
+            let status = v
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let sessions = v
+                .get("sessions")
+                .and_then(|s| s.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| {
+                            let name = s
+                                .get("tool_name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("");
+                            let args_val = s.get("args").cloned().unwrap_or(serde_json::Value::Null);
+                            let output = s
+                                .get("output")
+                                .and_then(|o| o.as_str())
+                                .unwrap_or("");
+                            let preview = output.chars().take(80).collect::<String>();
+                            if name.is_empty() {
+                                return None;
+                            }
+                            Some(SubagentToolInfo {
+                                name: name.to_string(),
+                                args: args_val,
+                                output_preview: preview,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let callback_ref = Arc::clone(&self.callback);
+            callback_ref.on_complete(delegate_id, result, &status, sessions);
+        }
+    }
+
+    fn on_tool_error(&self, _tool_name: &str, _args: &str, _error: &str) {}
+    fn on_tool_gen(&self, _tool_name: &str, _call_id: &str) {}
+    fn on_tool_progress(&self, _tool_name: &str, _preview: &str) {}
 }

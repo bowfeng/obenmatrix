@@ -10,10 +10,10 @@ pub mod tui;
 
 // Re-export key types
 pub use runtime::{HookEngine, NudgeHook};
-pub use tui::{TuiStreamingAdapter, TuiToolLifecycleAdapter, TuiAgentLoopAdapter, TuiTurnLifecycleAdapter};
+pub use tui::{TuiStreamingAdapter, TuiToolLifecycleAdapter, TuiAgentLoopAdapter, TuiTurnLifecycleAdapter, TuiSubagentAdapter, SubagentLifecycleCallback};
 
 // Re-export types that TUI and consumers reference at the top level via oben_agent::
-pub use kind::{TurnState, TurnPhase, ActiveTool, CompletedTool, ActivityKind, ActivityItem};
+pub use kind::{TurnState, TurnPhase, ActiveTool, CompletedTool, ActivityKind, ActivityItem, SubagentToolInfo};
 
 // ---------------------------------------------------------------------------
 // HookBuilder

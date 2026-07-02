@@ -95,6 +95,7 @@ fn flush_pending_user(merged: &mut Vec<Message>, pending_text: String) {
         tool_call_ids: vec![],
         tool_calls: None,
         reasoning: None,
+        delegation_id: None,
     });
 }
 

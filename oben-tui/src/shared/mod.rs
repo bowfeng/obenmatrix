@@ -2,4 +2,4 @@
 
 pub mod agent_state;
 
-pub use agent_state::SharedAgentState;
+pub use agent_state::{SharedAgentState, SubagentInfo, SubagentStats, SubagentCallback};

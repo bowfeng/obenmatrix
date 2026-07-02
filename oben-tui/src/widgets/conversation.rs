@@ -173,8 +173,21 @@ impl ConversationWidget {
         let (sy, sx) = state.selection_start?;
         let (ey, ex) = state.selection_end?;
 
-        let flat_lines = state.cached_lines.lock().ok()?.clone();
-        let body_to_flat = state.cached_body_to_flat.lock().ok()?;
+        let flat_lines = match state.cached_lines.lock() {
+            Ok(g) => {
+                let lines = g.clone();
+                if lines.is_empty() {
+                    // No render has populated the cache yet — nothing to copy.
+                    return None;
+                }
+                lines
+            }
+            Err(_) => return None,
+        };
+        let body_to_flat = match state.cached_body_to_flat.lock() {
+            Ok(g) => g,
+            Err(_) => return None,
+        };
         let content_y = state.content_y as usize;
         let content_x = state.content_x as usize;
         let scroll_pos = state.scroll_pos.load(Ordering::SeqCst);
@@ -885,6 +898,9 @@ impl ConversationWidget {
         // ─── Phase 2.5: Streaming blocks (reasoning + content as separate bordered blocks) ─
         let mut total_height = total_height;
         let mut streaming_rendered = false;
+        // Capture streaming block body areas so we can append them to visible_body_ranges.
+        let mut _reasoning_body_area: Option<Rect> = None;
+        let mut _content_body_area: Option<Rect> = None;
         if let Some((content_wrapped, reasoning_wrapped, _total_height)) = stream_parsed {
             let has_reasoning = reasoning_wrapped.is_some() && !reasoning_wrapped.as_ref().unwrap().is_empty();
             let has_content = content_wrapped.is_some() && !content_wrapped.as_ref().unwrap().is_empty();
@@ -924,7 +940,7 @@ impl ConversationWidget {
                                 .fg(palette.muted)
                                 .add_modifier(Modifier::BOLD | Modifier::DIM)),
                         ]));
-                    let reasoning_body = reasoning_block.inner(reasoning_block_area);
+                    _reasoning_body_area = Some(reasoning_block.inner(reasoning_block_area));
                     let reasoning_wrap = reasoning_wrapped.as_ref().unwrap();
                     let reasoning_vw = inner_height.min(reasoning_wrap.len());
                     let reasoning_off = reasoning_wrap.len().saturating_sub(reasoning_vw);
@@ -934,7 +950,7 @@ impl ConversationWidget {
                         if reasoning_off > 0 {
                             para = para.scroll((reasoning_off as u16, 0));
                         }
-                        frame.render_widget(para, reasoning_body);
+                        frame.render_widget(para, reasoning_block_area);
                     }
                     frame.render_widget(reasoning_block, reasoning_block_area);
                 }
@@ -958,7 +974,7 @@ impl ConversationWidget {
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(role_color).add_modifier(Modifier::BOLD))
                         .title(self.role_title(&MessageRole::Assistant, palette));
-                    let content_body = content_block.inner(content_block_area);
+                    _content_body_area = Some(content_block.inner(content_block_area));
                     let content_wrap = content_wrapped.as_ref().unwrap();
                     let content_vw = inner_height.min(content_wrap.len());
                     let content_off = content_wrap.len().saturating_sub(content_vw);
@@ -967,7 +983,7 @@ impl ConversationWidget {
                     if content_off > 0 {
                         para = para.scroll((content_off as u16, 0));
                     }
-                    frame.render_widget(para, content_body);
+                    frame.render_widget(para, content_block_area);
                     frame.render_widget(content_block, content_block_area);
                 }
 
