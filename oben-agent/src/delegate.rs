@@ -188,10 +188,12 @@ pub struct SubagentSpawner {
     context_config: crate::compact::CompactCofig,
     /// Max iterations per child.
     max_iterations: usize,
-    /// Max messages per child context.
+    /// Max messages per child.
     max_messages: usize,
     /// Maximum delegation depth. When child depth >= this value, child cannot delegate further.
     max_spawn_depth: usize,
+    /// Shared hook engine so child agents fire the same hooks as the parent.
+    hooks: Arc<super::hooks::HookEngine>,
 }
 
 impl SubagentSpawner {
@@ -204,6 +206,7 @@ impl SubagentSpawner {
         max_iterations: usize,
         max_messages: usize,
         max_spawn_depth: usize,
+        hooks: Arc<super::hooks::HookEngine>,
     ) -> Self {
         Self {
             transport,
@@ -213,6 +216,7 @@ impl SubagentSpawner {
             max_iterations,
             max_messages,
             max_spawn_depth,
+            hooks,
         }
     }
 
@@ -238,6 +242,7 @@ impl SubagentSpawner {
         let _max_messages = self.max_messages;
         let max_spawn_depth = self.max_spawn_depth;
         let child_session_id_clone = child_session_id.clone();
+        let shared_hooks = Arc::clone(&self.hooks);
 
         // Create interrupt state OUTSIDE the async block so it is accessible
         // to the parent coordinator for subagent tree interrupt propagation.
@@ -278,15 +283,16 @@ impl SubagentSpawner {
 
             // Build child agent — this is the core of delegate tool:
             // a full `Agent` with fresh context but shared transport/tools/parent-config.
-            let mut child_agent = crate::agent::Agent::new(
-                config,
-                system_prompt,
-                tools,
-            )
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to create child agent: {e}")
-            })?;
+            let mut child_agent = crate::AgentBuilder::new()
+                .with_config(config)
+                .with_system_prompt(system_prompt)
+                .with_tools(tools)
+                .with_hooks(shared_hooks)
+                .build()
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to create child agent: {e}")
+                })?;
 
             // Execute the child's turn with the goal as the first message input
             let result = child_agent
@@ -442,6 +448,7 @@ pub fn build_spawn_fn_wrapper(
     let max_iterations = spawner.max_iterations;
     let max_messages = spawner.max_messages;
     let max_spawn_depth = spawner.max_spawn_depth;
+    let shared_hooks = spawner.hooks;
 
     Arc::new(
         move |parent_session_id: String, goal: String, depth: usize, role: &str| {
@@ -481,6 +488,7 @@ pub fn build_spawn_fn_wrapper(
             let goal_clone = goal.clone();
             let role_clone = role.to_string();
             let config_for_child = config.clone();
+            let shared_hooks_for_child = Arc::clone(&shared_hooks);
 
             info!(
                 "delegate: spawning child parent_session_id={} depth={} role={}",
@@ -602,21 +610,22 @@ pub fn build_spawn_fn_wrapper(
                 // (Previously passed to on_session_start, which was removed)
 
                 info!("delegate: build_child_agent child_session_id={} depth={} role={} max_iterations={}", child_session_id, depth, role_clone, max_iterations);
-                let mut child_agent = crate::agent::Agent::new(
-                    config_for_child,
-                    child_system_prompt,
-                    child_tool_registry,
-                )
-                .await
-                .map_err(|e| {
-                    warn!(
-                        "delegate: build_child_agent FAILED in {:0.2}s child_session_id={}: {}",
-                        start.elapsed().as_secs_f64(),
-                        child_session_id,
-                        e
-                    );
-                    anyhow::anyhow!("Failed to create child agent: {e}")
-                })?;
+                let mut child_agent = crate::AgentBuilder::new()
+                    .with_config(config_for_child)
+                    .with_system_prompt(child_system_prompt)
+                    .with_tools(child_tool_registry)
+                    .with_hooks(shared_hooks_for_child)
+                    .build()
+                    .await
+                    .map_err(|e| {
+                        warn!(
+                            "delegate: build_child_agent FAILED in {:0.2}s child_session_id={}: {}",
+                            start.elapsed().as_secs_f64(),
+                            child_session_id,
+                            e
+                        );
+                        anyhow::anyhow!("Failed to create child agent: {e}")
+                    })?;
 
                 // Execute the child's turn with the goal
                 info!(

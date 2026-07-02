@@ -18,13 +18,12 @@
 //! - Concurrent tool dispatch (Tier 2)
 //! - Nudge / background review (Tier 2)
 
+use anyhow::Result;
+use crate::agent_builder::AgentBuilder;
 use crate::fallback::FallbackChain;
+use crate::hooks::HookEngine;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-use anyhow::Result;
-
-use super::hooks::HookEngine;
 
 pub fn generate_session_name() -> String {
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
@@ -59,16 +58,16 @@ impl ConversationCoordinator for DummyCoordinator {
 
 /// An interactive agent — owns all resources, delegates turns to shared execute_turn_full.
 pub struct Agent {
-    transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
-    tools: Arc<oben_tools::ToolRegistry>,
-    context_window_manager: Box<dyn crate::context::ContextWindowManager>,
-    call_mode: Option<oben_models::CallMode>,
-    session_manager: Arc<Mutex<SessionStore>>,
-    interrupt_state: Arc<InterruptState>,
-    config: oben_config::AppConfig,
-    fallback_chain: Option<crate::fallback::FallbackChain>,
-    system_prompt: String,
-    hooks: Arc<super::hooks::HookEngine>,
+    pub(crate) transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
+    pub(crate) tools: Arc<oben_tools::ToolRegistry>,
+    pub(crate) context_window_manager: Box<dyn crate::context::ContextWindowManager>,
+    pub(crate) call_mode: Option<oben_models::CallMode>,
+    pub(crate) session_manager: Arc<Mutex<SessionStore>>,
+    pub(crate) interrupt_state: Arc<InterruptState>,
+    pub(crate) config: oben_config::AppConfig,
+    pub(crate) fallback_chain: Option<crate::fallback::FallbackChain>,
+    pub(crate) system_prompt: String,
+    pub(crate) hooks: Arc<super::hooks::HookEngine>,
 }
 
 impl Agent {
@@ -77,37 +76,12 @@ impl Agent {
         system_prompt: String,
         tools: Arc<oben_tools::ToolRegistry>,
     ) -> Result<Self> {
-        let system_prompt_cloned = system_prompt.clone();
-        let tools_for_transport: Vec<oben_models::ToolMeta> = tools.list_tools().iter().map(|t| t.clone()).collect();
-        let transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync> =
-            oben_transport::Transport::from_config_with_tools_via_registry(
-                &config.model,
-                &system_prompt_cloned,
-                &tools_for_transport,
-            );
-        let session_manager = Arc::new(Mutex::new(SessionStore::new(config.session_store.clone())?));
-        let hooks = Arc::new(super::hooks::HookBuilder::from_config(&config.hooks).build());
-        let context_config = crate::compact::CompactCofig {
-            context_length: config.context.context_length,
-            threshold_percent: config.context.threshold_percent,
-            ..crate::compact::CompactCofig::default()
-        };
-
-        let mut agent = Self {
-            transport,
-            tools,
-            context_window_manager: Box::new(crate::compact_context::BuiltinContextWindowManager::with_config(context_config)),
-            call_mode: None,
-            session_manager,
-            interrupt_state: Arc::new(InterruptState::new()),
-            config,
-            fallback_chain: None,
-            system_prompt,
-            hooks,
-        };
-
-        agent.eager_load_active_session().await;
-        Ok(agent)
+        AgentBuilder::new()
+            .with_config(config)
+            .with_system_prompt(system_prompt)
+            .with_tools(tools)
+            .build()
+            .await
     }
 
     /// Create a minimal Agent for testing. Does NOT call real transport or LLMs.
@@ -203,7 +177,7 @@ impl Agent {
         }
     }
 
-    async fn eager_load_active_session(&mut self) {
+    pub(crate) async fn eager_load_active_session(&mut self) {
         let sid = self.context_window_manager.session_id();
         if let Some(sid) = sid {
             let _ = self.session_manager.lock().await.switch_session(&sid);

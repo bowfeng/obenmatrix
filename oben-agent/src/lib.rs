@@ -2,6 +2,7 @@
 //!
 //! Key abstractions:
 //! - **Agent** (`agent.rs`) — the main agent struct (legacy, being phased out)
+//! - **AgentBuilder** (`agent_builder.rs`) — builder for `Agent` with optional shared hooks.
 //! - **ConversationCoordinator** (`coordinator/`) — unified conversation loop trait
 //!   and implementations (CLI, TUI). Replaces `ConversationLoop` and `Agent::interactive_chat`.
 //! - **TurnExecutor** (`turn_executor.rs`) — deep module for the core turn cycle.
@@ -16,6 +17,7 @@
 //!   pluggable turn termination (response evaluation) and remedy (budget/empty recovery).
 
 pub mod agent;
+pub mod agent_builder;
 pub mod budget;
 pub mod compact;
 pub mod compact_context;
@@ -39,6 +41,7 @@ pub mod transport;
 pub mod turn_executor;
 
 pub use agent::*;
+pub use agent_builder::AgentBuilder;
 pub use budget::*;
 pub use compact::*;
 pub use compact_context::*;

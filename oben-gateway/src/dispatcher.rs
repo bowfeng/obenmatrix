@@ -12,7 +12,7 @@ use crate::coordinator::GatewayCoordinator;
 use crate::platform::IncomingMessage;
 use crate::router::ResponseRouter;
 
-use oben_agent::{Agent, AgentHandle};
+use oben_agent::{AgentBuilder, AgentHandle};
 use oben_config::AppConfig;
 use oben_tools::ToolRegistry;
 
@@ -142,7 +142,13 @@ impl Dispatcher {
 
             // Build the agent with defaults
             let system_prompt = oben_config::defaults::default_system_prompt();
-            let agent = match Agent::new((*app_config).clone(), system_prompt, tools).await {
+            let agent = match AgentBuilder::new()
+                .with_config((*app_config).clone())
+                .with_system_prompt(system_prompt)
+                .with_tools(tools)
+                .build()
+                .await
+            {
                 Ok(agent) => agent,
                 Err(e) => {
                     warn!(error = %e, "Failed to create agent for session");
