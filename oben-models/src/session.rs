@@ -124,6 +124,8 @@ pub struct SessionMetadata {
     pub resume_pending: bool, // interrupted by restart, recovery expected
     pub resume_reason: Option<String>,
     pub last_resume_marked_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Turn counter — how many turns this session has processed.
+    pub turn_count: u32,
 }
 
 /// A conversation session (in-memory view).

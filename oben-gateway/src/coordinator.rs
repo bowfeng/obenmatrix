@@ -67,7 +67,7 @@ impl ConversationCoordinator for GatewayCoordinator {
 
     /// Send the response back to the dispatcher for platform routing.
     /// Returns true to continue the conversation loop, false to exit.
-    fn on_turn_complete(&mut self, response: &str, _msg_count: usize, success: bool) -> bool {
+    fn on_turn_complete(&mut self, response: &str, _msg_count: usize, _turn_count: u32, success: bool) -> bool {
         if success {
             let thread = self.thread_id.as_deref().unwrap_or("global");
             let session_key = format!("{}/{}/{}", self.platform, self.user_id, thread);

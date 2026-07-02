@@ -753,6 +753,7 @@ mod tests {
             _messages: &[Message],
             _mode: &oben_models::CallMode,
             _delta_callback: oben_models::StreamDeltaCallback,
+            _reasoning_callback: Option<oben_models::StreamReasoningCallback>,
         ) -> Result<oben_models::TransportResponse> {
             Ok(oben_models::TransportResponse {
                 text: self.summary.clone(),
@@ -922,6 +923,7 @@ mod tests {
                 _: &[Message],
                 _: &oben_models::CallMode,
                 _: oben_models::StreamDeltaCallback,
+                _: Option<oben_models::StreamReasoningCallback>,
             ) -> Result<oben_models::TransportResponse> {
                 unreachable!("stream_chat should not be called when below threshold")
             }

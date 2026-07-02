@@ -66,7 +66,7 @@ impl Hook for NudgeHook {
 impl TurnLifecycleHooks for NudgeHook {
     fn on_pre_turn(&self) {}
 
-    fn on_post_turn(&self, _response: &str, _success: bool) {
+    fn on_post_turn(&self, _response: &str, _success: bool, _turn_count: u32) {
         if !self.config.enabled() || !self.has_memory_tools { return; }
         let turns = self.turn_count.fetch_add(1, Ordering::SeqCst);
         let threshold = self.config.memory_nudge_interval;
@@ -139,16 +139,16 @@ impl HookEngine {
             hook.on_pre_turn();
         }
     }
-    pub fn emit_turn_complete(&self, response: &str, _msg_count: usize) {
+    pub fn emit_turn_complete(&self, response: &str, turn_count: u32, _msg_count: usize) {
         let hooks = self.turn_hooks.read().unwrap();
         for hook in hooks.iter() {
-            hook.on_post_turn(response, true);
+            hook.on_post_turn(response, true, turn_count);
         }
     }
-    pub fn emit_turn_error(&self, error: &anyhow::Error) {
+    pub fn emit_turn_error(&self, error: &anyhow::Error, turn_count: u32) {
         let hooks = self.turn_hooks.read().unwrap();
         for hook in hooks.iter() {
-            hook.on_post_turn(&error.to_string(), false);
+            hook.on_post_turn(&error.to_string(), false, turn_count);
         }
     }
     pub fn emit_tool_gen(&self, n: &str, c: &str) {
@@ -245,14 +245,8 @@ impl HookEngine {
             hook.on_interrupted(r);
         }
     }
-    pub fn emit_turn_complete_with_count(&self, response: &str, _turn_count:usize, _msg_count: usize) {
-        let hooks = self.turn_hooks.read().unwrap();
-        for hook in hooks.iter() {
-            hook.on_post_turn(response, true);
-        }
-    }
-    pub fn post_turn(&self, response: &str, msg_count: usize) {
-        self.emit_turn_complete(response, msg_count);
+    pub fn post_turn(&self, response: &str, turn_count: u32, msg_count: usize) {
+        self.emit_turn_complete(response, turn_count, msg_count);
     }
     pub fn turn_count(&self) -> usize {
         self.turn_hooks.read().unwrap().len()

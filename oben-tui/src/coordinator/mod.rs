@@ -72,6 +72,7 @@ impl ConversationCoordinator for TuiCoordinator {
         &mut self,
         response: &str,
         msg_count: usize,
+        turn_count: u32,
         success: bool,
     ) -> bool {
         tracing::debug!(
@@ -118,8 +119,8 @@ impl ConversationCoordinator for &mut TuiCoordinator {
         (**self).next_turn().await
     }
 
-    fn on_turn_complete(&mut self, response: &str, msg_count: usize, success: bool) -> bool {
-        (**self).on_turn_complete(response, msg_count, success)
+    fn on_turn_complete(&mut self, response: &str, msg_count: usize, turn_count: u32, success: bool) -> bool {
+        (**self).on_turn_complete(response, msg_count, turn_count, success)
     }
 
     fn on_loop_end(&mut self, outcome: &ConversationResult) {

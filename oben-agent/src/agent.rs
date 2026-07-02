@@ -51,7 +51,7 @@ impl Default for DummyCoordinator {
 #[::async_trait::async_trait]
 impl ConversationCoordinator for DummyCoordinator {
     fn on_loop_start(&mut self) {}
-    fn on_turn_complete(&mut self, _response: &str, _msg_count: usize, _success: bool) -> bool { false }
+    fn on_turn_complete(&mut self, _response: &str, _msg_count: usize, _turn_count: u32, _success: bool) -> bool { false }
     fn on_loop_end(&mut self, _outcome: &ConversationResult) {}
     async fn next_turn(&mut self) -> Option<String> { None }
 }
@@ -155,16 +155,19 @@ impl Agent {
                 let msg_count = me.session_manager.lock().await
                     .session(&me.context_window_manager.session_id().unwrap_or_default())
                     .map(|s| s.messages.len()).unwrap_or(0);
+                let turn_count_v = me.session_manager.lock().await
+                    .session(&me.context_window_manager.session_id().unwrap_or_default())
+                    .map(|s| s.metadata.turn_count).unwrap_or(turn_count as u32);
                 let turn_success = response.is_ok();
                 let turn_text = response.as_deref().unwrap_or("");
-                if !coordinator.on_turn_complete(turn_text, msg_count, turn_success) {
+                if !coordinator.on_turn_complete(turn_text, msg_count, turn_count_v, turn_success) {
                     me.hooks.emit_loop_end("user_exit");
                     return Ok(ConversationResult::Exit);
                 }
                 if turn_success {
-                    me.hooks.post_turn(turn_text, msg_count);
+                    me.hooks.emit_turn_complete(turn_text, turn_count_v, msg_count);
                 } else {
-                    me.hooks.emit_turn_error(&response.unwrap_err());
+                    me.hooks.emit_turn_error(&response.unwrap_err(), turn_count_v);
                 }
                 turn_count += 1;
                 if let Some(max) = max_iterations {

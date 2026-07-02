@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    turn_count INTEGER DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -792,7 +793,7 @@ impl SessionDB {
     pub fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, COALESCE(title, ''), source, model, system_prompt, parent_session_id, started_at, ended_at, end_reason, title, preview, handoff_state, message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error FROM sessions WHERE id = ?"
+                "SELECT id, COALESCE(title, ''), source, model, system_prompt, parent_session_id, started_at, ended_at, end_reason, title, preview, handoff_state, message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error, turn_count FROM sessions WHERE id = ?"
             )?;
             match stmt.query_row([session_id], |row| {
                 let source_str: String = row.get("source")?;
@@ -824,6 +825,7 @@ impl SessionDB {
                     resume_pending: false,
                     resume_reason: None,
                     last_resume_marked_at: None,
+                    turn_count: row.get("turn_count")?,
                 })
             }) {
                 Ok(metadata) => Ok(Some(Session {
@@ -842,8 +844,8 @@ impl SessionDB {
         let mut stmt = conn.prepare(
             "SELECT id, COALESCE(title, ''), source, model, system_prompt, parent_session_id, \
              started_at, ended_at, end_reason, title, preview, handoff_state, \
-             message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error \
-             FROM sessions WHERE id = ?"
+              message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error, turn_count \
+              FROM sessions WHERE id = ?"
         )?;
         let row: (
             String,
@@ -864,6 +866,7 @@ impl SessionDB {
             usize,
             Option<String>,
             Option<String>,
+            u32,
         ) = match stmt.query_row([session_id], |row| {
             Ok((
                 row.get(0)?,
@@ -884,6 +887,7 @@ impl SessionDB {
                 row.get(15)?,
                 row.get(16)?,
                 row.get(17)?,
+                row.get(18)?,
             ))
         }) {
             Ok(r) => r,
@@ -913,6 +917,7 @@ impl SessionDB {
             handoff_state: row.11,
             handoff_platform: row.16,
             handoff_error: row.17,
+            turn_count: row.18,
             message_count: row.12,
             tool_call_count: row.13,
             input_tokens: row.14,
@@ -1248,7 +1253,7 @@ impl SessionDB {
             }
             let where_clause = if conditions.is_empty() { String::new() } else { format!("WHERE {}", conditions.join(" AND ")) };
             let query = format!(
-                "SELECT id, COALESCE(title, '') AS title, source, model, COALESCE(system_prompt, '') AS system_prompt, parent_session_id, started_at, ended_at, end_reason, title AS display_title, preview, handoff_state, message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error \
+                "SELECT id, COALESCE(title, '') AS title, source, model, COALESCE(system_prompt, '') AS system_prompt, parent_session_id, started_at, ended_at, end_reason, title AS display_title, preview, handoff_state, message_count, tool_call_count, input_tokens, output_tokens, handoff_platform, handoff_error, turn_count \
                  FROM sessions s {} ORDER BY started_at DESC LIMIT ? OFFSET ?",
                 where_clause
             );
@@ -1283,6 +1288,7 @@ impl SessionDB {
                     resume_pending: false,
                     resume_reason: None,
                     last_resume_marked_at: None,
+                    turn_count: row.get("turn_count")?,
                 })
             })?;
             let mut result = Vec::new();
@@ -2464,6 +2470,7 @@ impl DBSessionManager {
             resume_pending: false,
             resume_reason: None,
             last_resume_marked_at: None,
+            turn_count: 0,
         };
         // Update DB
         self.db.set_parent_session_id(&new_id, &sid)?;

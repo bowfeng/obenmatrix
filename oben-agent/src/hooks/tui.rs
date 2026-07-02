@@ -192,7 +192,7 @@ impl TurnLifecycleHooks for TuiTurnLifecycleAdapter {
         ts.phase = TurnPhase::Streaming;
     }
 
-    fn on_post_turn(&self, response: &str, _success: bool) {
+    fn on_post_turn(&self, response: &str, _success: bool, _turn_count: u32) {
         tracing::info!("[tui_turn] on_post_turn: response.len={}, success={}", response.len(), _success);
         let mut ts = self.state.state.lock();
         ts.on_completed(response);

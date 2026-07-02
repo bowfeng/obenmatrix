@@ -162,7 +162,7 @@ pub trait ConversationCoordinator: Send + Sync {
     ///
     /// For streaming mode, the coordinator should handle output formatting.
     /// For non-streaming mode, it should print the full response.
-    fn on_turn_complete(&mut self, response: &str, msg_count: usize, success: bool) -> bool;
+    fn on_turn_complete(&mut self, response: &str, msg_count: usize, turn_count: u32, success: bool) -> bool;
 
     /// Called when the loop exits (no more input, user quit, etc.).
     fn on_loop_end(&mut self, _outcome: &ConversationResult) {}

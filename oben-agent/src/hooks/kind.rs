@@ -259,8 +259,8 @@ pub trait TurnLifecycleHooks: Hook {
     fn on_pre_turn(&self) {}
 
     /// Called after the turn cycle ends (all tool calls resolved or final response).
-    /// `response` is the final text output. `success` indicates if the turn completed without error.
-    fn on_post_turn(&self, _response: &str, _success: bool) {}
+    /// `turn_count` is the session turn counter (1-indexed per session).
+    fn on_post_turn(&self, _response: &str, _success: bool, _turn_count: u32) {}
 }
 
 /// Tool execution lifecycle.

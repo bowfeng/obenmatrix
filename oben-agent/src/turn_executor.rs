@@ -55,6 +55,7 @@ impl Default for TurnConfig {
 pub struct TurnResult {
     pub text: String,
     pub reason: TurnResultReason,
+    pub turn_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,14 +133,16 @@ impl TurnExecutor {
             }
         };
 
-        let (mut session, mut current_session_id) =
+        let (mut session, mut current_session_id, mut turn_count) =
             Self::pre_turn_setup(context_window_manager, session_manager, session_id, user_message, &mut config)?;
         let mut consecutive_empty: u32 = 0;
         #[allow(unused_assignments)]
         let mut decision_result: Option<TurnResult> = None;
         'turn_loop: loop {
+            turn_count += 1;
+
             // Interrupt
-            if let Some(r) = Self::check_interrupt(&session) {
+            if let Some(r) = Self::check_interrupt(&session, turn_count) {
                 decision_result = Some(r);
                 break 'turn_loop;
             }
@@ -175,7 +178,7 @@ impl TurnExecutor {
                     session.messages = compacted;
                 }
                 CompactionResult::Complete(_) => {
-                    decision_result = Some(TurnResult { text: String::new(), reason: TurnResultReason::BudgetExhausted });
+                    decision_result = Some(TurnResult { text: String::new(), reason: TurnResultReason::BudgetExhausted, turn_count });
                     break;
                 }
             }
@@ -231,19 +234,19 @@ impl TurnExecutor {
                         }
                         TurnRemedyAction::RemedyExhausted => {
                             let last = Self::last_tool_result_text(&session.messages).unwrap_or_default();
-                            decision_result = Some(TurnResult { text: last.to_string(), reason: TurnResultReason::BudgetExhausted });
+                            decision_result = Some(TurnResult { text: last.to_string(), reason: TurnResultReason::BudgetExhausted, turn_count });
                             break;
                         }
                     }
                 }
                 TurnTerminationDecision::ReturnLastToolResult => {
                     if let Some(last) = Self::last_tool_result_text(&session.messages) {
-                        decision_result = Some(TurnResult { text: last.to_string(), reason: TurnResultReason::ToolResult });
+                        decision_result = Some(TurnResult { text: last.to_string(), reason: TurnResultReason::ToolResult, turn_count });
                         break;
                     }
                 }
                 TurnTerminationDecision::Return(text) => {
-                    decision_result = Some(TurnResult { text, reason: TurnResultReason::Normal });
+                    decision_result = Some(TurnResult { text, reason: TurnResultReason::Normal, turn_count });
                     break;
                 }
             }
@@ -261,6 +264,7 @@ impl TurnExecutor {
             s.metadata.output_tokens = session.metadata.output_tokens;
             s.metadata.total_tokens = session.metadata.total_tokens;
             s.metadata.estimated_cost_usd = session.metadata.estimated_cost_usd;
+            s.metadata.turn_count = turn_count;
         }
         let _ = session_manager.incremental_save(Some(&current_session_id));
 
@@ -292,7 +296,7 @@ impl TurnExecutor {
         session_id: &str,
         user_message: Message,
         config: &mut TurnConfig,
-     ) -> Result<(Session, String)> {
+     ) -> Result<(Session, String, u32)> {
         let mut current_id = session_id.to_string();
 
         // Use whichever session ID the CWM considers active as the primary.
@@ -345,14 +349,16 @@ impl TurnExecutor {
             metadata: session_ref.metadata.clone(),
         };
 
-        Ok((session, id))
+        let turn_count = session.metadata.turn_count;
+
+        Ok((session, id, turn_count))
     }
 
-    fn check_interrupt(session: &Session) -> Option<TurnResult> {
+    fn check_interrupt(session: &Session, turn_count: u32) -> Option<TurnResult> {
         session.messages.iter().find_map(|m| {
             if let MessageContent::Text(ref t) = m.content {
                 if t.starts_with("__INTERRUPT__:") {
-                    return Some(TurnResult { text: String::new(), reason: TurnResultReason::Normal });
+                    return Some(TurnResult { text: String::new(), reason: TurnResultReason::Normal, turn_count });
                 }
             }
             None
