@@ -502,11 +502,15 @@ impl TurnExecutor {
             let mut msg = Message::assistant_tool_calls(tool_calls.iter().map(oben_models::ToolCall::from_transport).collect());
             msg.reasoning = combined_reasoning;
             msg
-        } else {
-            let trimmed = scrubbed.trim();
-            let mut msg = Message::assistant(trimmed.to_string());
+        } else if !is_empty {
+            let mut msg = Message::assistant(scrubbed.trim().to_string());
             msg.reasoning = combined_reasoning;
             msg
+        } else {
+            // LLM returned empty text with no tool calls — skip to avoid
+            // persisting blank assistant rows that pollute context.
+            // consecutive_empty counter is already updated above.
+            return Ok(());
         };
         session.messages.push(assistant);
 
