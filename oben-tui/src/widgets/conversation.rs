@@ -477,6 +477,7 @@ impl ConversationWidget {
         state: &ConversationState,
         palette: &ratatui_themes::ThemePalette,
         is_streaming: bool,
+        entry_titles: &[Option<Line<'static>>],
         entries: &[MessageRenderEntry],
     ) {
         // ─── Outer frame ───────────────────────────────────────────────
@@ -825,9 +826,7 @@ impl ConversationWidget {
                     BlockType::Message(r) => r,
                     BlockType::ToolResult => unreachable!(),
                 };
-                let entries = state.message_entries.lock().unwrap();
-                let title = entries[*entry_idx]
-                    .title
+                let title = entry_titles[*entry_idx]
                     .clone()
                     .unwrap_or_else(|| self.role_title(role, palette));
                 Block::default()
@@ -1067,39 +1066,6 @@ impl ConversationWidget {
         }
     }
 
-    fn render_turn_status(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        state: &ConversationState,
-        _palette: &ratatui_themes::ThemePalette,
-    ) {
-        let mut stream_info = String::new();
-        if let Ok(si) = state.stream_info.lock() {
-            stream_info = si.clone();
-        }
-        if stream_info.is_empty() {
-            return;
-        }
-
-        let lines: Vec<&str> = stream_info.lines().collect();
-        let height = lines.len().min(3) as u16;
-        if height == 0 {
-            return;
-        }
-
-        let displayed_lines: Vec<Line> = lines.iter().take(3).map(|l| Line::from(*l)).collect();
-        let para = Paragraph::new(displayed_lines);
-        let status_w = lines.iter().map(|l| l.len() as u16).max().unwrap_or(1) + 2;
-        let display_area = Rect::new(
-            area.x + area.width.saturating_sub(status_w + 2),
-            area.y + area.height.saturating_sub(height + 2),
-            status_w.min(area.width.saturating_sub(2)),
-            height.min(area.height.saturating_sub(2)),
-        );
-        frame.render_widget(para, display_area);
-    }
-
     /// Render the full message display widget in `area`.
     pub fn render(
         &self,
@@ -1110,27 +1076,8 @@ impl ConversationWidget {
         is_streaming: bool,
     ) {
         let entries = state.message_entries.lock().unwrap();
-        self.render_bordered_blocks(frame, area, state, palette, is_streaming, &entries);
-        self.render_turn_status(frame, area, state, palette);
-
-        // Draw streaming indicator in messages panel area
-        if is_streaming {
-            let indicator_text = " Streaming... ";
-            let w = indicator_text.len() as u16 + 2;
-            let indicator_area = Rect::new(
-                area.right()
-                    .saturating_sub(w + 2)
-                    .min(area.width.saturating_sub(2)),
-                area.y + 1,
-                w,
-                1,
-            );
-            let para = Paragraph::new(Line::from(Span::styled(
-                indicator_text,
-                Style::default().fg(palette.info),
-            )));
-            frame.render_widget(para, indicator_area);
-        }
+        let entry_titles: Vec<Option<Line<'static>>> = entries.iter().map(|e| e.title.clone()).collect();
+        self.render_bordered_blocks(frame, area, state, palette, is_streaming, &entry_titles, &entries);
     }
 
     /// Append a user message to the internal display state.
