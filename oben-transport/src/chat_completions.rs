@@ -838,57 +838,41 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
 
             // Process choices
             for choice in chunk.choices {
-                if let Some(ref finish) = choice.finish_reason {
-                    let _ = finish;
-                }
-
-                tracing::trace!(choices_count = 1, "[ChatCompletions] SSE event parsed");
-
                 let delta = choice.delta;
 
-                // Track content and reasoning separately.
-                // Some servers stream thinking text in `content` while others use `reasoning_content`.
-                // We accumulate both but deliver them through the appropriate callback.
-                let reasoning_delta = delta.reasoning_content.as_deref().unwrap_or("");
-                
-                if !reasoning_delta.is_empty() {
-                    final_reasoning.push_str(reasoning_delta);
-                    if let Some(ref mut cb) = reasoning_callback {
-                        cb(reasoning_delta);
+                // Emit reasoning, content, and accumulate tool calls in a single match.
+                match (&delta.content, &delta.reasoning_content) {
+                    (Some(content), Some(reasoning))
+                        if !content.trim().is_empty() && !reasoning.is_empty() =>
+                    {
+                        // Both present: emit content to text stream, reasoning to reasoning stream.
+                        final_text.push_str(content);
+                        delta_count += 1;
+                        delta_callback(content.as_str());
+                        final_reasoning.push_str(reasoning);
+                        if let Some(ref mut cb) = reasoning_callback {
+                            cb(reasoning.as_str());
+                        }
                     }
-                }
-                
-                let text = match (&delta.content, &delta.reasoning_content) {
-                    (Some(c), Some(r)) => {
-                        // Both present: prefer content (standard), fall back to reasoning_content
-                        if !c.trim().is_empty() { c.as_str() }
-                        else if !r.trim().is_empty() { r.as_str() }
-                        else { "" }
+                    (Some(content), None) if !content.trim().is_empty() => {
+                        final_text.push_str(content);
+                        delta_count += 1;
+                        delta_callback(content.as_str());
                     }
-                    (Some(c), None) => {
-                        if !c.trim().is_empty() { c.as_str() }
-                        else { "" }
+                    (None, Some(reasoning)) if !reasoning.is_empty() => {
+                        final_reasoning.push_str(reasoning);
+                        if let Some(ref mut cb) = reasoning_callback {
+                            cb(reasoning.as_str());
+                        }
                     }
-                    (None, Some(_)) => {
-                        // reasoning_content was handled above
-                        ""
-                    }
-                    (None, None) => "",
-                };
-                if !text.is_empty() {
-                    final_text.push_str(text);
-                    delta_count += 1;
-                    tracing::trace!(delta = text, "[ChatCompletions] SSE delta content found");
-                    delta_callback(text);
-                } else {
-                    tracing::trace!("[ChatCompletions] SSE delta found but content is empty (skipped)");
+                    _ => {}
                 }
 
-                // Accumulate tool call deltas
+                // Accumulate tool call deltas (indexed by field to handle out-of-order).
                 if let Some(ref tool_deltas) = delta.tool_calls {
                     for tc in tool_deltas {
                         let idx = tc.index;
-                        // Ensure vectors are large enough
+                        // Ensure vectors are large enough.
                         while tool_call_args.len() <= idx {
                             tool_call_args.push(String::new());
                             tool_call_names.push(String::new());
