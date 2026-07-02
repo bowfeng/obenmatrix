@@ -679,7 +679,7 @@ impl ConversationWidget {
                     "DIAG: arc_refs={} streaming_text_len={} [draw_read]",
                     refs, ts_len
                 );
-                if ts_len > 0 {
+                if ts_len > 0 || !ts_ref.reasoning_text.is_empty() {
                     // Log streaming_text length every ~10 draws during streaming
                     // to avoid log flooding while still capturing growth pattern.
                     if ts_len % 20 == 0 {
@@ -692,7 +692,7 @@ impl ConversationWidget {
                     let raw = ts_ref
                         .streaming_text
                         .trim_start_matches(|c: char| c.is_whitespace());
-                    let stream_lines: Vec<Line<'static>> = raw
+                    let mut stream_lines: Vec<Line<'static>> = raw
                         .lines()
                         .map(|l| {
                             Line::from(Span::styled(
@@ -703,6 +703,24 @@ impl ConversationWidget {
                             ))
                         })
                         .collect::<Vec<_>>();
+
+                    // Prepend reasoning text (muted) if present — thinking appears before response
+                    if !ts_ref.reasoning_text.is_empty() {
+                        let reasoning_lines: Vec<Line<'static>> = ts_ref
+                            .reasoning_text
+                            .lines()
+                            .filter(|l| !l.trim().is_empty())
+                            .map(|line| Line::from(
+                                Span::styled(
+                                    line.to_string(),
+                                    Style::default()
+                                        .fg(palette.muted)
+                                        .add_modifier(Modifier::DIM),
+                                ),
+                            ))
+                            .collect();
+                        stream_lines.splice(0..0, reasoning_lines);
+                    }
 
                     let wrapped = layout::wrap_styled_lines_to_lines(
                         &stream_lines,

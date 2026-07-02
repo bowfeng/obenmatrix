@@ -175,12 +175,12 @@ impl TurnState {
         self.phase = TurnPhase::Completed;
         self.outcome = outcome.to_string();
         self.active_tools.clear();
-        self.completed_tools.clear();
+        // Don't clear completed_tools or reasoning_text here — the TUI flushes them
+        // to message_entries in the next draw via update_from_turn_state when it sees
+        // prev_phase=Streaming && settled=true. Clearing here would lose them.
+        // They are cleared on the next on_turn_start / on_pre_turn.
         self.add_activity(ActivityKind::Completed, "Turn completed".to_string());
-        // Don't clear streaming_text here — the TUI flushes it to message_entries
-        // in the next draw_ui via update_from_turn_state when it sees
-        // prev_phase=Streaming && settled=true. Clearing here would lose the response.
-        // It will be cleared on the next on_pre_turn / on_turn_start.
+        // Don't clear streaming_text here either — same reason, cleared on next on_turn_start.
     }
 
     pub fn on_error(&mut self, error: &str) {
