@@ -88,7 +88,7 @@ pub enum TuiEvent {
 pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     let app = App::new()?;
 
-    // Raw mode + terminal — needed for splash loop to draw
+    // Raw mode + alternate screen — needed for splash loop to draw
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
     io::stdout().execute(EnableMouseCapture)?;
@@ -100,6 +100,12 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     // Wrap app in Arc<TokioMutex<>> — needed because init task and splash loop
     // both need mutable access to app.panels during splash phase.
     let arc_app = Arc::new(tokio::sync::Mutex::new(app));
+
+    // Set splash started timestamp after entering raw mode
+    {
+        let mut a = arc_app.lock().await;
+        a.splash_started = std::time::Instant::now();
+    }
 
     // Configure splash minimum duration from terminal height — ensures at least
     // one full rain drop falls from top to bottom.
@@ -117,7 +123,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
 
     // --- SPLASH LOOP ---
     // Use oneshot channel so init and draw don't contend for the app mutex.
-    let (init_done_tx, mut init_done_rx) =
+    let (init_done_tx, init_done_rx) =
         tokio::sync::oneshot::channel::<Result<(), anyhow::Error>>();
 
     {
@@ -156,11 +162,8 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         });
     }
 
-    let mut interval = tokio::time::interval(Duration::from_millis(32));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
     loop {
-        // Draw splash — single lock, ~32ms cadence
+        // Draw splash
         {
             let a = arc_app.lock().await;
             if let Some(splash) = a.panels.get(&PanelId::Splash) {
@@ -171,102 +174,74 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
                     .ok();
             }
         }
+        terminal.backend_mut().flush().ok();
 
-        // Check init result via oneshot (no app lock needed)
-        if let Ok(result) = init_done_rx.try_recv() {
-            if let Err(e) = result {
-                if let Some(splash) = arc_app
-                    .lock()
-                    .await
-                    .panels
-                    .get_mut(&PanelId::Splash)
-                    .and_then(|p| p.downcast_mut::<SplashPanel>())
-                {
-                    splash.set_error(e.to_string());
-                }
-            } else {
-                arc_app
-                    .lock()
-                    .await
-                    .init_active_panel(session_name)
-                    .await
-                    .ok();
-            }
+        if crossterm::event::poll(Duration::from_millis(32)).unwrap_or(false) {
+            break;
         }
-
-        // Break once full fall cycle elapsed
-        {
-            let a = arc_app.lock().await;
-            if let Some(splash) = a
-                .panels
-                .get(&PanelId::Splash)
-                .and_then(|p| p.downcast_ref::<SplashPanel>())
-            {
-                if splash.remaining_min_display() == Duration::ZERO {
-                    break;
-                }
-            }
-        }
-
-        interval.tick().await;
     }
 
-    // Post-loop: check if init failed and enter error splash
-    if arc_app
+    let init_done = tokio::time::timeout(
+        Duration::from_secs(3), init_done_rx,
+    ).await.is_ok();
+
+    arc_app
         .lock()
         .await
-        .panels
-        .get(&PanelId::Splash)
-        .and_then(|p| p.downcast_ref::<SplashPanel>())
-        .map(|s| s.error.is_some())
-        .unwrap_or(false)
-    {
-        // Draw error splash (rain with error message) forever until Ctrl+C.
-        let backend = CrosstermBackend::new(io::stdout());
-        let mut err_terminal = Terminal::new(backend).unwrap();
-        err_terminal.clear().unwrap();
+        .init_active_panel(session_name)
+        .await
+        .ok();
+
+    // --- MAIN EVENT LOOP SETUP ---
+    let agent = if init_done {
+        arc_app.lock().await.shared_state.lock().agent.clone()
+    } else {
+        None
+    };
+
+    if agent.is_none() {
+        // Init failed — show error splash until user quits
+        arc_app
+            .lock()
+            .await
+            .panels
+            .get_mut(&PanelId::Splash)
+            .and_then(|p| p.downcast_mut::<panels::splash::SplashPanel>())
+            .map(|s| s.set_error("Agent failed to initialize".to_string()));
+        // Wait forever for user to quit
         loop {
-            {
-                let a = arc_app.lock().await;
-                if let Some(splash) = a.panels.get(&PanelId::Splash) {
-                    err_terminal
-                        .draw(|frame| {
-                            splash.draw(frame, frame.area());
-                        })
-                        .ok();
-                }
+            let a = arc_app.lock().await;
+            if let Some(splash) = a.panels.get(&PanelId::Splash) {
+                terminal
+                    .draw(|frame| splash.draw(frame, frame.area()))
+                    .ok();
             }
-            tokio::time::sleep(Duration::from_millis(32)).await;
+            drop(a);
+            terminal.backend_mut().flush().ok();
             if crossterm::event::poll(Duration::from_millis(32)).unwrap_or(false) {
-                if let Ok(event) = crossterm::event::read() {
-                    if let crossterm::event::Event::Key(key) = event {
-                        if key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            drop(err_terminal);
-                            io::stdout().execute(LeaveAlternateScreen).ok();
-                            io::stdout().execute(DisableMouseCapture).ok();
-                            disable_raw_mode().ok();
-                            std::process::exit(0);
-                        }
+                let ev = crossterm::event::read()?;
+                if let crossterm::event::Event::Key(k) = ev {
+                    if k.code == crossterm::event::KeyCode::Char('c')
+                        && k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
+                        break;
                     }
                 }
             }
         }
+        drop(terminal);
+        io::stdout().execute(LeaveAlternateScreen)?;
+        io::stdout().execute(DisableMouseCapture)?;
+        disable_raw_mode()?;
+        return Ok(());
     }
 
-    // --- MAIN EVENT LOOP SETUP ---
-    let (chat_tx, chat_rx) = unbounded_channel();
+    let agent = agent.unwrap();
+
+    // --- EVENT LOOP CHANNELS ---
+    let (chat_tx, chat_rx) = unbounded_channel::<String>();
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<TurnCompletion>();
     let (command_tx, mut command_rx) = unbounded_channel::<TuiCommand>();
-
-    let (agent, _config, _interrupt_state) = {
-        let a = arc_app.lock().await;
-        let agent = Arc::clone(a.shared_state.lock().agent.as_ref().unwrap());
-        let cfg = a.config.clone();
-        let interrupt = Arc::clone(&agent.lock().await.get_interrupt_state());
-        (agent, cfg, interrupt)
-    };
 
     // Initial draw — needs_redraw starts as true from App::new()
     {
