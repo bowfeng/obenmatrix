@@ -259,6 +259,23 @@ Your next move: approve to start, or request a high-accuracy review first. Full 
   Evidence: .omo/evidence/task-4-tui-turn-display-check.txt + .omo/evidence/task-4-tui-turn-display-test.txt
   Commit: Y | ci(tui): final compile check and integration test
 
+- [x] 5. Add proper markdown rendering with pulldown-cmark ✅ **COMPLETED**
+  What to do / Must NOT do: In `oben-tui/Cargo.toml`, add `pulldown-cmark = "0.12"`. In `oben-tui/src/widgets/message_renderer.rs`, replace the custom `tokenize()` function and `render_body_lines()` implementation with a `pulldown-cmark` parser. The current custom tokenizer only handles: inline code, bold, italic, fenced code blocks, headings, blockquotes. Replace with complete markdown support: tables, ordered/unordered lists, headings, code blocks, links, bold/italic, blockquotes, horizontal rules. Keep `MessageRenderEntry`, `StyledLine`, `render_message_entry()`, and `MessageRenderer` unchanged. Remove old `Token` enum and `tokens_to_spans()` function. Verify `cargo check -p oben-tui` and `cargo test -p oben-tui --lib` pass.
+  Must NOT do: Do NOT change `Message`, `MessageContent`, or `TokenCall` structs. Do NOT change `render_message_entry()` or `MessageRenderer`. Keep existing tests passing.
+  Parallelization: Wave 5 | Blocked by: none | Blocks: F1-F4
+  References: `oben-tui/Cargo.toml` (add dependency), `message_renderer.rs:217-266` (render_body_lines — REPLACE), `message_renderer.rs:23-178` (tokenize + tokens_to_spans — REMOVE)
+  Acceptance criteria (agent-executable):
+  1. `cargo check -p oben-tui` passes
+  2. Tables render with monospace alignment
+  3. Lists show bullet/number prefixes
+  4. Code blocks render dim + green with language labels
+  5. All existing tests still pass
+  QA scenarios:
+  - Happy: full markdown (tables, lists, code, links) renders properly
+  - Failure: cargo check fails or tests break
+  Evidence: .omo/evidence/task-5-markdown-rendering.diff + .omo/evidence/task-5-markdown-rendering-compile.txt
+  Commit: Y | feat(tui): replace custom markdown tokenizer with pulldown-cmark
+
 ## Final verification wave
 > Runs in parallel after ALL todos. ALL must APPROVE. Surface results and wait for the user's explicit okay before declaring complete.
 - [ ] F1. Plan compliance audit — verify all must-have items implemented, no must-not-have items violated
