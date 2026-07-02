@@ -12,7 +12,7 @@ use crate::coordinator::GatewayCoordinator;
 use crate::platform::IncomingMessage;
 use crate::router::ResponseRouter;
 
-use oben_agent::{AgentBuilder, AgentHandle};
+use oben_agent::{Agent, AgentBuilder};
 use oben_config::AppConfig;
 use oben_tools::ToolRegistry;
 
@@ -156,11 +156,8 @@ impl Dispatcher {
                 }
             };
 
-            // Wrap agent in Arc<Mutex<>> for AgentHandle
-            let agent_handle = AgentHandle::new(Arc::new(Mutex::new(agent)));
-
-            // Run the conversation loop (blocks until exit)
-            let result = agent_handle.run(coordinator).await;
+            let agent = Arc::new(Mutex::new(agent));
+            let result = Agent::run(agent, coordinator).await;
 
             // coordinator ended — response_tx is dropped, response_rx loop will exit
             if let Err(e) = &result {
