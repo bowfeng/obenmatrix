@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthChar;
 
 use oben_agent::TurnState;
 use crate::widgets::layout;
-use crate::widgets::message_renderer::{MessageRenderEntry, MessageRenderer};
+use crate::widgets::message_renderer::{render_body_lines, MessageRenderEntry, MessageRenderer};
 use crate::widgets::role_style::role_info_for_role;
 use oben_models::{Message, MessageRole};
 
@@ -692,17 +692,11 @@ impl ConversationWidget {
                     let raw = ts_ref
                         .streaming_text
                         .trim_start_matches(|c: char| c.is_whitespace());
-                    let mut stream_lines: Vec<Line<'static>> = raw
-                        .lines()
-                        .map(|l| {
-                            Line::from(Span::styled(
-                                l.to_string(),
-                                Style::default()
-                                    .fg(palette.info)
-                                    .add_modifier(Modifier::DIM),
-                            ))
-                        })
-                        .collect::<Vec<_>>();
+                    let body_lines = render_body_lines(raw, palette);
+                    let mut stream_lines: Vec<Line<'static>> = body_lines
+                        .into_iter()
+                        .map(|sl| sl.content)
+                        .collect();
 
                     // Prepend reasoning text (muted) if present — thinking appears before response
                     if !ts_ref.reasoning_text.is_empty() {

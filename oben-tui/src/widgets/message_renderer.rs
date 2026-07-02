@@ -1,6 +1,6 @@
 //! Message renderer — renders `oben_models::Message` into structured display data.
 
-use pulldown_cmark::{Parser, Event, Tag, TagEnd, CodeBlockKind, HeadingLevel};
+use pulldown_cmark::{Parser, Event, Tag, TagEnd, CodeBlockKind};
 use ratatui::prelude::*;
 use ratatui_themes::ThemeName;
 
@@ -36,6 +36,7 @@ impl MessageRenderEntry {
 
 /// Render markdown text into styled lines using pulldown-cmark.
 pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> Vec<StyledLine> {
+    tracing::info!("[render_md] INPUT text_len={} preview={}", text.len(), text.chars().take(200).collect::<String>());
     let parser = Parser::new(text);
     let mut lines: Vec<StyledLine> = Vec::new();
     let mut current_line_text = String::new();
@@ -86,7 +87,8 @@ pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> 
                     current_line_text.clear();
                 }
             }
-            Event::Start(Tag::Heading { level: HeadingLevel::H1, .. }) => {
+            Event::Start(Tag::Heading { level, .. }) => {
+                tracing::info!("[render_md] START Heading level={:?}", level);
                 lines.push(StyledLine {
                     content: Line::from(vec![
                         Span::styled("▸ ", Style::default().fg(palette.accent)),
@@ -97,6 +99,7 @@ pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> 
                 current_line_text.clear();
             }
             Event::End(TagEnd::CodeBlock) => {
+                tracing::info!("[render_md] END CodeBlock lang=\"{}\"", code_lang);
                 let lang_str = code_lang.trim().to_string();
                 let lang_label = if !lang_str.is_empty() && lang_str != "text" {
                     format!("[{}] ", lang_str.to_lowercase())
@@ -127,6 +130,7 @@ pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> 
                 in_code_block = false;
             }
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) => {
+                tracing::info!("[render_md] START CodeBlock lang=\"{}\"", lang.trim());
                 code_lang = lang.trim().to_string();
                 in_code_block = true;
                 code_block_lines.clear();
@@ -136,6 +140,7 @@ pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> 
                 code_block_lines.clear();
             }
             Event::Start(Tag::BlockQuote(_)) => {
+                tracing::info!("[render_md] START BlockQuote");
                 if !current_line_text.is_empty() {
                     lines.push(StyledLine {
                         content: Line::from(vec![
@@ -149,6 +154,7 @@ pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> 
             }
             Event::End(TagEnd::BlockQuote(_)) => {}
             Event::Start(Tag::Item) => {
+                tracing::info!("[render_md] START Item text=\"{}\"", current_line_text.chars().take(40).collect::<String>());
                 lines.push(StyledLine {
                     content: Line::from(vec![
                         Span::styled("• ", Style::default().fg(palette.info)),
@@ -185,6 +191,11 @@ pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> 
             role_color: None,
         });
     }
+
+    for (i, line) in lines.iter().enumerate() {
+        tracing::info!("[render_md] line[{}] content=\"{}\"", i, line.content.spans.iter().map(|s| s.content.to_string()).collect::<String>());
+    }
+    tracing::info!("[render_md] FINAL lines={}", lines.len());
 
     lines
 }
@@ -289,6 +300,7 @@ pub fn render_message_entry(
     let mut body_lines = if text.is_empty() {
         vec![]
     } else {
+        tracing::info!("[render_md] text to parse len={} preview={}", text.len(), text.chars().take(200).collect::<String>());
         render_body_lines(&text, palette)
     };
 
