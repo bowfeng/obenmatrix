@@ -149,10 +149,25 @@ async fn main() -> Result<()> {
     let tools = Arc::new(create_tool_registry());
     info!("Tool registry created");
 
+    // Build HookEngine with NudgeHook + WASM hook adapters
+    #[cfg(feature = "wasm-plugins")]
+    let hook_engine = load_wasm_hooks(
+        HookBuilder::from_config(&app_config.hooks),
+        &gateway_config.plugin_dir,
+    )
+    .await
+    .build();
+
+    #[cfg(not(feature = "wasm-plugins"))]
+    let hook_engine = HookBuilder::from_config(&app_config.hooks).build();
+
+    tracing::info!("HookEngine built");
+
     let dispatcher = Arc::new(Dispatcher::new(
         app_config.clone(),
         tools,
         response_router.clone(),
+        Arc::new(hook_engine),
     ));
     info!("Dispatcher created");
 
@@ -324,21 +339,6 @@ async fn main() -> Result<()> {
 
     info!("Platforms started via factory pipeline");
 
-    // Build HookEngine with NudgeHook + WASM hook adapters
-    #[cfg(feature = "wasm-plugins")]
-    let hook_engine = load_wasm_hooks(
-        HookBuilder::from_config(&app_config.hooks),
-        &gateway_config.plugin_dir,
-    )
-    .await
-    .build();
-
-    #[cfg(not(feature = "wasm-plugins"))]
-    let hook_engine = HookBuilder::from_config(&app_config.hooks).build();
-
-    tracing::info!("HookEngine built");
-
-    let _hook_engine = hook_engine;
     info!("Gateway initialized — calling start_blocking()");
     info!("Press Ctrl+C to shut down");
 
@@ -370,10 +370,14 @@ mod tests {
     async fn test_platform_registry_qq_factory() {
         let mut registry = oben_gateway::platform::PlatformRegistry::new();
         let response_router = Arc::new(super::ResponseRouter::new());
+        let hook_engine = Arc::new(
+            oben_agent::hooks::HookBuilder::from_config(&oben_config::HooksConfig::default()).build()
+        );
         let dispatcher = Arc::new(Dispatcher::new(
             AppConfig::default(),
             Arc::new(ToolRegistry::new()),
             response_router.clone(),
+            hook_engine,
         ));
         let config = oben_config::QQBotConfig {
             enabled: true,

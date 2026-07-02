@@ -12,6 +12,7 @@ use crate::coordinator::GatewayCoordinator;
 use crate::platform::IncomingMessage;
 use crate::router::ResponseRouter;
 
+use oben_agent::hooks::HookEngine;
 use oben_agent::{Agent, AgentBuilder};
 use oben_config::AppConfig;
 use oben_tools::ToolRegistry;
@@ -27,6 +28,7 @@ pub struct Dispatcher {
     tools: Arc<ToolRegistry>,
     session_map: Mutex<HashMap<String, UserChannel>>, // session_key → sender
     response_router: Arc<ResponseRouter>,
+    hooks: Arc<HookEngine>,
 }
 
 impl Dispatcher {
@@ -35,12 +37,14 @@ impl Dispatcher {
         app_config: AppConfig,
         tools: Arc<ToolRegistry>,
         response_router: Arc<ResponseRouter>,
+        hooks: Arc<HookEngine>,
     ) -> Self {
         Self {
             app_config: Arc::new(app_config),
             tools,
             session_map: Mutex::new(HashMap::new()),
             response_router,
+            hooks,
         }
     }
 
@@ -112,6 +116,7 @@ impl Dispatcher {
         let app_config = self.app_config.clone();
         let tools = self.tools.clone();
         let response_router = self.response_router.clone();
+        let hooks = self.hooks.clone();
 
         tokio::spawn(async move {
             info!(session_key = %session_key, "Coordinator task started");
@@ -146,6 +151,7 @@ impl Dispatcher {
                 .with_config((*app_config).clone())
                 .with_system_prompt(system_prompt)
                 .with_tools(tools)
+                .with_hooks(hooks)
                 .build()
                 .await
             {
