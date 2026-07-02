@@ -3,6 +3,7 @@
 use super::{KeyAction, Panel};
 use crate::widgets::conversation::{ConversationState, ConversationWidget};
 use crate::widgets::input_bar::{InputBarResult, InputBarWidget, InputState};
+use crate::widgets::message_renderer::{MessageRenderEntry, StyledLine};
 use crate::widgets::message_renderer::MessageRenderer;
 use crossterm::event::KeyEvent;
 use parking_lot::Mutex as PlMutex;
@@ -188,10 +189,9 @@ impl ChatPanel {
             self.drained_this_turn = false;
         }
 
-        // Flush accumulated streaming_text to permanent entries when the turn
-        // completes. `streaming_text` is rendered in-place while `is_streaming`
-        // but vanishes once the phase changes — commit it to message_entries
-        // so the assistant response persists after the draw cycle.
+        // Build and flush structured message entries from TurnState when the turn
+        // completes. This produces multi-block output: reasoning (if present),
+        // assistant response with tool indicators, and tool result blocks.
         //
         // Guard against repeated flushes: we only enter this block on the
         // transition into a settled state (prev=Streaming, current=Completed).
@@ -205,27 +205,116 @@ impl ChatPanel {
             if let Some(ref arc) = self.message_state.turn_state_ref {
                 let mut ts = arc.lock();
                 let text = ts.streaming_text.clone();
+                let reasoning_text = ts.reasoning_text.clone();
+                let completed_tools: Vec<_> = ts.completed_tools.iter().cloned().collect();
+                // Consume all fields — TUI flushes them exactly once
                 ts.streaming_text.clear();
+                ts.reasoning_text.clear();
+                ts.completed_tools.clear();
                 drop(ts);
+
+                if text.is_empty() && reasoning_text.is_empty() && completed_tools.is_empty() {
+                    return;
+                }
+
+                let mut new_entries: Vec<MessageRenderEntry> = Vec::new();
+                let palette = self.renderer.current_palette();
+
+                // 1. Tool blocks (tool results from completed_tools) — shown first
+                for ct in &completed_tools {
+                    let preview = if ct.output_preview.chars().count() > 60 {
+                        format!("{}...", ct.output_preview.chars().take(60).collect::<String>())
+                    } else {
+                        ct.output_preview.clone()
+                    };
+                    let status_icon = if ct.has_error { "CR" } else { "OK" };
+                    let status_color = if ct.has_error {
+                        palette.error
+                    } else {
+                        palette.success
+                    };
+                    let body_lines = vec![StyledLine {
+                        content: Line::from(Span::styled(
+                            format!("   {} {}({})", status_icon, ct.name, preview),
+                            Style::default().fg(status_color),
+                        )),
+                        role_color: Some(status_color),
+                    }];
+                    new_entries.push(MessageRenderEntry {
+                        role: oben_models::MessageRole::Tool,
+                        is_tool_result: true,
+                        body_lines,
+                        tool_calls: Vec::new(),
+                        reasoning: None,
+                    });
+                }
+
+                // 2. Reasoning block (if present) — shown after tools
+                if !reasoning_text.is_empty() {
+                    let reasoning_lines: Vec<StyledLine> = reasoning_text
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|line| StyledLine {
+                            content: Line::styled(
+                                line.to_string(),
+                                Style::default()
+                                    .fg(palette.muted)
+                                    .add_modifier(Modifier::DIM),
+                            ),
+                            role_color: None,
+                        })
+                        .collect();
+                    if !reasoning_lines.is_empty() {
+                        new_entries.push(MessageRenderEntry {
+                            role: oben_models::MessageRole::Assistant,
+                            is_tool_result: false,
+                            body_lines: reasoning_lines,
+                            tool_calls: Vec::new(),
+                            reasoning: Some(reasoning_text.clone()),
+                        });
+                    }
+                }
+
+                // 3. Main response block with tool call indicators
                 if !text.is_empty() {
-                    let body_lines = vec![crate::widgets::message_renderer::StyledLine {
+                    let mut tool_indicators: Vec<String> = Vec::new();
+                    for ct in &completed_tools {
+                        if ct.has_error {
+                            tool_indicators.push(format!("{} {{error}}", ct.name));
+                        } else {
+                            tool_indicators.push(ct.name.clone());
+                        }
+                    }
+                    let body_lines = vec![StyledLine {
                         content: Line::from(text.clone()),
                         role_color: None,
                     }];
+                    let tool_indicators_count = tool_indicators.len();
+                    new_entries.push(MessageRenderEntry {
+                        role: oben_models::MessageRole::Assistant,
+                        body_lines,
+                        is_tool_result: false,
+                        tool_calls: tool_indicators,
+                        reasoning: None,
+                    });
+                    tracing::info!(
+                        "[chat_panel] flushed streaming_text to entries: len={}, with {} tool indicators",
+                        text.len(),
+                        tool_indicators_count
+                    );
+                }
+
+                // 4. Commit all entries at once
+                if !new_entries.is_empty() {
+                    let entry_count = new_entries.len();
                     self.message_state
                         .message_entries
                         .lock()
                         .unwrap()
-                        .push(crate::widgets::message_renderer::MessageRenderEntry {
-                            role: oben_models::MessageRole::Assistant,
-                            body_lines,
-                            is_tool_result: false,
-                            tool_calls: Vec::new(),
-                            reasoning: None,
-                        });
+                        .extend(new_entries);
                     tracing::info!(
-                        "[chat_panel] flushed streaming_text to entries: len={}",
-                        text.len()
+                        "[chat_panel] flushed {} structured entries",
+                        entry_count
                     );
                 }
             }
