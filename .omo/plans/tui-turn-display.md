@@ -58,7 +58,7 @@ Your next move: approve to start, or request a high-accuracy review first. Full 
 > Implementation + Test = ONE todo. Never separate.
 <!-- APPEND TASK BATCHES BELOW THIS LINE WITH edit/apply_patch - never rewrite the headers above. -->
 
-- [ ] 1. Preserve completed_tools in TurnState::on_completed()
+- [x] 1. Preserve completed_tools in TurnState::on_completed() ✅ **COMPLETED** (commit: `5b5a115`)
   What to do / Must NOT do: In `oben-agent/src/hooks/kind.rs:174-183`, CHANGE the `on_completed` method: replace `self.completed_tools.clear();` with a no-op (remove that line entirely). reasoning_text is already preserved (it's not cleared in `on_completed()` — only in `on_turn_start()` at line 112). This mirrors the `streaming_text` pattern: the data survives until `on_turn_start()` clears it and the TUI flush reads it in the next draw cycle.
   Critical: The flush at `chat.rs:203-232` fires when it sees `prev=Streaming → current=Completed`. It reads `completed_tools` in that flush — if `on_completed()` already cleared them, the flush gets empty data. The `streaming_text` fix (kind.rs:176, no clear) is the documented precedent — the comment at lines 180-183 explicitly says: *"Don't clear streaming_text here — the TUI flushes it to message_entries in the next draw."* Apply the same reasoning to `completed_tools`.
   Parallelization: Wave 1 | Blocked by: none | Blocks: T2
@@ -74,7 +74,7 @@ Your next move: approve to start, or request a high-accuracy review first. Full 
   Evidence: .omo/evidence/task-1-tui-turn-display.diff
   Commit: Y | fix(agent): preserve completed_tools across on_completed for TUI flush
 
-- [ ] 2. Multi-block flush: build reasoning + response + tool result MessageRenderEntries
+- [x] 2. Multi-block flush: build reasoning + response + tool result MessageRenderEntries ✅ **COMPLETED** (commit: `5b5a115`)
   What to do / Must NOT do: In `oben-tui/src/panels/chat.rs:203-232`, REPLACE the flush block. Current code (lines 203-232) creates a single `MessageRenderEntry { role: Assistant, body_lines, tool_calls: [], reasoning: None }`. Replace with:
 
   ```rust
@@ -195,7 +195,7 @@ Your next move: approve to start, or request a high-accuracy review first. Full 
   Evidence: .omo/evidence/task-2-tui-turn-display.diff + .omo/evidence/task-2-tui-turn-display-compile.txt
   Commit: Y | feat(tui): multi-block flush for reasoning, tools, and results
 
-- [ ] 3. Stream reasoning text: display reasoning_text in live turn view (Phase 2.5)
+- [x] 3. Stream reasoning text: display reasoning_text in live turn view (Phase 2.5) ✅ **COMPLETED** (commit: `5b5a115`)
   What to do / Must NOT do: In `oben-tui/src/widgets/conversation.rs:847+` (Phase 2.5 — STREAMING BLOCK RENDERING), modify the stream block rendering so that when `is_streaming` is true, the stream block also displays `reasoning_text` from `TurnState`.
 
   Implementation: In the `stream_parsed` section (Phase 1.5, conversation.rs:668-727), after constructing `stream_lines` from `streaming_text`, check `ts_ref.reasoning_text` for non-empty content. If present, PREPEND reasoning lines (DIM, muted color) to `stream_lines` before wrapping. Use the exact same styling as `render_entries` reasoning at `message_renderer.rs:492-525`: `palette.muted` (or `palette.info` for non-assistant) with `Modifier::DIM`.
@@ -250,7 +250,7 @@ Your next move: approve to start, or request a high-accuracy review first. Full 
   Evidence: .omo/evidence/task-3-tui-turn-display.diff
   Commit: Y | feat(tui): display reasoning_text during streaming in turn panel
 
-- [ ] 4. Compile check, cargo test, and scope audit
+- [x] 4. Compile check, cargo test, and scope audit ✅ **COMPLETED** `6486b92` phase 2.5 stream uses pulldown-cmark)
   What to do / Must NOT do: Run `cargo check -p oben-agent && cargo check -p oben-tui && cargo test -p oben-agent --lib && cargo test -p oben-tui --lib`. Verify all existing tests still pass. Check clippy (`cargo clippy -p oben-tui -p oben-agent -- -D warnings`). Review final diff against Must NOT have list.
   Parallelization: Wave 4 | Blocked by: T2, T3 | Blocks: F1-F4
   References: All prior tasks
@@ -259,7 +259,9 @@ Your next move: approve to start, or request a high-accuracy review first. Full 
   Evidence: .omo/evidence/task-4-tui-turn-display-check.txt + .omo/evidence/task-4-tui-turn-display-test.txt
   Commit: Y | ci(tui): final compile check and integration test
 
-- [x] 5. Add proper markdown rendering with pulldown-cmark ✅ **COMPLETED**
+- [x] 5. Add proper markdown rendering with pulldown-cmark ✅ **COMPLETED** 
+  - Wave 5: `1448ea7` replace custom tokenizer with pulldown-cmark
+  - Phase 2.5 fix: `6486b92` use render_body_lines for streaming text (was raw lines)
   What to do / Must NOT do: In `oben-tui/Cargo.toml`, add `pulldown-cmark = "0.12"`. In `oben-tui/src/widgets/message_renderer.rs`, replace the custom `tokenize()` function and `render_body_lines()` implementation with a `pulldown-cmark` parser. The current custom tokenizer only handles: inline code, bold, italic, fenced code blocks, headings, blockquotes. Replace with complete markdown support: tables, ordered/unordered lists, headings, code blocks, links, bold/italic, blockquotes, horizontal rules. Keep `MessageRenderEntry`, `StyledLine`, `render_message_entry()`, and `MessageRenderer` unchanged. Remove old `Token` enum and `tokens_to_spans()` function. Verify `cargo check -p oben-tui` and `cargo test -p oben-tui --lib` pass.
   Must NOT do: Do NOT change `Message`, `MessageContent`, or `TokenCall` structs. Do NOT change `render_message_entry()` or `MessageRenderer`. Keep existing tests passing.
   Parallelization: Wave 5 | Blocked by: none | Blocks: F1-F4
