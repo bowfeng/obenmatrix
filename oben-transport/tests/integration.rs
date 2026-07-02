@@ -216,6 +216,7 @@ async fn test_stream_chat_text_response() -> Result<()> {
             &[Message::user("Hi")],
             &CallMode::Fresh("test-session".to_string()),
             cb,
+            None,
         )
         .await?;
 
@@ -251,6 +252,7 @@ async fn test_stream_chat_with_usage() -> Result<()> {
             &[Message::user("test")],
             &CallMode::Fresh("test-session".to_string()),
             cb,
+            None,
         )
         .await?;
 
@@ -284,6 +286,7 @@ async fn test_stream_chat_tool_calls() -> Result<()> {
             &[Message::user("run command")],
             &CallMode::Fresh("test-session".to_string()),
             cb,
+            None,
         )
         .await?;
 
@@ -322,6 +325,7 @@ async fn test_stream_chat_empty_content() -> Result<()> {
             &[Message::user("test")],
             &CallMode::Fresh("test-session".to_string()),
             cb,
+            None,
         )
         .await?;
 
@@ -348,6 +352,7 @@ async fn test_stream_chat_api_error() -> Result<()> {
             &[Message::user("test")],
             &CallMode::Fresh("test-session".to_string()),
             cb,
+            None,
         )
         .await;
 
@@ -383,6 +388,7 @@ async fn test_stream_chat_separate_instances() -> Result<()> {
             &[Message::user("test")],
             &CallMode::Fresh("test-session".to_string()),
             cb,
+            None,
         )
         .await?;
 

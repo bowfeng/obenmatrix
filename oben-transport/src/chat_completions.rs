@@ -770,6 +770,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         messages: &[Message],
         mode: &oben_models::CallMode,
         mut delta_callback: oben_models::StreamDeltaCallback,
+        mut reasoning_callback: Option<oben_models::StreamReasoningCallback>,
     ) -> Result<TransportResponse> {
         let request = {
             let mut cached = self.cached.lock().unwrap();
@@ -852,6 +853,9 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
                 
                 if !reasoning_delta.is_empty() {
                     final_reasoning.push_str(reasoning_delta);
+                    if let Some(ref mut cb) = reasoning_callback {
+                        cb(reasoning_delta);
+                    }
                 }
                 
                 let text = match (&delta.content, &delta.reasoning_content) {

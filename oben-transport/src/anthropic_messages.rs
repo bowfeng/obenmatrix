@@ -849,6 +849,7 @@ impl TransportProvider for AnthropicMessagesTransport {
         messages: &[Message],
         mode: &CallMode,
         mut delta_callback: oben_models::StreamDeltaCallback,
+        _reasoning_callback: Option<oben_models::StreamReasoningCallback>,
     ) -> Result<TransportResponse> {
         let request = {
             let mut cached = self.cached.lock().unwrap();
