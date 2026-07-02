@@ -118,11 +118,13 @@ impl SharedAgentState {
                 .await?,
         ));
 
+        let session_id = agent.lock().await.context_window_manager().session_id();
+
         Ok(Self {
             agent: Some(agent),
             turn_message_count: 0,
             turn_handle: None,
-            session_id: None,
+            session_id,
             tools: Arc::new(tools_for_reg),
             tool_names,
             turn_state: Arc::new(PlMutex::new(TurnState::new())),
@@ -134,6 +136,16 @@ impl SharedAgentState {
         self.agent.as_ref().map(|a| {
             Arc::clone(&a.blocking_lock().get_interrupt_state())
         })
+    }
+
+    /// Refresh session_id from the agent's CWM, since sessions are created lazily on first turn.
+    pub async fn sync_session_id(&mut self) {
+        if let Some(agent) = &self.agent {
+            let id = agent.lock().await.context_window_manager().session_id();
+            if id.as_deref() != self.session_id.as_deref() {
+                self.session_id = id;
+            }
+        }
     }
 
     /// Check if agent is initialized.

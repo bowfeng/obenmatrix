@@ -24,7 +24,7 @@ pub struct TurnCompletion {
     pub success: bool,
     pub status: String,
     pub session_name: Option<String>,
-    pub messages: Vec<oben_models::Message>,
+    pub message_count: usize,
 }
 
 pub struct App {

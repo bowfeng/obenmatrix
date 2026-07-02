@@ -358,15 +358,21 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
             completion = done_rx.recv() => {
                 if let Some(completion) = completion {
                     tracing::info!(
-                        "[event_loop] done_rx: success={} session_name={} msgs={}",
+                        "[event_loop] done_rx: success={} session_name={}",
                         completion.success,
                         completion.session_name.as_deref().unwrap_or("<none>"),
-                        completion.messages.len(),
                     );
                     let mut app = arc_app.lock().await;
+                    // Refresh session_id from agent's CWM — sessions are created
+                    // lazily on first turn, so the init-time capture may be None.
+                    app.shared_state.lock().sync_session_id().await;
                     if let Some(chat) = app.get_chat_mut() {
                         chat.streaming = false;
-                        chat.update_from_messages(&completion.messages, completion.session_name.clone());
+                        chat.message_count = completion.message_count;
+                        // Also set session_name so ChatPanel state matches TurnCompletion.
+                        if let Some(ref name) = completion.session_name {
+                            chat.session_name = Some(name.clone());
+                        }
                     }
                     if completion.success {
                         app.status = "Ready".into();
@@ -801,6 +807,8 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
                 if let Some(ref sid) = chat.session_name {
                     (sid.clone(), chat.message_count)
                 } else {
+                    // Fallback: pull from shared state when ChatPanel
+                    // session_name/message_count are still at their defaults.
                     (
                         app.shared_state.lock()
                             .session_id
@@ -820,7 +828,7 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     };
     let mode_text = match app.status.as_str() {
         s if s.starts_with("Error") => "Error",
-        s if !s.is_empty() => "Streaming",
+        "Busy" => "Streaming",
         _ => "Ready",
     };
     let status_lines: Vec<Line> =

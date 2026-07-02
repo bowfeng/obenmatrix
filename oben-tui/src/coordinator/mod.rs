@@ -72,7 +72,7 @@ impl ConversationCoordinator for TuiCoordinator {
         &mut self,
         response: &str,
         msg_count: usize,
-        turn_count: u32,
+        _turn_count: u32,
         success: bool,
     ) -> bool {
         tracing::debug!(
@@ -97,7 +97,7 @@ impl ConversationCoordinator for TuiCoordinator {
             success,
             status,
             session_name: None,
-            messages: Vec::new(),
+            message_count: msg_count,
         };
         let _ = self.done_tx.send(completion);
 
