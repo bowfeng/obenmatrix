@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use oben_agent::delegate::{build_spawn_fn_wrapper, SubagentSpawner};
-use oben_agent::{Agent, TurnState};
+use oben_agent::{Agent, AgentBuilder, TurnState};
 use oben_config::AppConfig;
 use oben_tools::delegate::DelegateTool;
 use oben_tools::ToolRegistry;
@@ -83,6 +83,10 @@ impl SharedAgentState {
                     .collect::<Vec<oben_models::ToolMeta>>(),
             );
 
+        let shared_hooks = Arc::new(
+            oben_agent::hooks::HookBuilder::from_config(&config.hooks).build(),
+        );
+
         let spawner = SubagentSpawner::new(
             Arc::new(delegate_transport),
             Arc::new(ToolRegistry::clone(&tools)),
@@ -95,6 +99,7 @@ impl SharedAgentState {
             config.max_iterations.unwrap_or(50),
             config.context.max_messages.unwrap_or(100),
             config.max_spawn_depth.unwrap_or(3),
+            shared_hooks.clone(),
         );
         let spawn_fn = build_spawn_fn_wrapper(spawner, assembled.prompt.clone());
         let mut tools_for_reg = ToolRegistry::clone(&tools);
@@ -104,7 +109,12 @@ impl SharedAgentState {
         ));
 
         let agent = Arc::new(tokio::sync::Mutex::new(
-            Agent::new(config.clone(), assembled.prompt.clone(), Arc::new(tools_for_reg.clone()))
+            AgentBuilder::new()
+                .with_config(config.clone())
+                .with_system_prompt(assembled.prompt.clone())
+                .with_tools(Arc::new(tools_for_reg.clone()))
+                .with_hooks(shared_hooks)
+                .build()
                 .await?,
         ));
 

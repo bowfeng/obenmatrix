@@ -18,13 +18,12 @@
 //! - Concurrent tool dispatch (Tier 2)
 //! - Nudge / background review (Tier 2)
 
+use anyhow::Result;
+use crate::agent_builder::AgentBuilder;
 use crate::fallback::FallbackChain;
+use crate::hooks::HookEngine;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-use anyhow::Result;
-
-use super::hooks::HookEngine;
 
 pub fn generate_session_name() -> String {
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
@@ -59,16 +58,16 @@ impl ConversationCoordinator for DummyCoordinator {
 
 /// An interactive agent — owns all resources, delegates turns to shared execute_turn_full.
 pub struct Agent {
-    transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
-    tools: Arc<oben_tools::ToolRegistry>,
-    context_window_manager: Box<dyn crate::context::ContextWindowManager>,
-    call_mode: Option<oben_models::CallMode>,
-    session_manager: Arc<Mutex<SessionStore>>,
-    interrupt_state: Arc<InterruptState>,
-    config: oben_config::AppConfig,
-    fallback_chain: Option<crate::fallback::FallbackChain>,
-    system_prompt: String,
-    hooks: Arc<super::hooks::HookEngine>,
+    pub(crate) transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync>,
+    pub(crate) tools: Arc<oben_tools::ToolRegistry>,
+    pub(crate) context_window_manager: Box<dyn crate::context::ContextWindowManager>,
+    pub(crate) call_mode: Option<oben_models::CallMode>,
+    pub(crate) session_manager: Arc<Mutex<SessionStore>>,
+    pub(crate) interrupt_state: Arc<InterruptState>,
+    pub(crate) config: oben_config::AppConfig,
+    pub(crate) fallback_chain: Option<crate::fallback::FallbackChain>,
+    pub(crate) system_prompt: String,
+    pub(crate) hooks: Arc<super::hooks::HookEngine>,
 }
 
 impl Agent {
@@ -77,37 +76,12 @@ impl Agent {
         system_prompt: String,
         tools: Arc<oben_tools::ToolRegistry>,
     ) -> Result<Self> {
-        let system_prompt_cloned = system_prompt.clone();
-        let tools_for_transport: Vec<oben_models::ToolMeta> = tools.list_tools().iter().map(|t| t.clone()).collect();
-        let transport: Arc<dyn oben_models::providers::TransportProvider + Send + Sync> =
-            oben_transport::Transport::from_config_with_tools_via_registry(
-                &config.model,
-                &system_prompt_cloned,
-                &tools_for_transport,
-            );
-        let session_manager = Arc::new(Mutex::new(SessionStore::new(config.session_store.clone())?));
-        let hooks = Arc::new(super::hooks::HookBuilder::from_config(&config.hooks).build());
-        let context_config = crate::compact::CompactCofig {
-            context_length: config.context.context_length,
-            threshold_percent: config.context.threshold_percent,
-            ..crate::compact::CompactCofig::default()
-        };
-
-        let mut agent = Self {
-            transport,
-            tools,
-            context_window_manager: Box::new(crate::compact_context::BuiltinContextWindowManager::with_config(context_config)),
-            call_mode: None,
-            session_manager,
-            interrupt_state: Arc::new(InterruptState::new()),
-            config,
-            fallback_chain: None,
-            system_prompt,
-            hooks,
-        };
-
-        agent.eager_load_active_session().await;
-        Ok(agent)
+        AgentBuilder::new()
+            .with_config(config)
+            .with_system_prompt(system_prompt)
+            .with_tools(tools)
+            .build()
+            .await
     }
 
     /// Create a minimal Agent for testing. Does NOT call real transport or LLMs.
@@ -203,7 +177,7 @@ impl Agent {
         }
     }
 
-    async fn eager_load_active_session(&mut self) {
+    pub(crate) async fn eager_load_active_session(&mut self) {
         let sid = self.context_window_manager.session_id();
         if let Some(sid) = sid {
             let _ = self.session_manager.lock().await.switch_session(&sid);
@@ -835,103 +809,6 @@ impl Agent {
                  If nothing worth saving, say so briefly and stop.\n\n\
                  Think through your reasoning before deciding."
             )
-        }
-    }
-}
-
-/// Shared agent handle for the TUI layer.
-///
-/// Wraps `Arc<tokio::sync::Mutex<Agent>>`, releasing the lock during
-/// `coordinator.next_turn().await` so the event loop can access the agent
-/// without deadlocking (e.g. `/clear`, `/new`, Interrupt).
-///
-/// The CLI continues to use `Agent::run(&mut self)` directly.
-pub struct AgentHandle {
-    inner: Arc<tokio::sync::Mutex<Agent>>,
-}
-
-impl AgentHandle {
-    pub fn new(inner: Arc<tokio::sync::Mutex<Agent>>) -> Self {
-        Self { inner }
-    }
-
-    /// Run the conversation loop with automatic lock management.
-    ///
-    /// Locks the inner agent only while executing `turn()` and hook
-    /// lifecycle calls. During `coordinator.next_turn().await`, the
-    /// mutex is unlocked so other tasks can access the agent.
-    pub async fn run(
-        &self,
-        mut coordinator: impl crate::coordinator::ConversationCoordinator,
-    ) -> anyhow::Result<crate::coordinator::ConversationResult> {
-        let hooks = self.inner.lock().await.hooks().clone();
-        let max_turns = self.inner.lock().await.config().max_iterations;
-
-        {
-            let me = self.inner.lock().await;
-            me.hooks().emit_loop_start();
-        }
-        coordinator.on_loop_start();
-
-        let mut turn_count = 0usize;
-
-        loop {
-            tracing::debug!("[agent_loop] next_turn: waiting for input");
-            let user_input = match coordinator.next_turn().await {
-                Some(input) => {
-                    tracing::debug!("[agent_loop] next_turn: received input (len={})", input.len());
-                    input
-                },
-                None => {
-                    tracing::debug!("[agent_loop] next_turn: returned None (no more input)");
-                    hooks.emit_loop_end("input_end");
-                    return Ok(crate::coordinator::ConversationResult::Exit);
-                }
-            };
-
-            let (response, msg_count) = {
-                let mut me = self.inner.lock().await;
-                tracing::debug!("[agent_loop] emitting pre_turn hooks");
-                me.hooks().emit_pre_turn();
-                let response = me.turn(&user_input, true, None).await;
-                let msg_count = me
-                    .session_manager()
-                    .lock()
-                    .await
-                    .session(
-                        &me.context_window_manager()
-                            .session_id()
-                            .unwrap_or_default(),
-                    )
-                    .map(|s| s.messages.len())
-                    .unwrap_or(0);
-                (response, msg_count)
-            };
-
-            let turn_success = response.is_ok();
-            let turn_text = response.as_deref().unwrap_or("").to_string();
-
-            if !coordinator.on_turn_complete(&turn_text, msg_count, turn_success) {
-                hooks.emit_loop_end("user_exit");
-                return Ok(crate::coordinator::ConversationResult::Exit);
-            }
-
-            {
-                let me = self.inner.lock().await;
-                if turn_success {
-                    me.hooks().post_turn(&turn_text, msg_count);
-                } else {
-                    me.hooks().emit_turn_error(&response.unwrap_err());
-                }
-            }
-
-            turn_count += 1;
-            if let Some(max) = max_turns {
-                if turn_count >= max {
-                    hooks.emit_loop_end("max_turns_reached");
-                    return Ok(crate::coordinator::ConversationResult::BudgetExhausted);
-                }
-            }
         }
     }
 }

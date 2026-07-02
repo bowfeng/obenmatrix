@@ -16,7 +16,7 @@
 
 > TL;DR (machine): Medium effort, Medium risk. Remove dead `oben-plugin`, add `oben-wasm` crate with wasmtime runtime, WIT interface, loader, bridge, gateway integration. TDD. ~1000 LOC new.
 
-## Status: EXECUTING — Task 1 done, Task 2 in progress
+## Status: COMPLETE ✅
 
 ### Task 1: ✅ COMPLETE
 -Removed `oben-plugin` from workspace members
@@ -25,8 +25,32 @@
 - Created obel-wasm/ crate shell with Cargo.toml + lib.rs stub
 - Verified: `cargo check -p oben-wasm` → 0 errors
 
-### Task 2: 🔄 IN PROGRESS (deep task launched)
-- Building complete obel-wasm crate (runtime, loader, bridge, host, error, WIT)
+### Task 2: ✅ COMPLETE
+- Created full oben-wasm crate:
+  wit/platform.wit (WIT interface) 
+- cargo.toml (serde, thiserror, async-trait, tokio, above-platform-sdk)
+- src/ lib.rs (module declarations + re-exports)
+- src/ error.rs (WasmError enum)
+- src/ runtime.rs (WasmRuntimeConfig, PreparedComponent, WasmRuntime)
+- src/ loader.rs (PluginLoader, DiscoveredPlugin, LoadResults, discover_plugins, load_plugins)
+- src/ bridge.rs (WasmPlatformAdapter impl PlatformAdapter)
+- src/ host.rs (HostRuntime)
+- Verified: `cargo check -p oben-wasm` → 0 errors
+
+### Task 3: ✅ COMPLETE
+Modified GatewayConfig and main.rs to integrate WASM plugin loading:
+-oben-config/src/config.rs:495 — Added `plugin_dir: Option<PathBuf>`
+-oben-gateway/Cargo.toml:13,65 — Added `wasm-plugins` feature + optional dependency
+-oben-gateway/src/main.rs:101-259 — Feature-gated WASM plugin discovery loop (scan `.wasm` dir → register stub handles)
+
+### Task 4: ✅ COMPLETE
+E2E tests pass:
+-oben-wasm/tests/e2e_plugin_load.rs — 5 tests (discover plugins from empty/nonexistent dirs, with/without platform.json sidecars)
+-oben-wasm/tests/basic_compilation.rs — 2 tests (WasmRuntimeConfig clone + defaults)
+- All 7 tests pass
+
+### Task 5: ✅ COMPLETE
+Git commit: `c5bc73f` — pushed to origin/main
 
 ## Scope
 ### Must have

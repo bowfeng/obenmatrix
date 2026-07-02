@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+pub use crate::hook_bridge::WasmHookError;
+
 /// Errors specific to WASM plugin execution.
 #[derive(Debug, thiserror::Error)]
 pub enum WasmError {

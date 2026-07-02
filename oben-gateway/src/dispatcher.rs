@@ -12,7 +12,8 @@ use crate::coordinator::GatewayCoordinator;
 use crate::platform::IncomingMessage;
 use crate::router::ResponseRouter;
 
-use oben_agent::{Agent, AgentHandle};
+use oben_agent::hooks::HookEngine;
+use oben_agent::{Agent, AgentBuilder};
 use oben_config::AppConfig;
 use oben_tools::ToolRegistry;
 
@@ -27,6 +28,7 @@ pub struct Dispatcher {
     tools: Arc<ToolRegistry>,
     session_map: Mutex<HashMap<String, UserChannel>>, // session_key → sender
     response_router: Arc<ResponseRouter>,
+    hooks: Arc<HookEngine>,
 }
 
 impl Dispatcher {
@@ -35,12 +37,14 @@ impl Dispatcher {
         app_config: AppConfig,
         tools: Arc<ToolRegistry>,
         response_router: Arc<ResponseRouter>,
+        hooks: Arc<HookEngine>,
     ) -> Self {
         Self {
             app_config: Arc::new(app_config),
             tools,
             session_map: Mutex::new(HashMap::new()),
             response_router,
+            hooks,
         }
     }
 
@@ -112,6 +116,7 @@ impl Dispatcher {
         let app_config = self.app_config.clone();
         let tools = self.tools.clone();
         let response_router = self.response_router.clone();
+        let hooks = self.hooks.clone();
 
         tokio::spawn(async move {
             info!(session_key = %session_key, "Coordinator task started");
@@ -142,7 +147,14 @@ impl Dispatcher {
 
             // Build the agent with defaults
             let system_prompt = oben_config::defaults::default_system_prompt();
-            let agent = match Agent::new((*app_config).clone(), system_prompt, tools).await {
+            let agent = match AgentBuilder::new()
+                .with_config((*app_config).clone())
+                .with_system_prompt(system_prompt)
+                .with_tools(tools)
+                .with_hooks(hooks)
+                .build()
+                .await
+            {
                 Ok(agent) => agent,
                 Err(e) => {
                     warn!(error = %e, "Failed to create agent for session");
@@ -150,11 +162,8 @@ impl Dispatcher {
                 }
             };
 
-            // Wrap agent in Arc<Mutex<>> for AgentHandle
-            let agent_handle = AgentHandle::new(Arc::new(Mutex::new(agent)));
-
-            // Run the conversation loop (blocks until exit)
-            let result = agent_handle.run(coordinator).await;
+            let agent = Arc::new(Mutex::new(agent));
+            let result = Agent::run(agent, coordinator).await;
 
             // coordinator ended — response_tx is dropped, response_rx loop will exit
             if let Err(e) = &result {

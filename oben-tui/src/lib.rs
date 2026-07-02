@@ -128,8 +128,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
             let result = a.init_agent().await;
             if result.is_ok() {
                 // Register TUI adapters on the agent's internal HookEngine.
-                // This follows the same pattern as CLI: Agent::new() creates
-                // HookEngine internally, then we register adapters via Agent::hooks().
+                // AgentBuilder creates HookEngine internally (from config), then we register TUI adapters via Agent::hooks() and share it with subagents through SubagentSpawner::new().with_hooks().
                 let ts = a.shared_state.lock().turn_state.clone();
                 // Clone the agent arc before the lock is dropped, to avoid
                 // holding a borrow from the lock guard across the .await below.

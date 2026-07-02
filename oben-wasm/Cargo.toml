@@ -19,8 +19,10 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 oben-platform-sdk = { path = "../oben-platform-sdk" }
+oben-agent = { path = "../oben-agent" }
 chrono = { workspace = true }
 
 [dev-dependencies]
+oben-agent = { path = "../oben-agent" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }

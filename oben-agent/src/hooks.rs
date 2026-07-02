@@ -112,6 +112,48 @@ impl HookBuilder {
         self
     }
 
+    /// Add WASM agent-loop hook components from the given vector.
+    pub fn with_agent_loop_hooks(mut self, hooks: Vec<Box<dyn AgentLoopHooks>>) -> Self {
+        self.agent_loop_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM turn-lifecycle hook components from the given vector.
+    pub fn with_turn_hooks(mut self, hooks: Vec<Box<dyn TurnLifecycleHooks>>) -> Self {
+        self.turn_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM tool-lifecycle hook components from the given vector.
+    pub fn with_tool_hooks(mut self, hooks: Vec<Box<dyn ToolLifecycleHooks>>) -> Self {
+        self.tool_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM streaming hook components from the given vector.
+    pub fn with_streaming_hooks(mut self, hooks: Vec<Box<dyn StreamingHooks>>) -> Self {
+        self.streaming_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM system-events hook components from the given vector.
+    pub fn with_system_hooks(mut self, hooks: Vec<Box<dyn SystemEventsHooks>>) -> Self {
+        self.system_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM session-lifecycle hook components from the given vector.
+    pub fn with_session_hooks(mut self, hooks: Vec<Box<dyn SessionLifecycleHooks>>) -> Self {
+        self.session_hooks.extend(hooks);
+        self
+    }
+
+    /// Add WASM interrupt-lifecycle hook components from the given vector.
+    pub fn with_interrupt_hooks(mut self, hooks: Vec<Box<dyn InterruptLifecycleHooks>>) -> Self {
+        self.interrupt_hooks.extend(hooks);
+        self
+    }
+
     pub fn build(self) -> HookEngine {
         HookEngine {
             agent_loop_hooks: Arc::new(RwLock::new(self.agent_loop_hooks)),

@@ -14,6 +14,7 @@ use crate::cli::{
 use clap::Parser;
 use crate::coordinator::CliCoordinator;
 use oben_agent::coordinator::ConversationConfig;
+use oben_agent::AgentBuilder;
 use oben_cron::{CronJob, CronStore};
 use oben_goals::GoalStore;
 use oben_models::TransportProvider;
@@ -118,11 +119,12 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
         Some(&volatile),
     );
 
-    let mut chat = oben_agent::Agent::new(
-        config,
-        assembled.prompt.clone(),
-        Arc::new(tools),
-    ).await?;
+    let mut chat = AgentBuilder::new()
+        .with_config(config)
+        .with_system_prompt(assembled.prompt.clone())
+        .with_tools(Arc::new(tools))
+        .build()
+        .await?;
 
     // Coordinator handles streaming hook registration internally.
     let conversation_config = ConversationConfig::from_app_config(&chat.config());
@@ -156,11 +158,12 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
 
     let system_prompt = oben_config::defaults::default_system_prompt();
 
-    let mut agent = oben_agent::Agent::new(
-        config,
-        system_prompt.clone(),
-        std::sync::Arc::new(tools),
-    ).await?;
+    let mut agent = AgentBuilder::new()
+        .with_config(config)
+        .with_system_prompt(system_prompt.clone())
+        .with_tools(Arc::new(tools))
+        .build()
+        .await?;
 
     let response = agent.turn(prompt, stream, None).await?;
 
@@ -637,13 +640,13 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
             let prompt_owned = prompt.to_string();
             let config = config.clone();
             async move {
-                let mut goal_agent =   oben_agent::Agent::new(
-                    config.clone(),
-                    sp.clone(),
-                    tools.clone(),
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let mut goal_agent =   AgentBuilder::new()
+                    .with_config(config.clone())
+                    .with_system_prompt(sp.clone())
+                    .with_tools(tools.clone())
+                    .build()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
 
                 goal_agent
                     .turn_with_message(

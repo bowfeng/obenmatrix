@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use oben_agent::compact::CompactCofig;
 use oben_agent::delegate::SubagentSpawner;
+use oben_agent::hooks::HookBuilder;
 use oben_models::{CallMode, Message, ToolParameters, TransportProvider, TransportResponse};
 use oben_tools::registry::{SpawnFn, SubagentResult, ToolRegistry};
 
@@ -56,6 +57,7 @@ impl TransportProvider for MockTransport {
 
 fn make_spawner(transport: Arc<MockTransport>) -> (SubagentSpawner, Arc<ToolRegistry>) {
     let tools = Arc::new(ToolRegistry::new());
+    let hooks = Arc::new(HookBuilder::new().build());
 
     // SubagentSpawner needs Arc<dyn TransportProvider> — MockTransport is Send + Sync
     let spawner = SubagentSpawner::new(
@@ -69,6 +71,7 @@ fn make_spawner(transport: Arc<MockTransport>) -> (SubagentSpawner, Arc<ToolRegi
         5,   // max_iterations
         100, // max_messages
         3,   // max_spawn_depth
+        hooks,
     );
 
     (spawner, tools)

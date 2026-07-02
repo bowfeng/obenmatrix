@@ -3451,6 +3451,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "oben-agent",
  "oben-platform-sdk",
  "semver",
  "serde",

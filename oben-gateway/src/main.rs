@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tracing::info;
+use oben_agent::hooks::HookBuilder;
 use oben_config::AppConfig;
 use oben_gateway::{Dispatcher, Gateway, ResponseRouter};
 use oben_sessions::DBSessionManager;
@@ -56,6 +57,68 @@ fn create_tool_registry() -> ToolRegistry {
     registry
 }
 
+/// Load WASM hook adapters and inject them into a HookBuilder via typed channels.
+///
+/// Returns the builder unchanged when no plugins are found or the feature is disabled.
+#[cfg(feature = "wasm-plugins")]
+async fn load_wasm_hooks(
+    builder: HookBuilder,
+    plugins_dir: &Option<std::path::PathBuf>,
+) -> HookBuilder {
+    use std::path::PathBuf;
+    use oben_wasm::{WasmHookRegistry, WasmRuntime, WasmRuntimeConfig};
+
+    let plugin_path = plugins_dir
+        .clone()
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".obenalien").join("plugins").join("wasm"))
+        });
+
+    let Some(pdir) = plugin_path.as_ref()
+        .filter(|p| p.exists() && p.is_dir())
+    else {
+        return builder;
+    };
+
+    tracing::info!(?pdir, "Loading WASM hook components");
+
+    let runtime = match WasmRuntime::new(WasmRuntimeConfig::default()) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "WASM runtime creation failed");
+            return builder;
+        }
+    };
+
+    let registry = WasmHookRegistry::new(runtime, pdir.clone());
+    let components = match registry.load_hooks().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "WASM hook loading failed");
+            return builder;
+        }
+    };
+
+    let hook_components = match registry.instantiate_hooks(components).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "WASM adapter instantiation failed");
+            return builder;
+        }
+    };
+
+    builder
+        .with_agent_loop_hooks(hook_components.agent_loop)
+        .with_turn_hooks(hook_components.turn)
+        .with_tool_hooks(hook_components.tool)
+        .with_streaming_hooks(hook_components.streaming)
+        .with_system_hooks(hook_components.system)
+        .with_session_hooks(hook_components.session)
+        .with_interrupt_hooks(hook_components.interrupt)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     rustls::crypto::ring::default_provider()
@@ -86,10 +149,25 @@ async fn main() -> Result<()> {
     let tools = Arc::new(create_tool_registry());
     info!("Tool registry created");
 
+    // Build HookEngine with NudgeHook + WASM hook adapters
+    #[cfg(feature = "wasm-plugins")]
+    let hook_engine = load_wasm_hooks(
+        HookBuilder::from_config(&app_config.hooks),
+        &gateway_config.plugin_dir,
+    )
+    .await
+    .build();
+
+    #[cfg(not(feature = "wasm-plugins"))]
+    let hook_engine = HookBuilder::from_config(&app_config.hooks).build();
+
+    tracing::info!("HookEngine built");
+
     let dispatcher = Arc::new(Dispatcher::new(
         app_config.clone(),
         tools,
         response_router.clone(),
+        Arc::new(hook_engine),
     ));
     info!("Dispatcher created");
 
@@ -292,10 +370,14 @@ mod tests {
     async fn test_platform_registry_qq_factory() {
         let mut registry = oben_gateway::platform::PlatformRegistry::new();
         let response_router = Arc::new(super::ResponseRouter::new());
+        let hook_engine = Arc::new(
+            oben_agent::hooks::HookBuilder::from_config(&oben_config::HooksConfig::default()).build()
+        );
         let dispatcher = Arc::new(Dispatcher::new(
             AppConfig::default(),
             Arc::new(ToolRegistry::new()),
             response_router.clone(),
+            hook_engine,
         ));
         let config = oben_config::QQBotConfig {
             enabled: true,
