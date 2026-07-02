@@ -3,8 +3,7 @@
 use super::{KeyAction, Panel};
 use crate::widgets::conversation::{ConversationState, ConversationWidget};
 use crate::widgets::input_bar::{InputBarResult, InputBarWidget, InputState};
-use crate::widgets::message_renderer::{MessageRenderEntry, StyledLine};
-use crate::widgets::message_renderer::MessageRenderer;
+use crate::widgets::message_renderer::{MessageRenderEntry, MessageRenderer, StyledLine, render_body_lines};
 use crossterm::event::KeyEvent;
 use parking_lot::Mutex as PlMutex;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -220,36 +219,7 @@ impl ChatPanel {
                 let mut new_entries: Vec<MessageRenderEntry> = Vec::new();
                 let palette = self.renderer.current_palette();
 
-                // 1. Tool blocks (tool results from completed_tools) — shown first
-                for ct in &completed_tools {
-                    let preview = if ct.output_preview.chars().count() > 60 {
-                        format!("{}...", ct.output_preview.chars().take(60).collect::<String>())
-                    } else {
-                        ct.output_preview.clone()
-                    };
-                    let status_icon = if ct.has_error { "CR" } else { "OK" };
-                    let status_color = if ct.has_error {
-                        palette.error
-                    } else {
-                        palette.success
-                    };
-                    let body_lines = vec![StyledLine {
-                        content: Line::from(Span::styled(
-                            format!("   {} {}({})", status_icon, ct.name, preview),
-                            Style::default().fg(status_color),
-                        )),
-                        role_color: Some(status_color),
-                    }];
-                    new_entries.push(MessageRenderEntry {
-                        role: oben_models::MessageRole::Tool,
-                        is_tool_result: true,
-                        body_lines,
-                        tool_calls: Vec::new(),
-                        reasoning: None,
-                    });
-                }
-
-                // 2. Reasoning block (if present) — shown after tools
+                // 1. Reasoning block (shown FIRST)
                 if !reasoning_text.is_empty() {
                     let reasoning_lines: Vec<StyledLine> = reasoning_text
                         .lines()
@@ -271,40 +241,75 @@ impl ChatPanel {
                             body_lines: reasoning_lines,
                             tool_calls: Vec::new(),
                             reasoning: Some(reasoning_text.clone()),
+                            title: Some(Line::from(vec![
+                                Span::styled(
+                                    "  🤔 Thought",
+                                    Style::default()
+                                        .fg(palette.muted)
+                                        .add_modifier(Modifier::BOLD | Modifier::DIM),
+                                ),
+                            ])),
                         });
                     }
                 }
 
-                // 3. Main response block with tool call indicators
+                // 2. Main response
                 if !text.is_empty() {
-                    let mut tool_indicators: Vec<String> = Vec::new();
-                    for ct in &completed_tools {
-                        if ct.has_error {
-                            tool_indicators.push(format!("{} {{error}}", ct.name));
-                        } else {
-                            tool_indicators.push(ct.name.clone());
+                    let mut body_lines = render_body_lines(&text, &palette);
+
+                    if !completed_tools.is_empty() {
+                        // Blank separator line
+                        body_lines.push(StyledLine {
+                            content: Line::raw(""),
+                            role_color: None,
+                        });
+                        body_lines.push(StyledLine {
+                            content: Line::styled(
+                                "── Tools ──",
+                                Style::default()
+                                    .fg(palette.info)
+                                    .add_modifier(Modifier::DIM | Modifier::BOLD),
+                            ),
+                            role_color: None,
+                        });
+                        for ct in &completed_tools {
+                            let preview = if ct.output_preview.chars().count() > 80 {
+                                format!(
+                                    "{}...",
+                                    ct.output_preview.chars().take(80).collect::<String>()
+                                )
+                            } else {
+                                ct.output_preview.clone()
+                            };
+                            let trail = format!(
+                                "● {} {} {}",
+                                tool_name_to_title_case(&ct.name),
+                                if ct.has_error { "\u{2717}" } else { "\u{2713}" },
+                                preview,
+                            );
+                            body_lines.push(StyledLine {
+                                content: Line::styled(trail, Style::default().fg(palette.muted)),
+                                role_color: None,
+                            });
                         }
                     }
-                    let body_lines = vec![StyledLine {
-                        content: Line::from(text.clone()),
-                        role_color: None,
-                    }];
-                    let tool_indicators_count = tool_indicators.len();
+
                     new_entries.push(MessageRenderEntry {
                         role: oben_models::MessageRole::Assistant,
                         body_lines,
                         is_tool_result: false,
-                        tool_calls: tool_indicators,
+                        tool_calls: Vec::new(),
                         reasoning: None,
+                        title: None,
                     });
                     tracing::info!(
-                        "[chat_panel] flushed streaming_text to entries: len={}, with {} tool indicators",
+                        "[chat_panel] flushed streaming_text to entries: len={}, tools={}",
                         text.len(),
-                        tool_indicators_count
+                        completed_tools.len(),
                     );
                 }
 
-                // 4. Commit all entries at once
+                // 3. Commit all entries at once
                 if !new_entries.is_empty() {
                     let entry_count = new_entries.len();
                     self.message_state
@@ -551,4 +556,17 @@ impl Panel for ChatPanel {
             _ => None,
         }
     }
+}
+
+fn tool_name_to_title_case(name: &str) -> String {
+    name.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

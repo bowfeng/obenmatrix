@@ -805,7 +805,7 @@ impl ConversationWidget {
             if block_rect.y.saturating_add(block_rect.height) > last_entry_vp_bottom {
                 last_entry_vp_bottom = block_rect.y.saturating_add(block_rect.height);
             }
-            let (_entry_idx, block_type, wrapped) = &layout_entries[idx];
+            let (entry_idx, block_type, wrapped) = &layout_entries[idx];
 
             // body_area = block.inner(block_area) — calculated at render time
             // using the actual Block struct (handles title, borders correctly)
@@ -825,10 +825,15 @@ impl ConversationWidget {
                     BlockType::Message(r) => r,
                     BlockType::ToolResult => unreachable!(),
                 };
+                let entries = state.message_entries.lock().unwrap();
+                let title = entries[*entry_idx]
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| self.role_title(role, palette));
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(self.role_border_style(role, palette))
-                    .title(self.role_title(role, palette))
+                    .title(title)
             };
 
             // Render body (Paragraph) before block (borders on top)
@@ -1141,6 +1146,7 @@ impl ConversationWidget {
                 is_tool_result: false,
                 tool_calls: Vec::new(),
                 reasoning: None,
+                title: None,
             },
         );
     }
@@ -1172,6 +1178,7 @@ impl ConversationWidget {
                     is_tool_result: false,
                     tool_calls: Vec::new(),
                     reasoning: None,
+                    title: None,
                 },
             );
         }

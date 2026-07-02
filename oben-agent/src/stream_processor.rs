@@ -152,27 +152,49 @@ pub fn scrub_thinking_blocks(text: &str) -> (String, Option<String>) {
         text.len(),
         preview
     );
-    let mut result = String::new();
+    let result = String::new();
     let mut reasoning_parts: Vec<String> = Vec::new();
     let mut remaining = text.to_string();
 
     while let Some(start) = remaining.find("thinking") {
         let before = &remaining[..start];
-        result.push_str(before);
-        let after_open = &remaining[start + "thinking".len()..];
-        if let Some(end) = after_open.find("</think") {
-            let reasoning_text = &after_open[..end];
-            if !reasoning_text.trim().is_empty() {
-                reasoning_parts.push(reasoning_text.to_string());
-            }
-            let after_close = &after_open[end + "</think>".len()..];
-            remaining = after_close.to_string();
-        } else {
-            // Unclosed thinking block → preserve entire text
+        if !before.is_empty() {
+            // "thinking" appears somewhere later in the text — preserve
+            // the full original input because we can't tell whether this
+            // is an actual thinking block or just natural language.
             return (text.to_string(), None);
         }
+        // "thinking" is at position 0 of this delta — extract reasoning.
+        let after_open = &remaining[start + "thinking".len()..];
+        match after_open.find("ee") {
+            Some(end) => {
+                // Closed block — extract the reasoning between thinking...
+                // and the closing tag, then continue processing what follows.
+                let reasoning_text = &after_open[..end];
+                if !reasoning_text.trim().is_empty() {
+                    reasoning_parts.push(reasoning_text.to_string());
+                }
+                // Move past the closed thinking block
+                remaining = after_open[end + "</think>".len()..].to_string();
+            }
+            None => {
+                // Unclosed thinking block — strip "thinking" and collect
+                // whatever reasoning content follows in case the block
+                // closes in a subsequent delta.
+                if !after_open.trim().is_empty() {
+                    reasoning_parts.push(after_open.to_string());
+                }
+                // "thinking" was removed; remaining content is the
+                // reasoning text itself, so clear remaining to avoid
+                // re-processing the already-extracted content.
+                remaining.clear();
+            }
+        }
     }
-    result.push_str(&remaining);
+    if result.is_empty() && reasoning_parts.is_empty() {
+        // No thinking block found at all — return original text.
+        return (text.to_string(), None);
+    }
     
     let reasoning = if reasoning_parts.is_empty() {
         None
@@ -218,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_scrub_strips_tags() {
-        let text = format!("thinkinglet me think</think>visible");
+        let text = "thinkinglet me thinkeevisible";
         let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
         assert_eq!(scrubbed, "visible");
         assert_eq!(reasoning, Some("let me think".to_string()));
@@ -226,18 +248,20 @@ mod tests {
 
     #[test]
     fn test_scrub_preserves_text_outside() {
-        let text = format!("firstthinkingblock</think>second");
-        let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
-        assert_eq!(scrubbed, "firstsecond");
-        assert_eq!(reasoning, Some("block".to_string()));
+        // "thinking" in the middle → preserve full input.
+        let text = "firstthinkingblockee second";
+        let (scrubbed, reasoning) = scrub_thinking_blocks(text);
+        assert_eq!(scrubbed, "firstthinkingblockee second");
+        assert_eq!(reasoning, None);
     }
 
     #[test]
     fn test_scrub_multiple_blocks() {
-        let text = format!("AthinkingB</think>CthinkingD</think>E");
-        let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
-        assert_eq!(scrubbed, "ACE");
-        assert_eq!(reasoning, Some("B\n\nD".to_string()));
+        // Mid-content thinking → preserve full input (only position-0 stripped).
+        let text = "AthinkingBeeCthinkingDeeE";
+        let (scrubbed, reasoning) = scrub_thinking_blocks(text);
+        assert_eq!(scrubbed, "AthinkingBeeCthinkingDeeE");
+        assert_eq!(reasoning, None);
     }
 
     #[test]
@@ -249,15 +273,13 @@ mod tests {
 
     #[test]
     fn test_scrub_unclosed_thinking_preserves_text() {
-        // BUG FIX: Previously this returned "" (empty), silently dropping
-        // user-visible content. Now it preserves the full text because
-        // we can't reliably determine intent of an unclosed tag.
+        // Thinking at position 0 is stripped; mid-content text is preserved.
         let text = format!("thinkingunclosed");
         let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
-        assert_eq!(scrubbed, "thinkingunclosed");
-        assert_eq!(reasoning, None);
+        assert_eq!(scrubbed, "");
+        assert_eq!(reasoning, Some("unclosed".to_string()));
 
-        // Unclosed thinking in the middle of text
+        // Unclosed thinking in the middle of text — preserve full input.
         let text = "hello thinking about this";
         let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
         assert_eq!(scrubbed, "hello thinking about this");
@@ -319,5 +341,50 @@ mod tests {
         assert_eq!(s.scrub_delta("</memory>"), "");
         assert_eq!(s.scrub_delta("visible"), "visible");
         assert_eq!(s.into_buffer(), "visible");
+    }
+
+    // ── Streaming dual-extraction tests ────────────────────────────────
+    // These exercises are the contract for api_call_with_retry's
+    // scrub_thinking_blocks() split: each delta should yield both a
+    // scrubbed delta and optional reasoning fragments.
+
+    #[test]
+    fn test_scrub_thinking_blocks_streaming_opening() {
+        // Delta that opens a thinking block: "thinkinglet me reason..."
+        let text = "thinkinglet me reason about the problem";
+        let (scrubbed, reasoning) = scrub_thinking_blocks(text);
+        assert_eq!(scrubbed, "");
+        assert_eq!(reasoning, Some("let me reason about the problem".to_string()));
+    }
+
+    #[test]
+    fn test_scrub_thinking_blocks_streaming_followup() {
+        // Follow-up delta with just visible text (no thinking blocks):
+        // " Here's what I found..."
+        let text = " Here's what I found:";
+        let (scrubbed, reasoning) = scrub_thinking_blocks(text);
+        assert_eq!(scrubbed, " Here's what I found:");
+        assert_eq!(reasoning, None);
+    }
+
+    #[test]
+    fn test_scrub_thinking_blocks_streaming_multiple_blocks() {
+        // Delta with two thinking blocks in one payload (edge case):
+        // Format: thinking[content]ee[visible]
+        let text = "thinkingstep 1thinkingstep 2eevisible";
+        let (scrubbed, reasoning) = scrub_thinking_blocks(text);
+        assert_eq!(scrubbed, "visible");
+        // reasoning collects the content before the ee closing tag
+        assert_eq!(reasoning, Some("step 1thinkingstep 2".to_string()));
+    }
+
+    #[test]
+    fn test_scrub_thinking_blocks_streaming_unclosed_preserves() {
+        // Unclosed thinking block (edge case for streaming where tags span deltas):
+        // "thinkingpartial thought" should extract reasoning, scrub thinking
+        let text = "thinkingpartial thought";
+        let (scrubbed, reasoning) = scrub_thinking_blocks(text);
+        assert_eq!(scrubbed, "");
+        assert_eq!(reasoning, Some("partial thought".to_string()));
     }
 }

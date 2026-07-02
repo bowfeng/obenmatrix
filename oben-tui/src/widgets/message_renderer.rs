@@ -7,6 +7,13 @@ use ratatui_themes::ThemeName;
 use crate::widgets::role_style::role_info_for_role;
 use oben_models::{Message, MessageContent, MessagePart, MessageRole};
 
+/// A text segment with associated styling.
+#[derive(Debug, Clone)]
+pub struct Segment {
+    pub text: String,
+    pub style: Style,
+}
+
 /// A single renderable line with optional role color for the header.
 #[derive(Debug, Clone)]
 pub struct StyledLine {
@@ -22,6 +29,7 @@ pub struct MessageRenderEntry {
     pub body_lines: Vec<StyledLine>,
     pub tool_calls: Vec<String>,
     pub reasoning: Option<String>,
+    pub title: Option<Line<'static>>,
 }
 
 impl MessageRenderEntry {
@@ -36,102 +44,31 @@ impl MessageRenderEntry {
 
 /// Render markdown text into styled lines using pulldown-cmark.
 pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> Vec<StyledLine> {
-    tracing::info!("[render_md] INPUT text_len={} preview={}", text.len(), text.chars().take(200).collect::<String>());
+    tracing::trace!("[render_md] INPUT text_len={} preview={}", text.len(), text.chars().take(200).collect::<String>());
     let parser = Parser::new(text);
-    let mut lines: Vec<StyledLine> = Vec::new();
-    let mut current_line_text = String::new();
-    let mut code_block_lines: Vec<String> = Vec::new();
-    let mut code_lang = String::new();
-    let mut in_code_block = false;
 
     let body_style = Style::default().fg(palette.info);
     let code_style = Style::default().fg(palette.success).add_modifier(Modifier::DIM);
     let heading_style = Style::default().fg(palette.accent).add_modifier(Modifier::BOLD);
 
+    let mut lines: Vec<StyledLine> = Vec::new();
+    let mut in_code_block = false;
+    
+    // Style stack — tracks nested Strong/Emphasis
+    let mut in_strong = false;
+    let mut in_emphasis = false;
+
+    // Segments — accumulated styled text
+    let mut segments: Vec<Segment> = Vec::new();
+
+    let mut pending_code_block_lang: Option<String> = None;
+    let mut code_block_lines: Vec<String> = Vec::new();
+
     for event in parser {
         match event {
-            Event::Text(text) => {
-                if in_code_block {
-                    if !text.is_empty() {
-                        code_block_lines.push(text.to_string());
-                    }
-                } else {
-                    current_line_text.push_str(&text.to_string());
-                }
-            }
-            Event::Code(code) => {
-                if in_code_block {
-                    code_block_lines.push(code.to_string());
-                } else {
-                    current_line_text.push('`');
-                    current_line_text.push_str(&code);
-                    current_line_text.push('`');
-                }
-            }
-            Event::SoftBreak => {
-                current_line_text.push(' ');
-            }
-            Event::HardBreak => {
-                current_line_text.push(' ');
-            }
-            Event::Start(Tag::Paragraph) => {}
-            Event::End(TagEnd::Paragraph) => {
-                if !current_line_text.is_empty() {
-                    lines.push(StyledLine {
-                        content: Line::from(Span::styled(
-                            current_line_text.clone(),
-                            body_style,
-                        )),
-                        role_color: None,
-                    });
-                    current_line_text.clear();
-                }
-            }
-            Event::Start(Tag::Heading { level, .. }) => {
-                tracing::info!("[render_md] START Heading level={:?}", level);
-                lines.push(StyledLine {
-                    content: Line::from(vec![
-                        Span::styled("▸ ", Style::default().fg(palette.accent)),
-                        Span::styled(current_line_text.clone(), heading_style),
-                    ]),
-                    role_color: None,
-                });
-                current_line_text.clear();
-            }
-            Event::End(TagEnd::CodeBlock) => {
-                tracing::info!("[render_md] END CodeBlock lang=\"{}\"", code_lang);
-                let lang_str = code_lang.trim().to_string();
-                let lang_label = if !lang_str.is_empty() && lang_str != "text" {
-                    format!("[{}] ", lang_str.to_lowercase())
-                } else {
-                    String::new()
-                };
-
-                if !lang_label.is_empty() {
-                    lines.push(StyledLine {
-                        content: Line::from(Span::styled(
-                            lang_label,
-                            Style::default().fg(palette.accent),
-                        )),
-                        role_color: None,
-                    });
-                }
-
-                for code_line in &code_block_lines {
-                    lines.push(StyledLine {
-                        content: Line::from(Span::styled(
-                            code_line.clone(),
-                            code_style,
-                        )),
-                        role_color: None,
-                    });
-                }
-                code_block_lines.clear();
-                in_code_block = false;
-            }
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) => {
-                tracing::info!("[render_md] START CodeBlock lang=\"{}\"", lang.trim());
-                code_lang = lang.trim().to_string();
+                tracing::trace!("[render_md] START CodeBlock lang=\"{}\"", lang.trim());
+                pending_code_block_lang = Some(lang.trim().to_string());
                 in_code_block = true;
                 code_block_lines.clear();
             }
@@ -139,65 +76,160 @@ pub fn render_body_lines(text: &str, palette: &ratatui_themes::ThemePalette) -> 
                 in_code_block = true;
                 code_block_lines.clear();
             }
-            Event::Start(Tag::BlockQuote(_)) => {
-                tracing::info!("[render_md] START BlockQuote");
-                if !current_line_text.is_empty() {
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(lang) = pending_code_block_lang {
+                    let lang_str = lang.trim();
+                    let label = if !lang_str.is_empty() && lang_str != "text" {
+                        format!("[{}] ", lang_str.to_lowercase())
+                    } else { String::new() };
+                    if !label.is_empty() {
+                        lines.push(StyledLine {
+                            content: Line::from(Span::styled(label, Style::default().fg(palette.accent))),
+                            role_color: None,
+                        });
+                    }
+                }
+                for code_line in &code_block_lines {
                     lines.push(StyledLine {
-                        content: Line::from(vec![
-                            Span::styled("┃ ", Style::default().fg(palette.info).add_modifier(Modifier::DIM)),
-                            Span::styled(current_line_text.clone(), body_style.add_modifier(Modifier::DIM)),
-                        ]),
+                        content: Line::from(Span::styled(code_line.clone(), code_style)),
                         role_color: None,
                     });
-                    current_line_text.clear();
                 }
+                code_block_lines.clear();
+                pending_code_block_lang = None;
+                in_code_block = false;
             }
-            Event::End(TagEnd::BlockQuote(_)) => {}
-            Event::Start(Tag::Item) => {
-                tracing::info!("[render_md] START Item text=\"{}\"", current_line_text.chars().take(40).collect::<String>());
+            
+            // ── Inline styling ──────────────
+            Event::Start(Tag::Strong) => { in_strong = true; }
+            Event::End(TagEnd::Strong) => { in_strong = false; }
+            Event::Start(Tag::Emphasis) => { in_emphasis = true; }
+            Event::End(TagEnd::Emphasis) => { in_emphasis = false; }
+
+            // ── Headings ─────────────────────────────────
+            Event::Start(Tag::Heading { level, .. }) => {
+                if !segments.is_empty() {
+                    lines.push(flush_segments(&mut segments));
+                }
+                tracing::trace!("[render_md] START Heading level={:?}", level);
                 lines.push(StyledLine {
                     content: Line::from(vec![
-                        Span::styled("• ", Style::default().fg(palette.info)),
-                        Span::styled(current_line_text.clone(), body_style),
+                        Span::styled("▸ ", Style::default().fg(palette.accent)),
+                        Span::styled(segments_text(&segments), heading_style),
                     ]),
                     role_color: None,
                 });
-                current_line_text.clear();
+            }
+
+            // ── Paragraphs ───────────────────────────────
+            Event::Start(Tag::Paragraph) => {}
+            Event::End(TagEnd::Paragraph) => {
+                if !segments.is_empty() {
+                    lines.push(flush_segments(&mut segments));
+                }
+            }
+
+            // ── Blockquotes ──────────────────────────────
+            Event::Start(Tag::BlockQuote(_)) => {
+                if !segments.is_empty() {
+                    lines.push(flush_segments(&mut segments));
+                }
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {}
+
+            // ── Lists ────────────────────────────────────
+            Event::Start(Tag::Item) => {
+                if !segments.is_empty() {
+                    lines.push(StyledLine {
+                        content: Line::from(vec![
+                            Span::styled("• ", Style::default().fg(palette.info)),
+                            Span::styled(segments_text(&segments), body_style),
+                        ]),
+                        role_color: None,
+                    });
+                    segments.clear();
+                } else {
+                    lines.push(StyledLine {
+                        content: Line::from(Span::styled("• ", Style::default().fg(palette.info))),
+                        role_color: None,
+                    });
+                }
             }
             Event::Start(Tag::List(_)) => {}
             Event::End(TagEnd::List(_)) => {}
-            Event::Start(Tag::Table(_)) => {
-                if !current_line_text.is_empty() {
-                    lines.push(StyledLine {
-                        content: Line::from(Span::styled(
-                            current_line_text.clone(),
-                            body_style,
-                        )),
-                        role_color: None,
-                    });
-                    current_line_text.clear();
+
+            // ── Text content ─────────────────────────────
+            Event::Text(text) => {
+                if in_code_block {
+                    code_block_lines.push(text.to_string());
+                } else {
+                    let mut style = body_style;
+                    if in_strong { style = style.add_modifier(Modifier::BOLD); }
+                    if in_emphasis { style = style.add_modifier(Modifier::ITALIC); }
+                    segments.push(Segment { text: text.to_string(), style });
                 }
+            }
+
+            // ── Inline code ─────────────────
+            Event::Code(code) => {
+                if in_code_block {
+                    code_block_lines.push(code.to_string());
+                } else {
+                    segments.push(Segment { text: code.to_string(), style: code_style });
+                }
+            }
+
+            // ── Breaks ───────────────────────────────────
+            Event::SoftBreak => {
+                if !in_code_block {
+                    segments.push(Segment { text: " ".to_string(), style: body_style });
+                }
+            }
+            Event::HardBreak => {
+                if in_code_block {
+                    code_block_lines.push("\n".to_string());
+                } else if !segments.is_empty() {
+                    lines.push(flush_segments(&mut segments));
+                }
+            }
+
+            // ── Horizontal rule ──────────────────────────
+            Event::Rule => {
+                let rule = "\u{2500}".repeat(60);
+                lines.push(StyledLine {
+                    content: Line::from(Span::styled(rule, Style::default().fg(palette.info).add_modifier(Modifier::DIM))),
+                    role_color: None,
+                });
             }
             _ => {}
         }
     }
 
-    if !current_line_text.is_empty() {
-        lines.push(StyledLine {
-            content: Line::from(Span::styled(
-                current_line_text,
-                body_style,
-            )),
-            role_color: None,
-        });
+    // Flush remaining segments
+    if !segments.is_empty() {
+        lines.push(flush_segments(&mut segments));
     }
 
     for (i, line) in lines.iter().enumerate() {
-        tracing::info!("[render_md] line[{}] content=\"{}\"", i, line.content.spans.iter().map(|s| s.content.to_string()).collect::<String>());
+        tracing::trace!("[render_md] line[{}] content=\"{}\"", i, line.content.spans.iter().map(|s| s.content.to_string()).collect::<String>());
     }
-    tracing::info!("[render_md] FINAL lines={}", lines.len());
+    tracing::trace!("[render_md] FINAL lines={}", lines.len());
 
     lines
+}
+
+fn segments_text(segments: &[Segment]) -> String {
+    segments.iter().map(|s| s.text.as_str()).collect()
+}
+
+fn flush_segments(segments: &mut Vec<Segment>) -> StyledLine {
+    let spans: Vec<Span<'static>> = segments.drain(..)
+        .map(|s| Span::styled(s.text, s.style))
+        .collect();
+    StyledLine {
+        content: Line::from(spans),
+        role_color: None,
+    }
 }
 
 /// Check if a URL is a base64 data URL (starts with "data:").
@@ -251,7 +283,7 @@ pub fn render_message_entry(
             .collect::<Vec<_>>()
             .join(" "),
     };
-    tracing::info!(
+    tracing::trace!(
         "[render_entry] role={:?} raw_content_len={} preview={}",
         msg.role, raw_content.len(),
         raw_content.chars().take(120).collect::<String>()
@@ -300,7 +332,7 @@ pub fn render_message_entry(
     let mut body_lines = if text.is_empty() {
         vec![]
     } else {
-        tracing::info!("[render_md] text to parse len={} preview={}", text.len(), text.chars().take(200).collect::<String>());
+        tracing::trace!("[render_md] text to parse len={} preview={}", text.len(), text.chars().take(200).collect::<String>());
         render_body_lines(&text, palette)
     };
 
@@ -345,6 +377,7 @@ pub fn render_message_entry(
         body_lines,
         tool_calls,
         reasoning: msg.reasoning.clone(),
+        title: None,
     }
 }
 
@@ -421,6 +454,14 @@ impl MessageRenderer {
             body_lines: reasoning_lines,
             tool_calls: vec![],
             reasoning: Some(refining),
+            title: Some(Line::from(vec![
+                Span::styled(
+                    "  🤔 Thought",
+                    Style::default()
+                        .fg(self.current_palette().muted)
+                        .add_modifier(Modifier::BOLD | Modifier::DIM),
+                ),
+            ])),
         };
 
         vec![reasoning_entry, main]
