@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use anyhow;
 use super::kind::*;
@@ -15,10 +15,7 @@ pub struct NudgeHook {
     config: NudgeConfig,
     turn_count: AtomicUsize,
     has_memory_tools: bool,
-    sub_turn_callback: Option<Mutex<Box<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync>>>,
     /// HTTP client for submitting memory-review cron jobs to the daemon agent.
-    /// When `Some`, submissions are fire-and-forget HTTP POSTs.
-    /// When `None`, the hook calls the sub_turn_callback (CLI path).
     cron_client: Option<CronClient>,
 }
 
@@ -29,7 +26,6 @@ impl NudgeHook {
             config: config.clone(),
             turn_count: AtomicUsize::new(0),
             has_memory_tools: false,
-            sub_turn_callback: None,
             cron_client: None,
         }
     }
@@ -40,7 +36,6 @@ impl NudgeHook {
             config: config.clone(),
             turn_count: AtomicUsize::new(0),
             has_memory_tools: false,
-            sub_turn_callback: None,
             cron_client: Some(CronClient::new(daemon_url)),
         }
     }
@@ -54,14 +49,8 @@ impl NudgeHook {
             config: nc,
             turn_count: AtomicUsize::new(0),
             has_memory_tools: false,
-            sub_turn_callback: None,
             cron_client: None,
         })
-    }
-
-    pub fn set_sub_turn_callback<F>(&mut self, f: F)
-    where F: Fn(&str) -> anyhow::Result<()> + Send + Sync + 'static {
-        self.sub_turn_callback = Some(Mutex::new(Box::new(f)));
     }
 
     pub fn set_turn_count(&mut self, count: usize) {
@@ -115,11 +104,6 @@ impl TurnLifecycleHooks for NudgeHook {
                     }
                 }
             });
-        } else if let Some(ref callback) = self.sub_turn_callback {
-            if let Ok(guard) = callback.lock() {
-                let prompt = crate::nudge::build_nudge_prompt(true, true);
-                let _ = guard(&prompt);
-            }
         }
     }
 }
