@@ -5,6 +5,7 @@
 //!
 //! Example: `oben cron list` to see all jobs, `oben cron create --help` for creating.
 
+pub mod http;
 pub mod jobs;
 pub mod schedule;
 
