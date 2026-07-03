@@ -127,7 +127,7 @@ impl TurnLifecycleHooks for WasmTurnLifecycleAdapter {
         wrap_call_str(&self.bridge, "on_pre_turn", |_| Ok(()));
     }
 
-    fn on_post_turn(&self, response: &str, success: bool) {
+    fn on_post_turn(&self, response: &str, success: bool, _turn_count: u32) {
         wrap_call_str(&self.bridge, "on_post_turn", |_| Ok(()));
         let _ = response;
         let _ = success;
