@@ -25,5 +25,7 @@ regex = { workspace = true }
 tokio = { workspace = true, features = ["sync", "fs", "time", "macros", "signal"] }
 tracing-subscriber = { workspace = true, default-features = true, features = ["fmt"] }
 
+reqwest.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true

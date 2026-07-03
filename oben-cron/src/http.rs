@@ -1,8 +1,49 @@
-//! HTTP request/response data types for the cron scheduler.
+//! HTTP request/response data types and client for the cron scheduler.
 //!
-//! These structs are pure data types — no HTTP server logic lives here.
+//! This module provides both the data types for cron submission and a lightweight
+//! HTTP client (`CronClient`) for daemons or other services to submit cron jobs
+//! to theoben agent endpoint. No HTTP server endpoints are defined here.
 
 use serde::{Deserialize, Serialize};
+
+/// Lightweight HTTP client for submitting cron jobs to the agent daemon.
+///
+/// # Example
+/// ```ignore
+/// let client = CronClient::new(None);
+/// let resp = client.submit(&request).await?;
+/// ```
+pub struct CronClient {
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl CronClient {
+    /// Create a new `CronClient` with an optional base URL.
+    ///
+    /// When `base_url` is `None`, defaults to `http://localhost:8790`.
+    pub fn new(base_url: Option<String>) -> Self {
+        let base_url = base_url.unwrap_or_else(|| "http://localhost:8790".to_string());
+        Self {
+            base_url,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    /// Submit a cron job to the daemon endpoint.
+    pub async fn submit(
+        &self,
+        request: &CronSubmitRequest,
+    ) -> Result<CronSubmitResponse, reqwest::Error> {
+        self.client
+            .post(format!("{}/cron/submit", self.base_url))
+            .json(request)
+            .send()
+            .await?
+            .json::<CronSubmitResponse>()
+            .await
+    }
+}
 
 /// Request body for submitting a cron job via HTTP.
 #[derive(Debug, Clone, Deserialize, Serialize)]
