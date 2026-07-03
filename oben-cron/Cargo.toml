@@ -25,5 +25,11 @@ regex = { workspace = true }
 tokio = { workspace = true, features = ["sync", "fs", "time", "macros", "signal"] }
 tracing-subscriber = { workspace = true, default-features = true, features = ["fmt"] }
 
+reqwest.workspace = true
+
+axum = { version = "0.8", features = ["json"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors"] }
+
 [dev-dependencies]
 tempfile.workspace = true

@@ -16,12 +16,26 @@ async fn main() -> Result<()> {
     info!("Cron daemon base dir: {:?}", base_dir);
 
     let store = oben_cron::jobs::CronStore::new(base_dir.clone())?;
+    let store: Arc<oben_cron::jobs::CronStore> = Arc::new(store);
 
     // Write PID file so supervisors can track the process
     let pid_path = base_dir.join("cron.pid");
     let pid = std::process::id();
     fs::write(&pid_path, pid.to_string()).with_context(|| "Write PID file")?;
     info!("PID file written: {} (pid: {})", pid_path.display(), pid);
+
+    // Start HTTP server for job submission
+    let port: u16 = std::env::var("OBEN_CRON_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8790);
+    let addr = format!("127.0.0.1:{}", port);
+    let server_store = Arc::clone(&store);
+    info!("HTTP server starting on {}", addr);
+    tokio::spawn(async move {
+        let parse_addr: std::net::SocketAddr = addr.parse().unwrap();
+        oben_cron::server::run_server(server_store, parse_addr).await;
+    });
 
     let running = Arc::new(AtomicBool::new(true));
 
@@ -49,29 +63,20 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Main tick loop
-    let tick_interval = Duration::from_secs(60);
+    // Spawn cron tick loop as a background task
+    let daemon_store = Arc::clone(&store);
+    let daemon_handle = oben_cron::jobs::Daemon::spawn(
+        daemon_store,
+        Duration::from_secs(60),
+    );
+
+    // Wait for signal to stop
     while running.load(Ordering::SeqCst) {
-        tokio::time::sleep(tick_interval).await;
-
-        if !running.load(Ordering::SeqCst) {
-            break;
-        }
-
-        let due = store.get_due_jobs();
-        if !due.is_empty() {
-            info!("cron tick: {} job(s) due", due.len());
-            for job in due {
-                let id = job.id.clone();
-                let name = job.name.clone();
-                let ober_exec = oben_cron::cron_exec_binary();
-                if let Err(e) = store.advance_job(&id, &ober_exec) {
-                    warn!("Failed to process {}: {}", id, e);
-                }
-                info!("tick: completed cron job '{}' ({})", name, id);
-            }
-        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
+
+    // Stop daemon
+    daemon_handle.0.stop();
 
     info!("Cron daemon stopped");
     Ok(())
