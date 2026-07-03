@@ -5,6 +5,7 @@ use anyhow;
 use super::kind::*;
 use crate::ContextWindowManager;
 use crate::nudge::NudgeConfig;
+use oben_cron::http::{CronClient, CronSubmitRequest};
 
 // ---------------------------------------------------------------------------
 // NudgeHook — concrete hook that triggers memory/skill reviews
@@ -14,7 +15,11 @@ pub struct NudgeHook {
     config: NudgeConfig,
     turn_count: AtomicUsize,
     has_memory_tools: bool,
-    sub_turn_callback: Option<Mutex<Box<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync>>>
+    sub_turn_callback: Option<Mutex<Box<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync>>>,
+    /// HTTP client for submitting memory-review cron jobs to the daemon agent.
+    /// When `Some`, submissions are fire-and-forget HTTP POSTs.
+    /// When `None`, the hook calls the sub_turn_callback (CLI path).
+    cron_client: Option<CronClient>,
 }
 
 
@@ -25,6 +30,18 @@ impl NudgeHook {
             turn_count: AtomicUsize::new(0),
             has_memory_tools: false,
             sub_turn_callback: None,
+            cron_client: None,
+        }
+    }
+
+    /// Create a NudgeHook that posts memory-review cron jobs to the daemon agent.
+    pub fn from_config_for_daemon(config: &NudgeConfig, daemon_url: Option<String>) -> Self {
+        Self {
+            config: config.clone(),
+            turn_count: AtomicUsize::new(0),
+            has_memory_tools: false,
+            sub_turn_callback: None,
+            cron_client: Some(CronClient::new(daemon_url)),
         }
     }
 
@@ -38,6 +55,7 @@ impl NudgeHook {
             turn_count: AtomicUsize::new(0),
             has_memory_tools: false,
             sub_turn_callback: None,
+            cron_client: None,
         })
     }
 
@@ -74,9 +92,32 @@ impl TurnLifecycleHooks for NudgeHook {
             return;
         }
         self.turn_count.store(0, Ordering::SeqCst);
-        if let Some(ref callback) = self.sub_turn_callback {
+
+        if let Some(ref client) = self.cron_client {
+            let client = client.clone();
+            let prompt = crate::nudge::build_nudge_prompt(true, true);
+            tokio::spawn(async move {
+                let request = CronSubmitRequest {
+                    prompt,
+                    deliver_target: None,
+                    session_id: None,
+                };
+                match client.submit(&request).await {
+                    Ok(resp) => {
+                        tracing::info!(
+                            job_id = resp.job_id,
+                            status = resp.status,
+                            "Nudge cron job submitted to daemon agent"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = e.to_string(), "Nudge cron submit failed");
+                    }
+                }
+            });
+        } else if let Some(ref callback) = self.sub_turn_callback {
             if let Ok(guard) = callback.lock() {
-                let prompt = crate::nudge::build_nudge_prompt(self.config.memory_enabled(), self.config.skill_enabled());
+                let prompt = crate::nudge::build_nudge_prompt(true, true);
                 let _ = guard(&prompt);
             }
         }

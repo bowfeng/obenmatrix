@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 /// let client = CronClient::new(None);
 /// let resp = client.submit(&request).await?;
 /// ```
+#[derive(Clone)]
 pub struct CronClient {
     base_url: String,
     client: reqwest::Client,
