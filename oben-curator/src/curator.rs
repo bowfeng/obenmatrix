@@ -23,7 +23,7 @@ impl Default for CuratorConfig {
             min_idle_hours: 2,
             skills_dir: dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join(".obenalien")
+                .join(".obenmatrix")
                 .join("skills"),
         }
     }

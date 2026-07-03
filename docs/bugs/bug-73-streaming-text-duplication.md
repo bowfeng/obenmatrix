@@ -1,6 +1,6 @@
 ## Bug Fix Summary: Streaming text duplication in messages panel
 
-**PR:** [#73](https://github.com/bowfeng/oben-alien/pull/73)
+**PR:** [#73](https://github.com/bowfeng/obenmatrix/pull/73)
 **Status:** Fixed and merged
 **Severity:** High — caused visible text duplication over user messages
 

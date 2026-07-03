@@ -15,7 +15,7 @@ use oben_sessions::DBSessionManager;
 use oben_tools::ToolRegistry;
 
 /// Directory where gateway logs are persisted.
-pub const LOG_DIR: &str = ".config/obenalien/logs";
+pub const LOG_DIR: &str = ".config/obenmatrix/logs";
 pub const LOG_FILE_PREFIX: &str = "gateway";
 
 fn init_logging() {
@@ -73,7 +73,7 @@ async fn load_wasm_hooks(
         .or_else(|| {
             std::env::var("HOME")
                 .ok()
-                .map(|h| PathBuf::from(h).join(".obenalien").join("plugins").join("wasm"))
+                .map(|h| PathBuf::from(h).join(".obenmatrix").join("plugins").join("wasm"))
         });
 
     let Some(pdir) = plugin_path.as_ref()
@@ -294,7 +294,7 @@ async fn main() -> Result<()> {
             .or_else(|| {
                 std::env::var("HOME")
                     .ok()
-                    .map(|h| PathBuf::from(h).join(".obenalien").join("plugins").join("wasm"))
+                    .map(|h| PathBuf::from(h).join(".obenmatrix").join("plugins").join("wasm"))
             });
 
         if let Some(ref plugin_dir) = plugin_dir {

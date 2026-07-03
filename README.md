@@ -46,7 +46,7 @@
 ```bash
 # Clone the repository
 git clone https://github.com/bowfeng/openalien.git
-cd obenalien
+cd obenmatrix
 
 # Build
 cargo build --release
@@ -59,29 +59,29 @@ cargo install --path .
 
 ```bash
 # Interactive chat (streaming)
-obenalien chat
+obenmatrix chat
 
 # One-shot prompt
-obenalien run -p "What is the capital of France?"
+obenmatrix run -p "What is the capital of France?"
 
 # Stream output
-obenalien run -p "Explain quantum computing" --stream
+obenmatrix run -p "Explain quantum computing" --stream
 
 # List available tools
-obenalien tools
+obenmatrix tools
 
 # List skills (work in progress)
-obenalien skills
+obenmatrix skills
 
 # Discover models from your provider (experimental)
-obenalien models list
+obenmatrix models list
 
 # Manage sessions
-obenalien sessions list
-obenalien sessions compact [-s session-id]
+obenmatrix sessions list
+obenmatrix sessions compact [-s session-id]
 
 # Show agent info
-obenalien info
+obenmatrix info
 ```
 
 ---
@@ -91,7 +91,7 @@ obenalien info
 ObenAgent is a Rust workspace with 11 crates:
 
 ```
-obenalien/               # Root workspace (binary)
+obenmatrix/               # Root workspace (binary)
 ├── oben-models/         # Core domain types (messages, tools, skills, sessions, providers)
 ├── oben-utils/          # Shared utilities (logging, spinner, table formatter)
 ├── oben-config/         # YAML config, setup wizard, defaults
@@ -117,7 +117,7 @@ obenalien/               # Root workspace (binary)
 
 ## Configuration
 
-Configuration lives at `~/.obenalien/config.yaml`:
+Configuration lives at `~/.obenmatrix/config.yaml`:
 
 ```yaml
 model:
@@ -133,7 +133,7 @@ context:
 max_iterations: 50
 ```
 
-Or edit `~/.obenalien/config.yaml` manually (setup wizard is coming soon)
+Or edit `~/.obenmatrix/config.yaml` manually (setup wizard is coming soon)
 
 ---
 
@@ -151,16 +151,16 @@ Sessions store conversation history and persist to disk as JSON. ObenAgent suppo
 
 ```bash
 # List all sessions
-obenalien sessions list
+obenmatrix sessions list
 
 # Compact a session (summarizes older messages via LLM)
-obenalien sessions compact -s my-session
+obenmatrix sessions compact -s my-session
 
 # Compact with a focus topic
-obenalien sessions compact -s my-session -f "database migration"
+obenmatrix sessions compact -s my-session -f "database migration"
 
 # Delete a session
-obenalien sessions delete -s my-session
+obenmatrix sessions delete -s my-session
 ```
 
 ---
@@ -170,7 +170,7 @@ obenalien sessions delete -s my-session
 Run the agent autonomously on a goal — it plans, acts via tools, and iterates:
 
 ```bash
-obenalien agent
+obenmatrix agent
 ```
 
 The agent:

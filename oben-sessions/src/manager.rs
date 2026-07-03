@@ -1845,8 +1845,8 @@ pub struct DBSessionManager {
 impl DBSessionManager {
     pub fn new() -> Result<Self> {
         let db_dir = dirs::home_dir()
-            .map(|d| d.join(".obenalien").join("memory"))
-            .unwrap_or_else(|| std::path::PathBuf::from("~/.obenalien"));
+            .map(|d| d.join(".obenmatrix").join("memory"))
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.obenmatrix"));
         let db_path = db_dir.join("sessions.db");
         Self::new_with_db_path(db_path)
     }

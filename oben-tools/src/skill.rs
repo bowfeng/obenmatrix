@@ -13,7 +13,7 @@ use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 fn get_skills_dir() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("HOME") {
-        Path::new(&home).join(".obenalien").join("skills")
+        Path::new(&home).join(".obenmatrix").join("skills")
     } else {
         Path::new(".").join("skills")
     }

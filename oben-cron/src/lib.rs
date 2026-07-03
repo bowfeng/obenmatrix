@@ -10,7 +10,7 @@ pub mod jobs;
 pub mod schedule;
 pub mod server;
 
-/// Resolve the `obenalien` binary for cron execution.
+/// Resolve the `obenmatrix` binary for cron execution.
 ///
 /// Priority: `OBEN_BIN` env → local cargo artifacts → `which` → literal fallback.
 pub fn cron_exec_binary() -> String {
@@ -34,14 +34,14 @@ pub fn cron_exec_binary() -> String {
     }
     // Fall back to PATH lookup
     if let Ok(out) = std::process::Command::new("which")
-        .arg("obenalien")
+        .arg("obenmatrix")
         .output()
     {
         if out.status.success() {
             return String::from_utf8_lossy(&out.stdout).trim().to_string();
         }
     }
-    "obenalien".to_string()
+    "obenmatrix".to_string()
 }
 
 pub use jobs::*;

@@ -6,11 +6,11 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 static LOG_PATH: Mutex<Option<String>> = Mutex::new(None);
 
-/// Initialize the tracing subscriber. Logs are written to `~/.obenalien/logs/oa-{datetime}.log`.
+/// Initialize the tracing subscriber. Logs are written to `~/.obenmatrix/logs/oa-{datetime}.log`.
 /// Returns the log path so callers can use it for other purposes (e.g. panic hooks).
 pub fn init(level: tracing::Level) -> String {
     let log_dir = dirs::home_dir()
-        .map(|d| d.join(".obenalien/logs"))
+        .map(|d| d.join(".obenmatrix/logs"))
         .unwrap_or_else(|| std::path::PathBuf::from("./logs"));
     let _ = std::fs::create_dir_all(&log_dir);
     let datetime = chrono::Local::now().format("%Y%m%dT%H%M%S");

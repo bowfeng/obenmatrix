@@ -5,7 +5,7 @@ use oben_models::ProviderConfig;
 
 pub use oben_models::SessionStoreKind;
 
-/// All application settings, stored in ~/.config/obenalien/config.yaml.
+/// All application settings, stored in ~/.config/obenmatrix/config.yaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -496,7 +496,7 @@ pub struct GatewayConfig {
     pub whatsapp: Option<WhatsAppConfig>,
     pub qq_bot: Option<QQBotConfig>,
     /// Directory containing WASM platform plugins (.wasm files).
-    /// If not set, defaults to ~/.obenalien/plugins/wasm.
+    /// If not set, defaults to ~/.obenmatrix/plugins/wasm.
     #[serde(default)]
     pub plugin_dir: Option<PathBuf>,
 }
@@ -569,7 +569,7 @@ impl Default for ContextConfig {
             compression: "summary".to_string(),
             context_length: default_context_length(),
             threshold_percent: default_threshold_percent(),
-            files: vec![".obenalien.md".to_string(), "OBEN.md".to_string(), "AGENTS.md".to_string(), "CLAUDE.md".to_string(), ".cursorrules".to_string()],
+            files: vec![".obenmatrix.md".to_string(), "OBEN.md".to_string(), "AGENTS.md".to_string(), "CLAUDE.md".to_string(), ".cursorrules".to_string()],
             max_chars: default_context_max_chars(),
         }
     }
@@ -790,7 +790,7 @@ impl Default for AppConfig {
                 compression: "summary".to_string(),
                 context_length: 128_000,
                 threshold_percent: 0.75,
-                files: vec![".obenalien.md".to_string(), "OBEN.md".to_string(), "AGENTS.md".to_string(), "CLAUDE.md".to_string(), ".cursorrules".to_string()],
+                files: vec![".obenmatrix.md".to_string(), "OBEN.md".to_string(), "AGENTS.md".to_string(), "CLAUDE.md".to_string(), ".cursorrules".to_string()],
                 max_chars: default_context_max_chars(),
             },
             providers: Vec::new(),
@@ -1007,27 +1007,27 @@ impl AppConfig {
     pub fn config_dir() -> PathBuf {
         dirs::config_dir()
             .map(|d| d.join("oben"))
-            .unwrap_or_else(|| PathBuf::from("~/.config/obenalien"))
+            .unwrap_or_else(|| PathBuf::from("~/.config/obenmatrix"))
     }
 
     pub fn config_path() -> PathBuf {
         Self::config_dir().join("config.yaml")
     }
 
-    /// Read from `~/.obenalien/config.yaml` (legacy/standard path).
+    /// Read from `~/.obenmatrix/config.yaml` (legacy/standard path).
     pub fn config_dir_legacy() -> PathBuf {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("~"));
-        home.join(".config/obenalien")
+        home.join(".config/obenmatrix")
     }
 
-    /// Read from `~/.config/obenalien/config.yaml` (legacy/standard path).
+    /// Read from `~/.config/obenmatrix/config.yaml` (legacy/standard path).
     pub fn config_path_legacy() -> PathBuf {
         Self::config_dir_legacy().join("config.yaml")
     }
 
-    /// Load config from `~/.config/obenalien/config.yaml`.
+    /// Load config from `~/.config/obenmatrix/config.yaml`.
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::config_path_legacy();
         if !path.exists() {

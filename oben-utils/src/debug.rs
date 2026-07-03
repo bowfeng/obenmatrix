@@ -146,7 +146,7 @@ pub fn extract_paste_id(url: &str) -> Option<&str> {
 /// Get the directory for storing debug paste tracking files.
 pub fn debug_paste_dir() -> Result<std::path::PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
-    let paste_dir = home.join(".obenalien/pastes");
+    let paste_dir = home.join(".obenmatrix/pastes");
     if !paste_dir.exists() {
         fs::create_dir_all(&paste_dir)?;
     }

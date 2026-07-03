@@ -10,7 +10,7 @@ fn history_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let mut path = PathBuf::from(home);
     path.push(".config");
-    path.push("obenalien");
+    path.push("obenmatrix");
     path.push(FILENAME);
     path
 }

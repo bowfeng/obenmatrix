@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>org.obenalien.cron</string>
+	<string>org.obenmatrix.cron</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string><BIN_PATH>/oben-cron</string>

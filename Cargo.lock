@@ -3547,7 +3547,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "obenalien"
+name = "obenmatrix"
 version = "0.1.0"
 dependencies = [
  "oben-cli",

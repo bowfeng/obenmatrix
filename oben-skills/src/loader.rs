@@ -342,7 +342,7 @@ pub fn is_valid_namespace(candidate: &str) -> bool {
 
 /// Read disabled skill names from a config file.
 ///
-/// For now, reads from `~/.config/obenalien/config.yaml` if it exists.
+/// For now, reads from `~/.config/obenmatrix/config.yaml` if it exists.
 /// Returns an empty set if the file doesn't exist or can't be parsed.
 pub fn get_disabled_skill_names() -> std::collections::HashSet<String> {
     let config_path = get_config_path();
@@ -361,7 +361,7 @@ pub fn get_disabled_skill_names() -> std::collections::HashSet<String> {
 
 fn get_config_path() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
-        Path::new(&home).join(".config/obenalien/config.yaml")
+        Path::new(&home).join(".config/obenmatrix/config.yaml")
     } else {
         Path::new(".").join("config.yaml")
     }
@@ -489,9 +489,9 @@ pub fn get_all_skills_dirs() -> Vec<PathBuf> {
 
 fn get_skills_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
-        Path::new(&home).join(".config/obenalien/skills")
+        Path::new(&home).join(".config/obenmatrix/skills")
     } else if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        Path::new(&xdg).join("obenalien/skills")
+        Path::new(&xdg).join("obenmatrix/skills")
     } else {
         Path::new(".").join("skills")
     }

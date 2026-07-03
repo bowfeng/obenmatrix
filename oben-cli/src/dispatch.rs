@@ -1095,7 +1095,7 @@ fn cron_info() -> Result<()> {
 
 fn get_gateway_pid_path() -> std::path::PathBuf {
     let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("~/.config"));
-    config_dir.join("obenalien").join("gateway.pid")
+    config_dir.join("obenmatrix").join("gateway.pid")
 }
 
 /// Check if the gateway process is running by reading the PID file.
@@ -1589,7 +1589,7 @@ mod gateway_lifecycle_tests {
 
     /// Write a PID into a temp directory and return the PID path.
     fn write_temp_pid(temp_dir: &TempDir, pid: u32) -> std::path::PathBuf {
-        let dir = temp_dir.path().join("obenalien");
+        let dir = temp_dir.path().join("obenmatrix");
         fs::create_dir_all(&dir).unwrap();
         let pid_path = dir.join("gateway.pid");
         fs::write(&pid_path, format!("{}\n", pid)).unwrap();
@@ -1610,13 +1610,13 @@ mod gateway_lifecycle_tests {
     #[test]
     /// Given: no special environment
     /// When: get_gateway_pid_path is called
-    /// Then: returns a path ending with "obenalien/gateway.pid"
+    /// Then: returns a path ending with "obenmatrix/gateway.pid"
     fn test_gateway_pid_path_construction() {
         let path = get_gateway_pid_path();
         assert!(
-            path.to_string_lossy().ends_with("obenalien/gateway.pid")
-                || cfg!(windows) && path.to_string_lossy().ends_with("obenalien\\gateway.pid"),
-            "Expected path to end with 'obenalien/gateway.pid', got: {}",
+            path.to_string_lossy().ends_with("obenmatrix/gateway.pid")
+                || cfg!(windows) && path.to_string_lossy().ends_with("obenmatrix\\gateway.pid"),
+            "Expected path to end with 'obenmatrix/gateway.pid', got: {}",
             path.display()
         );
     }
@@ -1674,7 +1674,7 @@ mod gateway_lifecycle_tests {
     /// Then: parse fails
     fn test_pid_file_parsing_fails_on_non_numeric() {
         let temp = TempDir::new().unwrap();
-        let dir = temp.path().join("obenalien");
+        let dir = temp.path().join("obenmatrix");
         fs::create_dir_all(&dir).unwrap();
         let bad_path = dir.join("gateway.pid");
         fs::write(&bad_path, "not-a-pid\n").unwrap();
@@ -1691,7 +1691,7 @@ mod gateway_lifecycle_tests {
     /// Then: parse fails
     fn test_pid_file_parsing_fails_on_empty() {
         let temp = TempDir::new().unwrap();
-        let dir = temp.path().join("obenalien");
+        let dir = temp.path().join("obenmatrix");
         fs::create_dir_all(&dir).unwrap();
         let empty_path = dir.join("gateway.pid");
         fs::write(&empty_path, "\n").unwrap();
@@ -1710,12 +1710,12 @@ mod gateway_lifecycle_tests {
     /// Then: exists() returns false, no panic
     fn test_missing_pid_file_returns_false() {
         let temp = TempDir::new().unwrap();
-        let missing = temp.path().join("obenalien").join("gateway.pid");
+        let missing = temp.path().join("obenmatrix").join("gateway.pid");
         assert!(!missing.exists());
     }
 
     #[test]
-    /// Given: a directory that doesn't even contain "obenalien" subdirectory
+    /// Given: a directory that doesn't even contain "obenmatrix" subdirectory
     /// When: we look for the PID file
     /// Then: exists() returns false gracefully
     fn test_missing_parent_dir_returns_false() {

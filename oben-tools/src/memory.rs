@@ -155,7 +155,7 @@ impl MemoryStore {
 
     fn get_memory_dir() -> std::path::PathBuf {
         if let Ok(home) = std::env::var("HOME") {
-            Path::new(&home).join(".obenalien").join("memory")
+            Path::new(&home).join(".obenmatrix").join("memory")
         } else {
             Path::new(".").join("memory")
         }

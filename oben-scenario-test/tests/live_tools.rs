@@ -1,6 +1,6 @@
 /// Live tool-call tests — verifies the agent round-trip with real tool definitions.
 ///
-/// These tests require a configured LLM server at `~/.obenalien/config.yaml`.
+/// These tests require a configured LLM server at `~/.obenmatrix/config.yaml`.
 /// They are the end-to-end check that the transport sends tools to the LLM
 /// and the model returns structured `tool_calls` (not arbitrary XML-like tags).
 use anyhow::Result;

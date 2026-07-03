@@ -1,6 +1,6 @@
 //! Cron job storage - JSON persistence with atomic writes.
 //!
-//! Jobs are stored in `~/.config/obenalien/cron/jobs.json`.
+//! Jobs are stored in `~/.config/obenmatrix/cron/jobs.json`.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -266,7 +266,7 @@ impl CronStore {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("~"));
-        home.join(".config/obenalien").join("cron")
+        home.join(".config/obenmatrix").join("cron")
     }
 
     pub fn new(base_dir: PathBuf) -> Result<Self> {

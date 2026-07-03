@@ -49,7 +49,7 @@ async fn test_live_full_roundtrip() -> Result<()> {
     );
 
     let home = std::env::var("HOME").unwrap_or_default();
-    let state_path = PathBuf::from(&home).join(".obenalien").join("state.db");
+    let state_path = PathBuf::from(&home).join(".obenmatrix").join("state.db");
 
     if state_path.exists() {
         eprintln!("  state.db exists at {}", state_path.display());
@@ -171,7 +171,7 @@ async fn test_live_fts5_search() -> Result<()> {
     assert!(!resp.text.trim().is_empty(), "Should get a response");
 
     let home = std::env::var("HOME").unwrap_or_default();
-    let default_state_path = PathBuf::from(&home).join(".obenalien").join("state.db");
+    let default_state_path = PathBuf::from(&home).join(".obenmatrix").join("state.db");
 
     if default_state_path.exists() {
         eprintln!(

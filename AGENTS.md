@@ -204,7 +204,7 @@ Directly below your Thinking block, you must determine if the feature is a **Par
    - *When*: [Crate boundary API is invoked]
    - *Then*: [Verify internal mocks intercept correctly]
 3. **Live Test** (`oben-scenario-test/tests/live_*.rs`):
-   - *Given*: [Valid config inside ~/.obenalien/config.yaml]
+   - *Given*: [Valid config inside ~/.obenmatrix/config.yaml]
    - *When*: [Full agent workflow runs with real LLMs]
    - *Then*: [Verify output semantic correctness]
 
@@ -223,7 +223,7 @@ Every single test function block MUST contain structured markdown-styled Doc Com
 
 * **Unit Tests**: Live inside `src/*.rs` under `#[cfg(test)]`. **Absolutely no I/O, network calls, or filesystem access.**
 * **Integration Tests**: Live in `tests/*.rs`. **Must use mocks exclusively** to isolate boundaries. No real network dependencies.
-* **Live Tests**: Live in `oben-scenario-test/tests/*.rs`. Executes full-stack sequences against real LLMs using configurations dynamically loaded from `~/.obenalien/config.yaml`.
+* **Live Tests**: Live in `oben-scenario-test/tests/*.rs`. Executes full-stack sequences against real LLMs using configurations dynamically loaded from `~/.obenmatrix/config.yaml`.
 
 ```rust
 /// BDD Test Block Example

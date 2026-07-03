@@ -5,7 +5,7 @@
 //! Creates snapshots before file-mutating operations (once per turn per directory).
 //! Supports restore, list, diff, and automatic pruning with configurable policies.
 //!
-//! [`tools/checkpoint_manager.py`]: https://github.com/bowfeng/oben-alien/blob/main/hermes-agent/tools/checkpoint_manager.py
+//! [`tools/checkpoint_manager.py`]: https://github.com/bowfeng/obenmatrix/blob/main/hermes-agent/tools/checkpoint_manager.py
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;

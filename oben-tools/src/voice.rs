@@ -189,7 +189,7 @@ fn wrap_pcm_as_wav(pcm_bytes: &[u8], sample_rate: u32) -> Vec<u8> {
 /// Get default output directory for TTS audio files.
 fn default_output_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-    Path::new(&home).join(".obenalien").join("voice").join("audio_cache")
+    Path::new(&home).join(".obenmatrix").join("voice").join("audio_cache")
 }
 
 /// Load audio file and convert to f32 mono 16kHz.

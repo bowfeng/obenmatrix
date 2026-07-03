@@ -26,7 +26,7 @@ edition = "2021"
 rust-version = "1.80"
 license = "MIT"
 authors = ["Nous Research"]
-repository = "https://github.com/bowfeng/oben-alien"
+repository = "https://github.com/bowfeng/obenmatrix"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full", "tracing", "rt-multi-thread"] }
@@ -66,7 +66,7 @@ wasmtime-wasi = "44.0.3"
 semver = "1.0"
 
 [package]
-name = "obenalien"
+name = "obenmatrix"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

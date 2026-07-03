@@ -1,6 +1,6 @@
 //! Persistent multi-credential pool for same-provider failover and rotation.
 //!
-//! Implements [credential pool](https://github.com/ellie/oben-alien/blob/main/docs/PRD-utils-parity.md#U7)
+//! Implements [credential pool](https://github.com/ellie/obenmatrix/blob/main/docs/PRD-utils-parity.md#U7)
 //! functionality: multiple credentials per provider with automatic rotation,
 //! cooldown-based recovery, and configurable selection strategies.
 

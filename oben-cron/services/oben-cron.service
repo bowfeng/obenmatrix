@@ -1,6 +1,6 @@
 [Unit]
 Description=Oben Alien Cron Scheduler
-Documentation=https://github.com/bowfeng/oben-alien
+Documentation=https://github.com/bowfeng/obenmatrix
 After=network.target
 
 [Service]
