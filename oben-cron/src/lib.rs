@@ -8,6 +8,7 @@
 pub mod http;
 pub mod jobs;
 pub mod schedule;
+pub mod server;
 
 /// Resolve the `obenalien` binary for cron execution.
 ///
