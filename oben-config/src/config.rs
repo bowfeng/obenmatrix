@@ -1018,7 +1018,7 @@ impl AppConfig {
         env.config_path()
     }
 
-    /// Read from `~/.config/abenmatrix/config.yaml` (legacy/standard path).
+    /// Read from `~/.config/obenmatrix/config.yaml` (legacy/standard path).
     pub fn config_dir_legacy() -> PathBuf {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
