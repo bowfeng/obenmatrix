@@ -8,6 +8,7 @@ use super::config::AppConfig;
 
 pub fn run_setup(config: &mut AppConfig) -> Result<()> {
     println!("\n🦀 ObenAgent Setup Wizard\n");
+    println!("Note: use --profile <name> to configure a profile-specific config.\n");
 
     // Step 1: Model provider
     let providers = vec![
@@ -114,8 +115,9 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
     // Save
     config.save()?;
 
-    println!("\n✅ Configuration saved to ~/.obenmatrix/config.yaml\n");
-    println!("You can re-run this wizard anytime with: `oben setup`\n");
+    println!("\n✅ Configuration saved successfully.\n");
+    println!("You can re-run this wizard anytime with: `oben setup`");
+    println!("Use --profile <name> to manage profile-specific configurations.\n");
 
     Ok(())
 }

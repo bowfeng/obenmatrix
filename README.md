@@ -82,7 +82,15 @@ obenmatrix sessions compact [-s session-id]
 
 # Show agent info
 obenmatrix info
+
+# Use a named profile (isolates config + data directories)
+obenmatrix --profile work chat
+obenmatrix --profile work sessions list
 ```
+
+Profile isolation creates separate:
+- Config: `~/.config/obenmatrix/<profile>/config.yaml`
+- Data: `~/.abenmatrix/<profile>/`
 
 ---
 
@@ -117,23 +125,23 @@ obenmatrix/               # Root workspace (binary)
 
 ## Configuration
 
-Configuration lives at `~/.obenmatrix/config.yaml`:
+Default profile config lives at `~/.config/obenmatrix/config.yaml`
+and data at `~/.abenmatrix/`. Each `--profile <name>` uses:
+- Config: `~/.config/obenmatrix/<profile>/config.yaml`
+- Data: `~/.abenmatrix/<profile>/`
 
 ```yaml
 model:
-  api_key: "sk-..."
-  endpoint: "https://api.openai.com/v1"
-  model: "gpt-4o"
-  max_model_len: 128000
+  kind: OpenRouter
+  model: "qwen/qwen3-235b:free"
+  api_key: "sk-or-..."
 
 context:
   max_messages: 100
-  max_tokens: 128000
-
-max_iterations: 50
+  compression: summary
 ```
 
-Or edit `~/.obenmatrix/config.yaml` manually (setup wizard is coming soon)
+Edit config manually or run `oben setup` to use the wizard.
 
 ---
 

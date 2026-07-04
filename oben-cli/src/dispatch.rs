@@ -254,7 +254,8 @@ async fn run_config(action: ConfigCommand, profile: Option<&str>) -> Result<()> 
             println!("{}", serde_yaml::to_string(&config)?);
         }
         ConfigCommand::Edit => {
-            let path = oben_config::AppConfig::config_path_legacy();
+            let env = oben_config::env::Env::new(profile.map(String::from));
+            let path = env.config_path();
             println!("Config file: {}", path.display());
             println!("Edit it manually, or run `oben setup` for the wizard.");
         }
