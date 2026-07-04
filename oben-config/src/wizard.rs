@@ -113,7 +113,7 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
     config.context.compression = compression_methods[compress_selected].to_string();
 
     // Save
-    config.save()?;
+    config.save_with_profile(None)?;
 
     println!("\n✅ Configuration saved successfully.\n");
     println!("You can re-run this wizard anytime with: `oben setup`");

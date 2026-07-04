@@ -1080,9 +1080,21 @@ impl AppConfig {
         Ok(config)
     }
 
+    /// Save config to the current profile's config dir.
     pub fn save(&self) -> anyhow::Result<()> {
-        let dir = Self::config_dir_legacy();
-        std::fs::create_dir_all(&dir)?;
+        let env = crate::env::Env::new(None);
+        let dir = env.config_dir();
+        std::fs::create_dir_all(dir)?;
+        let content = serde_yaml::to_string(self)?;
+        std::fs::write(dir.join("config.yaml"), content)?;
+        Ok(())
+    }
+
+    /// Save config to the given profile's config dir.
+    pub fn save_with_profile(&self, profile: Option<&str>) -> anyhow::Result<()> {
+        let env = crate::env::Env::new(profile.map(String::from));
+        let dir = env.config_dir();
+        std::fs::create_dir_all(dir)?;
         let content = serde_yaml::to_string(self)?;
         std::fs::write(dir.join("config.yaml"), content)?;
         Ok(())

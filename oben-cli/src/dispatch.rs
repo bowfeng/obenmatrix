@@ -244,6 +244,7 @@ async fn run_one_shot(prompt: &str, stream: bool, profile: Option<&str>) -> Resu
 fn run_setup(profile: Option<&str>) -> Result<()> {
     let mut config = oben_config::AppConfig::load(profile)?;
     oben_config::wizard::run_setup(&mut config)?;
+    config.save_with_profile(profile)?;
     Ok(())
 }
 
@@ -1273,7 +1274,7 @@ async fn gateway_setup(profile: Option<&str>) -> Result<()> {
         _ => unreachable!(),
     }
     
-    config.save()?;
+    config.save_with_profile(profile)?;
     
     println!("\n✅ Gateway configuration saved.");
     println!("You can re-run this wizard anytime with: `oben gateway setup`\n");
