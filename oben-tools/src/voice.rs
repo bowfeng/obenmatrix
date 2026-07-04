@@ -798,7 +798,7 @@ pub async fn execute_stt<'a>(call: &ToolCall<'a>) -> anyhow::Result<String> {
         anyhow::anyhow!("No audio source provided (neither audio_file nor audio_base64)")
     })?;
 
-    let config = AppConfig::load().unwrap_or_else(|_| AppConfig::default());
+    let config = AppConfig::load(None).unwrap_or_else(|_| AppConfig::default());
     let transcript = do_transcribe(&result_path, provider, &config).await?;
 
     if audio_base64.is_some() && result_path.exists() {
@@ -816,7 +816,7 @@ pub async fn execute_tts<'a>(call: &ToolCall<'a>) -> anyhow::Result<String> {
     let output_format = "mp3";
     let cleaned_text = clean_for_tts(text);
 
-    let config = AppConfig::load().unwrap_or_else(|_| AppConfig::default());
+    let config = AppConfig::load(None).unwrap_or_else(|_| AppConfig::default());
     let media_path = do_text_to_speech(&cleaned_text, custom_path, output_format, &config).await?;
     Ok(media_path)
 }

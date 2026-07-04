@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 /// Get a ProviderConfig from the config file.
 fn get_provider_config() -> (ProviderConfig, String) {
-    let config = AppConfig::load().expect("Failed to load config");
+    let config = AppConfig::load(None).expect("Failed to load config");
     let mut pc = ProviderConfig::new(config.model.kind.clone(), config.model.model.clone());
     pc.api_key = config.model.api_key.clone();
     pc.base_url = config.model.base_url.clone();

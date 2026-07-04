@@ -342,7 +342,7 @@ impl App {
     }
 
     pub fn new() -> Result<Self> {
-        let config = AppConfig::load()?;
+        let config = AppConfig::load(None)?;
         // Placeholder toast engine — area is set dynamically in draw_ui.
         let toast_engine = ToastEngine::new(ToastEngine::<()>::from_builder(
             ToastEngineBuilder::<()>::new(Rect::new(0, 0, 0, 0))

@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
     init_logging();
     info!("=== Oben Gateway Starting ===");
 
-    let app_config = AppConfig::load()?;
+    let app_config = AppConfig::load(None)?;
 
     let gateway_config = app_config
         .gateway

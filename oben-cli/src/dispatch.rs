@@ -100,7 +100,7 @@ pub async fn run_cli() -> Result<()> {
 async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
     info!("Starting interactive chat...");
 
-    let config = oben_config::AppConfig::load()?;
+    let config = oben_config::AppConfig::load(None)?;
     let mut tools = oben_tools::ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut tools);
 
@@ -184,7 +184,7 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
 
 
 async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
-    let config = oben_config::AppConfig::load()?;
+    let config = oben_config::AppConfig::load(None)?;
 
     let mut tools = oben_tools::ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut tools);
@@ -240,19 +240,19 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
 // ── Setup & Config ──────────────────────────────────────────────────────
 
 fn run_setup() -> Result<()> {
-    let mut config = oben_config::AppConfig::load()?;
+    let mut config = oben_config::AppConfig::load(None)?;
     oben_config::wizard::run_setup(&mut config)?;
     Ok(())
 }
 
 async fn run_config(action: ConfigCommand) -> Result<()> {
-    let config = oben_config::AppConfig::load()?;
+    let config = oben_config::AppConfig::load(None)?;
     match action {
         ConfigCommand::Show => {
             println!("{}", serde_yaml::to_string(&config)?);
         }
         ConfigCommand::Edit => {
-            let path = oben_config::AppConfig::config_path();
+            let path = oben_config::AppConfig::config_path_legacy();
             println!("Config file: {}", path.display());
             println!("Edit it manually, or run `oben setup` for the wizard.");
         }
@@ -307,7 +307,7 @@ fn list_sessions() -> Result<()> {
 }
 
 async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str>) -> Result<()> {
-    let config = oben_config::AppConfig::load()?;
+    let config = oben_config::AppConfig::load(None)?;
     let mut sm = oben_sessions::DBSessionManager::new()?;
 
     let target: String = match session_key {
@@ -462,7 +462,7 @@ fn dump_session(session_key: Option<&str>) -> Result<()> {
 // ── Models ──────────────────────────────────────────────────────────────
 
 async fn run_models(action: ModelsCommand) -> Result<()> {
-    let config = oben_config::AppConfig::load()?;
+    let config = oben_config::AppConfig::load(None)?;
     let transport = create_transport(&config, "", &oben_tools::ToolRegistry::new());
 
     match action {
@@ -563,7 +563,7 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
     // Decomposer: call LLM to break goal into plan nodes.
     // This mirrors `create_plan_from_goal()` but executed synchronously so the CLI
     // blocks until the plan is created and printed before the background loop starts.
-    let config = oben_config::AppConfig::load()?;
+    let config = oben_config::AppConfig::load(None)?;
 
     let mut tools = oben_tools::ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut tools);
@@ -1244,7 +1244,7 @@ async fn gateway_status() -> Result<()> {
 async fn gateway_setup() -> Result<()> {
     println!("\n🔌 Gateway Setup Wizard\n");
     
-    let mut config = oben_config::AppConfig::load()?;
+    let mut config = oben_config::AppConfig::load(None)?;
     
     let platforms = vec![
         "QQ Bot (Tencent)",

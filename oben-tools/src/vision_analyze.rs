@@ -287,7 +287,7 @@ async fn analyze_from_data_url(data_url: &str, prompt: &str) -> Result<String, S
         mime
     };
 
-    let config = AppConfig::load().unwrap_or_default();
+    let config = AppConfig::load(None).unwrap_or_default();
     let vision = config.vision;
     let model = vision.model.as_deref().unwrap_or("gpt-4o");
     let max_tokens = vision.max_tokens.unwrap_or(1024);
@@ -337,7 +337,7 @@ async fn analyze_image(image_url: &str, prompt: &str) -> Result<String, String> 
         return analyze_from_data_url(image_url, prompt).await;
     }
 
-    let config = AppConfig::load().unwrap_or_default();
+    let config = AppConfig::load(None).unwrap_or_default();
     let vision = config.vision;
 
     let provider = vision.provider.trim();

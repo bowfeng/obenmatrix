@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 fn get_provider_config() -> ProviderConfig {
-    let config = AppConfig::load().expect("Failed to load config");
+    let config = AppConfig::load(None).expect("Failed to load config");
     let mut pc = ProviderConfig::new(config.model.kind.clone(), config.model.model.clone());
     pc.api_key = config.model.api_key.clone();
     pc.base_url = config.model.base_url.clone();

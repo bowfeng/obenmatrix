@@ -1004,17 +1004,19 @@ mod tests {
 }
 
 impl AppConfig {
-    pub fn config_dir() -> PathBuf {
-        dirs::config_dir()
-            .map(|d| d.join("oben"))
-            .unwrap_or_else(|| PathBuf::from("~/.config/obenmatrix"))
+    /// Get config directory for a profile (delegates to Env).
+    pub fn config_dir_from_profile(profile: Option<&str>) -> PathBuf {
+        let env = crate::env::Env::new(profile.map(String::from));
+        env.config_dir().clone()
     }
 
-    pub fn config_path() -> PathBuf {
-        Self::config_dir().join("config.yaml")
+    /// Get config file path for a profile (delegates to Env).
+    pub fn config_path_from_profile(profile: Option<&str>) -> PathBuf {
+        let env = crate::env::Env::new(profile.map(String::from));
+        env.config_path()
     }
 
-    /// Read from `~/.obenmatrix/config.yaml` (legacy/standard path).
+    /// Read from `~/.config/abenmatrix/config.yaml` (legacy/standard path).
     pub fn config_dir_legacy() -> PathBuf {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
@@ -1027,9 +1029,10 @@ impl AppConfig {
         Self::config_dir_legacy().join("config.yaml")
     }
 
-    /// Load config from `~/.config/obenmatrix/config.yaml`.
-    pub fn load() -> anyhow::Result<Self> {
-        let path = Self::config_path_legacy();
+    /// Load config from the profile-specific (or default) config file.
+    pub fn load(profile: Option<&str>) -> anyhow::Result<Self> {
+        let env = crate::env::Env::new(profile.map(String::from));
+        let path = env.config_path();
         if !path.exists() {
             return Ok(Self::default());
         }
