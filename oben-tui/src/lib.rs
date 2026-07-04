@@ -836,8 +836,24 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         "Busy" => "Streaming",
         _ => "Ready",
     };
+    let model_text = {
+        let kind_str = app.config.model.kind.as_str();
+        let model_name = app
+            .config
+            .model
+            .model
+            .splitn(2, '/')
+            .nth(1)
+            .unwrap_or(&app.config.model.model);
+        if model_name.trim().is_empty() {
+            format!("{} model", kind_str)
+        } else {
+            format!("{} ({})", model_name, kind_str)
+        }
+    };
+    let model_label = if model_text.is_empty() { String::new() } else { format!("  {}", model_text) };
     let status_lines: Vec<Line> =
-        vec![Line::from(format!(" [{}]  {}", mode_text, session_text))];
+        vec![Line::from(format!(" [{}]{}{}", mode_text, model_label, session_text))];
     let status_para = Paragraph::new(status_lines);
     let status_area = Rect::new(
         layout.statusbar.x,
