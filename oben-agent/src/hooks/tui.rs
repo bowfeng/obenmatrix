@@ -156,7 +156,10 @@ impl AgentLoopHooks for TuiAgentLoopAdapter {
     fn on_loop_end(&self, outcome: &str) {
         tracing::debug!("[tui_agent_loop] on_loop_end: outcome={}", outcome);
         let mut ts = self.state.state.lock();
-        ts.on_completed(outcome);
+        // Only complete if not already in error state — don't overwrite TurnPhase::Error
+        if matches!(ts.phase, TurnPhase::Completed) {
+            ts.on_completed(outcome);
+        }
     }
 }
 
@@ -191,10 +194,14 @@ impl TurnLifecycleHooks for TuiTurnLifecycleAdapter {
         ts.phase = TurnPhase::Streaming;
     }
 
-    fn on_post_turn(&self, response: &str, _success: bool, _turn_count: u32) {
-        tracing::info!("[tui_turn] on_post_turn: response.len={}, success={}", response.len(), _success);
+    fn on_post_turn(&self, response: &str, success: bool, _turn_count: u32) {
+        tracing::info!("[tui_turn] on_post_turn: response.len={}, success={}", response.len(), success);
         let mut ts = self.state.state.lock();
-        ts.on_completed(response);
+        if success {
+            ts.on_completed(response);
+        } else {
+            ts.on_error(response);
+        }
     }
 }
 
