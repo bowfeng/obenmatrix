@@ -89,10 +89,10 @@ pub async fn run_cli() -> Result<()> {
                 println!("Run 'oben gateway start' to launch the gateway server.");
                 Ok(())
             }
-            Some(GatewayCommand::Start) => gateway_start().await,
-            Some(GatewayCommand::Stop) => gateway_stop().await,
-            Some(GatewayCommand::Status) => gateway_status().await,
-            Some(GatewayCommand::Setup) => gateway_setup().await,
+            Some(GatewayCommand::Start) => gateway_start(profile).await,
+            Some(GatewayCommand::Stop) => gateway_stop(profile).await,
+            Some(GatewayCommand::Status) => gateway_status(profile).await,
+            Some(GatewayCommand::Setup) => gateway_setup(profile).await,
         },
     }
 }
@@ -1095,14 +1095,15 @@ fn cron_info() -> Result<()> {
 
 // ── Gateway ───────────────────────────────────────────────────────────────
 
-fn get_gateway_pid_path() -> std::path::PathBuf {
-    let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("~/.config"));
-    config_dir.join("obenmatrix").join("gateway.pid")
+fn get_gateway_pid_path(profile: Option<&str>) -> std::path::PathBuf {
+    let env = oben_config::env::Env::new(profile.map(String::from));
+    let config_dir = env.config_dir();
+    config_dir.join("gateway.pid")
 }
 
 /// Check if the gateway process is running by reading the PID file.
-pub fn is_gateway_running() -> Option<u32> {
-    let pid_path = get_gateway_pid_path();
+pub fn is_gateway_running(profile: Option<&str>) -> Option<u32> {
+    let pid_path = get_gateway_pid_path(profile);
     if !pid_path.exists() {
         return None;
     }
@@ -1144,8 +1145,8 @@ fn find_gateway_binary() -> Option<std::path::PathBuf> {
 }
 
 /// Start the gateway binary in the background and record its PID.
-async fn gateway_start() -> Result<()> {
-    if let Some(pid) = is_gateway_running() {
+async fn gateway_start(profile: Option<&str>) -> Result<()> {
+    if let Some(pid) = is_gateway_running(profile) {
         println!("Gateway is already running (PID {}).", pid);
         return Ok(());
     }
@@ -1167,7 +1168,7 @@ async fn gateway_start() -> Result<()> {
         }
     };
 
-    let pid_path = get_gateway_pid_path();
+    let pid_path = get_gateway_pid_path(profile);
     if let Some(dir) = pid_path.parent() {
         std::fs::create_dir_all(dir).ok();
     }
@@ -1190,9 +1191,9 @@ async fn gateway_start() -> Result<()> {
     Ok(())
 }
 
-async fn gateway_stop() -> Result<()> {
-    let pid_path = get_gateway_pid_path();
-    let pid = is_gateway_running()
+async fn gateway_stop(profile: Option<&str>) -> Result<()> {
+    let pid_path = get_gateway_pid_path(profile);
+    let pid = is_gateway_running(profile)
         .ok_or_else(|| anyhow::anyhow!("Gateway is not running"))?;
 
     println!("Stopping gateway (PID {})...", pid);
@@ -1204,7 +1205,7 @@ async fn gateway_stop() -> Result<()> {
     child.wait().ok();
 
     for _ in 0..10 {
-        if is_gateway_running().is_none() {
+        if is_gateway_running(profile).is_none() {
             let _ = std::fs::remove_file(&pid_path);
             println!("Gateway stopped.");
             return Ok(());
@@ -1225,10 +1226,10 @@ async fn gateway_stop() -> Result<()> {
     Ok(())
 }
 
-async fn gateway_status() -> Result<()> {
-    let pid_path = get_gateway_pid_path();
+async fn gateway_status(profile: Option<&str>) -> Result<()> {
+    let pid_path = get_gateway_pid_path(profile);
 
-    if let Some(pid) = is_gateway_running() {
+    if let Some(pid) = is_gateway_running(profile) {
         println!("Gateway: active (PID {})", pid);
         println!("  PID file: {:?}", pid_path);
         Ok(())
@@ -1243,10 +1244,10 @@ async fn gateway_status() -> Result<()> {
     }
 }
 
-async fn gateway_setup() -> Result<()> {
+async fn gateway_setup(profile: Option<&str>) -> Result<()> {
     println!("\n🔌 Gateway Setup Wizard\n");
     
-    let mut config = oben_config::AppConfig::load(None)?;
+    let mut config = oben_config::AppConfig::load(profile)?;
     
     let platforms = vec![
         "QQ Bot (Tencent)",
