@@ -69,14 +69,7 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
         _ => oben_models::ProviderKind::Custom,
     };
 
-    // Step 2: Model name
-    let model: String = Input::new()
-        .with_prompt("Model name (e.g. qwen/qwen3-235b:free, gpt-4o)")
-        .default("qwen/qwen3-235b:free".to_string())
-        .interact()?;
-    config.model.model = model;
-
-    // Step 3: API key
+    // --- API key FIRST (moved up so we can use it for listing) ---
     let api_key: String = Input::new()
         .with_prompt("API key (leave blank to skip / set later)")
         .default(String::new())
@@ -84,6 +77,68 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
     if !api_key.trim().is_empty() {
         config.model.api_key = Some(api_key);
     }
+
+    // --- Model listing + model name selection ---
+    let model: String = {
+        let model_prompt = "Model name (e.g. qwen/qwen3-235b:free, gpt-4o)";
+        let default_model = "qwen/qwen3-235b:free";
+
+        if !config.model.api_key.as_ref().map_or(true, |k| k.trim().is_empty()) {
+            // API key available — attempt to list models
+            println!("\n🔍 Fetching available models from provider...");
+            match try_list_models(&config.model) {
+                Some(display_options) if !display_options.is_empty() => {
+                    // Got model list, let user pick
+                    let mut select_options = display_options.clone();
+                    select_options.insert(
+                        select_options.len(),
+                        "⚙️  Skip listing - enter model manually".to_string(),
+                    );
+                    let idx = Select::new()
+                        .with_prompt("Select a model")
+                        .items(&select_options)
+                        .default(0)
+                        .interact()?;
+                    if idx < (select_options.len() - 1) {
+                        let id = display_options[idx].split_whitespace().next().unwrap().to_string();
+                        println!("✅ Selected: {}", id);
+                        id
+                    } else {
+                        let manual: String = Input::new()
+                            .with_prompt(model_prompt)
+                            .default(default_model.to_string())
+                            .interact()?;
+                        manual
+                    }
+                }
+                Some(_) => {
+                    println!("⚠️  No models with max_tokens returned. Proceeding with manual input.");
+                    let manual: String = Input::new()
+                        .with_prompt(model_prompt)
+                        .default(default_model.to_string())
+                        .interact()?;
+                    manual
+                }
+                None => {
+                    println!("⚠️  Could not fetch model list. Proceeding with manual input.");
+                    let manual: String = Input::new()
+                        .with_prompt(model_prompt)
+                        .default(default_model.to_string())
+                        .interact()?;
+                    manual
+                }
+            }
+        } else {
+            // No API key — skip listing entirely, go straight to manual input
+            println!("ℹ️  No API key set, skipping model listing.");
+            let manual: String = Input::new()
+                .with_prompt(model_prompt)
+                .default(default_model.to_string())
+                .interact()?;
+            manual
+        }
+    };
+    config.model.model = model;
 
     // Step 3.5: Auto-detect max_tokens from provider
     println!("\n🔍 Discovering model capabilities...");
@@ -120,6 +175,40 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
     println!("Use --profile <name> to manage profile-specific configurations.\n");
 
     Ok(())
+}
+
+/// Attempt to fetch available models from the provider.
+///
+/// Runs in a separate thread with its own tokio runtime to avoid
+/// "Cannot start a runtime from within a runtime" panic when called
+/// from inside the CLI's #[tokio::main] context.
+///
+/// Returns display strings on success, None on error.
+fn try_list_models(config: &oben_models::ProviderConfig) -> Option<Vec<String>> {
+    let config_clone = config.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().ok()?;
+        let transport = oben_transport::Transport::from_config(&config_clone, "");
+        if let Ok(resp) = rt.block_on(async { transport.list_models().await }) {
+            let mut models: Vec<_> = resp
+                .data
+                .into_iter()
+                .filter(|m| m.max_model_len.unwrap_or(0) > 0)
+                .collect();
+            models.sort_by(|a, b| b.max_model_len.cmp(&a.max_model_len));
+            let display: Vec<String> = models.iter().take(100).map(|m| {
+                let max_t = m.max_model_len.unwrap_or(0);
+                format!("{} ({}, max_tokens: {})", m.id, m.owned_by, max_t)
+            })
+            .collect();
+            Some(display)
+        } else {
+            None
+        }
+    })
+    .join()
+    .ok()
+    .flatten()
 }
 
 /// Detect max_tokens from the LLM provider and return it if found.
