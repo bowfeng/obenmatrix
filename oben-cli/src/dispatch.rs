@@ -35,14 +35,16 @@ pub async fn run_cli() -> Result<()> {
     // Install panic hook so `panic!` goes into the log file instead of the TUI screen.
     oben_utils::logging::init_panic_hook();
 
+    let profile = cli.profile.as_deref();
+
     match cli.command {
         Commands::Chat {
             no_stream,
             continue_session,
-        } => run_chat(!no_stream, continue_session.as_deref()).await,
-        Commands::Run { prompt, stream } => run_one_shot(&prompt, stream).await,
-        Commands::Setup => run_setup(),
-        Commands::Config { action } => run_config(action).await,
+        } => run_chat(!no_stream, continue_session.as_deref(), profile).await,
+        Commands::Run { prompt, stream } => run_one_shot(&prompt, stream, profile).await,
+        Commands::Setup => run_setup(profile),
+        Commands::Config { action } => run_config(action, profile).await,
         Commands::Tools => list_tools(),
         Commands::Skills => list_skills(),
         Commands::Sessions { action } => match action {
@@ -97,10 +99,10 @@ pub async fn run_cli() -> Result<()> {
 
 // ── Chat / Run ──────────────────────────────────────────────────────────
 
-async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
+async fn run_chat(stream: bool, continue_with: Option<&str>, profile: Option<&str>) -> Result<()> {
     info!("Starting interactive chat...");
 
-    let config = oben_config::AppConfig::load(None)?;
+    let config = oben_config::AppConfig::load(profile)?;
     let mut tools = oben_tools::ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut tools);
 
@@ -183,8 +185,8 @@ async fn run_chat(stream: bool, continue_with: Option<&str>) -> Result<()> {
 
 
 
-async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
-    let config = oben_config::AppConfig::load(None)?;
+async fn run_one_shot(prompt: &str, stream: bool, profile: Option<&str>) -> Result<()> {
+    let config = oben_config::AppConfig::load(profile)?;
 
     let mut tools = oben_tools::ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut tools);
@@ -239,14 +241,14 @@ async fn run_one_shot(prompt: &str, stream: bool) -> Result<()> {
 
 // ── Setup & Config ──────────────────────────────────────────────────────
 
-fn run_setup() -> Result<()> {
-    let mut config = oben_config::AppConfig::load(None)?;
+fn run_setup(profile: Option<&str>) -> Result<()> {
+    let mut config = oben_config::AppConfig::load(profile)?;
     oben_config::wizard::run_setup(&mut config)?;
     Ok(())
 }
 
-async fn run_config(action: ConfigCommand) -> Result<()> {
-    let config = oben_config::AppConfig::load(None)?;
+async fn run_config(action: ConfigCommand, profile: Option<&str>) -> Result<()> {
+    let config = oben_config::AppConfig::load(profile)?;
     match action {
         ConfigCommand::Show => {
             println!("{}", serde_yaml::to_string(&config)?);
