@@ -123,14 +123,26 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
 }
 
 /// Detect max_tokens from the LLM provider and return it if found.
+///
+/// Runs in a separate thread with its own tokio runtime to avoid
+/// "Cannot start a runtime from within a runtime" panic when called
+/// from inside the CLI's #[tokio::main] context.
 fn detect_max_tokens(config: &oben_models::ProviderConfig) -> Option<usize> {
-    let handle = tokio::runtime::Handle::current();
-    let transport = oben_transport::Transport::from_config(config, "");
-    let result = handle.block_on(async { transport.find_model(&config.model).await });
-
-    match result {
-        Ok(Some(model_info)) => model_info.max_model_len,
-        Ok(None) => None,
-        Err(_) => None,
-    }
+    let config_clone = config.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().ok()?;
+        let transport =
+            oben_transport::Transport::from_config(&config_clone, "");
+        let result = rt.block_on(async {
+            transport.find_model(&config_clone.model).await
+        });
+        match result {
+            Ok(Some(model_info)) => model_info.max_model_len,
+            Ok(None) => None,
+            Err(_) => None,
+        }
+    })
+    .join()
+    .ok()
+    .flatten()
 }
