@@ -50,13 +50,13 @@ pub async fn run_cli() -> Result<()> {
         Commands::Sessions { action } => match action {
             Some(SessionsCommand::List) => list_sessions(),
             Some(SessionsCommand::Compact { session, focus }) => {
-                run_compact_session(session.as_deref(), focus.as_deref()).await
+                run_compact_session(session.as_deref(), focus.as_deref(), profile).await
             }
             Some(SessionsCommand::Delete { session }) => run_delete_session(&session),
             Some(SessionsCommand::Dump { session }) => dump_session(session.as_deref()),
             None => list_sessions(),
         },
-        Commands::Models { action } => run_models(action).await,
+        Commands::Models { action } => run_models(action, profile).await,
         Commands::Tui { session } => oben_tui::run_tui(session.as_deref()).await,
         Commands::Cron { action } => match action {
             None => cron_list(false),
@@ -76,7 +76,7 @@ pub async fn run_cli() -> Result<()> {
         },
         Commands::Goals { action } => match action {
             None => goal_list(None),
-            Some(GoalCommand::Start { goal, max_turns }) => goal_start(&goal, max_turns).await,
+            Some(GoalCommand::Start { goal, max_turns }) => goal_start(&goal, max_turns, profile).await,
             Some(GoalCommand::List { status }) => goal_list(status.as_deref()),
             Some(GoalCommand::Status { goal_id }) => goal_status(&goal_id),
             Some(GoalCommand::Pause { id }) => goal_pause(&id).await,
@@ -308,8 +308,8 @@ fn list_sessions() -> Result<()> {
     Ok(())
 }
 
-async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str>) -> Result<()> {
-    let config = oben_config::AppConfig::load(None)?;
+async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str>, profile: Option<&str>) -> Result<()> {
+    let config = oben_config::AppConfig::load(profile)?;
     let mut sm = oben_sessions::DBSessionManager::new()?;
 
     let target: String = match session_key {
@@ -463,8 +463,8 @@ fn dump_session(session_key: Option<&str>) -> Result<()> {
 
 // ── Models ──────────────────────────────────────────────────────────────
 
-async fn run_models(action: ModelsCommand) -> Result<()> {
-    let config = oben_config::AppConfig::load(None)?;
+async fn run_models(action: ModelsCommand, profile: Option<&str>) -> Result<()> {
+    let config = oben_config::AppConfig::load(profile)?;
     let transport = create_transport(&config, "", &oben_tools::ToolRegistry::new());
 
     match action {
@@ -551,7 +551,7 @@ fn goal_store() -> Result<oben_goals::JsonGoalStore> {
     oben_goals::JsonGoalStore::default_store()
 }
 
-async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
+async fn goal_start(goal: &str, max_turns: Option<usize>, profile: Option<&str>) -> Result<()> {
     let goal_id = format!(
         "goal-{}-{}",
         chrono::Utc::now().timestamp_millis(),
@@ -565,7 +565,7 @@ async fn goal_start(goal: &str, max_turns: Option<usize>) -> Result<()> {
     // Decomposer: call LLM to break goal into plan nodes.
     // This mirrors `create_plan_from_goal()` but executed synchronously so the CLI
     // blocks until the plan is created and printed before the background loop starts.
-    let config = oben_config::AppConfig::load(None)?;
+    let config = oben_config::AppConfig::load(profile)?;
 
     let mut tools = oben_tools::ToolRegistry::new();
     oben_tools::discover_builtin_tools(&mut tools);
