@@ -1616,7 +1616,7 @@ mod gateway_lifecycle_tests {
     /// When: get_gateway_pid_path is called
     /// Then: returns a path ending with "obenmatrix/gateway.pid"
     fn test_gateway_pid_path_construction() {
-        let path = get_gateway_pid_path();
+        let path = get_gateway_pid_path(None);
         assert!(
             path.to_string_lossy().ends_with("obenmatrix/gateway.pid")
                 || cfg!(windows) && path.to_string_lossy().ends_with("obenmatrix\\gateway.pid"),
@@ -1630,7 +1630,7 @@ mod gateway_lifecycle_tests {
     /// When: we inspect its file name
     /// Then: it equals "gateway.pid"
     fn test_gateway_pid_path_file_name_is_pid() {
-        let path = get_gateway_pid_path();
+        let path = get_gateway_pid_path(None);
         assert_eq!(path.file_name().unwrap().to_string_lossy().as_ref(), "gateway.pid");
     }
 
