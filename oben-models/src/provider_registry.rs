@@ -163,6 +163,8 @@ pub const ALIAS_CANONICAL_PAIRS: &[(&str, &str)] = &[
     ("ollama-cloud", "ollama-custom"),
     // Local
     ("local", "local"),
+    // Custom (catch-all for OpenAI-compatible endpoints)
+    ("custom", "custom"),
     ("vllm", "local"),
     ("llamacpp", "local"),
     ("llama.cpp", "local"),
@@ -268,6 +270,7 @@ pub(crate) const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
         "https://ollama.com/v1",
     ),
     ("local", TransportType::OpenAIChat, ""),
+    ("custom", TransportType::OpenAIChat, ""),
 ];
 
 /// Canonical provider API key environment variable fallback chains.
