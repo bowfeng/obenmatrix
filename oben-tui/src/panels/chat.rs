@@ -222,24 +222,36 @@ impl ChatPanel {
                 let text = ts.streaming_text.clone();
                 let reasoning_text = ts.reasoning_text.clone();
                 let completed_tools: Vec<_> = ts.completed_tools.iter().cloned().collect();
+                // Capture error phase before dropping lock
+                let error_msg_for_render: Option<String> = match &ts.phase {
+                    TurnPhase::Error(ref e) if !e.trim().is_empty() => Some(e.clone()),
+                    _ => None,
+                };
                 // Consume all fields — TUI flushes them exactly once
                 ts.streaming_text.clear();
                 ts.reasoning_text.clear();
                 ts.completed_tools.clear();
                 drop(ts);
 
+                let mut error_msg: Option<&str> = None;
                 if text.is_empty()
                     && reasoning_text.is_empty()
                     && completed_tools.is_empty()
                 {
+                    // Check if there's an error message to render
+                    if let Some(ref error_text) = error_msg_for_render {
+                        error_msg = Some(error_text.as_str());
+                    }
                     // Still proceed if there are subagers to flush/render
-                    let has_subagers = self
-                        .shared_state_ref
-                        .try_lock()
-                        .map(|guard| !guard.get_subagents().is_empty())
-                        .unwrap_or(false);
-                    if !has_subagers {
-                        return;
+                    if error_msg.is_none() {
+                        let has_subagers = self
+                            .shared_state_ref
+                            .try_lock()
+                            .map(|guard| !guard.get_subagents().is_empty())
+                            .unwrap_or(false);
+                        if !has_subagers {
+                            return;
+                        }
                     }
                 }
 
@@ -276,6 +288,37 @@ impl ChatPanel {
                                         .add_modifier(Modifier::BOLD | Modifier::DIM),
                                 ),
                             ])),
+                        });
+                    }
+                }
+
+                // 1.5 Error message (if turn failed)
+                if let Some(ref error_text) = error_msg {
+                    let mut error_lines: Vec<StyledLine> = Vec::new();
+                    for line in error_text.lines().filter(|l| !l.trim().is_empty()) {
+                        error_lines.push(StyledLine {
+                            content: Line::styled(
+                                line.to_string(),
+                                Style::default()
+                                    .fg(Color::Red)
+                                    .add_modifier(Modifier::DIM),
+                            ),
+                            role_color: None,
+                        });
+                    }
+                    if !error_lines.is_empty() {
+                        new_entries.push(MessageRenderEntry {
+                            role: oben_models::MessageRole::Assistant,
+                            is_tool_result: false,
+                            body_lines: error_lines,
+                            tool_calls: Vec::new(),
+                            reasoning: None,
+                            title: Some(Line::from(vec![Span::styled(
+                                "  ⚠ Error",
+                                Style::default()
+                                    .fg(Color::Red)
+                                    .add_modifier(Modifier::BOLD | Modifier::DIM),
+                            )])),
                         });
                     }
                 }
