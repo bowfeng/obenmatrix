@@ -11,6 +11,10 @@ pub struct Cli {
     #[arg(short, long)]
     pub verbose: bool,
 
+    /// Named profile to use (creates/loads a isolated config+data directory)
+    #[arg(long)]
+    pub profile: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
