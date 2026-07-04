@@ -873,6 +873,7 @@ mod tests {
             slack: None,
             whatsapp: None,
             qq_bot: None,
+            plugin_dir: None,
         });
         let yaml = serde_yaml::to_string(&config).unwrap();
         let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
@@ -973,6 +974,7 @@ mod tests {
             discord: None,
             slack: None,
             whatsapp: None,
+            plugin_dir: None,
             qq_bot: Some(QQBotConfig {
                 enabled: true,
                 app_id: "12345".to_string(),
