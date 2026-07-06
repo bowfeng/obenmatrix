@@ -4,7 +4,7 @@ use crate::history;
 use crate::panels::chat::ChatPanel;
 use crate::panels::config::ConfigPanel;
 use crate::panels::sessions::SessionsPanel;
-use crate::panels::setup::SetupPanel;
+
 use crate::panels::splash::SplashPanel;
 use crate::panels::{KeyAction, Panel, PanelId};
 use anyhow::Result;
@@ -33,8 +33,6 @@ pub struct App {
     pub panels: HashMap<PanelId, Box<dyn Panel>>,
     pub status: String,
     pub config: AppConfig,
-    /// Timestamp when splash was first created. Used to enforce minimum 5s display.
-    pub splash_started: std::time::Instant,
     /// Pending session name to load on startup (from CLI `-s` argument).
     pub pending_session: Option<String>,
     /// Whether step-by-step reasoning mode is enabled.
@@ -127,8 +125,6 @@ impl App {
                             "SessionsPanel"
                         } else if p.downcast_ref::<ConfigPanel>().is_some() {
                             "ConfigPanel"
-                        } else if p.downcast_ref::<SetupPanel>().is_some() {
-                            "SetupPanel"
                         } else {
                             "unknown"
                         }
@@ -356,7 +352,6 @@ impl App {
             running: true,
             active_panel: PanelId::Splash,
             panels,
-            splash_started: std::time::Instant::now(),
             status: String::new(),
             config,
             input_tx: None,
@@ -598,47 +593,17 @@ impl App {
             .insert(PanelId::Config, Box::new(ConfigPanel::new(yaml)));
     }
 
-    pub fn create_setup_panel(&mut self) {
-        let mut panel = SetupPanel::new();
-        panel.set_config(AppConfig {
-            model: self.config.model.clone(),
-            temperature: self.config.temperature,
-            max_tokens: self.config.max_tokens,
-            max_iterations: self.config.max_iterations,
-            max_spawn_depth: self.config.max_spawn_depth,
-            max_concurrent_tasks: self.config.max_concurrent_tasks,
-            tools: self.config.tools.clone(),
-            skills: self.config.skills.clone(),
-            gateway: self.config.gateway.clone(),
-            display: self.config.display.clone(),
-            context: self.config.context.clone(),
-            voice: self.config.voice.clone(),
-            providers: self.config.providers.clone(),
-            custom_providers: self.config.custom_providers.clone(),
-            vision: self.config.vision.clone(),
-            session_store: self.config.session_store.clone(),
-            retry: self.config.retry.clone(),
-            concurrency: self.config.concurrency.clone(),
-            hooks: self.config.hooks.clone(),
-            fallback_models: self.config.fallback_models.clone(),
-            agent: self.config.agent.clone(),
-            events: self.config.events.clone(),
-        });
-        self.panels.insert(PanelId::Setup, Box::new(panel));
-    }
-
     pub async fn init_panels(&mut self) -> Result<()> {
         self.create_chat_panel().await?;
         self.activate_panel(PanelId::Chat).await;
         self.create_sessions_panel().await?;
         self.create_config_panel();
-        self.create_setup_panel();
         Ok(())
     }
 
     /// Initialize the active panel based on config presence and CLI session argument.
     ///
-    /// - If no `config.yaml` exists → activate Setup panel (first-time guide).
+    /// - If no `config.yaml` exists → show setup prompt on splash, exit TUI on key press.
     /// - If `config.yaml` exists → activate Chat panel and load the specified session
     ///   messages (if `session_name` was provided via CLI `-s`).
     pub async fn init_active_panel(&mut self, session_name: Option<&str>) -> Result<()> {
@@ -656,15 +621,25 @@ impl App {
         self.create_chat_panel().await?;
         self.create_sessions_panel().await?;
         self.create_config_panel();
-        self.create_setup_panel();
 
         if !has_config {
-            // No config — activate Setup panel for first-time configuration
+            // No config — display setup prompt on splash panel so user knows
+            // they need to run `obenmatrix setup` to create a config file.
             info!(
-                "No config.yaml found at {:?}, activating Setup panel",
+                "No config.yaml found at {:?}, showing setup prompt on splash",
                 config_path
             );
-            self.activate_panel(PanelId::Setup).await;
+            if let Some(splash) = self
+                .panels
+                .get_mut(&PanelId::Splash)
+                .and_then(|p| p.downcast_mut::<SplashPanel>())
+            {
+                splash.set_error(format!(
+                    "No configuration found.\nRun `obenmatrix setup` to configure.",
+                ));
+            }
+            // Without config, just show rain splash — user must run setup first.
+            return Ok(());
         } else {
             // Config exists — activate Chat panel
             info!("Config found at {:?}, activating Chat panel", config_path);

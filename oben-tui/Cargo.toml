@@ -19,7 +19,7 @@ oben-gateway = { path = "../oben-gateway" }
 oben-utils = { path = "../oben-utils" }
 oben-skills = { path = "../oben-skills" }
 
-ratatui = { version = "0", features = ["serde"] }
+ratatui = { workspace = true }
 crossterm = { version = "0", features = ["event-stream"] }
 ratatui-textarea = { version = "0.9", features = ["crossterm"] }
 unicode-width = "0.2"
@@ -43,7 +43,6 @@ ratatui-toaster = "0.1.3"
 rand = { version = "0.8", features = ["std", "std_rng"] }
 parking_lot = "0.12"
 regex = { workspace = true }
-tui-rain = { path = "../tui-rain-patched" }
 lazy_static = "1.5.0"
 pulldown-cmark = "0.12"
 

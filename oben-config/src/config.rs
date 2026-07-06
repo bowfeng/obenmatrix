@@ -1031,6 +1031,12 @@ impl AppConfig {
         Self::config_dir_legacy().join("config.yaml")
     }
 
+    /// Return true if the config file does not exist on disk.
+    pub fn is_config_missing(profile: Option<&str>) -> bool {
+        let env = crate::env::Env::new(profile.map(String::from));
+        !env.config_path().exists()
+    }
+
     /// Load config from the profile-specific (or default) config file.
     pub fn load(profile: Option<&str>) -> anyhow::Result<Self> {
         let env = crate::env::Env::new(profile.map(String::from));

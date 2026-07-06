@@ -3,7 +3,6 @@
 pub mod chat;
 pub mod config;
 pub mod sessions;
-pub mod setup;
 pub mod splash;
 
 use async_trait::async_trait;
@@ -18,7 +17,6 @@ pub enum PanelId {
     Chat,
     Sessions,
     Config,
-    Setup,
 }
 
 /// Actions returned by `Panel::handle_key` for `App::handle_key` to process.

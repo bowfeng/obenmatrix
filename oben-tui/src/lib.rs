@@ -25,7 +25,6 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
-use panels::splash::SplashPanel;
 use panels::PanelId;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -101,30 +100,16 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     // both need mutable access to app.panels during splash phase.
     let arc_app = Arc::new(tokio::sync::Mutex::new(app));
 
-    // Set splash started timestamp after entering raw mode
-    {
-        let mut a = arc_app.lock().await;
-        a.splash_started = std::time::Instant::now();
-    }
 
-    // Configure splash minimum duration from terminal height — ensures at least
-    // one full rain drop falls from top to bottom.
-    {
-        let term_h = terminal.size().unwrap().height;
-        let mut a = arc_app.lock().await;
-        if let Some(splash) = a
-            .panels
-            .get_mut(&PanelId::Splash)
-            .and_then(|p| p.downcast_mut::<SplashPanel>())
-        {
-            splash.set_min_duration(term_h);
-        }
-    }
 
     // --- SPLASH LOOP ---
     // Use oneshot channel so init and draw don't contend for the app mutex.
     let (init_done_tx, init_done_rx) =
         tokio::sync::oneshot::channel::<Result<(), anyhow::Error>>();
+
+    // Minimum splash display duration — gives time for agent init.
+    let splash_start = std::time::Instant::now();
+    let min_display_ms: u64 = 1500;
 
     {
         let init_arc_app = Arc::clone(&arc_app);
@@ -168,7 +153,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
     }
 
     loop {
-        // Draw splash
+        // Draw splash screen
         {
             let a = arc_app.lock().await;
             if let Some(splash) = a.panels.get(&PanelId::Splash) {
@@ -181,8 +166,19 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         }
         terminal.backend_mut().flush().ok();
 
-        if crossterm::event::poll(Duration::from_millis(32)).unwrap_or(false) {
+        // Break after minimum display or any key press
+        let elapsed_ms: u128 = std::time::Instant::now()
+            .duration_since(splash_start)
+            .as_millis();
+        if elapsed_ms >= min_display_ms as u128 {
             break;
+        }
+
+        if crossterm::event::poll(Duration::from_millis(32)).unwrap_or(false) {
+            // Any key press skips splash early
+            if crossterm::event::read().is_ok() {
+                break;
+            }
         }
     }
 
