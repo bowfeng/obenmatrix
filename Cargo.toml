@@ -64,6 +64,7 @@ ctor = "0.2"
 wasmtime = { version = "44.0.3", features = ["component-model"] }
 wasmtime-wasi = "44.0.3"
 semver = "1.0"
+ratatui = { version = "0", features = ["serde"] }
 
 [package]
 name = "obenmatrix"

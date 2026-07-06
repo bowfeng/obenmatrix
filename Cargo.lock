@@ -1100,7 +1100,6 @@ checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
 dependencies = [
  "bitflags 2.13.0",
  "crossterm_winapi",
- "futures-core",
  "mio",
  "parking_lot",
  "rustix 0.38.44",
@@ -3494,7 +3493,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "tui-rain",
  "tui-scrollview",
  "tui-widget-list",
  "unicode-ident",
@@ -4323,15 +4321,6 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
-
-[[package]]
-name = "rand_pcg"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59cad018caf63deb318e5a4586d99a24424a364f40f1e5778c29aca23f4fc73e"
-dependencies = [
- "rand_core 0.6.4",
-]
 
 [[package]]
 name = "ratatui"
@@ -6164,18 +6153,6 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
-
-[[package]]
-name = "tui-rain"
-version = "1.0.1"
-dependencies = [
- "crossterm 0.28.1",
- "futures",
- "rand 0.8.6",
- "rand_pcg",
- "ratatui",
- "tokio",
-]
 
 [[package]]
 name = "tui-scrollview"

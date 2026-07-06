@@ -20,3 +20,5 @@ tui-rain-patched/
 .DS_Store
 Thumbs.db
 lcov.info
+.omo/
+.omo/
