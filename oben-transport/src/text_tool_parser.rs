@@ -18,40 +18,37 @@ fn extract_json_object(s: &str) -> Option<&str> {
     if !s.starts_with('{') {
         return None;
     }
-    let bytes = s.as_bytes();
     let mut depth = 0usize;
+    let mut in_string = false;
     let mut escape = false;
-    let mut i = 0;
-    while i < bytes.len() {
+    for (i, ch) in s.char_indices() {
         if escape {
             escape = false;
-            i += 1;
             continue;
         }
-        match bytes[i] {
-            b'\\' => escape = true,
-            b'"' => {
-                // Skip the entire quoted string (including escape sequences)
-                i += 1;
-                while i < bytes.len() {
-                    match bytes[i] {
-                        b'\\' => i += 2,
-                        b'"' => { i += 1; break; }
-                        _ => i += 1,
-                    }
-                }
-                continue;
-            }
-            b'{' | b'[' => depth += 1,
-            b'}' | b']' => {
+        if ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => {
                 depth -= 1;
                 if depth == 0 {
                     return Some(&s[..=i]);
                 }
             }
+            '[' => depth += 1,
+            ']' => depth -= 1,
             _ => {}
         }
-        i += 1;
     }
     None
 }
