@@ -115,7 +115,7 @@ impl ConversationCoordinator for CliCoordinator {
         &mut self,
         response: &str,
         _msg_count: usize,
-        turn_count: u32,
+        _turn_count: u32,
         success: bool,
     ) -> bool {
         let interaction = &self.interaction;

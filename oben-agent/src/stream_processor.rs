@@ -152,7 +152,7 @@ pub fn scrub_thinking_blocks(text: &str) -> (String, Option<String>) {
         text.len(),
         preview
     );
-    let result = String::new();
+    let mut result = String::new();
     let mut reasoning_parts: Vec<String> = Vec::new();
     let mut remaining = text.to_string();
 
@@ -166,7 +166,7 @@ pub fn scrub_thinking_blocks(text: &str) -> (String, Option<String>) {
         }
         // "thinking" is at position 0 of this delta — extract reasoning.
         let after_open = &remaining[start + "thinking".len()..];
-        match after_open.find("ee") {
+        match after_open.find("</thinking>") {
             Some(end) => {
                 // Closed block — extract the reasoning between thinking...
                 // and the closing tag, then continue processing what follows.
@@ -175,7 +175,7 @@ pub fn scrub_thinking_blocks(text: &str) -> (String, Option<String>) {
                     reasoning_parts.push(reasoning_text.to_string());
                 }
                 // Move past the closed thinking block
-                remaining = after_open[end + "</think>".len()..].to_string();
+                remaining = after_open[end + "</thinking>".len()..].to_string();
             }
             None => {
                 // Unclosed thinking block — strip "thinking" and collect
@@ -191,6 +191,7 @@ pub fn scrub_thinking_blocks(text: &str) -> (String, Option<String>) {
             }
         }
     }
+    result.push_str(&remaining);
     if result.is_empty() && reasoning_parts.is_empty() {
         // No thinking block found at all — return original text.
         return (text.to_string(), None);
@@ -240,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_scrub_strips_tags() {
-        let text = "thinkinglet me thinkeevisible";
+        let text = "thinkinglet me think</thinking>visible";
         let (scrubbed, reasoning) = scrub_thinking_blocks(&text);
         assert_eq!(scrubbed, "visible");
         assert_eq!(reasoning, Some("let me think".to_string()));
@@ -249,18 +250,18 @@ mod tests {
     #[test]
     fn test_scrub_preserves_text_outside() {
         // "thinking" in the middle → preserve full input.
-        let text = "firstthinkingblockee second";
+        let text = "firstthinkingblock</thinking> second";
         let (scrubbed, reasoning) = scrub_thinking_blocks(text);
-        assert_eq!(scrubbed, "firstthinkingblockee second");
+        assert_eq!(scrubbed, "firstthinkingblock</thinking> second");
         assert_eq!(reasoning, None);
     }
 
     #[test]
     fn test_scrub_multiple_blocks() {
         // Mid-content thinking → preserve full input (only position-0 stripped).
-        let text = "AthinkingBeeCthinkingDeeE";
+        let text = "AthinkingB</thinking>CthinkingD</thinking>E";
         let (scrubbed, reasoning) = scrub_thinking_blocks(text);
-        assert_eq!(scrubbed, "AthinkingBeeCthinkingDeeE");
+        assert_eq!(scrubbed, "AthinkingB</thinking>CthinkingD</thinking>E");
         assert_eq!(reasoning, None);
     }
 
@@ -366,18 +367,16 @@ mod tests {
         assert_eq!(scrubbed, " Here's what I found:");
         assert_eq!(reasoning, None);
     }
-
     #[test]
     fn test_scrub_thinking_blocks_streaming_multiple_blocks() {
-        // Delta with two thinking blocks in one payload (edge case):
-        // Format: thinking[content]ee[visible]
-        let text = "thinkingstep 1thinkingstep 2eevisible";
+        // Delta with two consecutive thinking blocks in one payload (edge case)
+        // Uses format: thinking[content]
+        // Format: thinking[content]</thinking>thinking[content]</thinking>[visible]
+        let text = "thinkingstep 1</thinking>thinkingstep 2</thinking>visible";
         let (scrubbed, reasoning) = scrub_thinking_blocks(text);
         assert_eq!(scrubbed, "visible");
-        // reasoning collects the content before the ee closing tag
-        assert_eq!(reasoning, Some("step 1thinkingstep 2".to_string()));
+        assert_eq!(reasoning, Some("step 1\n\nstep 2".to_string()));
     }
-
     #[test]
     fn test_scrub_thinking_blocks_streaming_unclosed_preserves() {
         // Unclosed thinking block (edge case for streaming where tags span deltas):

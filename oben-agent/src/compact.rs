@@ -983,6 +983,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         };
         assert_eq!(message_token_estimate(&msg), 500);
     }
@@ -1037,6 +1038,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: Some(vec![tool_call]),
             reasoning: None,
+            delegation_id: None,
         }];
         let (pruned, count) = prune_tool_results(&msgs, 10000);
         assert_eq!(count, 1);
@@ -1069,6 +1071,7 @@ mod tests {
                 tool_call_ids: vec![],
                 tool_calls: Some(vec![assistant_call, assistant_call2]),
                 reasoning: None,
+                delegation_id: None,
             },
             Message::tool_result("call-1", "result 1"),
             Message::tool_result("call-99", "orphaned result"), // orphaned
@@ -1106,6 +1109,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: Some(vec![assistant_call]),
             reasoning: None,
+            delegation_id: None,
         }];
         let mut messages: Vec<Message> = msgs;
         let (removed, added) = sanitize_tool_pairs(&mut messages);
@@ -1140,6 +1144,7 @@ mod tests {
                 tool_call_ids: vec![],
                 tool_calls: None,
                 reasoning: None,
+                delegation_id: None,
             },
             Message {
                 role: oben_models::MessageRole::User,
@@ -1148,6 +1153,7 @@ mod tests {
                 tool_call_ids: vec![],
                 tool_calls: None,
                 reasoning: None,
+                delegation_id: None,
             },
             Message {
                 role: oben_models::MessageRole::User,
@@ -1159,6 +1165,7 @@ mod tests {
                 tool_call_ids: vec![],
                 tool_calls: None,
                 reasoning: None,
+                delegation_id: None,
             },
         ];
         let mut messages: Vec<Message> = msgs;
@@ -1181,6 +1188,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }];
         let mut messages: Vec<Message> = msgs;
         let count = strip_historical_media(&mut messages);
@@ -1199,6 +1207,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }];
         let mut messages: Vec<Message> = msgs;
         let count = strip_historical_media(&mut messages);
@@ -1223,6 +1232,7 @@ mod tests {
                 tool_call_ids: vec![],
                 tool_calls: None,
                 reasoning: None,
+                delegation_id: None,
             },
             Message {
                 role: oben_models::MessageRole::User,
@@ -1234,6 +1244,7 @@ mod tests {
                 tool_call_ids: vec![],
                 tool_calls: None,
                 reasoning: None,
+                delegation_id: None,
             },
         ];
         let mut messages: Vec<Message> = msgs;
@@ -1313,6 +1324,7 @@ mod tests {
                         arguments: serde_json::json!({"path": format!("/src/benchmarks/mod{i}.rs", i=i), "content": "x".repeat(500)}),
                     }]),
                     reasoning: None,
+                    delegation_id: None,
                 };
                 msgs.push(tool_call_msg);
                 let tool_result = format!("Benchmark results for mod{}:\nDashMap: 125ns read, 340ns write\nRwLock: 45ns read, 2800ns write (under contention)\nMutex: 42ns read, 2650ns write\n\nThe benchmarks confirm that DashMap provides the best balanced performance for concurrent workloads.", i);
@@ -1575,6 +1587,7 @@ mod tests {
                 arguments: serde_json::json!({"path": "/src/main.rs"}),
             }]),
             reasoning: None,
+            delegation_id: None,
         };
         let messages = vec![
             Message::system("You are a helpful coding assistant dedicated to helping the user with their projects. You always write high-quality code and follow best practices."),

@@ -336,6 +336,7 @@ struct StreamChoice {
     #[serde(default)]
     _index: usize,
     #[serde(default)]
+    #[allow(dead_code)]
     pub finish_reason: Option<String>,
 }
 

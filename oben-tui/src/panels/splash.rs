@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
-use ratatui::layout::{Rect, Alignment};
+use ratatui::layout::{Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 

@@ -189,6 +189,6 @@ mod tests {
         let engine = HookBuilder::new()
             .register_agent_loop(Box::new(TestHook))
             .build();
-        assert!(engine.count() >= 0);
+        assert_eq!(engine.count(), 1);
     }
 }

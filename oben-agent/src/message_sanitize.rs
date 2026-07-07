@@ -202,6 +202,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }
     }
 
@@ -213,6 +214,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: Some(vec![]),
             reasoning: None,
+            delegation_id: None,
         }
     }
 
@@ -300,6 +302,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         };
 
         let text_msg = make_user("Hello");
@@ -329,6 +332,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         };
 
         let text_msg = make_user("先看这张");
@@ -362,6 +366,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         };
 
         let mut messages = vec![make_user("previous"), make_assistant("hello"), img_msg];
@@ -391,6 +396,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         };
 
         let mut messages = vec![
@@ -443,6 +449,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         };
 
         let text_msg1 = make_user("先");

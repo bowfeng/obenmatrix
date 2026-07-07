@@ -324,7 +324,7 @@ mod tests {
         let policy = DefaultTurnTerminationPolicy::default();
         let resp = mk_response("", vec![]);
         let msgs = [
-            Message { role: MessageRole::Tool, content: MessageContent::Text("tool output".into()), id: None, tool_call_ids: vec![], tool_calls: None, reasoning: None },
+            Message { role: MessageRole::Tool, content: MessageContent::Text("tool output".into()), id: None, tool_call_ids: vec![], tool_calls: None, reasoning: None, delegation_id: None },
         ];
         let ctx = mk_ctx(&resp, &msgs);
         assert_eq!(policy.evaluate(&ctx).unwrap(), TurnTerminationDecision::ReturnLastToolResult);

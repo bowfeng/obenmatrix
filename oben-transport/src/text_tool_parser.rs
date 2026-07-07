@@ -21,7 +21,6 @@ fn extract_json_object(s: &str) -> Option<&str> {
     let mut depth = 0usize;
     let mut in_string = false;
     let mut escape = false;
-    let mut start = None;
     for (i, ch) in s.char_indices() {
         if escape {
             escape = false;
@@ -39,12 +38,7 @@ fn extract_json_object(s: &str) -> Option<&str> {
             continue;
         }
         match ch {
-            '{' => {
-                depth += 1;
-                if start.is_none() {
-                    start = Some(i);
-                }
-            }
+            '{' => depth += 1,
             '}' => {
                 depth -= 1;
                 if depth == 0 {
@@ -93,20 +87,27 @@ pub fn parse_tool_calls_from_text(text: &str) -> Vec<TransportToolCall> {
                 {
                     // Look ahead for a JSON object after this quoted word
                     let after_quote = end + 1;
-                    // Skip past trailing quotes or other chars that might appear
+                    // Skip non-quoting, non-brace chars between word and JSON object
                     let mut j = after_quote;
-                    while j < len && bytes[j] == b'"' {
+                    while j < len && bytes[j] != b'{' && bytes[j] != b'"' {
                         j += 1;
                     }
                     if j < len && bytes[j] == b'{' {
+                        // Extract JSON object and skip if it looks like a JSON key-value pair
                         if let Some(args_str) = extract_json_object(&text[j..]) {
-                            if let Ok(args) = serde_json::from_str::<serde_json::Value>(args_str) {
-                                if seen.insert(word.to_string()) {
-                                    tool_calls.push(TransportToolCall {
-                                        id: format!("call_{}_{}", tool_calls.len(), word),
-                                        tool_name: word.to_string(),
-                                        arguments: args,
-                                    });
+                            // Check between closing quote and `{` — if the only non-whitespace
+                            // character is `:`, this is a JSON key (word": {...}) not a tool name
+                            let between = &text[end + 1..j];
+                            let only_colon = between.chars().filter(|c| !c.is_whitespace()).eq([':'].iter().cloned());
+                            if !only_colon {
+                                if let Ok(args) = serde_json::from_str::<serde_json::Value>(args_str) {
+                                    if seen.insert(word.to_string()) {
+                                        tool_calls.push(TransportToolCall {
+                                            id: format!("call_{}_{}", tool_calls.len(), word),
+                                            tool_name: word.to_string(),
+                                            arguments: args,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -122,12 +123,11 @@ pub fn parse_tool_calls_from_text(text: &str) -> Vec<TransportToolCall> {
         let trimmed = line.trim();
         if let Some(paren_pos) = trimmed.find('(') {
             let before = &trimmed[..paren_pos];
-            let tool_name = before.trim();
+            let tool_name = before.trim().trim_matches('"');
             if !tool_name.is_empty()
                 && tool_name
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-                && !tool_name.contains('"')
             {
                 if let Some(close_paren) = trimmed.rfind(')') {
                     let inner = &trimmed[paren_pos + 1..close_paren];

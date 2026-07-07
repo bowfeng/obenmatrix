@@ -1217,9 +1217,10 @@ mod tests {
             tool_calls: Some(vec![oben_models::ToolCall {
                 id: "call-1".to_string(),
                 tool_name: "shell".to_string(),
-                arguments: json!({"command": "ls"}),
+                arguments: serde_json::json!({"command": "ls"}),
             }]),
             reasoning: None,
+            delegation_id: None,
         };
         let result = message_to_anthropic_json(&msg);
         assert_eq!(result["role"], "assistant");
