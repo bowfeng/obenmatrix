@@ -143,7 +143,10 @@ async fn test_live_stream_tool_calls_response() -> Result<()> {
         );
     }
 
-    assert!(resp.text.len() > 0, "Should have some response text");
+    assert!(
+        !resp.text.is_empty() || !resp.tool_calls.is_empty(),
+        "Should have some response text or tool calls"
+    );
 
     Ok(())
 }

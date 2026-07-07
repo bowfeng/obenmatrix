@@ -243,6 +243,7 @@ mod tests {
             _messages: &[Message],
             _mode: &CallMode,
             _delta_callback: StreamDeltaCallback,
+            _reasoning_callback: Option<oben_models::StreamReasoningCallback>,
         ) -> Result<TransportResponse, anyhow::Error> {
             Ok(TransportResponse {
                 text: self.response_text.clone(),
@@ -405,6 +406,7 @@ mod tests {
             tool_call_ids: vec![],
             tool_calls: None,
             reasoning: None,
+            delegation_id: None,
         }];
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

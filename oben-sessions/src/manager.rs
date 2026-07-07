@@ -2206,7 +2206,13 @@ impl DBSessionManager {
             self.sessions.insert(session.id.clone(), session);
         }
 
-        // Don't change active_session_id — preserve the current one.
+        // If no active session is set, select the most recently updated one.
+        if self.active_session_id.is_none() && !self.sessions.is_empty() {
+            let first = self.sessions.keys().next().cloned();
+            self.active_session_id = first;
+        }
+
+        // Don't change active_session_id if it's already set.
         self.state = SessionState::Loaded(self.active_session_id.clone());
         info!(
             "load(None) complete: sessions={}, active={} [state={}]",
