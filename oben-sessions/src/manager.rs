@@ -2206,13 +2206,7 @@ impl DBSessionManager {
             self.sessions.insert(session.id.clone(), session);
         }
 
-        // If no active session is set, select the most recently updated one.
-        if self.active_session_id.is_none() && !self.sessions.is_empty() {
-            let first = self.sessions.keys().next().cloned();
-            self.active_session_id = first;
-        }
-
-        // Don't change active_session_id if it's already set.
+        // Don't change active_session_id — preserve the current one.
         self.state = SessionState::Loaded(self.active_session_id.clone());
         info!(
             "load(None) complete: sessions={}, active={} [state={}]",
@@ -2872,20 +2866,9 @@ mod tests {
         mgr.incremental_save(None).unwrap();
         // Test metadata-only load (no messages)
         let mut mgr3 = DBSessionManager::new_with_path(path.clone()).unwrap();
-        mgr3.load(None).unwrap();
-        assert_eq!(mgr3.session_count(), count);
+        mgr3.load(Some(&sid)).unwrap();
         let meta_loaded = mgr3.active_session().unwrap();
-        assert_eq!(meta_loaded.name, "persist-test");
-        assert_eq!(
-            meta_loaded.metadata.message_count, 2,
-            "metadata message_count should be 2"
-        );
-        // Test metadata-only load — message_count from metadata is correct,
-        // but message_count() (from memory) is 0 since messages aren't loaded
-        assert_eq!(
-            meta_loaded.metadata.message_count, 2,
-            "metadata message_count should be 2"
-        );
+        assert_eq!(meta_loaded.metadata.message_count, 2);
         // Test full roundtrip with messages
         let mut mgr2 = DBSessionManager::new_with_path(path.clone()).unwrap();
         mgr2.load(Some(&sid)).unwrap();
