@@ -101,6 +101,12 @@ pub struct PluginManifest {
     pub version: String,
     /// Plugin description
     pub description: String,
+    /// Tool names declared by this plugin (e.g. ["hello-world"])
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// CLI command names declared by this plugin (e.g. ["example-status"])
+    #[serde(default)]
+    pub cli_commands: Vec<String>,
     /// Plugin capabilities (workspace_read, http, tool_invoke)
     #[serde(default)]
     pub capabilities: PluginCapabilities,

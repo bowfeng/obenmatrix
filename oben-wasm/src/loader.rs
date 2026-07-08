@@ -158,12 +158,29 @@ impl PluginLoader {
         );
         let ctx = PluginContext::new(caps);
 
-        ctx.register_tool(
-            &manifest.name,
-            &manifest.description,
-            "{}",
-            vec![],
-        ).await;
+        // Register each tool declared in the manifest.
+        for tool_name in &manifest.tools {
+            let description = if manifest.description.is_empty() {
+                format!("{} plugin tool", manifest.name)
+            } else {
+                manifest.description.clone()
+            };
+            ctx.register_tool(
+                tool_name,
+                &description,
+                "{}",
+                vec![],
+            ).await;
+        }
+
+        // Register each CLI command declared in the manifest.
+        for cmd_name in &manifest.cli_commands {
+            ctx.register_command(
+                cmd_name,
+                &manifest.description,
+                vec![],
+            ).await;
+        }
 
         let tools = ctx.take_tools().await;
         let commands = ctx.take_commands().await;
