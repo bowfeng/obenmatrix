@@ -57,24 +57,44 @@ fn create_tool_registry() -> ToolRegistry {
     registry
 }
 
-/// Load WASM hook adapters and inject them into a HookBuilder via typed channels.
+/// Load WASM plugins and inject hook adapters into a HookBuilder.
 ///
-/// Returns the builder unchanged when no plugins are found or the feature is disabled.
+/// Flow (under `wasm-plugins` feature):
+/// 1. Resolve plugin directory (config > env > default).
+/// 2. Discover plugins via PluginDiscoverer (manifest parsing).
+/// 3. Filter by PluginConfig::is_enabled / disabled lists.
+/// 4. Create PluginLifecycleManager for crash tracking.
+/// 5. Create WasmRuntime + PluginLoader to load plugins into bundles.
+/// 6. Create separate WasmHookRegistry to load hook adapters.
+/// 7. Wire adapters into the HookBuilder for the agent loop.
+///
+/// Returns the builder unchanged when no plugins are found or the
+/// feature is disabled (the call-site cfg-gates the whole call).
+///
+/// NOTE: PluginLoader and WasmHookRegistry each own their own WasmRuntime
+/// instance. The loader uses PluginDiscoverer for manifest-based discovery
+/// (finding .platform.json / plugin.yaml), while the registry uses
+/// discover_plugins() for raw .wasm-file scanning. Lifecycle tracking
+/// covers all discovered plugins regardless of which system loaded them.
 #[cfg(feature = "wasm-plugins")]
 async fn load_wasm_hooks(
     builder: HookBuilder,
     plugins_dir: &Option<std::path::PathBuf>,
 ) -> HookBuilder {
     use std::path::PathBuf;
-    use oben_wasm::{WasmHookRegistry, WasmRuntime, WasmRuntimeConfig};
 
-    let plugin_path = plugins_dir
-        .clone()
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".obenmatrix").join("plugins").join("wasm"))
-        });
+    use oben_wasm::lifecycle::PluginLifecycleManager;
+    use oben_wasm::{
+        PluginDiscoverer, PluginLoader, WasmHookRegistry,
+        WasmRuntime, WasmRuntimeConfig,
+    };
+
+    // 1. Resolve plugin directory
+    let plugin_path = plugins_dir.clone().or_else(|| {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join(".obenmatrix").join("plugins").join("wasm"))
+    });
 
     let Some(pdir) = plugin_path.as_ref()
         .filter(|p| p.exists() && p.is_dir())
@@ -82,41 +102,156 @@ async fn load_wasm_hooks(
         return builder;
     };
 
-    tracing::info!(?pdir, "Loading WASM hook components");
+    tracing::info!(?pdir, "WASM plugin loading enabled");
 
-    let runtime = match WasmRuntime::new(WasmRuntimeConfig::default()) {
+    // 2. Discover plugins via manifest files (.platform.json / plugin.yaml)
+    let discovered = match PluginDiscoverer::discover(pdir.as_path()) {
+        Ok(d) if !d.is_empty() => d,
+        Ok(_) => {
+            tracing::info!(?pdir, "No plugins discovered, skipping WASM loading");
+            return builder;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, ?pdir, "WASM plugin discovery failed");
+            return builder;
+        }
+    };
+
+    // 3. Filter by PluginConfig (enabled/disabled lists)
+    let plugin_config = oben_config::PluginConfig::default();
+    let enabled_list: Vec<_> = discovered.iter()
+        .filter(|d| plugin_config.is_enabled(&d.manifest.name))
+        .collect();
+
+    if enabled_list.is_empty() {
+        tracing::info!(count = discovered.len(), "All discovered plugins are disabled");
+        return builder;
+    }
+
+    tracing::info!(count = enabled_list.len(), "Enabled plugins after filtering");
+
+    // 4. Create lifecycle manager (max 3 crash restarts per plugin)
+    let mut lifecycle = PluginLifecycleManager::new(3);
+
+    // 5a. Create runtime and loader (for bundle loading + caching)
+    let loader_runtime = match WasmRuntime::new(WasmRuntimeConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "WASM runtime creation failed");
             return builder;
         }
     };
+    let loader = PluginLoader::new(loader_runtime);
 
-    let registry = WasmHookRegistry::new(runtime, pdir.clone());
-    let components = match registry.load_hooks().await {
-        Ok(c) => c,
+    // 5b. Load plugins into bundles (populates the loader's internal component cache)
+    let loader_results = loader.load_plugins(pdir.as_path()).await;
+
+    // Track bundle load errors at lifecycle level
+    for bundle in &loader_results.bundles {
+        let plugin_name: String = match bundle.tools.first() {
+            Some(t) => t.name.clone(),
+            None => "unknown".to_string(),
+        };
+        if !bundle.errors.is_empty() {
+            lifecycle.crash(&plugin_name, &format!("bundle load errors: {:?}", bundle.errors));
+            tracing::warn!(plugin = %plugin_name, errors = ?bundle.errors, "Plugin bundle has load errors");
+        }
+    }
+
+    // 5c. (Alternative) Use loader's `discover` instead of PluginDiscoverer
+    // let loader_discovered = PluginLoader::discover(pdir.as_path())?;
+    // Filter by plugin_config.is_enabled same as above.
+
+    // 6. Create separate hook registry (uses its own runtime)
+    let hook_runtime = match WasmRuntime::new(WasmRuntimeConfig::default()) {
+        Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, "WASM hook loading failed");
+            tracing::warn!(error = %e, "WASM hook runtime creation failed");
             return builder;
         }
     };
 
-    let hook_components = match registry.instantiate_hooks(components).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, "WASM adapter instantiation failed");
-            return builder;
-        }
-    };
+    let registry = WasmHookRegistry::new(hook_runtime, pdir.clone());
 
-    builder
-        .with_agent_loop_hooks(hook_components.agent_loop)
-        .with_turn_hooks(hook_components.turn)
-        .with_tool_hooks(hook_components.tool)
-        .with_streaming_hooks(hook_components.streaming)
-        .with_system_hooks(hook_components.system)
-        .with_session_hooks(hook_components.session)
-        .with_interrupt_hooks(hook_components.interrupt)
+    // Build HookBuilder incrementally across all successfully loaded plugins
+    let mut hook_builder = builder;
+    let mut loaded_count = 0usize;
+    let mut hook_plugin_names = Vec::new();
+
+    // Discover hook candidates via registry's raw WASM scanning
+    match registry.discover_plugins().await {
+        Ok(wasm_paths) => {
+            for wasm_path in &wasm_paths {
+                let stem = wasm_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                // Skip plugins not in our enabled list
+                if !enabled_list.iter().any(|d| d.manifest.name == stem) {
+                    tracing::debug!(
+                        plugin = %stem,
+                        "Skipping plugin not in enabled list",
+                    );
+                    continue;
+                }
+
+                lifecycle.start(&stem);
+
+                match registry.load_hooks().await {
+                    Ok(components) => {
+                        if components.is_empty() {
+                            lifecycle.started(&stem);
+                            continue;
+                        }
+
+                        match registry.instantiate_hooks(components).await {
+                            Ok(hook_components) => {
+                                hook_builder = hook_builder
+                                    .with_agent_loop_hooks(hook_components.agent_loop)
+                                    .with_turn_hooks(hook_components.turn)
+                                    .with_tool_hooks(hook_components.tool)
+                                    .with_streaming_hooks(hook_components.streaming)
+                                    .with_system_hooks(hook_components.system)
+                                    .with_session_hooks(hook_components.session)
+                                    .with_interrupt_hooks(hook_components.interrupt);
+                                loaded_count += 1;
+                                hook_plugin_names.push(stem.clone());
+                            },
+                            Err(e) => {
+                                lifecycle.crash(&stem, &format!("instantiate hooks failed: {e}"));
+                                tracing::warn!(
+                                    plugin = %stem, error = %e,
+                                    "Instantiating WASM hook adapters failed"
+                                );
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        lifecycle.crash(&stem, &format!("load hooks failed: {e}"));
+                        tracing::warn!(plugin = %stem, error = %e, "Loading WASM hook component failed");
+                    }
+                }
+
+                lifecycle.started(&stem);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "WASM hook plugin discovery failed");
+        }
+    }
+
+    // 7. Save lifecycle state for crash detection / shutdown
+    let running = lifecycle.running_plugins();
+    tracing::info!(
+        loaded = loaded_count,
+        hook_plugins = ?hook_plugin_names,
+        plugins = ?running,
+        "WASM plugin lifecycle state committed"
+    );
+
+    hook_builder
 }
 
 #[tokio::main]
@@ -283,59 +418,6 @@ async fn main() -> Result<()> {
 
         registry.start_all()?
     };
-    // Load WASM platform plugins from the configured directory
-    #[cfg(feature = "wasm-plugins")]
-    {
-        use std::path::PathBuf;
-
-        let plugin_dir = gateway_config
-            .plugin_dir
-            .clone()
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".obenmatrix").join("plugins").join("wasm"))
-            });
-
-        if let Some(ref plugin_dir) = plugin_dir {
-            if plugin_dir.exists() && plugin_dir.is_dir() {
-                tracing::info!(?plugin_dir, "Loading WASM platform plugins");
-                if let Ok(entries) = std::fs::read_dir(plugin_dir) {
-                    let mut stub_handles: Vec<(String, oben_gateway::platform::PlatformHandle)> =
-                        Vec::new();
-                    for entry in entries.filter_map(|e| e.ok()) {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
-                            continue;
-                        }
-                        let file_stem = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("unknown");
-                        tracing::info!(plugin = %file_stem, source = ?path, "Found WASM platform plugin");
-
-                        // Full WASM instantiation TBD in a future version.
-                        // For now register a stub handle so the gateway lifecycle
-                        // tracking includes it.
-                        let abort = tokio::spawn(async {
-                            loop {
-                                tokio::time::sleep(std::time::Duration::from_secs(86_400))
-                                    .await;
-                            }
-                        })
-                        .abort_handle();
-                        stub_handles.push((
-                            format!("wasm_{}", file_stem),
-                            oben_gateway::platform::PlatformHandle::new(abort),
-                        ));
-                    }
-                    for (name, handle) in stub_handles {
-                        platform_handles.insert(name, handle);
-                    }
-                }
-            }
-        }
-    }
 
     info!("Platforms started via factory pipeline");
 

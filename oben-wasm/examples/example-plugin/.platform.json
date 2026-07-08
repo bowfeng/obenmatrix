@@ -1,0 +1,17 @@
+{
+  "name": "example-plugin",
+  "version": "1.0.0",
+  "description": "Example WASM plugin demonstrating plugin API",
+  "tools": ["hello-world"],
+  "cli_commands": ["example-status"],
+  "capabilities": {
+    "workspace_read": false,
+    "http": false,
+    "tool_invoke": false
+  },
+  "sandbox_limits": {
+    "max_memory_mb": 64,
+    "timeout_ms": 5000,
+    "cpu_fuel": 0
+  }
+}

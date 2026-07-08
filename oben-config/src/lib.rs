@@ -5,9 +5,11 @@
 pub mod config;
 pub mod defaults;
 pub mod env;
+pub mod plugin_config;
 pub mod wizard;
 
 pub use config::*;
 pub use defaults::*;
 pub use env::*;
+pub use plugin_config::*;
 pub use wizard::*;

@@ -6,17 +6,23 @@
 pub mod error;
 pub mod runtime;
 pub mod loader;
+pub mod lifecycle;
 pub mod bridge;
 pub mod host;
 pub mod hook_bridge;
 pub mod hook_registry;
 pub mod wasm_hooks;
+pub mod plugin_context;
+pub mod tool;
+pub mod command;
+pub mod discover;
 
 // Re-export key public types (wasmtime::Result shadows error::Result, so export WasmError explicitly)
 pub use error::WasmError;
 pub use runtime::*;
 pub use loader::*;
 pub use bridge::*;
+pub use discover::PluginDiscoverer;
 
 // wasmtime re-exports for convenience
 pub use wasmtime::*;

@@ -8,18 +8,20 @@ authors.workspace = true
 description = "WASM execution layer for platform adapters using wasmtime"
 
 [dependencies]
-wasmtime = { workspace = true }
+wasmtime = { workspace = true, features = ["component-model"] }
 wasmtime-wasi = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 semver = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 oben-platform-sdk = { path = "../oben-platform-sdk" }
 oben-agent = { path = "../oben-agent" }
+oben-config = { path = "../oben-config" }
 chrono = { workspace = true }
 
 [dev-dependencies]
