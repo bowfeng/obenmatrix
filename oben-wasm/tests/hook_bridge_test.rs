@@ -271,9 +271,8 @@ fn test_hook_builder_wasm_hooks() {
     let hook1 = Box::new(TestWasmHook {
         id: "wasm-agent-loop-start".to_string(),
         priority: 100,
-    }) as Box<dyn Hook>;
+    }) as Box<dyn AgentLoopHooks>;
 
-    // Verify the hook ID starts with the expected prefix
     assert!(
         hook1.id().starts_with("wasm-agent-loop-"),
         "hook id should start with agent-loop prefix",
@@ -296,7 +295,7 @@ fn test_hook_builder_wasm_hooks() {
 
     let hook2 = Box::new(TestSystemHook {
         id: "wasm-system-metrics".to_string(),
-    }) as Box<dyn Hook>;
+    }) as Box<dyn SystemEventsHooks>;
 
     assert!(
         hook2.id().starts_with("wasm-system-"),
@@ -304,15 +303,12 @@ fn test_hook_builder_wasm_hooks() {
         hook2.id(),
     );
 
-    // Build the list of wasm hooks and pass to HookBuilder
     let builder = oben_agent::hooks::HookBuilder::new()
-        .with_wasm_hooks(vec![hook1, hook2]);
+        .register_agent_loop(hook1)
+        .register_system(hook2);
 
-    // Build the HookEngine to verify the hooks were accepted
     let engine = builder.build();
 
-    // The engine should have 2 wasm hooks registered across different queues
-    // (agent_loop_hooks: 1 from hook1, system_hooks: 1 from hook2)
     let total = engine.count();
     assert!(
         total >= 2,
@@ -326,10 +322,15 @@ fn test_hook_builder_wasm_hooks() {
 // ===========================================================================
 
 /// Given hooks with different wasm-* prefixes,
-/// when we build the HookEngine with with_wasm_hooks,
+/// when we build the HookEngine from each category separately,
 /// then each hook lands in the correct category queue.
 #[test]
 fn test_hook_builder_categorization_routing() {
+    use oben_agent::hooks::kind::{
+        AgentLoopHooks, TurnLifecycleHooks, ToolLifecycleHooks, StreamingHooks,
+        SystemEventsHooks, SessionLifecycleHooks, InterruptLifecycleHooks,
+    };
+
     struct CategorizedHook {
         id: String,
     }
@@ -340,37 +341,51 @@ fn test_hook_builder_categorization_routing() {
         }
     }
 
-    // Test each category routing.
-    // IDs use the exact prefix patterns recognized by HookBuilder::with_wasm_hooks.
-    let hooks: Vec<Box<dyn Hook>> = vec![
-        Box::new(CategorizedHook {
-            id: "wasm-agent-loop-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-turn-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-tool-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-streaming-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-system-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-session-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-interrupt-test".to_string(),
-        }) as Box<dyn Hook>,
-    ];
+    impl AgentLoopHooks for CategorizedHook {}
+    impl TurnLifecycleHooks for CategorizedHook {}
+    impl ToolLifecycleHooks for CategorizedHook {}
+    impl StreamingHooks for CategorizedHook {}
+    impl SystemEventsHooks for CategorizedHook {}
+    impl SessionLifecycleHooks for CategorizedHook {}
+    impl InterruptLifecycleHooks for CategorizedHook {}
 
-    // All hooks above implement the base Hook trait. The builder's
-    // with_wasm_hooks routes them into queues by prefix. This test
-    // verifies the compilation path works for all 7 categories.
+    let hook_agent = Box::new(CategorizedHook {
+        id: "wasm-agent-loop-test".to_string(),
+    }) as Box<dyn AgentLoopHooks>;
+
+    let hook_turn = Box::new(CategorizedHook {
+        id: "wasm-turn-test".to_string(),
+    }) as Box<dyn TurnLifecycleHooks>;
+
+    let hook_tool = Box::new(CategorizedHook {
+        id: "wasm-tool-test".to_string(),
+    }) as Box<dyn ToolLifecycleHooks>;
+
+    let hook_streaming = Box::new(CategorizedHook {
+        id: "wasm-streaming-test".to_string(),
+    }) as Box<dyn StreamingHooks>;
+
+    let hook_system = Box::new(CategorizedHook {
+        id: "wasm-system-test".to_string(),
+    }) as Box<dyn SystemEventsHooks>;
+
+    let hook_session = Box::new(CategorizedHook {
+        id: "wasm-session-test".to_string(),
+    }) as Box<dyn SessionLifecycleHooks>;
+
+    let hook_interrupt = Box::new(CategorizedHook {
+        id: "wasm-interrupt-test".to_string(),
+    }) as Box<dyn InterruptLifecycleHooks>;
+
     let builder = oben_agent::hooks::HookBuilder::new()
-        .with_wasm_hooks(hooks);
+        .register_agent_loop(hook_agent)
+        .register_turn(hook_turn)
+        .register_tool(hook_tool)
+        .register_streaming(hook_streaming)
+        .register_system(hook_system)
+        .register_session(hook_session)
+        .register_interrupt(hook_interrupt);
+
     let engine = builder.build();
     assert!(engine.count() >= 7, "all 7 categories should be routed");
 }

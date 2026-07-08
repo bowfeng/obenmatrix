@@ -1,0 +1,42 @@
+package oben:plugin;
+
+/// Plugin guest/host interface.
+/// 
+/// Guest exports (called by host):
+/// - `init()`       — register tools/commands, return handler names
+/// - `execute-tool`  — call a specific handler by name
+/// - `get-handler-list` — get all handler names with metadata
+///
+/// Host exports (called by guest during init):
+/// - `register-tool` — record handler metadata
+/// - `register-command` — record handler metadata
+
+world plugin-world {
+    /// Metadata about a registered tool handler
+    record tool-info {
+        name: string,
+        handler: string,
+        description: string,
+        schema: string,
+        capabilities: list<string>,
+    }
+
+    /// Metadata about a registered command handler
+    record command-info {
+        name: string,
+        handler: string,
+        description: string,
+        aliases: list<string>,
+    }
+
+    /// Exported by the guest — host calls this to get the list of
+    /// registered tools so it can call them later.
+    import get-handler-list: func() -> list<tool-info>;
+
+    /// Exported by the guest — host calls this to execute a handler.
+    /// Returns the handler's output as JSON or error text.
+    import execute-tool: func(handler-name: string, args: string) -> string;
+
+    /// Exported by the guest — host calls this to run a CLI command handler.
+    import execute-command: func(handler-name: string, args: list<string>) -> string;
+}

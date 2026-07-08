@@ -18,6 +18,9 @@ members = [
     "oben-cron",
     "oben-platform-sdk",
 ]
+exclude = [
+    "oben-wasm/examples/example-plugin",
+]
 resolver = "2"
 
 [workspace.package]

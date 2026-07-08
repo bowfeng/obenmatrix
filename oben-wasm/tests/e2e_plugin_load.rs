@@ -8,15 +8,8 @@
 use std::path::PathBuf;
 
 use tempfile::TempDir;
-use tokio;
 
-use oben_wasm::{PluginLoader, WasmRuntime, WasmRuntimeConfig};
-
-/// Helper that creates a WasmRuntime suitable for tests.
-/// Tests always run with cache disabled via WasmRuntime::new's cfg(test) branch.
-fn test_runtime() -> WasmRuntime {
-    WasmRuntime::new(WasmRuntimeConfig::default()).expect("should create WasmRuntime")
-}
+use oben_wasm::PluginLoader;
 
 /// Given an empty directory, when discover_plugins is called,
 /// then no plugins are discovered (empty result).
@@ -29,10 +22,7 @@ async fn test_discover_plugins_empty_dir() {
     let tmp = TempDir::new().expect("should create temp directory");
     let plugins_dir = tmp.path().to_path_buf();
 
-    let runtime = test_runtime();
-    let loader = PluginLoader::new(plugins_dir, runtime);
-
-    let discovered = loader.discover_only().await.expect("discover_only should succeed");
+    let discovered = PluginLoader::discover_only(&plugins_dir).expect("discover_only should succeed");
 
     assert!(
         discovered.is_empty(),
@@ -56,10 +46,7 @@ async fn test_discover_plugins_no_wasm_files() {
     std::fs::write(tmp.path().join("notes.md"), "# Notes").unwrap();
     std::fs::create_dir_all(tmp.path().join("subdir")).unwrap();
 
-    let runtime = test_runtime();
-    let loader = PluginLoader::new(tmp.path().to_path_buf(), runtime);
-
-    let discovered = loader.discover_only().await.expect("discover_only should succeed");
+    let discovered = PluginLoader::discover_only(tmp.path()).expect("discover_only should succeed");
 
     assert!(
         discovered.is_empty(),
@@ -81,10 +68,7 @@ async fn test_discover_plugins_platform_json_without_wasm() {
     let json = r#"{"name":"test-plugin","version":"1.0.0"}"#;
     std::fs::write(tmp.path().join("test-plugin.json"), json).unwrap();
 
-    let runtime = test_runtime();
-    let loader = PluginLoader::new(tmp.path().to_path_buf(), runtime);
-
-    let discovered = loader.discover_only().await.expect("discover_only should succeed");
+    let discovered = PluginLoader::discover_only(tmp.path()).expect("discover_only should succeed");
 
     assert!(
         discovered.is_empty(),
@@ -100,10 +84,7 @@ async fn test_discover_plugins_platform_json_without_wasm() {
 #[tokio::test]
 async fn test_discover_plugins_nonexistent_dir() {
     let nonexistent = PathBuf::from("/tmp/nonexistent_oben_wasm_dir_42xyz");
-    let runtime = test_runtime();
-    let loader = PluginLoader::new(nonexistent, runtime);
-
-    let discovered = loader.discover_only().await.expect("discover_only should not error for nonexistent dir");
+    let discovered = PluginLoader::discover_only(&nonexistent).expect("discover_only should not error for nonexistent dir");
 
     assert!(
         discovered.is_empty(),
@@ -119,24 +100,22 @@ async fn test_discover_plugins_nonexistent_dir() {
 async fn test_discover_plugins_with_platform_json_sidecar() {
     let tmp = TempDir::new().expect("should create temp directory");
 
-    // Create a minimal non-WASM blob just to test discovery (loading would fail).
-    // We only test discover_only which doesn't compile.
-    // Write an empty file — discover_plugins only checks extension, not content.
-    std::fs::write(tmp.path().join("my-plugin.wasm"), [] as [u8; 0]).unwrap();
+    // discover_only scans subdirectories for manifest files, so wrap
+    // the .wasm + .platform.json inside a plugin subdirectory.
+    let plugin_dir = tmp.path().join("my-plugin");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("plugin.wasm"), [] as [u8; 0]).unwrap();
     std::fs::write(
-        tmp.path().join("my-plugin.platform.json"),
-        r#"{"name":"my-platform-plugin","version":"0.1.0"}"#,
+        plugin_dir.join(".platform.json"),
+        r#"{"name":"my-platform-plugin","version":"0.1.0","description":"A test plugin"}"#,
     )
     .unwrap();
 
-    let runtime = test_runtime();
-    let loader = PluginLoader::new(tmp.path().to_path_buf(), runtime);
-
-    let discovered = loader.discover_only().await.expect("discover_only should succeed");
+    let discovered = PluginLoader::discover_only(tmp.path()).expect("discover_only should succeed");
 
     assert_eq!(discovered.len(), 1, "Should discover exactly one plugin");
     assert_eq!(
-        discovered[0].name, "my-platform-plugin",
+        discovered[0].manifest.name, "my-platform-plugin",
         "Plugin name should come from .platform.json"
     );
 }
