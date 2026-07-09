@@ -241,58 +241,6 @@ impl ContextWindowManager for BuiltinContextWindowManager {
         }
     }
 
-    async fn preflight_check(
-        &mut self,
-        messages: &mut Vec<Message>,
-        transport: Option<&dyn TransportProvider>,
-        focus_topic: Option<&str>,
-    ) -> Result<usize> {
-        const MAX_PREFLIGHT_PASSES: usize = 3;
-        let mut passes = 0usize;
-
-        loop {
-            let tokens = self.estimate_tokens(messages);
-            let threshold = self.config.threshold_tokens();
-
-            if tokens < threshold {
-                break;
-            }
-
-            if passes >= MAX_PREFLIGHT_PASSES {
-                tracing::warn!(
-                    "Preflight: session still over budget after {} compression pass(es) (tokens={}, threshold={}); consider /new",
-                    MAX_PREFLIGHT_PASSES, tokens, threshold
-                );
-                break;
-            }
-
-            passes += 1;
-            tracing::info!(
-                "Preflight compression pass {}: tokens={}/{}",
-                passes,
-                tokens,
-                threshold
-            );
-
-            self.ineffective_compression_count = 0;
-            self.consecutive_effective_compressions = 0;
-
-            match self.compact(messages, transport, focus_topic).await {
-                Ok(_) => info!("Preflight compression pass {} completed", passes),
-                Err(e) => {
-                    tracing::warn!("Preflight compression pass {} failed: {}", passes, e);
-                }
-            }
-        }
-
-        info!(
-            "Preflight check complete: {} pass(es), session tokens now {}",
-            passes,
-            self.estimate_tokens(messages)
-        );
-        Ok(passes)
-    }
-
     fn reset(&mut self) {
         self.last_prompt_tokens = 0;
         self.last_completion_tokens = 0;
@@ -434,9 +382,6 @@ impl ContextWindowManager for BuiltinContextWindowManager {
         }
     }
 
-    fn should_split_after_compaction(&self, status: CompactStatus) -> bool {
-        status != CompactStatus::Unchanged
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +447,8 @@ mod tests {
         fn find_key(&self, _key: &str) -> Option<String> { None }
         fn list_sessions_full(&self) -> Vec<Session> { Vec::new() }
         fn get_session_messages(&self, _session_id: &str) -> Result<Vec<Message>, anyhow::Error> { Ok(Vec::new()) }
+        fn set_compaction_summary(&mut self, _session_id: &str, _summary: String) -> Result<(), anyhow::Error> { Ok(()) }
+        fn get_compaction_summary(&self, _session_id: &str) -> Option<String> { None }
         fn ensure_session_loaded(&mut self, _session_id: &str) -> Result<(), anyhow::Error> { Ok(()) }
         fn close(&mut self) -> Result<(), anyhow::Error> { Ok(()) }
     }

@@ -126,6 +126,9 @@ pub struct SessionMetadata {
     pub last_resume_marked_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Turn counter — how many turns this session has processed.
     pub turn_count: u32,
+    /// Latest compaction summary. Replaced on each successful compact.
+    #[serde(default)]
+    pub compaction_summary: Option<String>,
 }
 
 /// A conversation session (in-memory view).
@@ -144,6 +147,9 @@ pub struct Session {
     pub summary_chunks: Vec<SummaryChunk>,
     #[serde(default)]
     pub persisted_message_count: usize,
+    /// Summary of last compaction event for this session.
+    #[serde(default)]
+    pub compaction_summary: Option<String>,
     /// SQLite metadata (populated when using SQLite-backed store).
     #[serde(default)]
     pub metadata: SessionMetadata,
@@ -262,6 +268,12 @@ pub trait SessionManager: Send + Sync {
 
     /// Close the session manager, dropping connections and resetting state.
     fn close(&mut self) -> Result<(), anyhow::Error>;
+
+    /// Set the latest compaction summary for a session.
+    fn set_compaction_summary(&mut self, session_id: &str, summary: String) -> Result<(), anyhow::Error>;
+
+    /// Get the latest compaction summary for a session.
+    fn get_compaction_summary(&self, session_id: &str) -> Option<String>;
 }
 
 /// Entry in the session list view.
@@ -519,6 +531,7 @@ impl Session {
             memory_context: None,
             summary_chunks: Vec::new(),
             persisted_message_count: 0,
+            compaction_summary: None,
             metadata: SessionMetadata::default(),
         }
     }

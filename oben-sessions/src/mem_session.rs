@@ -61,6 +61,7 @@ impl SessionManager for MemSessionManager {
                 memory_context: None,
                 summary_chunks: Vec::new(),
                 persisted_message_count: 0,
+                compaction_summary: None,
                 metadata: SessionMetadata {
                     id: id.clone(),
                     name: name.to_string(),
@@ -91,6 +92,7 @@ impl SessionManager for MemSessionManager {
             memory_context: None,
             summary_chunks: Vec::new(),
             persisted_message_count: 0,
+            compaction_summary: None,
             metadata: SessionMetadata {
                 id: id.clone(),
                 name: name.to_string(),
@@ -385,6 +387,7 @@ impl SessionManager for MemSessionManager {
             memory_context: None,
             summary_chunks: Vec::new(),
             persisted_message_count: 0,
+            compaction_summary: None,
             metadata: SessionMetadata {
                 id: child_id.clone(),
                 name: child_name,
@@ -441,6 +444,7 @@ impl SessionManager for MemSessionManager {
             memory_context: None,
             summary_chunks: Vec::new(),
             persisted_message_count: 0,
+            compaction_summary: None,
             metadata: SessionMetadata {
                 id: sid.clone(),
                 name: name.to_string(),
@@ -479,6 +483,17 @@ impl SessionManager for MemSessionManager {
     fn close(&mut self) -> Result<(), anyhow::Error> {
         self.sessions.clear();
         Ok(())
+    }
+
+    fn set_compaction_summary(&mut self, session_id: &str, summary: String) -> Result<(), anyhow::Error> {
+        if let Some(s) = self.sessions.get_mut(session_id) {
+            s.compaction_summary = Some(summary);
+        }
+        Ok(())
+    }
+
+    fn get_compaction_summary(&self, session_id: &str) -> Option<String> {
+        self.sessions.get(session_id).and_then(|s| s.compaction_summary.clone())
     }
 }
 

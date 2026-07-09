@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    compaction_summary TEXT,
     turn_count INTEGER DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
@@ -789,6 +790,7 @@ impl SessionDB {
             memory_context: None,
             summary_chunks: Vec::new(),
             persisted_message_count: 0,
+            compaction_summary: None,
             metadata,
         })
     }
@@ -825,17 +827,20 @@ impl SessionDB {
                     last_prompt_tokens: 0,
                     is_fresh_reset: false,
                     suspended: false,
-                    resume_pending: false,
-                    resume_reason: None,
-                    last_resume_marked_at: None,
-                    turn_count: row.get("turn_count")?,
-                })
+                resume_pending: false,
+                resume_reason: None,
+                last_resume_marked_at: None,
+                compaction_summary: None,
+                turn_count: row.get("turn_count")?,
+            })
             }) {
                 Ok(metadata) => Ok(Some(Session {
                     id: metadata.id.clone(), name: metadata.name.clone(),
                     created_at: metadata.started_at, updated_at: metadata.started_at,
                     messages: Vec::new(), memory_context: None, summary_chunks: Vec::new(),
-                    persisted_message_count: 0, metadata,
+                    persisted_message_count: 0,
+                    compaction_summary: None,
+                    metadata,
                 })),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(anyhow!(e)),
@@ -935,6 +940,7 @@ impl SessionDB {
             resume_pending: false,
             resume_reason: None,
             last_resume_marked_at: None,
+            compaction_summary: None,
         };
 
         Ok(Session {
@@ -946,6 +952,7 @@ impl SessionDB {
             memory_context: None,
             summary_chunks: Vec::new(),
             persisted_message_count: 0,
+            compaction_summary: None,
             metadata,
         })
     }
@@ -1292,6 +1299,7 @@ impl SessionDB {
                     resume_pending: false,
                     resume_reason: None,
                     last_resume_marked_at: None,
+                    compaction_summary: None,
                     turn_count: row.get("turn_count")?,
                 })
             })?;
@@ -1961,6 +1969,7 @@ impl DBSessionManager {
                 memory_context: None,
                 summary_chunks: Vec::new(),
                 persisted_message_count: meta.message_count,
+                compaction_summary: None,
                 metadata: meta,
             };
             self.sessions.insert(s.id.clone(), s);
@@ -2201,6 +2210,7 @@ impl DBSessionManager {
                 memory_context: None,
                 summary_chunks: Vec::new(),
                 persisted_message_count: meta.message_count,
+                compaction_summary: None,
                 metadata: meta,
             };
             self.sessions.insert(session.id.clone(), session);
@@ -2474,6 +2484,7 @@ impl DBSessionManager {
             resume_pending: false,
             resume_reason: None,
             last_resume_marked_at: None,
+            compaction_summary: None,
             turn_count: 0,
         };
         // Update DB
@@ -2495,6 +2506,7 @@ impl DBSessionManager {
             memory_context: None,
             summary_chunks: Vec::new(),
             persisted_message_count: 0,
+            compaction_summary: None,
             metadata: new_meta,
         };
         self.sessions.insert(new_id.clone(), new_session);
@@ -2746,6 +2758,22 @@ impl SessionManager for DBSessionManager {
     }
     fn close(&mut self) -> Result<(), anyhow::Error> {
         Self::close(self)
+    }
+    fn set_compaction_summary(&mut self, session_id: &str, summary: String) -> Result<(), anyhow::Error> {
+        if let Some(s) = self.sessions.get_mut(session_id) {
+            s.compaction_summary = Some(summary.clone());
+        }
+        self.db.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE sessions SET compaction_summary = ? WHERE id = ?",
+                params![summary, session_id],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+    fn get_compaction_summary(&self, session_id: &str) -> Option<String> {
+        self.sessions.get(session_id).and_then(|s| s.compaction_summary.clone())
     }
 }
 

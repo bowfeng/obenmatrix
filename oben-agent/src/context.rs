@@ -110,16 +110,6 @@ pub trait ContextWindowManager: Send + Sync {
         focus_topic: Option<&str>,
     ) -> Result<CompactStatus>;
 
-    /// Preflight check: compress messages if already over threshold.
-    ///
-    /// Mutates `messages` in-place. Returns the number of compression passes.
-    async fn preflight_check(
-        &mut self,
-        messages: &mut Vec<Message>,
-        transport: Option<&dyn TransportProvider>,
-        focus_topic: Option<&str>,
-    ) -> Result<usize>;
-
     /// Reset the engine's token/compression state. Does not touch messages.
     fn reset(&mut self);
 
@@ -173,14 +163,6 @@ pub trait ContextWindowManager: Send + Sync {
     /// and calling `on_session_split()` to sync CWM + SM.
     fn should_do_time_based_split(&mut self, session_manager: &mut dyn SessionManager) -> Option<String>;
 
-    /// Decide if a split is needed after compaction.
-    ///
-    /// Returns `true` if rotation is needed (`status` is `Compacted` or `Branched`),
-    /// `false` if `status` is `Unchanged` (compaction skipped or ineffective).
-    ///
-    /// Note: Does NOT create child session or persist. The TurnExecutor handles
-    /// `split_after_compression`, `save_compacted`, and `on_session_split`.
-    fn should_split_after_compaction(&self, status: CompactStatus) -> bool;
 }
 
 /// ── Blanket impl: Box<dyn ContextWindowManager> delegates to inner ────────────
@@ -212,16 +194,6 @@ impl ContextWindowManager for Box<dyn ContextWindowManager> {
     ) -> Result<CompactStatus> {
         (**self).compact(messages, transport, focus_topic).await
     }
-    async fn preflight_check(
-        &mut self,
-        messages: &mut Vec<Message>,
-        transport: Option<&dyn TransportProvider>,
-        focus_topic: Option<&str>,
-    ) -> Result<usize> {
-        (**self)
-            .preflight_check(messages, transport, focus_topic)
-            .await
-    }
     fn reset(&mut self) {
         (**self).reset()
     }
@@ -243,8 +215,5 @@ impl ContextWindowManager for Box<dyn ContextWindowManager> {
     }
     fn should_do_time_based_split(&mut self, session_manager: &mut dyn SessionManager) -> Option<String> {
         (**self).should_do_time_based_split(session_manager)
-    }
-    fn should_split_after_compaction(&self, status: CompactStatus) -> bool {
-        (**self).should_split_after_compaction(status)
     }
 }

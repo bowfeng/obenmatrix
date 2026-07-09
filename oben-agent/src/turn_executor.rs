@@ -66,12 +66,6 @@ pub enum TurnResultReason {
     BudgetExhausted,
 }
 
-enum CompactionResult {
-    Continue,
-    Rotated(String, Vec<Message>),
-    Complete(()),
-}
-
     // ---------------------------------------------------------------------------
     // TurnExecutor
     // ---------------------------------------------------------------------------
@@ -134,7 +128,7 @@ impl TurnExecutor {
             }
         };
 
-        let (mut session, mut current_session_id, mut turn_count) =
+        let (mut session, current_session_id, mut turn_count) =
             Self::pre_turn_setup(context_window_manager, session_manager, session_id, user_message, &mut config)?;
         let mut consecutive_empty: u32 = 0;
         #[allow(unused_assignments)]
@@ -149,40 +143,13 @@ impl TurnExecutor {
             }
 
             // Compaction
-            match Self::run_compaction(
+            Self::run_compaction(
                 context_window_manager,
                 &mut session,
-                &mut current_session_id,
                 session_manager,
                 transport,
             )
-            .await?
-            {
-                CompactionResult::Continue => {}
-                CompactionResult::Rotated(child_id, compacted) => {
-                    let (id, name, created_at, updated_at, memory_context, summary_chunks, persisted_message_count, metadata) = {
-                        let s = session_manager.session_mut(&child_id).ok_or_else(|| {
-                            anyhow::anyhow!("Child session disappeared: {}", child_id)
-                        })?;
-                        (s.id.clone(), s.name.clone(), s.created_at, s.updated_at,
-                         s.memory_context.clone(), s.summary_chunks.clone(),
-                         s.persisted_message_count, s.metadata.clone())
-                    };
-                    session.id = id;
-                    session.name = name;
-                    session.created_at = created_at;
-                    session.updated_at = updated_at;
-                    session.memory_context = memory_context;
-                    session.summary_chunks = summary_chunks;
-                    session.persisted_message_count = persisted_message_count;
-                    session.metadata = metadata;
-                    session.messages = compacted;
-                }
-                CompactionResult::Complete(_) => {
-                    decision_result = Some(TurnResult { text: String::new(), reason: TurnResultReason::BudgetExhausted, turn_count });
-                    break;
-                }
-            }
+            .await?;
 
             // Sanitize
             sanitize_messages(&mut session.messages);
@@ -347,6 +314,7 @@ impl TurnExecutor {
             memory_context: session_ref.memory_context.clone(),
             summary_chunks: session_ref.summary_chunks.clone(),
             persisted_message_count: session_ref.persisted_message_count,
+            compaction_summary: session_ref.compaction_summary.clone(),
             metadata: session_ref.metadata.clone(),
         };
 
@@ -429,12 +397,11 @@ impl TurnExecutor {
     async fn run_compaction(
         ctx: &mut dyn ContextWindowManager,
         session: &mut Session,
-        current_id: &mut String,
         session_mgr: &mut dyn SessionManager,
         transport: &dyn TransportProvider,
-    ) -> Result<CompactionResult> {
+    ) -> Result<()> {
         if !ctx.should_compact(&session.messages) {
-            return Ok(CompactionResult::Continue);
+            return Ok(());
         }
 
         info!(
@@ -445,39 +412,15 @@ impl TurnExecutor {
 
         let status = ctx.compact(&mut session.messages, Some(transport), None).await?;
         if status == CompactStatus::Unchanged {
-            return Ok(CompactionResult::Continue);
+            return Ok(());
         }
 
-        match Self::rotate_session(ctx, &mut session.messages, current_id, session_mgr) {
-            Ok((cid, msgs)) => Ok(CompactionResult::Rotated(cid, msgs)),
-            Err(e) => {
-                tracing::warn!("Rotation failed: {e}");
-                Ok(CompactionResult::Complete(()))
-            }
-        }
-    }
+        // Save compacted messages back to the session manager (no child session)
+        let sid = session.id.clone();
+        session_mgr.save_compacted(&sid, &session.messages)?;
 
-    fn rotate_session(
-        ctx: &mut dyn ContextWindowManager,
-        msgs: &mut Vec<Message>,
-        current_id: &mut String,
-        session_mgr: &mut dyn SessionManager,
-    ) -> Result<(String, Vec<Message>)> {
-        let parent_id = current_id.clone();
-        let compacted = msgs.clone();
-
-        let child = session_mgr.split_after_compression(&parent_id).map_err(|e| anyhow::anyhow!("Split failed: {}", e))?;
-        let child_id = child.id.clone();
-
-        let parent_msgs = {
-            let p = session_mgr.session(&parent_id).ok_or_else(|| anyhow::anyhow!("Parent gone: {}", parent_id))?;
-            p.messages.clone()
-        };
-        session_mgr.save_compacted(&child_id, &parent_msgs).map_err(|e| anyhow::anyhow!("Persist failed: {}", e))?;
-
-        *current_id = child_id.clone();
-        ctx.on_session_split(session_mgr, child_id.clone());
-        Ok((child_id, compacted))
+        info!("Compaction successful, session {} size reduced", sid);
+        Ok(())
     }
 
     fn process_response(
