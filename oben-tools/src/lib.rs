@@ -2,7 +2,6 @@ pub mod clarify;
 pub mod code_execution;
 pub mod computer_use;
 pub mod delegate;
-pub mod memory;
 pub mod osv_check;
 pub mod patch;
 pub mod read_write;
@@ -53,7 +52,6 @@ impl BuiltinTools {
         patch::register(registry);
         web_extract::register(registry);
         vision_analyze::register(registry);
-        memory::register(registry);
         clarify::register(registry);
         todo::register(registry);
         code_execution::register(registry);

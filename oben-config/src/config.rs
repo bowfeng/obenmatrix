@@ -32,6 +32,7 @@ pub struct AppConfig {
     pub agent: AgentConfig,
     pub events: EventsConfig,
     pub compaction: CompactionConfig,
+    pub memory: MemoryConfig,
 }
 
 /// Configuration for session context compaction.
@@ -52,6 +53,30 @@ impl Default for CompactionConfig {
             tail_turns: 2,
             preserve_recent_tokens: None,
             auto_continue: false,
+        }
+    }
+}
+
+/// Configuration for the memory provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
+    /// Whether the memory provider is enabled. Default: true.
+    pub enabled: bool,
+    /// Provider identifier (e.g. "builtin", "sqlite"). Default: "builtin".
+    #[serde(default = "default_memory_provider")]
+    pub provider: String,
+}
+
+fn default_memory_provider() -> String {
+    "builtin".to_string()
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: default_memory_provider(),
         }
     }
 }
@@ -828,6 +853,7 @@ impl Default for AppConfig {
             agent: AgentConfig::default(),
             events: EventsConfig::default(),
             compaction: CompactionConfig::default(),
+            memory: MemoryConfig::default(),
         }
     }
 }

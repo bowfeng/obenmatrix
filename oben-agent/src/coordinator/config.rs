@@ -15,6 +15,8 @@ pub struct ConversationConfig {
     pub fallback_configs: Vec<oben_config::FallbackConfig>,
     pub dispatch_config: Option<ConcurrentDispatchConfig>,
     pub max_spawn_depth: u32,
+    /// Memory context injected into the system prompt for this turn.
+    pub memory_context: Option<String>,
 }
 
 impl ConversationConfig {
@@ -36,6 +38,7 @@ impl ConversationConfig {
                 destructive_tools: app_config.concurrency.destructive_tools.clone(),
             }),
             max_spawn_depth: app_config.max_spawn_depth.unwrap_or(3) as u32,
+            memory_context: None,
         }
     }
 }
@@ -74,6 +77,15 @@ impl ConversationConfigBuilder {
         Self {
             config: ConversationConfig {
                 max_spawn_depth: max,
+                ..self.config
+            },
+        }
+    }
+
+    pub fn with_memory_context(self, memory_context: String) -> Self {
+        Self {
+            config: ConversationConfig {
+                memory_context: Some(memory_context),
                 ..self.config
             },
         }

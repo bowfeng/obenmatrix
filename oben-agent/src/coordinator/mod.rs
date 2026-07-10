@@ -51,6 +51,7 @@ pub async fn execute_turn(
         },
         dispatch_config: conversation_config.dispatch_config.clone(),
         max_iterations: conversation_config.max_iterations,
+        memory_context: conversation_config.memory_context.clone(),
     };
 
     let result = TurnExecutor::execute_turn_with_config(
@@ -104,6 +105,7 @@ pub async fn execute_turn_full(
         },
         dispatch_config: conversation_config.dispatch_config.clone(),
         max_iterations: conversation_config.max_iterations,
+        memory_context: conversation_config.memory_context.clone(),
     };
 
     let result = TurnExecutor::execute_turn_with_config(

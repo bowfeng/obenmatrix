@@ -31,6 +31,7 @@ pub mod hooks;
 pub mod interrupt;
 pub mod interaction;
 pub mod message_sanitize;
+pub mod memory_tools;
 pub mod nudge;
 pub mod prompt;
 pub mod retry;
