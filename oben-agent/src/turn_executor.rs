@@ -35,6 +35,8 @@ pub struct TurnConfig {
     pub fallback_chain: Option<FallbackChain>,
     pub dispatch_config: Option<ConcurrentDispatchConfig>,
     pub max_iterations: usize,
+    /// Memory context injected as system message at the front of API messages.
+    pub memory_context: Option<String>,
 }
 
 impl Default for TurnConfig {
@@ -45,6 +47,7 @@ impl Default for TurnConfig {
             fallback_chain: None,
             dispatch_config: None,
             max_iterations: 50,
+            memory_context: None,
         }
     }
 }
@@ -155,9 +158,11 @@ impl TurnExecutor {
             sanitize_messages(&mut session.messages);
 
             // API call
+            let memory_context = config.memory_context.as_deref();
+            let messages = Self::with_memory_context(&session.messages, memory_context).await;
             let response = Self::api_call_with_retry(
                 transport,
-                &session.messages,
+                &messages,
                 call_mode,
                 &config,
             )
@@ -332,6 +337,25 @@ impl TurnExecutor {
             }
             None
         })
+    }
+
+    /// Prepend memory context as a system message if present.
+    async fn with_memory_context(messages: &[Message], memory_context: Option<&str>) -> Vec<Message> {
+        match memory_context {
+            Some(ctx) if !ctx.is_empty() => {
+                let mut prefix_messages: Vec<Message> = Vec::new();
+                // Split multi-paragraph context into separate system messages
+                let parts: Vec<&str> = ctx.split("\n\n").collect();
+                for part in parts {
+                    if !part.trim().is_empty() {
+                        prefix_messages.push(Message::system(part.trim().to_string()));
+                    }
+                }
+                prefix_messages.extend(messages.iter().cloned());
+                prefix_messages
+            }
+            _ => messages.to_vec(),
+        }
     }
 
     async fn api_call_with_retry(

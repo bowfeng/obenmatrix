@@ -87,9 +87,9 @@ impl StreamingContextScrubber {
     pub fn scrub_delta(&mut self, delta: &str) -> String {
         if self.in_memory_block {
             // We're inside a memory block — strip everything until closing tag
-            if delta.contains("</memory>") {
-                let end = delta.find("</memory>").unwrap_or(delta.len());
-                let after = &delta[end + "</memory>".len()..];
+            if delta.contains("</memory-context>") {
+                let end = delta.find("</memory-context>").unwrap_or(delta.len());
+                let after = &delta[end + "</memory-context>".len()..];
                 self.in_memory_block = false;
                 if !after.is_empty() {
                     self.buffer.push_str(after);
@@ -106,9 +106,9 @@ impl StreamingContextScrubber {
                 self.buffer.push_str(before);
             }
             let after_open = &delta[start + "<memory-context>".len()..];
-            if after_open.contains("</memory>") {
-                let end = after_open.find("</memory>").unwrap_or(after_open.len());
-                let after_close = &after_open[end + "</memory>".len()..];
+            if after_open.contains("</memory-context>") {
+                let end = after_open.find("</memory-context>").unwrap_or(after_open.len());
+                let after_close = &after_open[end + "</memory-context>".len()..];
                 if !after_close.is_empty() {
                     self.buffer.push_str(after_close);
                 }
@@ -221,8 +221,8 @@ pub fn scrub_memory_context(text: &str) -> String {
         let before = &remaining[..start];
         result.push_str(before);
         let after_open = &remaining[start + "<memory-context>".len()..];
-        if let Some(end) = after_open.find("</memory>") {
-            let after_close = &after_open[end + "</memory>".len()..];
+        if let Some(end) = after_open.find("</memory-context>") {
+            let after_close = &after_open[end + "</memory-context>".len()..];
             remaining = after_close.to_string();
         } else {
             // Unclosed memory block → preserve entire text
@@ -317,13 +317,13 @@ mod tests {
 
     #[test]
     fn test_scrub_memory_strips_block() {
-        let text = "<memory-context>secret</memory>after";
+        let text = "<memory-context>secret</memory-context>after";
         assert_eq!(scrub_memory_context(text), "after");
     }
 
     #[test]
     fn test_scrub_memory_preserves_outside() {
-        let text = format!("before<memory-context>secret</memory>after");
+        let text = format!("before<memory-context>secret</memory-context>after");
         assert_eq!(scrub_memory_context(&text), "beforeafter");
     }
 
@@ -339,7 +339,7 @@ mod tests {
         let mut s = StreamingContextScrubber::new();
         assert_eq!(s.scrub_delta("<memory-context>"), "");
         assert_eq!(s.scrub_delta("hidden"), "");
-        assert_eq!(s.scrub_delta("</memory>"), "");
+        assert_eq!(s.scrub_delta("</memory-context>"), "");
         assert_eq!(s.scrub_delta("visible"), "visible");
         assert_eq!(s.into_buffer(), "visible");
     }

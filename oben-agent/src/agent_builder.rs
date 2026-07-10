@@ -13,10 +13,12 @@ use tokio::sync::Mutex;
 use crate::compact_context::BuiltinContextWindowManager;
 use crate::hooks::HookEngine;
 use crate::interrupt::InterruptState;
+use crate::memory_tools::register_memory_tools;
 use crate::Agent;
 
 use oben_config::AppConfig;
 use oben_models::providers::TransportProvider;
+use oben_sessions::memory_provider::discover_memory_providers;
 use oben_tools::ToolRegistry;
 
 /// Builder for [`Agent`].
@@ -126,6 +128,16 @@ impl AgentBuilder {
             ..crate::compact::CompactCofig::default()
         };
 
+        // Create memory manager early so we can pass it to register_memory_tools.
+        let memory_manager = Arc::new(std::sync::Mutex::new(discover_memory_providers()));
+
+        // Register memory tools -- unwrap the Arc to get &mut access, then re-wrap.
+        let mut tools_inner = Arc::try_unwrap(tools).unwrap_or_else(|_| {
+            panic!("tools Arc should be unique at build time")
+        });
+        register_memory_tools(&mut tools_inner, Arc::clone(&memory_manager));
+        let tools = Arc::new(tools_inner);
+
         let mut agent = Agent {
             transport,
             tools,
@@ -139,6 +151,7 @@ impl AgentBuilder {
             fallback_chain: None,
             system_prompt,
             hooks,
+            memory_manager,
         };
 
         agent.eager_load_active_session().await;

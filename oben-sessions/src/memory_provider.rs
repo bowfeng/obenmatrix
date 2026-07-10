@@ -37,7 +37,7 @@ pub struct ToolSchema {
 ///
 /// Providers give the agent persistent recall across sessions.
 /// The built-in provider is named `"builtin"` and always wraps `MemoryStore`.
-pub trait MemoryProvider {
+pub trait MemoryProvider: Send + Sync {
     /// Short identifier (e.g. `"builtin"`, `"honcho"`, `"hindsight"`).
     fn name(&self) -> &str;
 
@@ -526,13 +526,36 @@ impl MemoryManager {
         tool_name: &str,
         args: &serde_json::Value,
     ) -> serde_json::Value {
-        match self.tool_to_provider.get(tool_name) {
+        let result = match self.tool_to_provider.get(tool_name) {
             Some(&idx) => self.providers[idx].handle_tool_call(tool_name, args),
             None => serde_json::json!({
                 "success": false,
                 "error": format!("No memory provider handles tool '{}'", tool_name)
             }),
+        };
+
+        // After a successful memory tool execution, notify external providers.
+        if result.get("success").and_then(|v| v.as_bool()) == Some(true)
+            && tool_name.starts_with("memory.")
+        {
+            let action = tool_name.strip_prefix("memory.").unwrap_or("");
+            let target = args
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("memory");
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or(
+                    &args
+                        .get("new_content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                );
+            self.on_memory_write(action, target, content);
         }
+
+        result
     }
 
     pub fn on_turn_start(&mut self, turn_number: usize, message: &str) {
@@ -596,184 +619,63 @@ impl MemoryManager {
     }
 }
 
-// ── StreamingContextScrubber ──────────────────────────────────────────────────
-
-/// Stateful scrubber for streaming text that may contain split
-/// `<memory-context>` fence tags across multiple stream deltas.
+/// Discover and configure memory providers.
 ///
-/// Holds back partial-tag fragments at chunk boundaries and discards
-/// everything inside a span (safer: leaking partial memory context
-/// is worse than a truncated answer).
-pub struct StreamingContextScrubber {
-    in_span: bool,
-    buf: String,
-    at_block_boundary: bool,
-}
+/// Creates a `MemoryManager` with the `BuiltinProvider` registered.
+/// Scans `~/.abenmatrix/plugins/memory/` for external provider directories.
+///
+/// Note: External providers are currently discovered (listed by directory name).
+/// Actual runtime loading requires a plugin host.
+pub fn discover_memory_providers() -> MemoryManager {
+    let data_dir = dirs::home_dir()
+        .map(|h| h.join(".abenmatrix"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".abenmatrix"));
 
-impl StreamingContextScrubber {
-    pub fn new() -> Self {
-        Self {
-            in_span: false,
-            buf: String::new(),
-            at_block_boundary: true,
-        }
-    }
+    let plugins_dir = data_dir.join("plugins").join("memory");
+    let mut mgr = MemoryManager::new();
 
-    /// Return the visible portion of `text` after scrubbing.
-    ///
-    /// Key design: partial tags at chunk boundaries are BOTH returned
-    /// (so the user sees them) AND held back internally (so they can
-    /// be concatenated with the next chunk to detect complete tags).
-    pub fn feed(&mut self, text: &str) -> String {
-        if text.is_empty() {
-            return String::new();
-        }
+    let store_path = data_dir.clone();
+    let store = crate::skill_curation::MemoryStore::new();
+    let builtin = BuiltinProvider::new(store, store_path);
+    mgr.add_provider(Box::new(builtin));
 
-        let mut buf = std::mem::take(&mut self.buf) + text;
-        let mut out = String::new();
+    if let Ok(entries) = std::fs::read_dir(&plugins_dir) {
+        for entry in entries.flatten() {
+            let file_type = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = match entry.file_name().to_string_lossy().as_ref() {
+                n if n.starts_with('.') => continue,
+                n => n.to_string(),
+            };
+            let has_rs = entry.path().read_dir()
+                .ok()
+                .and_then(|mut rd| {
+                    rd.find_map(|e| {
+                        let entry = e.ok()?;
+                        let path = entry.path();
+                        let ext = path.extension()?.to_str()?;
+                        if ext == "rs" {
+                            Some(path.file_stem()?.to_str()?.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                });
 
-        while !buf.is_empty() {
-            if self.in_span {
-                // Inside a <memory-context> block — discard until </memory-context>
-                if let Some(idx) = buf.to_lowercase().find("</memory-context>") {
-                    buf = buf[idx + 17..].to_string();
-                    self.in_span = false;
-                } else {
-                    // No complete close tag — check for partial close suffix
-                    let partial = Self::max_partial_close_suffix(&buf);
-                    if partial > 0 {
-                        // We're in a span and might be about to exit.
-                        // Can't safely emit any new text since we don't know
-                        // where the partial close tag ends and content begins.
-                        // Hold everything back for the next call.
-                        self.buf = buf;
-                        break;
-                    }
-                    // No partial either — just hold back (no close tag at all)
-                    self.buf = buf;
-                    break;
-                }
-            } else {
-                // Not in a span — look for <memory-context>
-                if let Some(idx) = buf.to_lowercase().find("<memory-context>") {
-                    out.push_str(&buf[..idx]);
-                    buf = buf[idx + 16..].to_string();
-                    self.in_span = true;
-                } else {
-                    // No complete open tag — check for partial open suffix
-                    let partial = Self::max_partial_open_suffix(&buf);
-                    if partial > 0 {
-                        // Return everything (including the partial tag)
-                        // but hold back the partial internally for concatenation
-                        out.push_str(&buf);
-                        self.buf = buf[buf.len() - partial..].to_string();
-                        break;
-                    }
-                    // No tag at all — emit everything
-                    out.push_str(&buf);
-                    break;
-                }
+            if let Some(source_name) = has_rs {
+                tracing::warn!(
+                    "Discovered memory plugin directory '{}' ({}) — \
+                     external provider loading not yet implemented",
+                    name, source_name
+                );
             }
         }
-
-        let last = out.chars().last();
-        self.at_block_boundary = last == Some('\n') || out.is_empty();
-
-        out
     }
 
-    /// Emit any held-back buffer at end-of-stream.
-    pub fn flush(&mut self) -> String {
-        if self.in_span {
-            self.buf.clear();
-            self.in_span = false;
-            String::new()
-        } else {
-            let tail = std::mem::take(&mut self.buf);
-            self.at_block_boundary = tail.is_empty() || tail.ends_with('\n');
-            tail
-        }
-    }
-
-    /// Reset the scrubber state (for new top-level responses).
-    pub fn reset(&mut self) {
-        self.in_span = false;
-        self.buf.clear();
-        self.at_block_boundary = true;
-    }
-
-    /// Return the length of the longest buf-suffix that is a tag-prefix (partial or complete).
-    #[allow(dead_code, unused_macros)]
-    fn max_partial_suffix(buf: &str, tag: &str) -> usize {
-        let tag_lower = tag.to_lowercase();
-        let buf_lower = buf.to_lowercase();
-        let max_check = buf_lower.len().min(tag_lower.len());
-        for i in (1..=max_check).rev() {
-            if tag_lower.starts_with(&buf_lower[buf_lower.len() - i..]) {
-                return i;
-            }
-        }
-        0
-    }
-
-    /// Return the length of the longest buf-suffix that is an open-tag prefix.
-    /// e.g. for buffer "text <memor", returns 7 ("<memor" is a prefix).
-    fn max_partial_open_suffix(buf: &str) -> usize {
-        let open_tag = "<memory-context>";
-        let tag_lower = open_tag.to_lowercase();
-        let buf_lower = buf.to_lowercase();
-        for suffix_len in (1..=buf_lower.len().min(open_tag.len())).rev() {
-            let suffix = &buf_lower[buf_lower.len() - suffix_len..];
-            if tag_lower.starts_with(suffix) {
-                return suffix_len;
-            }
-        }
-        0
-    }
-
-    /// Return the length of the longest buf-suffix that is a close-tag prefix.
-    /// e.g. for buffer "text </memo", returns 6 ("</memo" is a prefix).
-    fn max_partial_close_suffix(buf: &str) -> usize {
-        let close_tag = "</memory-context>";
-        let tag_lower = close_tag.to_lowercase();
-        let buf_lower = buf.to_lowercase();
-        for suffix_len in (1..=buf_lower.len().min(close_tag.len())).rev() {
-            let suffix = &buf_lower[buf_lower.len() - suffix_len..];
-            if tag_lower.starts_with(suffix) {
-                return suffix_len;
-            }
-        }
-        0
-    }
-}
-
-// ── Context fencing helpers ───────────────────────────────────────────────────
-
-fn sanitize_context(text: &str) -> String {
-    // Strip fence tags and system notes
-    let text = match regex::Regex::new(r"(?i)<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>")
-    {
-        Ok(re) => re.replace_all(text, "").into_owned(),
-        Err(_) => text.to_string(),
-    };
-    let text = match regex::Regex::new(r"(?i)</?\s*memory-context\s*>") {
-        Ok(re) => re.replace_all(&text, "").into_owned(),
-        Err(_) => text,
-    };
-    text
-}
-
-pub fn build_memory_context_block(raw_context: &str) -> String {
-    if raw_context.trim().is_empty() {
-        return String::new();
-    }
-    let clean = sanitize_context(raw_context);
-    format!(
-        "<memory-context>\n\
-         [System note: The following is recalled memory context, NOT new user input. \
-         Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n\
-         {}\n\
-         </memory-context>",
-        clean
-    )
+    mgr
 }

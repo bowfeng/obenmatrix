@@ -31,13 +31,13 @@ pub fn generate_session_name() -> String {
     format!("{}-{:06}", ts, r)
 }
 use oben_models::{CallMode, Message};
-use oben_sessions::{SessionManager, SessionStore};
+use oben_sessions::{memory_provider::MemoryManager, SessionManager, SessionStore};
 
 
-use crate::coordinator::ConversationConfig;
 use crate::coordinator::execute_turn_full;
 use crate::coordinator::{ConversationCoordinator, ConversationResult};
 use crate::interrupt::InterruptState;
+use crate::system_prompt::build_volatile_block;
 
 /// Dummy coordinator for testing.
 pub struct DummyCoordinator;
@@ -68,6 +68,7 @@ pub struct Agent {
     pub(crate) fallback_chain: Option<crate::fallback::FallbackChain>,
     pub(crate) system_prompt: String,
     pub(crate) hooks: Arc<super::hooks::HookEngine>,
+    pub(crate) memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
 }
 
 impl Agent {
@@ -113,6 +114,7 @@ impl Agent {
             fallback_chain: None,
             system_prompt: String::new(),
             hooks: Arc::new(super::hooks::HookEngine::new()),
+            memory_manager: Arc::new(std::sync::Mutex::new(MemoryManager::new())),
         }
     }
 
@@ -352,8 +354,36 @@ impl Agent {
 
         let input_msg = oben_models::Message::user(input);
         let sm = Arc::clone(&self.session_manager);
+        let input_text = input.to_string();
 
-        let conversation = ConversationConfig::from_app_config(&self.config);
+        // Pre-turn memory lifecycle
+        let turn_count = {
+            let guard = sm.lock().await;
+            guard
+                .session(&sid)
+                .map(|s| s.metadata.turn_count)
+                .unwrap_or(0)
+        };
+        if self.config.memory.enabled {
+            let mm = Arc::clone(&self.memory_manager);
+            mm.lock().unwrap().on_turn_start(turn_count as usize, &input_text);
+        }
+
+        // Build memory context for this turn.
+        // `prefetch_all` fetches relevant context for the input; `build_volatile_block`
+        // wraps it (timestamp, session ID) so it's injected as system messages before
+        // each API call via TurnExecutor.
+        let memory_context = if self.config.memory.enabled {
+            let mm = Arc::clone(&self.memory_manager);
+            let mem = mm.lock().unwrap().prefetch_all(&input_text, &sid);
+            build_volatile_block(Some(&mem), Some(&sid), Some(&self.config.model.model))
+        } else {
+            build_volatile_block(None, Some(&sid), Some(&self.config.model.model))
+        };
+
+        let conversation = crate::coordinator::ConversationConfigBuilder::from_app_config(&self.config)
+            .with_memory_context(memory_context)
+            .build();
 
         let response = execute_turn_full(
             &mut self.context_window_manager,
@@ -368,6 +398,19 @@ impl Agent {
             interrupt.map(|x| Arc::clone(&x)),
         )
         .await?;
+
+        // Post-turn memory lifecycle
+        if self.config.memory.enabled {
+            let mm = Arc::clone(&self.memory_manager);
+            let sync_input = input_text.clone();
+            let sync_response = response.clone();
+            let sync_sid = sid.clone();
+            let mm_cloned = Arc::clone(&mm);
+            tokio::task::spawn_blocking(move || {
+                mm_cloned.lock().unwrap().sync_all(&sync_input, &sync_response, &sync_sid);
+            });
+            mm.lock().unwrap().queue_prefetch_all(&input_text, &sid);
+        }
 
         Ok(response)
     }
@@ -396,8 +439,32 @@ impl Agent {
         };
 
         let sm = Arc::clone(&self.session_manager);
+        let input_text = input_msg.content.to_text();
 
-        let conversation = ConversationConfig::from_app_config(&self.config);
+        // Pre-turn memory lifecycle
+        let turn_count = {
+            let guard = sm.lock().await;
+            guard
+                .session(&sid)
+                .map(|s| s.metadata.turn_count)
+                .unwrap_or(0)
+        };
+        if self.config.memory.enabled {
+            let mm = Arc::clone(&self.memory_manager);
+            mm.lock().unwrap().on_turn_start(turn_count as usize, &input_text);
+        }
+
+        let memory_context = if self.config.memory.enabled {
+            let mm = Arc::clone(&self.memory_manager);
+            let mem = mm.lock().unwrap().prefetch_all(&input_text, &sid);
+            build_volatile_block(Some(&mem), Some(&sid), Some(&self.config.model.model))
+        } else {
+            build_volatile_block(None, Some(&sid), Some(&self.config.model.model))
+        };
+
+        let conversation = crate::coordinator::ConversationConfigBuilder::from_app_config(&self.config)
+            .with_memory_context(memory_context)
+            .build();
 
         let response = execute_turn_full(
             &mut self.context_window_manager,
@@ -412,6 +479,19 @@ impl Agent {
             interrupt.map(|x| Arc::clone(&x)),
         )
         .await?;
+
+        // Post-turn memory lifecycle
+        if self.config.memory.enabled {
+            let mm = Arc::clone(&self.memory_manager);
+            let sync_input = input_text.clone();
+            let sync_response = response.clone();
+            let sync_sid = sid.clone();
+            let mm_cloned = Arc::clone(&mm);
+            tokio::task::spawn_blocking(move || {
+                mm_cloned.lock().unwrap().sync_all(&sync_input, &sync_response, &sync_sid);
+            });
+            mm.lock().unwrap().queue_prefetch_all(&input_text, &sid);
+        }
 
         Ok(response)
     }
@@ -460,11 +540,28 @@ impl Agent {
     /// a no-session state. The next [turn] will lazily create a new session
     /// via [resolve_session].
     pub async fn reset(&mut self) -> Result<()> {
+        let sm = Arc::clone(&self.session_manager);
+        let mm = Arc::clone(&self.memory_manager);
+
         let sid = self.context_window_manager.session_id();
-        if let Some(sid) = sid {
-            // Delete from DB and in-memory cache; sets active_session_id = None
-            self.session_manager.lock().await.delete_session(&sid)?;
+        if let Some(ref sid) = sid {
+            // Notify memory manager before deletion.
+            let msgs = {
+                let guard = sm.lock().await;
+                guard.session(sid).map(|s| s.messages.clone()).unwrap_or_default()
+            };
+            let msgs_json: Vec<serde_json::Value> = msgs
+                .iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect();
+            mm.lock().unwrap().on_session_end(&msgs_json);
+            self.session_manager.lock().await.delete_session(sid)?;
         }
+
+        // Notify of switch to no-session state.
+        let old_sid = sid.unwrap_or_default();
+        mm.lock().unwrap().on_session_switch("", &old_sid, true);
+
         // Reset call mode so the next turn starts as Fresh.
         self.call_mode = None;
         Ok(())
@@ -518,6 +615,24 @@ impl Agent {
             }
         };
 
+        // Notify memory manager before saving compaction.
+        let msgs_json: Vec<serde_json::Value> = messages
+            .iter()
+            .filter_map(|m| serde_json::to_value(m).ok())
+            .collect();
+        let mm = Arc::clone(&self.memory_manager);
+        let pre_compress = mm.lock().unwrap().on_pre_compress(&msgs_json);
+        if !pre_compress.is_empty() {
+            if let Some(s) = sm.lock().await.session_mut(&sid) {
+                if let Some(ref mut mc) = s.memory_context {
+                    mc.push_str("\n\n");
+                    mc.push_str(&pre_compress);
+                } else {
+                    s.memory_context = Some(pre_compress);
+                }
+            }
+        }
+
         match status {
             crate::context::CompactStatus::Compacted => {
                 // Save the compacted messages back to the session.
@@ -525,12 +640,12 @@ impl Agent {
                 // because persisted_message_count > messages.len() after compression.
                 // save_compacted() handles: clear old DB messages, insert compacted set,
                 // update in-memory session and persisted_message_count.
-                match sm.lock().await.save_compacted(&sid, &messages) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        tracing::error!("Failed to save compacted session {sid}: {e}");
-                    }
+                let compact_ok = sm.lock().await.save_compacted(&sid, &messages).is_ok();
+                if !compact_ok {
+                    tracing::error!("Failed to save compacted session {sid}");
                 }
+                // Notify memory manager that the session was compacted.
+                mm.lock().unwrap().on_session_switch(&sid, &sid, false);
                 crate::compact::CompactOutcome::Compressed {
                     original_count: 0,
                     compacted_count: 0,
@@ -556,13 +671,22 @@ impl Agent {
     /// and can be restored later via [continue_session].
     pub async fn new_session(&mut self) -> Result<String> {
         let sm = Arc::clone(&self.session_manager);
+        let mm = Arc::clone(&self.memory_manager);
+
+        let old_sid = self.context_window_manager.session_id();
+        let new_name = generate_session_name();
         let new_id = sm
             .lock()
             .await
-            .new_session(&generate_session_name())
+            .new_session(&new_name)
             .map(|s| s.id.clone())
             .unwrap_or_else(|_| generate_session_name());
-        // Reset call mode so next turn starts Fresh
+
+        // Notify memory manager of new session.
+        let old_sid_v = old_sid.unwrap_or_default();
+        mm.lock().unwrap().on_session_switch(&new_id, &old_sid_v, false);
+
+        // Reset call mode so next turn starts Fresh.
         self.call_mode = None;
         Ok(new_id)
     }
@@ -609,8 +733,22 @@ impl Agent {
 
     /// Switch to a session by ID (for app-level session loading).
     pub async fn switch_session_to(&mut self, id: &str) -> Result<()> {
+        let new_id = id.to_string();
         let sm = Arc::clone(&self.session_manager);
-        let _ = sm.lock().await.switch_session(id)?;
+        let mm = Arc::clone(&self.memory_manager);
+
+        let old_sid = self.context_window_manager.session_id();
+
+        {
+            let mut guard = sm.lock().await;
+            guard.switch_session(id)?;
+        }
+
+        mm.lock().unwrap().on_session_switch(
+            &new_id,
+            old_sid.as_deref().unwrap_or(""),
+            false,
+        );
         Ok(())
     }
 
