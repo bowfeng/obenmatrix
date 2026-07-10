@@ -282,4 +282,18 @@ impl crate::SessionManager for SessionStore {
             Self::Memory(mem) => mem.close(),
         }
     }
+
+    fn set_compaction_summary(&mut self, session_id: &str, summary: String) -> Result<(), anyhow::Error> {
+        match self {
+            Self::Database(db) => db.set_compaction_summary(session_id, summary),
+            Self::Memory(mem) => mem.set_compaction_summary(session_id, summary),
+        }
+    }
+
+    fn get_compaction_summary(&self, session_id: &str) -> Option<String> {
+        match self {
+            Self::Database(db) => db.get_compaction_summary(session_id),
+            Self::Memory(mem) => mem.get_compaction_summary(session_id),
+        }
+    }
 }

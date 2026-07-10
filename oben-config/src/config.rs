@@ -31,6 +31,29 @@ pub struct AppConfig {
     pub fallback_models: Vec<FallbackConfig>,
     pub agent: AgentConfig,
     pub events: EventsConfig,
+    pub compaction: CompactionConfig,
+}
+
+/// Configuration for session context compaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionConfig {
+    /// Number of recent turns to keep verbatim during compaction. Default: 2.
+    pub tail_turns: usize,
+    /// Token budget for recent preservation. If None, computed as 25% of usable input, clamped to [2000, 8000]. Default: None.
+    pub preserve_recent_tokens: Option<usize>,
+    /// Whether to inject an auto-continue prompt after compaction. Default: false.
+    pub auto_continue: bool,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            tail_turns: 2,
+            preserve_recent_tokens: None,
+            auto_continue: false,
+        }
+    }
 }
 
 /// Configuration for vision/image analysis.
@@ -804,6 +827,7 @@ impl Default for AppConfig {
             fallback_models: Vec::new(),
             agent: AgentConfig::default(),
             events: EventsConfig::default(),
+            compaction: CompactionConfig::default(),
         }
     }
 }
