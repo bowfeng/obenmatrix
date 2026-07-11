@@ -78,4 +78,6 @@ description = "The self-improving AI agent — CLI entry point"
 
 [dependencies]
 oben-cli = { path = "oben-cli" }
+reqwest = { workspace = true, features = ["json"] }
 tokio  = { workspace = true }
+urlencoding.workspace = true

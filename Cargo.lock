@@ -3287,6 +3287,8 @@ dependencies = [
  "discordrs",
  "futures",
  "futures-util",
+ "hex",
+ "libc",
  "oben-agent",
  "oben-config",
  "oben-models",
@@ -3301,6 +3303,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "teloxide",
  "tokio",
  "tokio-tungstenite 0.24.0",
@@ -3385,6 +3388,7 @@ dependencies = [
  "chrono",
  "dirs",
  "itertools 0.14.0",
+ "oben-agent",
  "oben-models",
  "rand 0.8.6",
  "regex",
@@ -3402,10 +3406,12 @@ name = "oben-skills"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fs_extra",
  "itertools 0.14.0",
  "oben-models",
  "regex",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tracing",
 ]
@@ -3433,6 +3439,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "urlencoding",
  "whisper-rs",
 ]
 
@@ -3549,7 +3556,9 @@ name = "obenmatrix"
 version = "0.1.0"
 dependencies = [
  "oben-cli",
+ "reqwest 0.12.28",
  "tokio",
+ "urlencoding",
 ]
 
 [[package]]
@@ -6357,6 +6366,12 @@ dependencies = [
  "serde",
  "serde_derive",
 ]
+
+[[package]]
+name = "urlencoding"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "utf-8"

@@ -21,6 +21,12 @@ pub mod vision_analyze;
 pub mod voice;
 pub mod web;
 pub mod web_extract;
+pub mod image_gen;
+pub mod video_gen;
+pub mod mcp_client;
+pub mod file_sync;
+pub mod cron_delivery;
+pub mod kanban;
 
 pub use registry::*;
 pub use terminal::*;
@@ -61,5 +67,11 @@ impl BuiltinTools {
         delegate::register(registry);
         tts::register(registry);
         stt::register(registry);
+        image_gen::register(registry);
+        video_gen::register(registry);
+        mcp_client::register(registry);
+        file_sync::register(registry);
+        cron_delivery::register(registry);
+        kanban::register(registry);
     }
 }

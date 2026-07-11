@@ -76,31 +76,6 @@ pub enum TurnResultReason {
 pub struct TurnExecutor;
 
 impl TurnExecutor {
-    /// Execute one turn with default policies.
-    pub async fn execute_turn(
-        context_window_manager: &mut dyn ContextWindowManager,
-        transport: &dyn TransportProvider,
-        tools: &Arc<oben_tools::ToolRegistry>,
-        session_manager: &mut dyn SessionManager,
-        session_id: &str,
-        user_message: Message,
-        call_mode: &oben_models::CallMode,
-    ) -> Result<TurnResult> {
-        Self::execute_turn_with_config(
-            context_window_manager,
-            transport,
-            tools,
-            session_manager,
-            session_id,
-            user_message,
-            call_mode,
-            None,
-            None,
-            TurnConfig::default(),
-        )
-        .await
-    }
-
     /// Execute one turn with configurable termination/remedy policy groups.
     pub async fn execute_turn_with_config(
         context_window_manager: &mut dyn ContextWindowManager,
@@ -395,6 +370,8 @@ impl TurnExecutor {
                 let cb: StreamDeltaCallback = Box::new(move |delta: &str| {
                     if let Some(ref hooks) = hooks {
                         let scrubbed = scrubber.scrub_delta(delta);
+                        let delta_len = delta.len();
+                        let scrubbed_len = scrubbed.len();
 
                         // Also emit extracted reasoning from thinking blocks
                         // when the entire open+close arrives in one delta.
@@ -404,8 +381,17 @@ impl TurnExecutor {
                             hooks.emit_reasoning(&text);
                         }
 
-                        if !scrubbed.is_empty() {
+                        if scrubbed_len > 0 {
                             hooks.emit_stream_delta(&scrubbed);
+                        }
+                        
+                        // Log scrubbing behavior for debugging
+                        if delta_len > 0 && scrubbed_len == 0 {
+                            tracing::debug!(
+                                delta_len = delta_len,
+                                scrubbed_len = scrubbed_len,
+                                "Streaming delta scrubbed to empty (thinking block?)"
+                            );
                         }
                     }
                 });

@@ -161,13 +161,18 @@ impl Agent {
                     .session(&me.context_window_manager.session_id().unwrap_or_default())
                     .map(|s| s.metadata.turn_count).unwrap_or(turn_count as u32);
                 let turn_success = response.is_ok();
-                let turn_text = response.as_deref().unwrap_or("");
-                if !coordinator.on_turn_complete(turn_text, msg_count, turn_count_v, turn_success) {
+                // When error occurs, extract the error message to pass to coordinator
+                let turn_text: String = if turn_success {
+                    response.as_deref().unwrap_or("").to_string()
+                } else {
+                    response.as_ref().unwrap_err().to_string()
+                };
+                if !coordinator.on_turn_complete(turn_text.as_str(), msg_count, turn_count_v, turn_success) {
                     me.hooks.emit_loop_end("user_exit");
                     return Ok(ConversationResult::Exit);
                 }
                 if turn_success {
-                    me.hooks.emit_turn_complete(turn_text, turn_count_v, msg_count);
+                    me.hooks.emit_turn_complete(turn_text.as_str(), turn_count_v, msg_count);
                 } else {
                     me.hooks.emit_turn_error(&response.unwrap_err(), turn_count_v);
                 }

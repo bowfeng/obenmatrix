@@ -885,11 +885,12 @@ impl Panel for ChatPanel {
 impl ChatPanel {
     /// Toggle expansion of the first (most recent) subagent.
     pub fn toggle_first_subagent(&mut self, subagents: &[SubagentInfo]) -> bool {
-        for sub in subagents.iter().rev() {
+        if let Some(sub) = subagents.iter().rev().next() {
             self.subagent_accordion.toggle(sub.delegation_id);
-            return true;
+            true
+        } else {
+            false
         }
-        false
     }
 
     /// Get a mutable reference to the subagent accordion.

@@ -48,6 +48,10 @@ base64 = "0.22"
 # PRNG for bind key generation
 rand.workspace = true
 
+# Pairing system: sha2 for hashing, hex for hex encoding
+sha2 = "0.10"
+hex = "0.4"
+
 # QR code ASCII rendering for terminal display
 qrcode = "0.14"
 
@@ -56,6 +60,9 @@ qrcode = "0.14"
 # Without explicit installation, rustls 0.23+ panics on provider auto-detection.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 qr2term = "0.3.3"
+
+# Memory monitoring: libc for getrusage on Unix-like systems
+libc = "0.2"
 
 # Telegram Bot SDK (optional, enabled via "telegram" feature)
 teloxide = { version = "0.12", optional = true, features = ["auto-send", "macros", "rand"] }

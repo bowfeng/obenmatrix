@@ -252,15 +252,20 @@ fn split_message_utf16(content: &str, max_len: usize) -> Vec<String> {
             }
         }
 
-        // If even the first character exceeds the limit, split on first char
+        let char_start = char_positions[best].0;
+        let char_end = char_start + char_positions[best].1.len_utf8();
+        let prefix_with_char = &remaining[..char_end];
+        let prefix_utf16 = prefix_with_char.encode_utf16().count();
+        
         let cut_idx = if best == 0 {
-            let first_char_len = remaining.chars().next().unwrap().len_utf8();
-            remaining[..first_char_len].len()
+            remaining.chars().next().unwrap().len_utf8()
+        } else if prefix_utf16 <= max_len {
+            char_end
         } else {
-            char_positions[best].0 + char_positions[best].1.len_utf8()
+            char_start
         };
 
-        segments.push(remaining[..cut_idx].into());
+        segments.push(remaining[..cut_idx].to_string());
         remaining = &remaining[cut_idx..];
     }
 

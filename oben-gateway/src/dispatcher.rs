@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
 
 use crate::coordinator::GatewayCoordinator;
-use crate::platform::IncomingMessage;
+use crate::platform::{IncomingMessage, PlatformSessionContext};
 use crate::router::ResponseRouter;
 
 use oben_agent::hooks::HookEngine;
@@ -50,17 +50,17 @@ impl Dispatcher {
 
     /// Route an incoming message to the correct coordinator task.
     ///
-    /// Computes a session key from the platform, user_id, and thread_id.
+    /// Uses PlatformSessionContext to ensure session IDs are unique per platform.
+    /// This prevents collision when the same user_id is used across different platforms.
     /// If the session already exists, sends the message through the existing channel.
     /// Otherwise, creates a new channel, registers the sender, and spawns a
     /// coordinator task to process the message stream.
     pub async fn dispatch(&self, msg: IncomingMessage) -> Result<(), String> {
-        let session_key = format!(
-            "{}/{}/{}",
-            msg.platform,
-            msg.user_id,
-            msg.thread_id.as_deref().unwrap_or("global")
-        );
+        let session_key = PlatformSessionContext::with_thread_id(
+            &msg.platform,
+            &msg.user_id,
+            msg.thread_id.clone(),
+        ).session_key();
 
         let mut session_map = self.session_map.lock().await;
 
@@ -90,12 +90,17 @@ impl Dispatcher {
                 UserChannel { sender: tx },
             );
             
+            let platform = msg.platform.clone();
+            let user_id = msg.user_id.clone();
+            let thread_id = msg.thread_id.clone();
+            drop(session_map);
+            
             self.spawn_coordinator_task(
                 session_key,
                 rx,
-                msg.platform.clone(),
-                msg.user_id.clone(),
-                msg.thread_id.clone(),
+                platform,
+                user_id,
+                thread_id,
             );
             Ok(())
         }
@@ -119,7 +124,7 @@ impl Dispatcher {
         let hooks = self.hooks.clone();
 
         tokio::spawn(async move {
-            info!(session_key = %session_key, "Coordinator task started");
+            info!(session_key = %session_key, "Coordinator task started with PlatformSessionContext");
 
             let (response_tx, mut response_rx) = mpsc::channel::<crate::coordinator::ResponseMessage>(128);
 
@@ -176,5 +181,52 @@ impl Dispatcher {
                 warn!(session_key = %session_key, "response_router task join failed: {e}");
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_platform_session_isolation_in_dispatcher() {
+        // Two users with same ID on different platforms should have different session keys
+        let ctx1 = PlatformSessionContext::new("telegram", "user-123");
+        let ctx2 = PlatformSessionContext::new("discord", "user-123");
+        
+        assert_ne!(ctx1.session_key(), ctx2.session_key());
+        assert_eq!(ctx1.session_key(), "telegram/user-123/global");
+        assert_eq!(ctx2.session_key(), "discord/user-123/global");
+    }
+
+    #[test]
+    fn test_platform_session_with_thread_isolation() {
+        // Same user in different threads should have different session keys
+        let dm_ctx = PlatformSessionContext::new("telegram", "user-456");
+        let group_ctx = PlatformSessionContext::with_thread_id("telegram", "user-456", Some("thread-789".to_string()));
+        
+        assert_ne!(dm_ctx.session_key(), group_ctx.session_key());
+        assert_eq!(dm_ctx.session_key(), "telegram/user-456/global");
+        assert_eq!(group_ctx.session_key(), "telegram/user-456/thread-789");
+    }
+
+    #[test]
+    fn test_platform_session_matches_user() {
+        // Same user on same platform matches even with different threads
+        let ctx1 = PlatformSessionContext::new("slack", "user-789");
+        let ctx2 = PlatformSessionContext::with_thread_id("slack", "user-789", Some("thread-abc".to_string()));
+        
+        assert!(ctx1.matches_user(&ctx2));
+        assert!(ctx2.matches_user(&ctx1));
+    }
+
+    #[test]
+    fn test_platform_session_different_platform_no_match() {
+        // Same user on different platforms should NOT match at user level
+        let ctx1 = PlatformSessionContext::new("telegram", "user-789");
+        let ctx2 = PlatformSessionContext::new("discord", "user-789");
+        
+        assert!(!ctx1.matches_user(&ctx2));
+        assert!(!ctx2.matches_user(&ctx1));
     }
 }

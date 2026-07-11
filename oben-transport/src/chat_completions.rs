@@ -808,12 +808,15 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
         let mut tool_call_ids: Vec<String> = Vec::new();
         let mut total_tokens: Option<usize> = None;
         let mut delta_count: usize = 0;
+        let mut stream_error: Option<anyhow::Error> = None;
 
         while let Some(event_result) = stream.next().await {
             let event = match event_result {
                 Ok(e) => e,
                 Err(e) => {
-                    debug!("SSE stream error: {}", e);
+                    let err = anyhow::anyhow!("SSE stream error: {}", e);
+                    tracing::error!("[stream_chat] {}", err);
+                    stream_error = Some(err);
                     break;
                 }
             };
@@ -893,6 +896,12 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
                     }
                 }
             }
+        }
+
+        // Propagate any stream error that occurred during iteration
+        if let Some(err) = stream_error {
+            tracing::error!("[stream_chat] SSE stream failed: {}", err);
+            return Err(err);
         }
 
         // Build final tool_calls from accumulated deltas

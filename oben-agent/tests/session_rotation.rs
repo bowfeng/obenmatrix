@@ -1,4 +1,5 @@
 use oben_agent::compact::CompactCofig;
+use oben_agent::turn_executor::TurnConfig;
 /// Integration tests for session rotation on compression (S.9).
 ///
 /// Tests the TurnExecutor → SessionManager rotation flow using only
@@ -114,7 +115,7 @@ async fn test_turn_exec_rotates_session_on_compaction() {
 
     // Execute a turn — should_compact returns true because last_total_tokens
     // (100_001) exceeds the default threshold (~96K).
-    let result = TurnExecutor::execute_turn(
+    let result = TurnExecutor::execute_turn_with_config(
         &mut context_engine,
         &transport,
         &tools,
@@ -123,6 +124,8 @@ async fn test_turn_exec_rotates_session_on_compaction() {
         Message::user("new user message"),
         &CallMode::Fresh(session_id.clone()),
         None,
+        None,
+        TurnConfig::default(),
     )
     .await;
 
@@ -170,7 +173,7 @@ async fn test_rotation_updates_active_session() {
     // Initial active session is the parent
     assert_eq!(mgr.active_session_id().unwrap(), parent_id);
 
-    TurnExecutor::execute_turn(
+    TurnExecutor::execute_turn_with_config(
         &mut context_engine,
         &transport,
         &tools,
@@ -179,6 +182,8 @@ async fn test_rotation_updates_active_session() {
         Message::user("test message"),
         &CallMode::Fresh(parent_id.clone()),
         None,
+        None,
+        TurnConfig::default(),
     )
     .await
     .unwrap();
@@ -216,7 +221,7 @@ async fn test_multiple_rotations_increment_numbering() {
     let tools = Arc::new(oben_tools::ToolRegistry::new());
 
     // First turn — creates child "test-chat (2)"
-    TurnExecutor::execute_turn(
+    TurnExecutor::execute_turn_with_config(
         &mut context_engine,
         &transport,
         &tools,
@@ -225,6 +230,8 @@ async fn test_multiple_rotations_increment_numbering() {
         Message::user("first turn"),
         &CallMode::Fresh(session_id.clone()),
         None,
+        None,
+        TurnConfig::default(),
     )
     .await
     .unwrap();
@@ -246,7 +253,7 @@ async fn test_multiple_rotations_increment_numbering() {
     let mut context_engine2 = make_compacting_engine();
 
     // Second turn — should create child "test-chat (3)"
-    TurnExecutor::execute_turn(
+    TurnExecutor::execute_turn_with_config(
         &mut context_engine2,
         &transport,
         &tools,
@@ -255,6 +262,8 @@ async fn test_multiple_rotations_increment_numbering() {
         Message::user("second turn"),
         &CallMode::Fresh(child1_id.clone()),
         None,
+        None,
+        TurnConfig::default(),
     )
     .await
     .unwrap();
@@ -292,7 +301,7 @@ async fn test_rotation_failure_does_not_panic() {
     let tools = Arc::new(oben_tools::ToolRegistry::new());
 
     // First rotation succeeds
-    TurnExecutor::execute_turn(
+    TurnExecutor::execute_turn_with_config(
         &mut context_engine,
         &transport,
         &tools,
@@ -301,6 +310,8 @@ async fn test_rotation_failure_does_not_panic() {
         Message::user("first turn"),
         &CallMode::Fresh(session_id.clone()),
         None,
+        None,
+        TurnConfig::default(),
     )
     .await
     .unwrap();
@@ -309,7 +320,7 @@ async fn test_rotation_failure_does_not_panic() {
     // gracefully (the split_after_compression tries to end_session again).
     // We don't assert the specific error — just that no panic occurs.
     let mut context_engine2 = make_compacting_engine();
-    let result = TurnExecutor::execute_turn(
+    let result = TurnExecutor::execute_turn_with_config(
         &mut context_engine2,
         &transport,
         &tools,
@@ -318,6 +329,8 @@ async fn test_rotation_failure_does_not_panic() {
         Message::user("second turn"),
         &CallMode::Fresh(session_id.clone()),
         None,
+        None,
+        TurnConfig::default(),
     )
     .await;
 

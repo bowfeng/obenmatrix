@@ -166,7 +166,8 @@ mod tests {
                 writeln!(file, "{}", line).unwrap();
             }
         }
-        let history = InputHistory {
+        // Use InputHistory::new() to load from file
+        let mut history = InputHistory {
             path,
             inner: Mutex::new(InputHistoryInner {
                 entries: vec![],
@@ -174,6 +175,8 @@ mod tests {
                 current_draft: String::new(),
             }),
         };
+        // Manually load entries since we bypassed new()
+        history.inner.lock().unwrap().entries = InputHistory::load_entries(&history.path);
         (dir, history)
     }
 

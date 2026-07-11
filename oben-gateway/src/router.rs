@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-use crate::platform::{OutgoingMessage, PlatformAdapter};
+use crate::platform::{OutgoingMessage, PlatformAdapter, PlatformSessionContext};
 
 /// Routes agent responses to the correct platform adapter.
 pub struct ResponseRouter {
@@ -66,6 +66,7 @@ impl ResponseRouter {
     /// Routes a ResponseMessage to the correct platform adapter.
     ///
     /// The session_key format is `{platform}/{user_id}/{thread_id_or_global}`.
+    /// Uses PlatformSessionContext to parse and reconstruct the context.
     /// Looks up the adapter by platform name and sends the content.
     pub async fn dispatch_response(
         &self,
@@ -83,14 +84,16 @@ impl ResponseRouter {
             }
         }).unwrap_or(None);
 
+        let context = PlatformSessionContext::with_thread_id(platform, user_id, thread_id);
+
         let msg = OutgoingMessage {
-            platform: platform.to_string(),
-            user_id: user_id.to_string(),
-            thread_id,
+            platform: context.platform.clone(),
+            user_id: context.user_id.clone(),
+            thread_id: context.thread_id.clone(),
             content: resp.content,
         };
 
-        self.send(platform, msg).await
+        self.send(&context.platform, msg).await
     }
 
     /// Get the names of all registered platforms, sorted alphabetically.
@@ -103,6 +106,25 @@ impl ResponseRouter {
         let mut names: Vec<String> = adapters.keys().cloned().collect();
         names.sort();
         names
+    }
+
+    /// Routes a PlatformSessionContext to the correct platform adapter.
+    ///
+    /// Given: A PlatformSessionContext with platform, user_id, and optional thread_id
+    /// When: dispatch_response_with_context is called
+    /// Then: Response is routed to the correct platform adapter
+    pub async fn dispatch_response_with_context(
+        &self,
+        context: PlatformSessionContext,
+        content: String,
+    ) -> Result<()> {
+        let msg = OutgoingMessage {
+            platform: context.platform.clone(),
+            user_id: context.user_id.clone(),
+            thread_id: context.thread_id.clone(),
+            content,
+        };
+        self.send(&context.platform, msg).await
     }
 }
 
@@ -117,7 +139,7 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::platform::OutgoingMessage;
+    use crate::platform::{OutgoingMessage, PlatformSessionContext};
 
     struct TestAdapter {
         name_val: String,
@@ -162,5 +184,51 @@ mod tests {
             content: "test".to_string(),
         };
         assert!(router.send("platform_a", msg).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_response_router_dispatch_with_context() {
+        use super::PlatformSessionContext;
+
+        let router = ResponseRouter::new();
+
+        // Register a test adapter
+        let adapters: Vec<(String, Box<dyn PlatformAdapter + Send + Sync>)> = vec![
+            ("test_platform".to_string(), Box::new(TestAdapter { name_val: "test_platform".to_string() })),
+        ];
+        router.register_all(adapters).await;
+
+        // Dispatch with PlatformSessionContext
+        let context = PlatformSessionContext::new("test_platform", "user-123");
+        let content = "hello from context";
+
+        // Should not error (adapter exists)
+        let result = router.dispatch_response_with_context(context, content.to_string()).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_platform_session_context_isolation() {
+        // Verify session keys are unique across platforms
+        let telegram_ctx = PlatformSessionContext::new("telegram", "user-123");
+        let discord_ctx = PlatformSessionContext::new("discord", "user-123");
+        let slack_ctx = PlatformSessionContext::new("slack", "user-123");
+
+        assert_ne!(telegram_ctx.session_key(), discord_ctx.session_key());
+        assert_ne!(discord_ctx.session_key(), slack_ctx.session_key());
+        assert_ne!(telegram_ctx.session_key(), slack_ctx.session_key());
+
+        assert_eq!(telegram_ctx.session_key(), "telegram/user-123/global");
+        assert_eq!(discord_ctx.session_key(), "discord/user-123/global");
+        assert_eq!(slack_ctx.session_key(), "slack/user-123/global");
+    }
+
+    #[test]
+    fn test_platform_session_context_with_thread() {
+        let ctx = PlatformSessionContext::with_thread_id("telegram", "user-123", Some("thread-456".to_string()));
+        assert_eq!(ctx.session_key(), "telegram/user-123/thread-456");
+
+        let ctx = PlatformSessionContext::with_thread_id("telegram", "user-123", None);
+        assert_eq!(ctx.session_key(), "telegram/user-123/global");
     }
 }

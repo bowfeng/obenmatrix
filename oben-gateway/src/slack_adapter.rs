@@ -20,6 +20,8 @@ use super::router::ResponseRouter;
 
 // Test-only imports.
 #[cfg(test)]
+use oben_agent::hooks::HookEngine;
+#[cfg(test)]
 use oben_tools::registry::ToolRegistry;
 
 // Slack message limit: 4000 characters.
@@ -709,6 +711,7 @@ mod tests {
                 oben_config::AppConfig::default(),
                 Arc::new(ToolRegistry::new()),
                 Arc::new(ResponseRouter::new()),
+                Arc::new(HookEngine::new()),
             )),
             response_router: Arc::new(ResponseRouter::new()),
             http_client: HttpClient::new(),
@@ -893,6 +896,7 @@ mod tests {
             oben_config::AppConfig::default(),
             Arc::new(ToolRegistry::new()),
             response_router.clone(),
+            Arc::new(HookEngine::new()),
         ));
         let config = oben_config::SlackConfig {
             enabled: true,

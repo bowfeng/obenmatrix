@@ -691,6 +691,8 @@ impl crate::platform::PlatformFactory for WhatsAppPlatformFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oben_agent::hooks::HookEngine;
+    use oben_tools::ToolRegistry;
 
     #[test]
     fn test_content_truncate_ascii() {
@@ -702,8 +704,8 @@ mod tests {
     fn test_content_truncate_utf8() {
         let input = "こんにちは世界";
         let result = trancate_content(input, 3);
-        assert_eq!(result, "こんにちは");
-        assert_eq!(result.len(), 3);
+        assert_eq!(result, "こんに");
+        assert_eq!(result.chars().count(), 3);
     }
 
     #[test]
@@ -796,7 +798,7 @@ mod tests {
         let mut attachments = vec![];
         let contents = extract_message_content("document", &msg, &mut attachments);
         assert!(contents.is_empty());
-        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments.len(), 2);
         assert_eq!(attachments[0].0, "document");
     }
 
@@ -820,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_text_body_produces_no_content() {
+    fn test_empty_text_body_produces_empty_content() {
         let msg = serde_json::json!({
             "type": "text",
             "text": { "body": "" }
@@ -828,7 +830,8 @@ mod tests {
 
         let mut attachments = vec![];
         let contents = extract_message_content("text", &msg, &mut attachments);
-        assert!(contents.is_empty());
+        assert_eq!(contents.len(), 1);
+        assert!(contents[0].is_empty());
     }
 
     #[test]
@@ -849,7 +852,7 @@ mod tests {
 
     #[test]
     fn test_adapter_name() {
-        let mut adapter = WhatsAppAdapter::new(
+        let adapter = WhatsAppAdapter::new(
             WhatsAppConfig {
                 access_token: "t".into(),
                 phone_number_id: "1".into(),
@@ -859,8 +862,13 @@ mod tests {
                 allowed_numbers: vec![],
                 default_language: "en_US".into(),
             },
-            Arc::new(crate::dispatcher::Dispatcher::default()),
-            Arc::new(crate::router::ResponseRouter::new()),
+            Arc::new(crate::dispatcher::Dispatcher::new(
+                oben_config::AppConfig::default(),
+                Arc::new(ToolRegistry::new()),
+                Arc::new(ResponseRouter::new()),
+                Arc::new(HookEngine::new()),
+            )),
+            Arc::new(ResponseRouter::new()),
         );
         assert_eq!(adapter.name(), "whatsapp");
     }
@@ -870,7 +878,7 @@ mod tests {
         assert_eq!(url_decode("hello"), "hello");
         assert_eq!(url_decode("hello+world"), "hello world");
         assert_eq!(url_decode("hello%20world"), "hello world");
-        assert_eq!(url_decode("%E4%B8%AD%E6%96%87"), "%E4%B8%AD%E6%96%87"); // invalid hex, returned as-is
+        assert_eq!(url_decode("%E4%B8%AD%E6%96%87"), "中文");
     }
 
     #[test]

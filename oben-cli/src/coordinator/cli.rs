@@ -90,6 +90,8 @@ impl ConversationCoordinator for CliCoordinator {
     }
 
     async fn next_turn(&mut self) -> Option<String> {
+        // This loop always returns - either on EOF, valid input, or quit command
+        #[allow(clippy::never_loop)]
         loop {
             let line = match self.prompt_and_read_blocking() {
                 Some(line) => line,
@@ -129,7 +131,10 @@ impl ConversationCoordinator for CliCoordinator {
         }
 
         if !success {
-            // On error, exit the loop.
+            // On error, print the error message to stderr and exit the loop.
+            eprintln!("\n❌ Error occurred during turn:");
+            eprintln!("    {response}");
+            eprintln!("See log file for details.");
             return false;
         }
 

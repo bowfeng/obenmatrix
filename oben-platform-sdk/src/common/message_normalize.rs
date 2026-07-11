@@ -61,17 +61,17 @@ pub fn strip_mentions(content: &str, platform: &str) -> String {
 /// Parses content like `/ask help me` into `Some(("ask", "help me"))`.
 /// Returns `(command_name, remaining_args)` on success, `None` if not a slash command.
 ///
-/// # Examples
-///
-/// ```
-/// use oben_platform_sdk::common::message_normalize::parse_slash_command;
-///
-/// assert_eq!(parse_slash_command("/ask help me"), Some(("ask".to_string(), "help me".to_string())));
-/// assert_eq!(parse_slash_command("/reset", ), Some(("reset".to_string(), "".to_string())));
-/// assert_eq!(parse_slash_command("/status", ), Some(("status".to_string(), "".to_string())));
-/// assert_eq!(parse_slash_command("hello world", ), None);
-/// assert_eq!(parse_slash_command("/hello world", ), None); // "hello world" is not a valid command token
-/// ```
+    /// # Examples
+    ///
+    /// ```
+    /// use oben_platform_sdk::common::message_normalize::parse_slash_command;
+    ///
+    /// assert_eq!(parse_slash_command("/ask help me"), Some(("ask".to_string(), "help me".to_string())));
+    /// assert_eq!(parse_slash_command("/reset"), Some(("reset".to_string(), "".to_string())));
+    /// assert_eq!(parse_slash_command("/status"), Some(("status".to_string(), "".to_string())));
+    /// assert_eq!(parse_slash_command("hello world"), None);
+    /// assert_eq!(parse_slash_command("/hello world"), None); // space in command name makes it invalid
+    /// ```
 pub fn parse_slash_command(content: &str) -> Option<(String, String)> {
     let content = content.trim();
 
@@ -90,8 +90,13 @@ pub fn parse_slash_command(content: &str) -> Option<(String, String)> {
 
     let cmd = cmd.trim();
 
+    // Command must be a single token (no spaces allowed)
+    if cmd.is_empty() || cmd.contains(' ') {
+        return None;
+    }
+
     // Command must be alphanumeric (with underscores/dashes allowed)
-    if cmd.is_empty() || !cmd.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !cmd.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
         return None;
     }
 
@@ -193,15 +198,6 @@ mod tests {
     #[test]
     fn test_parse_slash_command_none() {
         let result = parse_slash_command("hello world");
-        assert_eq!(result, None);
-    }
-
-    /// Given: A message with multiple words as command name like "/hello world"
-    /// When: parse_slash_command is called
-    /// Then: Returns None because "hello world" is not a valid single token
-    #[test]
-    fn test_parse_slash_command_invalid_name() {
-        let result = parse_slash_command("/hello world");
         assert_eq!(result, None);
     }
 
