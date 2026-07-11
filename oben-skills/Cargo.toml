@@ -10,6 +10,8 @@ oben-models = { path = "../oben-models" }
 anyhow.workspace = true
 regex.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 serde_yaml.workspace = true
 tracing.workspace = true
 itertools.workspace = true
+fs_extra = "1.3"

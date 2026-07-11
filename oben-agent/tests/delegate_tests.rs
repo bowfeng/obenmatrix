@@ -94,7 +94,8 @@ async fn test_validate_single_valid() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"goal": "research schema"});
-    assert!(tool.validate(&args).is_ok());
+    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    tool.validate(&call).is_ok());
 }
 
 /// Given: Valid batch args with tasks array
@@ -117,7 +118,8 @@ async fn test_validate_batch_valid() {
             {"goal": "task 2", "role": "orchestrator"}
         ]
     });
-    assert!(tool.validate(&args).is_ok());
+    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    tool.validate(&call).is_ok());
 }
 
 /// Given: Args with neither goal nor tasks
@@ -135,7 +137,8 @@ async fn test_validate_neither_goal_nor_tasks() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"context": "extra info"});
-    let result = tool.validate(&args);
+    let result = let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    tool.validate(&call);
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -158,7 +161,8 @@ async fn test_validate_batch_missing_goal() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"tasks": [{"context": "no goal here"}]});
-    assert!(tool.validate(&args).is_err());
+    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    tool.validate(&call).is_err());
 }
 
 /// Given: Batch with task having empty goal
@@ -176,7 +180,8 @@ async fn test_validate_batch_empty_goal() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"tasks": [{"goal": ""}]});
-    assert!(tool.validate(&args).is_err());
+    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    tool.validate(&call).is_err());
 }
 
 /// Given: Batch with non-object task entry
@@ -194,7 +199,8 @@ async fn test_validate_batch_non_object_task() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"tasks": ["not-an-object"]});
-    assert!(tool.validate(&args).is_err());
+    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    tool.validate(&call).is_err());
 }
 
 /// Given: Valid single-task args
@@ -224,7 +230,8 @@ async fn test_execute_single_returns_result() {
         "parent_session_id": "parent-1",
         "call_id": "call-1"
     });
-    let result = tool.execute(&args).await;
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     assert!(result.error.is_none());
     let parsed: SubagentResult =
@@ -261,7 +268,8 @@ async fn test_execute_single_with_context() {
         "parent_session_id": "parent-2",
         "call_id": "call-2"
     });
-    let result = tool.execute(&args).await;
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     assert!(result.error.is_none());
     let parsed: SubagentResult =
@@ -298,7 +306,8 @@ async fn test_execute_batch_two_tasks() {
         "agent_depth": 0,
         "role": "leaf"
     });
-    let result = tool.execute(&args).await;
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     assert!(result.error.is_none());
     let parsed: Vec<oben_tools::delegate::DelegateTaskResult> =
@@ -340,7 +349,8 @@ async fn test_execute_batch_mixed_valid_invalid() {
         "call_id": "call-mixed",
         "agent_depth": 0
     });
-    let result = tool.execute(&args).await;
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     assert!(result.error.is_none());
     let parsed: Vec<oben_tools::delegate::DelegateTaskResult> =
@@ -381,7 +391,8 @@ async fn test_execute_batch_non_object_entries() {
         "call_id": "call-id",
         "agent_depth": 0
     });
-    let result = tool.execute(&args).await;
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.execute(&call).await;
 
     let parsed: Vec<oben_tools::delegate::DelegateTaskResult> =
         serde_json::from_str(&result.output).expect("output is valid JSON array");
@@ -407,7 +418,8 @@ async fn test_validate_empty_tasks_array() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"tasks": []});
-    assert!(tool.validate(&args).is_err());
+    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    tool.validate(&call).is_err());
 }
 
 /// Given: tool_def() definition
@@ -466,11 +478,12 @@ async fn test_spawn_child_agent_returns_completed() {
         "agent_depth": 0,
         "role": "leaf",
     });
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
 
-    let result = tool.validate(&args);
+    let result = tool.validate(&call);
     assert!(result.is_ok());
 
-    let output = tool.execute(&args).await;
+    let output = tool.execute(&call).await;
     assert!(output.error.is_none());
     assert!(output.output.contains("completed"));
 }
@@ -497,7 +510,8 @@ async fn test_spawn_child_depth_increment() {
         "role": "leaf",
     });
 
-    let output = tool.execute(&args).await;
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let output = tool.execute(&call).await;
     assert!(output.error.is_none());
     assert!(output.output.contains("2"));
 }
@@ -524,7 +538,8 @@ async fn test_spawn_child_orchestrator_role() {
         "role": "orchestrator",
     });
 
-    let output = tool.execute(&args).await;
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let output = tool.execute(&call).await;
     assert!(output.output.contains("orchestrator"));
 }
 
@@ -550,7 +565,8 @@ async fn test_spawn_child_has_summary() {
         "role": "leaf",
     });
 
-    let output = tool.execute(&args).await;
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let output = tool.execute(&call).await;
     assert!(output.output.contains("detailed summary"));
 }
 
@@ -576,7 +592,8 @@ async fn test_max_spawn_depth_respected() {
         "role": "leaf",
     });
 
-    let output = tool.execute(&args).await;
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let output = tool.execute(&call).await;
     assert!(output.output.contains("completed"));
 }
 

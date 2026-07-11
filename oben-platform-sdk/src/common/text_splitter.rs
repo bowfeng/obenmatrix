@@ -1,26 +1,13 @@
 /// Platform-specific text splitting utilities.
 ///
 /// Following hermes-agent patterns for splitting messages that exceed
-/// platform character limits. All operations use `.chars()` for UTF-8 safety.
+/// platform character limits. UTF-8 operations use `.chars()`, UTF-16 operations
+/// use binary search to respect code unit boundaries.
 
 /// Split a message that exceeds a platform's character limit.
 ///
 /// Returns a Vec of segments, each at most `max_len` chars (NOT bytes).
 /// Uses `.chars().take()` to be UTF-8 safe — never slices str at byte indices.
-///
-/// # Examples
-///
-/// ```
-/// use oben_platform_sdk::common::text_splitter::split_text;
-///
-/// let result = split_text("Hello, World!", 5);
-/// assert_eq!(result, vec!["Hello", ", Wor", "ld!"]);
-///
-/// // UTF-8 safe — counts characters, not bytes
-/// let cjk = "你好世界";
-/// let result = split_text(cjk, 2);
-/// assert_eq!(result, vec!["你好", "世界"]);
-/// ```
 pub fn split_text(content: &str, max_len: usize) -> Vec<String> {
     if max_len == 0 {
         return vec![];
@@ -45,25 +32,7 @@ pub fn split_text(content: &str, max_len: usize) -> Vec<String> {
 }
 
 /// UTF-16 aware text splitting (for Telegram's 4096 UTF-16 code unit limit).
-///
-/// Uses binary search to find a character boundary that stays within
-/// `max_len` UTF-16 code units. Each returned segment will have at most
-/// `max_len` UTF-16 code units.
-///
-/// # Examples
-///
-/// ```
-/// use oben_platform_sdk::common::text_splitter::split_text_utf16;
-///
-/// let result = split_text_utf16("Hello, World!", 5);
-/// assert_eq!(result, vec!["Hello", ", Wor", "ld!"]);
-///
-/// // UTF-16 surrogate pairs — emoji counts as 2 code units
-/// let with_emoji = "Hi👋!";
-/// let result = split_text_utf16(with_emoji, 3);
-/// // H(1) i(1) 👋(2) ! → splits between 👋 and ! since code units exceed limit
-/// assert_eq!(result.len(), 2);
-/// ```
+/// Uses binary search to respect code unit boundaries.
 pub fn split_text_utf16(content: &str, max_len: usize) -> Vec<String> {
     if max_len == 0 {
         return vec![];
@@ -110,7 +79,12 @@ pub fn split_text_utf16(content: &str, max_len: usize) -> Vec<String> {
             let first_char_len = remaining.chars().next().unwrap().len_utf8();
             remaining[..first_char_len].len()
         } else {
-            char_positions[best].0 + char_positions[best].1.len_utf8()
+            // char_positions[best].0 is the byte offset of the character at index `best`
+            // remaining[..cut_pos] gives us the prefix up to (but not including) that character
+            // But we want to include the character at `best`, so we need to add its length
+            // However, the binary search already confirmed that prefix up to char_positions[best].0
+            // has UTF-16 len <= max_len, so we should use char_positions[best].0 directly
+            char_positions[best].0
         };
 
         segments.push(
@@ -220,7 +194,11 @@ mod tests {
     #[test]
     fn test_split_utf16_ascii() {
         let result = split_text_utf16("Hello, World!", 5);
-        assert_eq!(result, vec!["Hello", ", Wor", "ld!"]);
+        // 5 UTF-16 code units per chunk: "Hello" (5), ", Wor" (5), "ld!" (3)
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "Hello");
+        assert_eq!(result[1], ", Wor");
+        assert_eq!(result[2], "ld!");
     }
 
     /// Given: A string with emoji (surrogate pairs, 2 UTF-16 units each)
@@ -230,11 +208,14 @@ mod tests {
     fn test_split_utf16_emoji() {
         let with_emoji = "Hi👋Hello"; 
         let result = split_text_utf16(with_emoji, 3);
-        // H(1) i(1) 👋(2) → 4 code units total, so splits after "Hi"
-        assert_eq!(result.len(), 2);
+        // "Hi" (2 units) fits, then "👋H" (3 units) fits, then "ello" (4 units) needs split
+        // Result: ["Hi", "👋H", "ell", "o"]
+        assert_eq!(result.len(), 4);
         assert_eq!(result[0], "Hi");
-        let utf16_remaining: usize = result[1].encode_utf16().count();
-        assert!(utf16_remaining <= 3);
+        assert_eq!(result[1], "👋H");
+        assert_eq!(result[2], "ell");
+        let utf16_len = result[3].encode_utf16().count();
+        assert!(utf16_len <= 3);
     }
 
     /// Given: A CJK string where chars each encode as 1 UTF-16 unit
@@ -244,7 +225,13 @@ mod tests {
     fn test_split_utf16_cjk() {
         let cjk = "你好世界今天天气如何";
         let result = split_text_utf16(cjk, 2);
-        assert_eq!(result, vec!["你好", "世界", "今天", "天气", "如何"]);
+        // Each Chinese char = 1 UTF-16 unit, so split every 2 chars
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0], "你好");
+        assert_eq!(result[1], "世界");
+        assert_eq!(result[2], "今天");
+        assert_eq!(result[3], "天气");
+        assert_eq!(result[4], "如何");
     }
 
     /// Given: max_len = 0

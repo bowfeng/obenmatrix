@@ -49,7 +49,6 @@ pub use compact_context::*;
 pub use concurrent_dispatch::*;
 pub use context::*;
 pub use coordinator::*;
-#[allow(ambiguous_glob_reexports)]
 pub use error_classifier::*;
 pub use fallback::*;
 pub use hooks::*;
@@ -59,7 +58,7 @@ pub use message_sanitize::*;
 pub use nudge::NudgeConfig;
 pub use prompt::*;
 pub use retry::*;
-pub use stream_processor::*;
+pub use stream_processor::{StreamingContextScrubber, StreamingThinkScrubber};
 pub use system_prompt::*;
 pub use system_prompt_cache::*;
 pub use turn_executor::*;

@@ -254,6 +254,7 @@ pub(crate) const PROVIDER_META: &[(&str, TransportType, &'static str)] = &[
     ("huggingface", TransportType::OpenAIChat, ""),
     ("novita", TransportType::OpenAIChat, ""),
     ("xiaomi", TransportType::OpenAIChat, ""),
+    ("bedrock", TransportType::BedrockConverse, ""),
     (
         "arcee",
         TransportType::OpenAIChat,

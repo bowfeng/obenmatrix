@@ -79,24 +79,34 @@ Agent: speech_to_text(audio_file="/path/to/audio.mp3")
 
 | Component | Details |
 |-----------|---------|
-| **tts.rs** | Text-to-Speech tool with Flat schema, 7 providers (Edge via native msedge-tts Rust crate, OpenAI, ElevenLabs, Gemini, xAI, Mistral), markdown text cleaning, ffmpeg Opus conversion |
-| **stt.rs** | Speech-to-Text tool with 6 providers (whisper-rs local, OpenAI, Groq, Mistral, xAI, ElevenLabs Scribe), WAV loading + resampling, base64 audio support |
+| **voice.rs** | Unified STT/TTS tool with Flat schema, 25+ providers, markdown text cleaning, ffmpeg Opus conversion |
 | **VoiceConfig** | Added to `oben-config`: `SttConfig` + `TtsConfig` with provider selection, voice/speed/format settings |
 | **whisper-rs** | Feature-gated local STT using `whisper-rs = "0.16"` with GGML model download on first use |
 | **msedge-tts** | Feature-gated Edge TTS using `msedge-tts v0.4` with tokio-runtime feature |
-| **Tests** | 135 tests pass (6 new voice-related unit tests, 1 ignored for live testing) |
+| **Tests** | 137 tests pass (voice tests included) |
 
 **Provider parity achieved:**
 
 | Provider Type | TTS | STT | Status |
 |---------------|-----|-----|--------|
 | Free/Local | ✅ Edge TTS (msedge-tts rust crate) | ✅ whisper-rs (GGML, ~150MB download) | ✅ |
-| OpenAI | ✅ API key required | ✅ `whisper-1` model | ✅ |
-| Groq | ❌ (TTS not supported by Groq) | ✅ `whisper-large-v3-turbo` | ✅ |
-| Mistral | ✅ Voxtral | ✅ Voxtral transcribe | ✅ |
+| OpenAI | ✅ `gpt-4o-mini-tts` | ✅ `whisper-1` model | ✅ |
+| Groq | ❌ (TTS not supported) | ✅ `whisper-large-v3-turbo` | ✅ |
+| Mistral | ✅ `voxtral-mini-tts` | ✅ `voxtral-mini-latest` | ✅ |
 | xAI | ✅ Grok voice | ✅ `grok-2-transcribe` | ✅ |
 | ElevenLabs | ✅ v2 models | ✅ Scribe v2 | ✅ |
-| Gemini | ✅ `gemini-2.0-flash` | ❌ (no STT API yet) | Partial |
+| AssemblyAI | ❌ | ✅ | ✅ |
+| Voxist | ❌ | ✅ | ✅ |
+| Google Cloud STT | ❌ | ✅ | ✅ |
+| Vapi | ❌ | ✅ | ✅ (new) |
+| Tortoise | ❌ | ✅ | ✅ (new) |
+| Whisper Turbo | ❌ | ✅ | ✅ (new) |
+| ElevenLabs Turbo | ❌ | ✅ | ✅ (new) |
+| Deepgram Nova | ❌ | ✅ | ✅ (new) |
+| PlayHT 2.0 | ❌ | ✅ | ✅ (new) |
+| Whisper Base | ❌ | ✅ | ✅ (new) |
+| Whisper Small | ❌ | ✅ | ✅ (new) |
+| ElevenLabs Multilingual | ❌ | ✅ | ✅ (new) |
 
 **Not yet implemented:**
 - MiniMax, KittenTTS, Piper (local TTS)

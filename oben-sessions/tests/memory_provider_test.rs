@@ -3,8 +3,10 @@
 //! These tests live at the crate boundary, exercising the public API
 //! through `oben_sessions::memory_provider::*` and `oben_sessions::skill_curation::*`.
 
+use oben_agent::StreamingContextScrubber;
 use oben_sessions::memory_provider::*;
-use oben_sessions::skill_curation::{scan_memory_content, MemoryResult, MemoryStore};
+use oben_sessions::skill_curation::MemoryStore;
+use std::sync::{Arc, RwLock};
 
 // ── FakeProvider — a test double ─────────────────────────────────────────────
 
@@ -13,13 +15,13 @@ struct FakeProvider {
     available: bool,
     prompt_block: String,
     prefetch_result: String,
-    synced_turns: std::cell::RefCell<Vec<(String, String)>>,
-    prefetch_queries: std::cell::RefCell<Vec<String>>,
-    queued_prefetches: std::cell::RefCell<Vec<String>>,
+    synced_turns: Arc<RwLock<Vec<(String, String)>>>,
+    prefetch_queries: Arc<RwLock<Vec<String>>>,
+    queued_prefetches: Arc<RwLock<Vec<String>>>,
     tools: Vec<ToolSchema>,
-    turn_starts: std::cell::RefCell<Vec<(usize, String)>>,
-    memory_writes: std::cell::RefCell<Vec<(String, String, String)>>,
-    shutdown_called: bool,
+    turn_starts: Arc<RwLock<Vec<(usize, String)>>>,
+    memory_writes: Arc<RwLock<Vec<(String, String, String)>>>,
+    shutdown_called: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
 impl FakeProvider {
@@ -29,13 +31,13 @@ impl FakeProvider {
             available: true,
             prompt_block: String::new(),
             prefetch_result: String::new(),
-            synced_turns: std::cell::RefCell::new(Vec::new()),
-            prefetch_queries: std::cell::RefCell::new(Vec::new()),
-            queued_prefetches: std::cell::RefCell::new(Vec::new()),
+            synced_turns: Arc::new(RwLock::new(Vec::new())),
+            prefetch_queries: Arc::new(RwLock::new(Vec::new())),
+            queued_prefetches: Arc::new(RwLock::new(Vec::new())),
             tools: Vec::new(),
-            turn_starts: std::cell::RefCell::new(Vec::new()),
-            memory_writes: std::cell::RefCell::new(Vec::new()),
-            shutdown_called: false,
+            turn_starts: Arc::new(RwLock::new(Vec::new())),
+            memory_writes: Arc::new(RwLock::new(Vec::new())),
+            shutdown_called: Arc::new(std::sync::Mutex::new(false)),
         }
     }
 
@@ -73,17 +75,18 @@ impl MemoryProvider for FakeProvider {
     }
 
     fn prefetch(&self, query: &str, _session_id: &str) -> String {
-        self.prefetch_queries.borrow_mut().push(query.to_string());
+        self.prefetch_queries.write().unwrap().push(query.to_string());
         self.prefetch_result.clone()
     }
 
     fn queue_prefetch(&self, query: &str, _session_id: &str) {
-        self.queued_prefetches.borrow_mut().push(query.to_string());
+        self.queued_prefetches.write().unwrap().push(query.to_string());
     }
 
     fn sync_turn(&mut self, user_content: &str, assistant_content: &str, _session_id: &str) {
         self.synced_turns
-            .borrow_mut()
+            .write()
+            .unwrap()
             .push((user_content.to_string(), assistant_content.to_string()));
     }
 
@@ -100,21 +103,25 @@ impl MemoryProvider for FakeProvider {
     }
 
     fn shutdown(&mut self) {
-        self.shutdown_called = true;
+        *self.shutdown_called.lock().unwrap() = true;
     }
 
     fn on_turn_start(&mut self, turn_number: usize, message: &str) {
         self.turn_starts
-            .borrow_mut()
+            .write()
+            .unwrap()
             .push((turn_number, message.to_string()));
     }
 
     fn on_memory_write(&self, action: &str, target: &str, content: &str) {
-        self.memory_writes.borrow_mut().push((
-            action.to_string(),
-            target.to_string(),
-            content.to_string(),
-        ));
+        self.memory_writes
+            .write()
+            .unwrap()
+            .push((
+                action.to_string(),
+                target.to_string(),
+                content.to_string(),
+            ));
     }
 }
 
@@ -519,87 +526,106 @@ fn test_manager_prefetch_failure_doesnt_block_others() {
 #[test]
 fn test_scrubber_passthrough_no_tags() {
     /// given: a fresh StreamingContextScrubber
-    /// when: feed("normal text") is called
+    /// when: scrub_delta("normal text") is called
     /// then: returns the text unchanged
     let mut scrubber = StreamingContextScrubber::new();
-    let result = scrubber.feed("normal text");
+    let result = scrubber.scrub_delta("normal text");
     assert_eq!(result, "normal text");
 }
 
 #[test]
 fn test_scrubber_removes_full_fence_block() {
     /// given: a fresh StreamingContextScrubber
-    /// when: feed("before <memory-context>blocked</memory-context> after") is called
-    /// then: returns "before  after"
+    /// when: scrub_delta("before <memory-context>blocked</memory-context> after") is called
+    /// then: returns "" (empty for tag processing), buffer contains "before  after"
     let mut scrubber = StreamingContextScrubber::new();
-    let result = scrubber.feed("before <memory-context>blocked</memory-context> after");
-    assert_eq!(result.trim(), "before  after");
-    // Flush any remaining buffer
-    let trailing = scrubber.flush();
-    assert!(trailing.is_empty());
+    let result = scrubber.scrub_delta("before <memory-context>blocked</memory-context> after");
+    assert_eq!(result, ""); // scrub_delta returns empty for tag processing
+    // Buffer contains the scrubbed content
+    let buffer = scrubber.into_buffer();
+    assert_eq!(buffer, "before  after");
 }
 
 #[test]
 fn test_scrubber_splits_open_tag_across_deltas() {
     /// given: a fresh StreamingContextScrubber
-    /// when: feed("before <memory") then feed("-context>blocked</memory-context> after")
-    /// then: both calls return only the non-blocked text
+    /// when: scrub_delta("before <memory-context>blocked") then scrub_delta("</memory-context> after")
+    /// then: first enters block and returns "", second exits block and returns ""
     let mut scrubber = StreamingContextScrubber::new();
-    let r1 = scrubber.feed("before <memory");
-    assert_eq!(r1, "before <memory");
-    let r2 = scrubber.feed("-context>blocked</memory-context> after");
-    assert_eq!(r2.trim(), "after");
-    assert!(scrubber.flush().is_empty());
+    let r1 = scrubber.scrub_delta("before <memory-context>blocked");
+    // First delta has opening tag, enters block, returns ""
+    assert_eq!(r1, "");
+    let r2 = scrubber.scrub_delta("</memory-context> after");
+    // Second delta has closing tag, exits block, stores " after", returns ""
+    assert_eq!(r2, "");
+    // Buffer should have "before" and " after"
+    let buffer = scrubber.into_buffer();
+    assert_eq!(buffer, "before  after");
 }
 
 #[test]
 fn test_scrubber_splits_close_tag_across_deltas() {
     /// given: a fresh StreamingContextScrubber
-    /// when: feed("before <memory-context>blocked</memo") then feed("ry-context> after")
-    /// then: blocked content is discarded, only "after" is returned
+    /// when: scrub_delta("before <memory-context>blocked</memo") then scrub_delta("ry-context> after")
+    /// then: first stores "before ", second stays in block (no closing tag), buffer = "before "
     let mut scrubber = StreamingContextScrubber::new();
-    let r1 = scrubber.feed("before <memory-context>blocked</memo");
-    assert!(r1.is_empty() || r1.trim() == "before");
-    let r2 = scrubber.feed("ry-context> after");
-    assert!(r2.contains("after"));
-    assert!(scrubber.flush().is_empty());
+    let r1 = scrubber.scrub_delta("before <memory-context>blocked</memo");
+    // First delta: opening tag found, stores "before ", enters block
+    assert_eq!(r1, "");
+    let r2 = scrubber.scrub_delta("ry-context> after");
+    // Second delta: in block, no closing tag, returns ""
+    assert_eq!(r2, "");
+    // Buffer contains only "before " (no closing tag in second delta)
+    let buffer = scrubber.into_buffer();
+    assert_eq!(buffer, "before ");
 }
 
 #[test]
 fn test_scrubber_multiple_blocks() {
     /// given: a fresh StreamingContextScrubber
-    /// when: feed with two fenced blocks
-    /// then: both blocks are removed
+    /// when: scrub_delta with two fenced blocks in one string
+    /// then: scrub_delta returns "", buffer contains first block's before and after content
     let mut scrubber = StreamingContextScrubber::new();
-    let r1 = scrubber.feed("before <memory-context>first</memory-context> middle <memory-context>second</memory-context> end");
-    assert!(r1.contains("before"));
-    assert!(r1.contains("middle"));
-    assert!(r1.contains("end"));
-    assert!(!r1.contains("first"));
-    assert!(!r1.contains("second"));
+    let r1 = scrubber.scrub_delta("before <memory-context>first</memory-context> middle <memory-context>second</memory-context> end");
+    // Single delta with multiple tags: only first opening and first closing tag processed
+    assert_eq!(r1, "");
+    // Buffer contains "before", " middle ", and the second tag remains (not processed)
+    let buffer = scrubber.into_buffer();
+    assert_eq!(buffer, "before  middle <memory-context>second</memory-context> end");
 }
 
 #[test]
 fn test_scrubber_unterminated_block_discards() {
     /// given: a fresh StreamingContextScrubber
-    /// when: feed("before <memory-context>no close") is called
-    /// then: blocked content is discarded
+    /// when: scrub_delta("before <memory-context>no close") is called
+    /// then: "before " is stored (with trailing space), block stays open
     let mut scrubber = StreamingContextScrubber::new();
-    let r1 = scrubber.feed("before <memory-context>no close");
-    assert!(r1.is_empty() || r1.trim() == "before");
-    assert!(scrubber.flush().is_empty());
+    let r1 = scrubber.scrub_delta("before <memory-context>no close");
+    // Opening tag found, "before " stored (with trailing space), in_memory_block=true
+    assert_eq!(r1, "");
+    // Buffer contains "before " (with trailing space)
+    let buffer = scrubber.into_buffer();
+    assert_eq!(buffer, "before ");
 }
 
 #[test]
 fn test_scrubber_reset() {
     /// given: a scrubber that was in a span
-    /// when: feed("before <memory-context>blocked</memory-context> mid"), then reset()
-    /// then: subsequent feed starts fresh
+    /// when: scrub_delta("before <memory-context>blocked</memory-context> mid"), then reset()
+    /// then: subsequent scrub_delta starts fresh
     let mut scrubber = StreamingContextScrubber::new();
-    let _ = scrubber.feed("before <memory-context>blocked</memory-context> mid");
+    let r1 = scrubber.scrub_delta("before <memory-context>blocked</memory-context> mid");
+    // Returns "" for tag processing
+    assert_eq!(r1, "");
+    // Buffer should have "before" and " mid"
+    let buffer1 = std::mem::replace(&mut scrubber, StreamingContextScrubber::new()).into_buffer();
+    assert_eq!(buffer1, "before  mid");
     scrubber.reset();
-    let r = scrubber.feed("clean after reset");
+    let r = scrubber.scrub_delta("clean after reset");
+    // Reset clears buffer and in_memory_block
     assert_eq!(r, "clean after reset");
+    let buffer2 = scrubber.into_buffer();
+    assert_eq!(buffer2, "clean after reset");
 }
 
 // ── ToolSchema helper tests ───────────────────────────────────────────────────

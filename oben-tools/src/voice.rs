@@ -29,6 +29,23 @@ const GROQ_API: &str = "https://api.groq.com/openai/v1";
 const MISTRAL_API: &str = "https://api.mistral.ai/v1";
 const XAI_API: &str = "https://api.x.ai/v1";
 const ELEVENLABS_BASE: &str = "https://api.elevenlabs.io/v1";
+const ASSEMBLYAI_API: &str = "https://api.assemblyai.com/v2";
+const VOXIST_API: &str = "https://api.voxist.ai/v1";
+const GOOGLE_CLOUD_STT_BASE: &str = "https://speech.googleapis.com/v1";
+const MURF_BASE: &str = "https://api.murf.ai/v1";
+const RESEMBLEAI_BASE: &str = "https://api.resemble.ai/v2";
+const PLAYHT_BASE: &str = "https://api.play.ht/api/v1";
+const GOOGLE_CLOUD_TTS_BASE: &str = "https://texttospeech.googleapis.com/v1";
+
+// Tasks 91-100: Additional STT/TTS provider endpoints
+const VAPI_BASE: &str = "https://api.vapi.ai/v1";
+const TORTOISE_BASE: &str = "https://api.tortoise.ai/v1";
+const WHISPER_TURBO_BASE: &str = "https://api.openai.com/v1";
+const ELEVENLABS_TURBO_BASE: &str = "https://api.elevenlabs.io/v1";
+const DEEPGRAM_NOVA_BASE: &str = "https://api.deepgram.com/v1";
+const PLAYHT_2_BASE: &str = "https://api.play.ht/api/v2";
+const WHISPER_BASE: &str = "https://api.openai.com/v1";
+const ELEVENLABS_MULTILINGUAL_BASE: &str = "https://api.elevenlabs.io/v1";
 
 // Env vars for STT
 const ENV_GROQ: &str = "GROQ_API_KEY";
@@ -36,6 +53,30 @@ const ENV_XAI: &str = "XAI_API_KEY";
 const ENV_MISTRAL: &str = "MISTRAL_API_KEY";
 const ENV_ELEVENLABS: &str = "ELEVENLABS_API_KEY";
 const ENV_OPENAI: &str = "OPENAI_API_KEY";
+const ENV_ASSEMBLYAI: &str = "ASSEMBLYAI_API_KEY";
+const ENV_VOXIST: &str = "VOXIST_API_KEY";
+const ENV_GOOGLE_CLOUD: &str = "GOOGLE_CLOUD_STT_API_KEY";
+const ENV_VAPI: &str = "VAPI_API_KEY";
+const ENV_TORTOISE: &str = "TORTOISE_API_KEY";
+const ENV_WHISPER_TURBO: &str = "WHISPER_TURBO_API_KEY";
+const ENV_ELEVENLABS_TURBO: &str = "ELEVENLABS_TURBO_API_KEY";
+const ENV_DEEPGRAM_NOVA: &str = "DEEPGRAM_NOVA_API_KEY";
+const ENV_PLAYHT_2: &str = "PLAYHT_2_API_KEY";
+const ENV_WHISPER_BASE: &str = "WHISPER_BASE_API_KEY";
+const ENV_WHISPER_SMALL: &str = "WHISPER_SMALL_API_KEY";
+const ENV_ELEVENLABS_MULTILINGUAL: &str = "ELEVENLABS_MULTILINGUAL_API_KEY";
+
+// Env vars for TTS
+const ENV_MURF: &str = "MURF_API_KEY";
+const ENV_RESEMBLEAI: &str = "RESEMBLEAI_API_KEY";
+const ENV_PLAYHT: &str = "PLAYHT_API_KEY";
+const ENV_GOOGLE_CLOUD_TTS: &str = "GOOGLE_CLOUD_TTS_API_KEY";
+const ENV_VAPI_TTS: &str = "VAPI_TTS_API_KEY";
+const ENV_TORTOISE_TTS: &str = "TORTOISE_TTS_API_KEY";
+const ENV_ELEVENLABS_TURBO_TTS: &str = "ELEVENLABS_TURBO_TTS_API_KEY";
+const ENV_PLAYHT_2_TTS: &str = "PLAYHT_2_TTS_API_KEY";
+const ENV_WHISPER_TURBO_TTS: &str = "WHISPER_TURBO_TTS_API_KEY";
+const ENV_ELEVENLABS_MULTILINGUAL_TTS: &str = "ELEVENLABS_MULTILINGUAL_TTS_API_KEY";
 
 // ---------------------------------------------------------------------------
 // TTS Constants
@@ -90,6 +131,19 @@ fn provider_label(p: &str) -> &str {
         "mistral" => "Mistral",
         "xai" => "xAI",
         "elevenlabs" => "ElevenLabs",
+        "assemblyai" => "AssemblyAI",
+        "voxist" => "Voxist",
+        "google_cloud_stt" => "Google Cloud STT",
+        "vapi" => "Vapi",
+        "tortoise" => "Tortoise",
+        "whisper_turbo" => "Whisper Turbo",
+        "elevenlabs_turbo" => "ElevenLabs Turbo",
+        "deepgram_nova" => "Deepgram Nova",
+        "playht_2" => "PlayHT 2.0",
+        "whisper_base" => "Whisper Base",
+        "whisper_small" => "Whisper Small",
+        "whisper_turbo_stt" => "Whisper Turbo",
+        "elevenlabs_multilingual" => "ElevenLabs Multilingual",
         other => other,
     }
 }
@@ -311,6 +365,132 @@ async fn transcribe_with_whisper_rs(
     }
 }
 
+/// AssemblyAI STT - requires ASSEMBLYAI_API_KEY
+async fn transcribe_with_assemblyai(
+    client: &Client,
+    api_key: &str,
+    audio_path: impl AsRef<Path>,
+    language: &str,
+) -> anyhow::Result<String> {
+    let path = audio_path.as_ref();
+
+    let language_code = if language.is_empty() { "en" } else { language };
+    
+    let response = client
+        .post(format!("{}/transcript", ASSEMBLYAI_API.trim_end_matches('/')))
+        .header("Authorization", api_key)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "audio_url": format!("file://{}", path.display()),
+            "language_code": language_code
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await?;
+        return Err(anyhow::anyhow!(
+            "AssemblyAI STT failed (HTTP {}): {}",
+            status,
+            body.lines().next().unwrap_or("").get(0..300).unwrap_or(&body),
+        ));
+    }
+
+    let json: Value = response.json().await?;
+    let text = json["text"].as_str().unwrap_or("").to_string();
+    Ok(text.trim().to_string())
+}
+
+/// Voxist STT - requires VOXIST_API_KEY
+async fn transcribe_with_voxist(
+    client: &Client,
+    api_key: &str,
+    audio_path: impl AsRef<Path>,
+    language: &str,
+) -> anyhow::Result<String> {
+    let path = audio_path.as_ref();
+
+    let file_bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read audio file {}: {}", path.display(), e))?;
+
+    let language_code = if language.is_empty() { "en" } else { language };
+    
+    let response = client
+        .post(format!("{}/transcribe", VOXIST_API.trim_end_matches('/')))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "file": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &file_bytes),
+            "language": language_code
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await?;
+        return Err(anyhow::anyhow!(
+            "Voxist STT failed (HTTP {}): {}",
+            status,
+            body.lines().next().unwrap_or("").get(0..300).unwrap_or(&body),
+        ));
+    }
+
+    let json: Value = response.json().await?;
+    let text = json["text"].as_str().unwrap_or("").to_string();
+    Ok(text.trim().to_string())
+}
+
+/// Google Cloud STT - requires GOOGLE_CLOUD_STT_API_KEY
+async fn transcribe_with_google_cloud_stt(
+    client: &Client,
+    api_key: &str,
+    audio_path: impl AsRef<Path>,
+    _model: &str,
+) -> anyhow::Result<String> {
+    let path = audio_path.as_ref();
+
+    let file_bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read audio file {}: {}", path.display(), e))?;
+
+    let audio_bytes_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &file_bytes);
+
+    let response = client
+        .post(format!("{}/speech:recognize?key={}", GOOGLE_CLOUD_STT_BASE.trim_end_matches('/'), api_key))
+        .json(&serde_json::json!({
+            "config": {
+                "encoding": "LINEAR16",
+                "sample_rate_hertz": 16000,
+                "language_code": "en-US"
+            },
+            "audio": {
+                "content": audio_bytes_b64
+            }
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await?;
+        return Err(anyhow::anyhow!(
+            "Google Cloud STT failed (HTTP {}): {}",
+            status,
+            body.lines().next().unwrap_or("").get(0..300).unwrap_or(&body),
+        ));
+    }
+
+    let json: Value = response.json().await?;
+    let text = json["results"][0]["alternatives"][0]["transcript"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    Ok(text.trim().to_string())
+}
+
 /// Common OpenAI-compatible transcription API endpoint.
 /// Works with: OpenAI, Groq, Mistral, xAI, ElevenLabs (Scribe v2)
 async fn transcribe_with_openai_compatible(
@@ -387,6 +567,29 @@ async fn generate_edge_tts(text: &str, voice: Option<&str>, output_path: &PathBu
 
     debug!("Edge TTS audio saved to {}", output_path.display());
     Ok(())
+}
+
+async fn generate_openai_compatible_tts(client: &Client, text: &str, output_path: &PathBuf, api_base: &str, api_key: &str, voice: &str) -> anyhow::Result<()> {
+    let response = client.post(format!("{}/audio/speech", api_base.trim_end_matches('/')))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&serde_json::json!({
+            "model": "default",
+            "voice": voice,
+            "input": text,
+            "response_format": "mp3"
+        }))
+        .send().await?;
+
+    if response.status().is_success() {
+        let audio_data = response.bytes().await?;
+        std::fs::write(output_path, &audio_data)
+            .map_err(|e| anyhow::anyhow!("Failed to write TTS output: {}", e))?;
+        Ok(())
+    } else {
+        let status = response.status();
+        let body = response.text().await?;
+        Err(anyhow::anyhow!("TTS failed (HTTP {}): {}", status, body.lines().next().unwrap_or("")))
+    }
 }
 
 /// OpenAI TTS — requires OPENAI_API_KEY
@@ -569,6 +772,124 @@ async fn generate_mistral_tts(client: &Client, text: &str, output_path: &PathBuf
     }
 }
 
+/// Murf TTS — requires MURF_API_KEY
+async fn generate_murf_tts(client: &Client, text: &str, output_path: &PathBuf, voice: &str) -> anyhow::Result<()> {
+    let api_key = resolve_api_key(ENV_MURF)
+        .ok_or_else(|| anyhow::anyhow!("MURF_API_KEY not set"))?;
+
+    let response = client
+        .post(format!("{}/tts", MURF_BASE.trim_end_matches('/')))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "text": text,
+            "voice_id": voice,
+            "format": "mp3"
+        }))
+        .send().await?;
+
+    if response.status().is_success() {
+        let audio_data = response.bytes().await?;
+        std::fs::write(output_path, &audio_data)
+            .map_err(|e| anyhow::anyhow!("Failed to write Murf TTS output: {}", e))?;
+        Ok(())
+    } else {
+        let status = response.status();
+        let body = response.text().await?;
+        Err(anyhow::anyhow!("Murf TTS failed (HTTP {}): {}", status, body.lines().next().unwrap_or("")))
+    }
+}
+
+/// Resemble AI TTS — requires RESEMBLEAI_API_KEY
+async fn generate_resembleai_tts(client: &Client, text: &str, output_path: &PathBuf, voice: &str) -> anyhow::Result<()> {
+    let api_key = resolve_api_key(ENV_RESEMBLEAI)
+        .ok_or_else(|| anyhow::anyhow!("RESEMBLEAI_API_KEY not set"))?;
+
+    let response = client
+        .post(format!("{}/generate", RESEMBLEAI_BASE.trim_end_matches('/')))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "text": text,
+            "voice_id": voice,
+            "format": "mp3"
+        }))
+        .send().await?;
+
+    if response.status().is_success() {
+        let audio_data = response.bytes().await?;
+        std::fs::write(output_path, &audio_data)
+            .map_err(|e| anyhow::anyhow!("Failed to write Resemble AI TTS output: {}", e))?;
+        Ok(())
+    } else {
+        let status = response.status();
+        let body = response.text().await?;
+        Err(anyhow::anyhow!("Resemble AI TTS failed (HTTP {}): {}", status, body.lines().next().unwrap_or("")))
+    }
+}
+
+/// PlayHT TTS — requires PLAYHT_API_KEY
+async fn generate_playht_tts(client: &Client, text: &str, output_path: &PathBuf, voice: &str) -> anyhow::Result<()> {
+    let api_key = resolve_api_key(ENV_PLAYHT)
+        .ok_or_else(|| anyhow::anyhow!("PLAYHT_API_KEY not set"))?;
+
+    let response = client
+        .post(format!("{}/tts", PLAYHT_BASE.trim_end_matches('/')))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "text": text,
+            "voice_id": voice,
+            "format": "mp3"
+        }))
+        .send().await?;
+
+    if response.status().is_success() {
+        let audio_data = response.bytes().await?;
+        std::fs::write(output_path, &audio_data)
+            .map_err(|e| anyhow::anyhow!("Failed to write PlayHT TTS output: {}", e))?;
+        Ok(())
+    } else {
+        let status = response.status();
+        let body = response.text().await?;
+        Err(anyhow::anyhow!("PlayHT TTS failed (HTTP {}): {}", status, body.lines().next().unwrap_or("")))
+    }
+}
+
+/// Google Cloud TTS — requires GOOGLE_CLOUD_TTS_API_KEY
+async fn generate_google_cloud_tts(client: &Client, text: &str, output_path: &PathBuf, _voice: &str) -> anyhow::Result<()> {
+    let api_key = resolve_api_key(ENV_GOOGLE_CLOUD_TTS)
+        .ok_or_else(|| anyhow::anyhow!("GOOGLE_CLOUD_TTS_API_KEY not set"))?;
+
+    let response = client
+        .post(format!("{}/text:synthesize?key={}", GOOGLE_CLOUD_TTS_BASE.trim_end_matches('/'), api_key))
+        .json(&serde_json::json!({
+            "input": { "text": text },
+            "voice": {
+                "languageCode": "en-US",
+                "ssmlGender": "NEUTRAL"
+            },
+            "audioConfig": {
+                "audioEncoding": "MP3"
+            }
+        }))
+        .send().await?;
+
+    if response.status().is_success() {
+        let json: Value = response.json().await?;
+        let audio_b64 = json["audioContent"].as_str().unwrap_or("");
+        let audio_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, audio_b64)
+            .map_err(|e| anyhow::anyhow!("Failed to decode base64: {}", e))?;
+        std::fs::write(output_path, &audio_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to write Google Cloud TTS output: {}", e))?;
+        Ok(())
+    } else {
+        let status = response.status();
+        let body = response.text().await?;
+        Err(anyhow::anyhow!("Google Cloud TTS failed (HTTP {}): {}", status, body.lines().next().unwrap_or("")))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Unified STT Dispatcher
 // ---------------------------------------------------------------------------
@@ -663,6 +984,167 @@ async fn do_transcribe(
                 "ElevenLabs",
             ).await
         }
+        "assemblyai" => {
+            let key = resolve_api_key(ENV_ASSEMBLYAI)
+                .ok_or_else(|| anyhow::anyhow!("ASSEMBLYAI_API_KEY not set"))?;
+            transcribe_with_assemblyai(
+                &Client::new(),
+                &key,
+                audio_path,
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+            ).await
+        }
+        "voxist" => {
+            let key = resolve_api_key(ENV_VOXIST)
+                .ok_or_else(|| anyhow::anyhow!("VOXIST_API_KEY not set"))?;
+            transcribe_with_voxist(
+                &Client::new(),
+                &key,
+                audio_path,
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+            ).await
+        }
+        "google_cloud_stt" => {
+            let key = resolve_api_key(ENV_GOOGLE_CLOUD)
+                .ok_or_else(|| anyhow::anyhow!("GOOGLE_CLOUD_STT_API_KEY not set"))?;
+            let model_name = model.unwrap_or_else(|| "standard".to_string());
+            transcribe_with_google_cloud_stt(
+                &Client::new(),
+                &key,
+                audio_path,
+                &model_name,
+            ).await
+        }
+        "vapi" => {
+            let key = resolve_api_key(ENV_VAPI)
+                .ok_or_else(|| anyhow::anyhow!("VAPI_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                VAPI_BASE,
+                &key,
+                audio_path,
+                "default",
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "Vapi",
+            ).await
+        }
+        "tortoise" => {
+            let key = resolve_api_key(ENV_TORTOISE)
+                .ok_or_else(|| anyhow::anyhow!("TORTOISE_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                TORTOISE_BASE,
+                &key,
+                audio_path,
+                "default",
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "Tortoise",
+            ).await
+        }
+        "whisper_turbo" => {
+            let key = resolve_api_key(ENV_WHISPER_TURBO)
+                .ok_or_else(|| anyhow::anyhow!("WHISPER_TURBO_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                WHISPER_TURBO_BASE,
+                &key,
+                audio_path,
+                model.as_deref().unwrap_or("whisper-1"),
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "Whisper Turbo",
+            ).await
+        }
+        "elevenlabs_turbo" => {
+            let key = resolve_api_key(ENV_ELEVENLABS_TURBO)
+                .ok_or_else(|| anyhow::anyhow!("ELEVENLABS_TURBO_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                ELEVENLABS_TURBO_BASE,
+                &key,
+                audio_path,
+                model.as_deref().unwrap_or("scribe_v2"),
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "ElevenLabs Turbo",
+            ).await
+        }
+        "deepgram_nova" => {
+            let key = resolve_api_key(ENV_DEEPGRAM_NOVA)
+                .ok_or_else(|| anyhow::anyhow!("DEEPGRAM_NOVA_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                DEEPGRAM_NOVA_BASE,
+                &key,
+                audio_path,
+                model.as_deref().unwrap_or("nova-2"),
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "Deepgram Nova",
+            ).await
+        }
+        "playht_2" => {
+            let key = resolve_api_key(ENV_PLAYHT_2)
+                .ok_or_else(|| anyhow::anyhow!("PLAYHT_2_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                PLAYHT_2_BASE,
+                &key,
+                audio_path,
+                model.as_deref().unwrap_or("default"),
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "PlayHT 2.0",
+            ).await
+        }
+        "whisper_base" => {
+            let key = resolve_api_key(ENV_WHISPER_BASE)
+                .ok_or_else(|| anyhow::anyhow!("WHISPER_BASE_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                WHISPER_BASE,
+                &key,
+                audio_path,
+                model.as_deref().unwrap_or("whisper-1"),
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "Whisper Base",
+            ).await
+        }
+        "whisper_small" => {
+            let key = resolve_api_key(ENV_WHISPER_SMALL)
+                .ok_or_else(|| anyhow::anyhow!("WHISPER_SMALL_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                WHISPER_BASE,
+                &key,
+                audio_path,
+                model.as_deref().unwrap_or("whisper-1"),
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "Whisper Small",
+            ).await
+        }
+        "whisper_turbo_stt" => {
+            let key = resolve_api_key(ENV_WHISPER_TURBO)
+                .ok_or_else(|| anyhow::anyhow!("WHISPER_TURBO_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                WHISPER_TURBO_BASE,
+                &key,
+                audio_path,
+                model.as_deref().unwrap_or("whisper-1"),
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "Whisper Turbo",
+            ).await
+        }
+        "elevenlabs_multilingual" => {
+            let key = resolve_api_key(ENV_ELEVENLABS_MULTILINGUAL)
+                .ok_or_else(|| anyhow::anyhow!("ELEVENLABS_MULTILINGUAL_API_KEY not set"))?;
+            transcribe_with_openai_compatible(
+                &Client::new(),
+                ELEVENLABS_MULTILINGUAL_BASE,
+                &key,
+                audio_path,
+                model.as_deref().unwrap_or("multilingual-v2"),
+                lang.as_deref().unwrap_or(LANG_DEFAULT),
+                "ElevenLabs Multilingual",
+            ).await
+        }
         other => Err(anyhow::anyhow!("Unknown STT provider: {}", other)),
     }
     .map_err(|e| {
@@ -688,7 +1170,9 @@ async fn do_text_to_speech(
         "" | "edge" => "mp3",
         "openai" | "elevenlabs" => { if output_format == "ogg" { "ogg" } else { "mp3" } },
         "gemini" => "wav",
-        "xai" | "mistral" => "mp3",
+        "xai" | "mistral" | "murf" | "resembleai" | "playht" => "mp3",
+        "google_cloud_tts" => "mp3",
+        "vapi" | "tortoise" | "elevenlabs_turbo" | "playht_2" | "whisper_turbo_tts" | "elevenlabs_multilingual" => "mp3",
         _ => "mp3",
     };
 
@@ -728,6 +1212,52 @@ async fn do_text_to_speech(
             generate_mistral_tts(&client, text, &output_path,
                 "voxtral-mini-tts-2603",
                 voice.unwrap_or("c69964a6-ab8b-4f8a-9465-ec0925096ec8")).await?;
+        }
+        "murf" => {
+            let voice_id = voice.unwrap_or("en-US-Studio-Vocalist-1").to_string();
+            generate_murf_tts(&client, text, &output_path, &voice_id).await?;
+        }
+        "resembleai" => {
+            let voice_id = voice.unwrap_or("default").to_string();
+            generate_resembleai_tts(&client, text, &output_path, &voice_id).await?;
+        }
+        "playht" => {
+            let voice_id = voice.unwrap_or("s3://voice-cloning-default/e6a1467c-8a37-4635-913a-c7c35a8c34f3/voice").to_string();
+            generate_playht_tts(&client, text, &output_path, &voice_id).await?;
+        }
+        "google_cloud_tts" => {
+            let voice_id = voice.unwrap_or("en-US-Neural2-A").to_string();
+            generate_google_cloud_tts(&client, text, &output_path, &voice_id).await?;
+        }
+        "vapi" => {
+            let api_key = resolve_api_key(ENV_VAPI_TTS)
+                .ok_or_else(|| anyhow::anyhow!("VAPI_TTS_API_KEY not set"))?;
+            generate_openai_compatible_tts(&client, text, &output_path, VAPI_BASE, &api_key, voice.unwrap_or("default")).await?;
+        }
+        "tortoise" => {
+            let api_key = resolve_api_key(ENV_TORTOISE_TTS)
+                .ok_or_else(|| anyhow::anyhow!("TORTOISE_TTS_API_KEY not set"))?;
+            generate_openai_compatible_tts(&client, text, &output_path, TORTOISE_BASE, &api_key, voice.unwrap_or("default")).await?;
+        }
+        "elevenlabs_turbo" => {
+            let api_key = resolve_api_key(ENV_ELEVENLABS_TURBO_TTS)
+                .ok_or_else(|| anyhow::anyhow!("ELEVENLABS_TURBO_TTS_API_KEY not set"))?;
+            generate_openai_compatible_tts(&client, text, &output_path, ELEVENLABS_TURBO_BASE, &api_key, voice.unwrap_or("default")).await?;
+        }
+        "playht_2" => {
+            let api_key = resolve_api_key(ENV_PLAYHT_2_TTS)
+                .ok_or_else(|| anyhow::anyhow!("PLAYHT_2_TTS_API_KEY not set"))?;
+            generate_openai_compatible_tts(&client, text, &output_path, PLAYHT_2_BASE, &api_key, voice.unwrap_or("default")).await?;
+        }
+        "whisper_turbo_tts" => {
+            let api_key = resolve_api_key(ENV_WHISPER_TURBO_TTS)
+                .ok_or_else(|| anyhow::anyhow!("WHISPER_TURBO_TTS_API_KEY not set"))?;
+            generate_openai_compatible_tts(&client, text, &output_path, WHISPER_TURBO_BASE, &api_key, voice.unwrap_or("default")).await?;
+        }
+        "elevenlabs_multilingual" => {
+            let api_key = resolve_api_key(ENV_ELEVENLABS_MULTILINGUAL_TTS)
+                .ok_or_else(|| anyhow::anyhow!("ELEVENLABS_MULTILINGUAL_TTS_API_KEY not set"))?;
+            generate_openai_compatible_tts(&client, text, &output_path, ELEVENLABS_MULTILINGUAL_BASE, &api_key, voice.unwrap_or("default")).await?;
         }
         other => {
             return Err(anyhow::anyhow!("Unknown TTS provider: {}", other));

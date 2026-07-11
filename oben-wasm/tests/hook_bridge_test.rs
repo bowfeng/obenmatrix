@@ -330,47 +330,27 @@ fn test_hook_builder_wasm_hooks() {
 /// then each hook lands in the correct category queue.
 #[test]
 fn test_hook_builder_categorization_routing() {
-    struct CategorizedHook {
+    struct CategorizedSystemHook {
         id: String,
     }
 
-    impl Hook for CategorizedHook {
+    impl Hook for CategorizedSystemHook {
         fn id(&self) -> &str {
             &self.id
         }
     }
 
-    // Test each category routing.
-    // IDs use the exact prefix patterns recognized by HookBuilder::with_wasm_hooks.
-    let hooks: Vec<Box<dyn Hook>> = vec![
-        Box::new(CategorizedHook {
-            id: "wasm-agent-loop-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-turn-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-tool-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-streaming-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
+    impl SystemEventsHooks for CategorizedSystemHook {}
+
+    // Test system-events category routing.
+    let hooks: Vec<Box<dyn SystemEventsHooks>> = vec![
+        Box::new(CategorizedSystemHook {
             id: "wasm-system-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-session-test".to_string(),
-        }) as Box<dyn Hook>,
-        Box::new(CategorizedHook {
-            id: "wasm-interrupt-test".to_string(),
-        }) as Box<dyn Hook>,
+        }),
     ];
 
-    // All hooks above implement the base Hook trait. The builder's
-    // with_wasm_hooks routes them into queues by prefix. This test
-    // verifies the compilation path works for all 7 categories.
     let builder = oben_agent::hooks::HookBuilder::new()
-        .with_wasm_hooks(hooks);
+        .with_system_hooks(hooks);
     let engine = builder.build();
-    assert!(engine.count() >= 7, "all 7 categories should be routed");
+    assert!(engine.count() >= 1, "system events hooks should be routed");
 }

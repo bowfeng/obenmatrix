@@ -901,7 +901,45 @@ impl ConversationWidget {
         // Capture streaming block body areas so we can append them to visible_body_ranges.
         let mut _reasoning_body_area: Option<Rect> = None;
         let mut _content_body_area: Option<Rect> = None;
-        if let Some((content_wrapped, reasoning_wrapped, _total_height)) = stream_parsed {
+        
+        // Fallback: render streaming placeholder if no parsed content but streaming active
+        let has_streaming_content = stream_parsed.is_some();
+        
+        if !has_streaming_content && is_streaming {
+            // Streaming active but no content yet - render a placeholder
+            if let Some(ref ts_arc) = state.turn_state_ref {
+                let ts_ref = &*ts_arc.lock();
+                tracing::info!(
+                    "Streaming active but buffer empty: streaming_text.len={} phase={:?}",
+                    ts_ref.streaming_text.len(),
+                    ts_ref.phase
+                );
+            }
+            
+            // Render a simple placeholder block to show we're streaming
+            let placeholder_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(palette.info))
+                .title(Line::from(vec![
+                    Span::styled(" ", Style::default().fg(palette.info)),
+                    Span::styled(
+                        "Streaming...",
+                        Style::default()
+                            .fg(palette.info)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" ", Style::default().fg(palette.info)),
+                ]));
+            let placeholder_area = Rect::new(
+                msg_area.left(),
+                last_entry_vp_bottom.saturating_add(1),
+                msg_area.width,
+                3,
+            );
+            frame.render_widget(placeholder_block, placeholder_area);
+            total_height += 3;
+            streaming_rendered = true;
+        } else if let Some((content_wrapped, reasoning_wrapped, _total_height)) = stream_parsed {
             let has_reasoning = reasoning_wrapped.is_some() && !reasoning_wrapped.as_ref().unwrap().is_empty();
             let has_content = content_wrapped.is_some() && !content_wrapped.as_ref().unwrap().is_empty();
 
@@ -999,8 +1037,7 @@ impl ConversationWidget {
         let prev_user_offset = state.user_scroll_offset.load(Ordering::SeqCst);
         let offset = state.user_scroll_offset.swap(0, Ordering::SeqCst);
         let prev_scroll_pos = scroll_pos;
-        #[allow(unused_assignments)]
-        let mut scroll_pos = prev_scroll_pos;
+        let mut scroll_pos = scroll_pos; // Copy value, will be reassigned later
         let scrollable_range = (total_height as i64 - inner_height as i64).max(0) as usize;
         let prev_scrollable_range = state
             .prev_scrollable_range

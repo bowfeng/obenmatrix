@@ -112,7 +112,7 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
                     }
                 }
                 Some(_) => {
-                    println!("⚠️  No models with max_tokens returned. Proceeding with manual input.");
+                    println!("⚠️  No models returned. Proceeding with manual input.");
                     let manual: String = Input::new()
                         .with_prompt(model_prompt)
                         .default(default_model.to_string())
@@ -190,12 +190,12 @@ fn try_list_models(config: &oben_models::ProviderConfig) -> Option<Vec<String>> 
         let rt = tokio::runtime::Runtime::new().ok()?;
         let transport = oben_transport::Transport::from_config(&config_clone, "");
         if let Ok(resp) = rt.block_on(async { transport.list_models().await }) {
-            let mut models: Vec<_> = resp
-                .data
-                .into_iter()
-                .filter(|m| m.max_model_len.unwrap_or(0) > 0)
-                .collect();
-            models.sort_by(|a, b| b.max_model_len.cmp(&a.max_model_len));
+            let mut models: Vec<_> = resp.data.into_iter().collect();
+            models.sort_by(|a, b| {
+                b.max_model_len
+                    .unwrap_or(0)
+                    .cmp(&a.max_model_len.unwrap_or(0))
+            });
             let display: Vec<String> = models.iter().take(100).map(|m| {
                 let max_t = m.max_model_len.unwrap_or(0);
                 format!("{} ({}, max_tokens: {})", m.id, m.owned_by, max_t)

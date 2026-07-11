@@ -892,12 +892,15 @@ impl TransportProvider for AnthropicMessagesTransport {
         let mut tool_call_names: Vec<String> = Vec::new();
         let mut tool_call_args: Vec<String> = Vec::new();
         let mut total_output_tokens: usize = 0;
+        let mut stream_error: Option<anyhow::Error> = None;
 
         while let Some(event_result) = stream.next().await {
             let event = match event_result {
                 Ok(e) => e,
                 Err(e) => {
-                    debug!("Anthropic SSE stream error: {}", e);
+                    let err = anyhow::anyhow!("Anthropic SSE stream error: {}", e);
+                    tracing::error!("[anthropic] {}", err);
+                    stream_error = Some(err);
                     break;
                 }
             };
@@ -994,6 +997,12 @@ impl TransportProvider for AnthropicMessagesTransport {
             }
         }
 
+        // Propagate any stream error that occurred during iteration
+        if let Some(err) = stream_error {
+            tracing::error!("[anthropic] SSE stream failed: {}", err);
+            return Err(err);
+        }
+
         // Build final tool_calls from accumulated deltas
         // Only include entries that have a non-empty tool call ID (text blocks
         // also add entries to the vectors but without an ID — skip those).
@@ -1023,6 +1032,14 @@ impl TransportProvider for AnthropicMessagesTransport {
             tokens_used: Some(total_output_tokens),
             reasoning: None,
         })
+    }
+
+    async fn list_models(&self) -> Result<oben_models::ModelListResponse> {
+        self.list_models().await
+    }
+
+    async fn find_model(&self, model_id: &str) -> Result<Option<oben_models::ModelInfo>> {
+        self.find_model(model_id).await
     }
 }
 

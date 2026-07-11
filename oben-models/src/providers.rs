@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 /// Controls how the transport builds the message JSON for a call.
 ///
@@ -262,7 +263,8 @@ fn canonical_to_kind(canonical: &str) -> ProviderKind {
 }
 
 /// A model returned from `/v1/models` API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Supports both OpenAI-compatible format and Qwen/Ollama format.
+#[derive(Debug, Clone, Serialize)]
 pub struct ModelInfo {
     /// The model's unique identifier.
     pub id: String,
@@ -273,21 +275,132 @@ pub struct ModelInfo {
     /// Organization that owns the model.
     pub owned_by: String,
     /// Max model context length (for OpenAI-compatible API).
-    #[serde(default)]
     pub max_model_len: Option<usize>,
     /// Root path for the model (vLLM-specific).
-    #[serde(default)]
     pub root: Option<String>,
     /// Parent model (for model groups).
-    #[serde(default)]
     pub parent: Option<String>,
 }
 
+impl<'de> Deserialize<'de> for ModelInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // First, deserialize into a JSON Value to inspect the structure
+        let value = Value::deserialize(deserializer)?;
+
+        // Try to extract fields from OpenAI-compatible format first
+        let id = value.get("id")
+            .and_then(|v| v.as_str())
+            .or_else(|| value.get("model").and_then(|v| v.as_str()))
+            .or_else(|| value.get("name").and_then(|v| v.as_str()))
+            .map(|s| s.to_string())
+            .ok_or_else(|| serde::de::Error::missing_field("id"))?;
+
+        let object = value.get("object")
+            .and_then(|v| v.as_str())
+            .unwrap_or("model")
+            .to_string();
+
+        let created = value.get("created")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        let owned_by = value.get("owned_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Try max_model_len first (OpenAI), then meta.n_ctx (Qwen/Ollama)
+        let max_model_len = value.get("max_model_len")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                value.get("meta")
+                    .and_then(|m| m.get("n_ctx"))
+                    .and_then(|v| v.as_u64())
+            })
+            .map(|v| v as usize);
+
+        let root = value.get("root")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let parent = value.get("parent")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(ModelInfo {
+            id,
+            object,
+            created,
+            owned_by,
+            max_model_len,
+            root,
+            parent,
+        })
+    }
+}
+
 /// Response from `/v1/models` API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Supports both OpenAI-compatible format (data array) and Qwen format (models array).
+#[derive(Debug, Clone, Serialize)]
 pub struct ModelListResponse {
     pub object: String,
     pub data: Vec<ModelInfo>,
+}
+
+impl<'de> Deserialize<'de> for ModelListResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+
+        let object = value.get("object")
+            .and_then(|v| v.as_str())
+            .unwrap_or("list")
+            .to_string();
+
+        let data_array = value.get("data").and_then(|v| v.as_array());
+        let models_array = value.get("models").and_then(|v| v.as_array());
+
+        let data = match (data_array, models_array) {
+            (Some(data_arr), Some(models_arr)) => {
+                let mut models_by_id: std::collections::HashMap<String, ModelInfo> = std::collections::HashMap::new();
+
+                for item in data_arr.iter().chain(models_arr.iter()) {
+                    let id = item.get("id")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| item.get("model").and_then(|v| v.as_str()))
+                        .or_else(|| item.get("name").and_then(|v| v.as_str()))
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+
+                    if let Ok(info) = ModelInfo::deserialize(item.clone()) {
+                        if let Some(existing) = models_by_id.get_mut(&id) {
+                            if existing.max_model_len.is_none() && info.max_model_len.is_some() {
+                                *existing = info;
+                            }
+                        } else {
+                            models_by_id.insert(id, info);
+                        }
+                    }
+                }
+
+                models_by_id.into_values().collect()
+            }
+            (Some(arr), None) | (None, Some(arr)) => {
+                arr.iter()
+                    .map(|item| ModelInfo::deserialize(item.clone()))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_default()
+            }
+            (None, None) => Vec::new(),
+        };
+
+        Ok(ModelListResponse { object, data })
+    }
 }
 
 /// Response format option for OpenAI-compatible APIs.

@@ -2,11 +2,137 @@
 /// Maps to `gateway/gateway.py` in Hermes.
 use anyhow::Result;
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::platform::{IncomingMessage, PlatformInfo, PlatformStatus};
 
 use oben_sessions::DBSessionManager;
-use tracing::info;
+use tracing::{info, warn};
+
+/// Retry configuration for gateway operations
+#[derive(Clone, Debug)]
+pub struct RetryConfig {
+    pub max_retries: u32,
+    pub initial_delay_ms: u64,
+    pub max_delay_ms: u64,
+    pub multiplier: f64,
+}
+
+impl RetryConfig {
+    pub fn new() -> Self {
+        Self {
+            max_retries: 3,
+            initial_delay_ms: 100,
+            max_delay_ms: 5000,
+            multiplier: 2.0,
+        }
+    }
+
+    pub fn with_max_retries(mut self, max: u32) -> Self {
+        self.max_retries = max;
+        self
+    }
+
+    pub fn with_initial_delay_ms(mut self, delay: u64) -> Self {
+        self.initial_delay_ms = delay;
+        self
+    }
+
+    pub fn with_max_delay_ms(mut self, delay: u64) -> Self {
+        self.max_delay_ms = delay;
+        self
+    }
+
+    pub fn with_multiplier(mut self, multiplier: f64) -> Self {
+        self.multiplier = multiplier;
+        self
+    }
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Retry result for gateway operations
+#[derive(Clone, Debug)]
+pub struct RetryResult<T> {
+    pub value: Option<T>,
+    pub attempts: u32,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+impl<T> RetryResult<T> {
+    pub fn success(value: T, attempts: u32) -> Self {
+        Self {
+            value: Some(value),
+            attempts,
+            success: true,
+            error: None,
+        }
+    }
+
+    pub fn failure(error: String, attempts: u32) -> Self {
+        Self {
+            value: None,
+            attempts,
+            success: false,
+            error: Some(error),
+        }
+    }
+}
+
+/// Gateway retry executor - handles retry logic with exponential backoff
+pub struct RetryExecutor {
+    config: RetryConfig,
+}
+
+impl RetryExecutor {
+    pub fn new(config: RetryConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn with_defaults() -> Self {
+        Self::new(RetryConfig::new())
+    }
+
+    pub async fn execute<F, T>(&self, mut f: F) -> RetryResult<T>
+    where
+        F: FnMut(u32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send>>,
+    {
+        let mut last_error = String::new();
+        let mut attempts = 0u32;
+        let mut current_delay = self.config.initial_delay_ms;
+
+        while attempts < self.config.max_retries {
+            attempts += 1;
+            match f(attempts).await {
+                Ok(value) => return RetryResult::success(value, attempts),
+                Err(e) => {
+                    last_error = e.to_string();
+                    warn!("Retry attempt {}/{} failed: {}", attempts, self.config.max_retries, last_error);
+                    if attempts < self.config.max_retries {
+                        tokio::time::sleep(Duration::from_millis(current_delay)).await;
+                        current_delay = (current_delay as f64 * self.config.multiplier).min(self.config.max_delay_ms as f64) as u64;
+                    }
+                }
+            }
+        }
+        RetryResult::failure(last_error, attempts)
+    }
+
+    pub fn config(&self) -> &RetryConfig {
+        &self.config
+    }
+}
+
+impl Default for RetryExecutor {
+    fn default() -> Self {
+        Self::with_defaults()
+    }
+}
 
 /// Thread-safe registry of platform adapter states.
 pub struct PlatformRegistry {

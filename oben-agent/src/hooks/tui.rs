@@ -48,20 +48,32 @@ impl Hook for TuiStreamingAdapter {
 impl StreamingHooks for TuiStreamingAdapter {
     fn on_stream_delta(&self, text: &str) {
         let mut ts = self.state.state.lock();
-        let total_after = ts.streaming_text.len() + text.len();
-        if total_after % 20 == 0 {
+        let total_before = ts.streaming_text.len();
+        let delta_len = text.len();
+        let total_after = total_before + delta_len;
+        
+        // Log every delta to trace streaming behavior
+        tracing::debug!(
+            delta_len = delta_len,
+            total_before = total_before,
+            total_after = total_after,
+            phase = ?ts.phase,
+            text_preview = ?text.chars().take(20).collect::<String>(),
+            "[TuiStreamingAdapter] on_stream_delta"
+        );
+        
+        ts.on_stream_delta(text);
+        
+        // Log after update for verification
+        let final_len = ts.streaming_text.len();
+        if final_len % 50 == 0 && final_len > 0 {
             tracing::info!(
-                delta_len = text.len(),
-                total_len = total_after,
+                final_len = final_len,
                 phase = ?ts.phase,
-                "[TuiStreamingAdapter] on_stream_delta: {}+{}={} bytes (phase={:?})",
-                ts.streaming_text.len(),
-                text.len(),
-                total_after,
-                ts.phase
+                "[TuiStreamingAdapter] After update: streaming_text.len={}",
+                final_len
             );
         }
-        ts.on_stream_delta(text);
     }
 
     fn on_reasoning(&self, text: &str) {
