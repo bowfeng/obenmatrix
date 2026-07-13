@@ -8,6 +8,7 @@ license = "MIT"
 oben-models = { path = "../oben-models" }
 oben-config = { path = "../oben-config" }
 oben-utils = { path = "../oben-utils" }
+oben-cron = { path = "../oben-cron" }
 
 anyhow.workspace = true
 tokio.workspace = true
@@ -25,6 +26,8 @@ chrono = { version = "0.4", features = ["serde"] }
 hound = "3.5"        # For WAV audio loading (used by whisper-rs)
 whisper-rs = { version = "0.16", optional = true, default-features = false }
 msedge-tts = { version = "0.4", features = ["tokio-runtime"] }
+sha2 = "0.10"
+walkdir = "2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "macros"] }

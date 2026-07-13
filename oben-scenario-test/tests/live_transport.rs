@@ -168,7 +168,7 @@ async fn test_live_chat_simple() -> Result<()> {
     eprintln!(
         "✅ Live chat test passed: text_len={}, text_preview='{}...'",
         resp.text.len(),
-        resp.chars().take(80).collect::<String>()
+        resp.text.chars().take(80).collect::<String>()
     );
 
     Ok(())

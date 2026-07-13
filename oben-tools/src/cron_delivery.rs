@@ -3,6 +3,8 @@ use oben_models::{ToolMeta, ToolParameter, ToolParameters};
 use super::registry::{Tool, ToolCall, ToolRegistry};
 use oben_models::ToolResult;
 
+use oben_cron::http::{CronClient, CronSubmitRequest};
+
 // ---------------------------------------------------------------------------
 // Tool definition
 // ---------------------------------------------------------------------------
@@ -25,17 +27,19 @@ async fn execute_cron_delivery<'a>(call: &ToolCall<'a>) -> anyhow::Result<oben_m
     let cron_expr = call.required_str("cron_expression")?;
     let message = call.required_str("message")?;
     
-    // In a real implementation, this would:
-    // 1. Parse cron expression
-    // 2. Schedule delivery using a cron scheduler
-    // 3. Store scheduled task in database
-    // 4. Return task ID
+    let prompt = format!("cron: {} -> {}", cron_expr, message);
+    let client = CronClient::new(None);
+    let request = CronSubmitRequest {
+        prompt,
+        deliver_target: None,
+        session_id: Some(call.call_id.clone()),
+    };
     
-    // For now, return a placeholder response
-    // TODO: Implement actual cron scheduler integration
+    let response = client.submit(&request).await?;
+    
     Ok(oben_models::ToolResult {
         call_id: call.call_id.clone(),
-        output: format!("Cron delivery scheduled for '{}': '{}' (not yet implemented)", cron_expr, message),
+        output: format!("Cron delivery scheduled (job_id: {}): '{}'", response.job_id, message),
         error: None,
     })
 }
@@ -77,35 +81,60 @@ mod tests {
     /// Given: valid cron expression and message
     /// When: cron_delivery tool is called
     /// Then: returns scheduled task response
-    #[tokio::test]
-    async fn test_cron_delivery_scheduling() {
+    #[test]
+    fn test_cron_delivery_request_construction() {
         let test_args = serde_json::json!({
             "call_id": "test-1",
             "cron_expression": "0 9 * * *",
             "message": "Daily standup meeting"
         });
         
-        let tool = CronDeliveryTool;
         let call = ToolCall::new("cron_delivery", &test_args);
-        let result = tool.execute(&call).await;
+        let cron_expr = call.required_str("cron_expression").unwrap();
+        let message = call.required_str("message").unwrap();
         
-        assert!(result.error.is_none());
-        assert!(result.output.contains("scheduled"));
+        let prompt = format!("cron: {} -> {}", cron_expr, message);
+        let request = CronSubmitRequest {
+            prompt,
+            deliver_target: None,
+            session_id: Some(call.call_id.clone()),
+        };
+        
+        assert_eq!(request.session_id, Some("test-1".to_string()));
+        assert!(request.prompt.contains("cron:"));
+        assert!(request.prompt.contains("0 9 * * *"));
+        assert!(request.prompt.contains("Daily standup meeting"));
     }
 
-    /// Given: invalid cron expression
+    /// Given: missing cron_expression
     /// When: cron_delivery tool is called
-    /// Then: returns error with invalid expression message
-    #[tokio::test]
-    async fn test_cron_delivery_missing_cron() {
+    /// Then: returns error for missing required field
+    #[test]
+    fn test_cron_delivery_missing_cron_expression() {
         let test_args = serde_json::json!({
-            "call_id": "test-2"
+            "call_id": "test-2",
+            "message": "Some message"
         });
         
-        let tool = CronDeliveryTool;
         let call = ToolCall::new("cron_delivery", &test_args);
-        let result = tool.execute(&call).await;
+        let result = call.required_str("cron_expression");
         
-        assert!(result.error.is_some());
+        assert!(result.is_err());
+    }
+
+    /// Given: missing message
+    /// When: cron_delivery tool is called
+    /// Then: returns error for missing required field
+    #[test]
+    fn test_cron_delivery_missing_message() {
+        let test_args = serde_json::json!({
+            "call_id": "test-3",
+            "cron_expression": "0 9 * * *"
+        });
+        
+        let call = ToolCall::new("cron_delivery", &test_args);
+        let result = call.required_str("message");
+        
+        assert!(result.is_err());
     }
 }

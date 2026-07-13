@@ -31,7 +31,7 @@ static RE_AT_MENTION: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\w+\s*").unwrap(
 /// ```
 /// use oben_platform_sdk::common::message_normalize::strip_mentions;
 ///
-/// assert_eq!(strip_mentions("@bot hello there", "discord"), "hello there");
+/// assert_eq!(strip_mentions("<@123456789> hello there", "discord"), "hello there");
 /// assert_eq!(strip_mentions("check this <@U12345>", "slack"), "check this");
 /// assert_eq!(strip_mentions("normal message", "telegram"), "normal message");
 /// ```
@@ -61,17 +61,17 @@ pub fn strip_mentions(content: &str, platform: &str) -> String {
 /// Parses content like `/ask help me` into `Some(("ask", "help me"))`.
 /// Returns `(command_name, remaining_args)` on success, `None` if not a slash command.
 ///
-    /// # Examples
-    ///
-    /// ```
-    /// use oben_platform_sdk::common::message_normalize::parse_slash_command;
-    ///
-    /// assert_eq!(parse_slash_command("/ask help me"), Some(("ask".to_string(), "help me".to_string())));
-    /// assert_eq!(parse_slash_command("/reset"), Some(("reset".to_string(), "".to_string())));
-    /// assert_eq!(parse_slash_command("/status"), Some(("status".to_string(), "".to_string())));
-    /// assert_eq!(parse_slash_command("hello world"), None);
-    /// assert_eq!(parse_slash_command("/hello world"), None); // space in command name makes it invalid
-    /// ```
+/// # Examples
+///
+/// ```
+/// use oben_platform_sdk::common::message_normalize::parse_slash_command;
+///
+/// assert_eq!(parse_slash_command("/ask help me"), Some(("ask".to_string(), "help me".to_string())));
+/// assert_eq!(parse_slash_command("/reset"), Some(("reset".to_string(), "".to_string())));
+/// assert_eq!(parse_slash_command("/status"), Some(("status".to_string(), "".to_string())));
+/// assert_eq!(parse_slash_command("hello world"), None);
+/// assert_eq!(parse_slash_command("/hello world"), Some(("hello".to_string(), "world".to_string())));
+/// ```
 pub fn parse_slash_command(content: &str) -> Option<(String, String)> {
     let content = content.trim();
 

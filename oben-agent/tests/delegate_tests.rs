@@ -40,6 +40,7 @@ impl TransportProvider for MockTransport {
             text: "I have completed the task.".to_string(),
             tool_calls: vec![],
             tokens_used: Some(15),
+            reasoning: None,
         })
     }
 
@@ -48,6 +49,7 @@ impl TransportProvider for MockTransport {
         _messages: &[Message],
         _mode: &CallMode,
         _callback: oben_models::StreamDeltaCallback,
+        _reasoning_callback: Option<oben_models::StreamReasoningCallback>,
     ) -> Result<TransportResponse, anyhow::Error> {
         self.chat(_messages, _mode).await
     }
@@ -63,6 +65,7 @@ fn make_spawner(transport: Arc<MockTransport>) -> (SubagentSpawner, Arc<ToolRegi
     let spawner = SubagentSpawner::new(
         transport as Arc<dyn TransportProvider + Send + Sync>,
         tools.clone(),
+        oben_config::AppConfig::default(),
         CompactCofig {
             context_length: 128_000,
             threshold_percent: 0.75,
@@ -94,8 +97,8 @@ async fn test_validate_single_valid() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"goal": "research schema"});
-    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
-    tool.validate(&call).is_ok());
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    assert!(tool.validate(&call).is_ok());
 }
 
 /// Given: Valid batch args with tasks array
@@ -118,8 +121,8 @@ async fn test_validate_batch_valid() {
             {"goal": "task 2", "role": "orchestrator"}
         ]
     });
-    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
-    tool.validate(&call).is_ok());
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    assert!(tool.validate(&call).is_ok());
 }
 
 /// Given: Args with neither goal nor tasks
@@ -137,8 +140,8 @@ async fn test_validate_neither_goal_nor_tasks() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"context": "extra info"});
-    let result = let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
-    tool.validate(&call);
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    let result = tool.validate(&call);
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
@@ -161,8 +164,8 @@ async fn test_validate_batch_missing_goal() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"tasks": [{"context": "no goal here"}]});
-    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
-    tool.validate(&call).is_err());
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    assert!(tool.validate(&call).is_err());
 }
 
 /// Given: Batch with task having empty goal
@@ -180,8 +183,8 @@ async fn test_validate_batch_empty_goal() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"tasks": [{"goal": ""}]});
-    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
-    tool.validate(&call).is_err());
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    assert!(tool.validate(&call).is_err());
 }
 
 /// Given: Batch with non-object task entry
@@ -199,8 +202,8 @@ async fn test_validate_batch_non_object_task() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"tasks": ["not-an-object"]});
-    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
-    tool.validate(&call).is_err());
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    assert!(tool.validate(&call).is_err());
 }
 
 /// Given: Valid single-task args
@@ -418,8 +421,8 @@ async fn test_validate_empty_tasks_array() {
     });
     let tool = oben_tools::delegate::DelegateTool::new(spawn, 5);
     let args = serde_json::json!({"tasks": []});
-    assert!(let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
-    tool.validate(&call).is_err());
+    let call = oben_tools::registry::ToolCall::new("delegate_task", &args);
+    assert!(tool.validate(&call).is_err());
 }
 
 /// Given: tool_def() definition

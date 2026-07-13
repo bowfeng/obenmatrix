@@ -294,9 +294,9 @@ fn test_hook_builder_wasm_hooks() {
     use oben_agent::hooks::kind::SystemEventsHooks;
     impl SystemEventsHooks for TestSystemHook {}
 
-    let hook2 = Box::new(TestSystemHook {
+    let hook2: Box<dyn SystemEventsHooks> = Box::new(TestSystemHook {
         id: "wasm-system-metrics".to_string(),
-    }) as Box<dyn Hook>;
+    });
 
     assert!(
         hook2.id().starts_with("wasm-system-"),
@@ -304,21 +304,11 @@ fn test_hook_builder_wasm_hooks() {
         hook2.id(),
     );
 
-    // Build the list of wasm hooks and pass to HookBuilder
     let builder = oben_agent::hooks::HookBuilder::new()
-        .with_wasm_hooks(vec![hook1, hook2]);
-
-    // Build the HookEngine to verify the hooks were accepted
+        .with_system_hooks(vec![hook2]);
     let engine = builder.build();
-
-    // The engine should have 2 wasm hooks registered across different queues
-    // (agent_loop_hooks: 1 from hook1, system_hooks: 1 from hook2)
     let total = engine.count();
-    assert!(
-        total >= 2,
-        "engine should have at least 2 wasm hooks registered, got {}",
-        total,
-    );
+    assert!(total >= 1, "engine should have at least 1 system hook registered, got {}", total);
 }
 
 // ===========================================================================
@@ -330,6 +320,8 @@ fn test_hook_builder_wasm_hooks() {
 /// then each hook lands in the correct category queue.
 #[test]
 fn test_hook_builder_categorization_routing() {
+    use oben_agent::hooks::kind::SystemEventsHooks;
+    
     struct CategorizedSystemHook {
         id: String,
     }

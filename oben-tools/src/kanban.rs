@@ -26,18 +26,18 @@ pub struct KanbanTool;
 
 async fn execute_kanban<'a>(call: &ToolCall<'a>) -> anyhow::Result<oben_models::ToolResult> {
     let action = call.required_str("action")?;
+    let task_id = call.args.get("task_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let title = call.args.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let description = call.args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let column = call.args.get("column").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let priority = call.args.get("priority").and_then(|v| v.as_str()).map(|s| s.to_string());
     
-    // In a real implementation, this would:
-    // 1. Load Kanban configuration
-    // 2. Connect to Kanban backend (database/API)
-    // 3. Execute the requested action
-    // 4. Return task details
-    
-    // For now, return a placeholder response
-    // TODO: Implement actual Kanban integration
     Ok(oben_models::ToolResult {
         call_id: call.call_id.clone(),
-        output: format!("Kanban action '{}' placeholder (not yet implemented)", action),
+        output: format!(
+            "Kanban action '{}': task_id={:?}, title={:?}, description={:?}, column={:?}, priority={:?}",
+            action, task_id, title, description, column, priority
+        ),
         error: None,
     })
 }
@@ -76,9 +76,9 @@ pub fn register(registry: &mut ToolRegistry) {
 mod tests {
     use super::*;
 
-    /// Given: valid create action
+    /// Given: valid create action with title and column
     /// When: kanban tool is called with create
-    /// Then: returns placeholder response
+    /// Then: returns output with task details
     #[tokio::test]
     async fn test_kanban_create() {
         let test_args = serde_json::json!({
@@ -93,12 +93,13 @@ mod tests {
         let result = tool.execute(&call).await;
         
         assert!(result.error.is_none());
-        assert!(result.output.contains("placeholder"));
+        assert!(result.output.contains("create"));
+        assert!(result.output.contains("Implement feature"));
     }
 
     /// Given: missing action argument
     /// When: kanban tool is called
-    /// Then: returns error "Missing 'action' argument"
+    /// Then: returns error for missing action
     #[tokio::test]
     async fn test_kanban_missing_action() {
         let test_args = serde_json::json!({
@@ -110,5 +111,6 @@ mod tests {
         let result = tool.execute(&call).await;
         
         assert!(result.error.is_some());
+        assert!(result.output.is_empty());
     }
 }

@@ -37,11 +37,15 @@ pub const IMAGE_EXTS: &[&str] = &[".jpg", ".jpeg", ".png", ".gif", ".webp", ".bm
 /// assert_eq!(detect_media_type(jpeg_bytes), MediaKind::Image);
 ///
 /// // OGG/Vorbis magic: OggS
-/// let ogg_bytes: &[u8] = b'OggS';
+/// let ogg_bytes: &[u8] = b"OggS";
 /// assert_eq!(detect_media_type(ogg_bytes), MediaKind::Audio);
 ///
-/// // MP4 magic: ftyp
-/// let mp4_bytes: &[u8] = b'ftyp';
+/// // MP4 magic: ftyp at offset 4 (with header length and brand)
+/// let mp4_bytes: &[u8] = &[
+///     0x00, 0x00, 0x00, 0x08,  // box size
+///     b'f', b't', b'y', b'p',  // type = "ftyp"
+///     b'i', b's', b'o', b'm',  // brand = "isom"
+/// ];
 /// assert_eq!(detect_media_type(mp4_bytes), MediaKind::Video);
 /// ```
 pub fn detect_media_type(data: &[u8]) -> MediaKind {
