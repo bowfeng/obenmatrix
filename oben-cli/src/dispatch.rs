@@ -9,7 +9,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::cli::{
-    Cli, Commands, ConfigCommand, CronCommand, GatewayCommand, GoalCommand, ModelsCommand, SessionsCommand,
+    Cli, Commands, ConfigCommand, CronCommand, CuratorCommand, GatewayCommand, GoalCommand, ModelsCommand, SessionsCommand,
 };
 use clap::Parser;
 use crate::coordinator::CliCoordinator;
@@ -22,6 +22,8 @@ use oben_tools::ToolRegistry;
 use oben_cron::{CronJob, CronStore};
 use oben_goals::GoalStore;
 use oben_models::TransportProvider;
+use oben_skills::SkillStateManager;
+use oben_curator::{Curator, CuratorConfig};
 
 /// Entry point: parse CLI args and dispatch to the appropriate handler.
 pub async fn run_cli() -> Result<()> {
@@ -93,6 +95,11 @@ pub async fn run_cli() -> Result<()> {
             Some(GatewayCommand::Stop) => gateway_stop(profile).await,
             Some(GatewayCommand::Status) => gateway_status(profile).await,
             Some(GatewayCommand::Setup) => gateway_setup(profile).await,
+        },
+        Commands::Curator { action } => match action {
+            CuratorCommand::Pin { skill } => run_curator_pin(&skill),
+            CuratorCommand::Run => run_curator_run(),
+            CuratorCommand::Status => run_curator_status(),
         },
     }
 }
@@ -1092,6 +1099,53 @@ fn cron_info() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+// ── Curator ───────────────────────────────────────────────────────────────
+
+fn run_curator_pin(skill_name: &str) -> Result<()> {
+    let state_dir = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".agents/skill_states"))
+        .unwrap_or_else(|| std::path::PathBuf::from("./skill_states"));
+    let skills_dir = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".agents/skills"))
+        .unwrap_or_else(|| std::path::PathBuf::from("./skills"));
+
+    let manager = SkillStateManager::new(skills_dir, state_dir);
+    
+    if manager.pin(skill_name)? {
+        println!("Skill pinned: {}", skill_name);
+    } else {
+        println!("Skill not found: {}", skill_name);
+    }
+    Ok(())
+}
+
+fn run_curator_run() -> Result<()> {
+    let config = CuratorConfig::default();
+    let mut curator = Curator::new(config);
+    
+    let idle_hours = 168.0; // Default 7 days
+    let result = curator.run(idle_hours);
+    println!("{}", result);
+    Ok(())
+}
+
+fn run_curator_status() -> Result<()> {
+    let config = CuratorConfig::default();
+    let curator = Curator::new(config);
+    let state = curator.state();
+    
+    println!("Curator Status:");
+    println!("  Run count: {}", state.run_count);
+    println!("  Last run: {:?}", state.last_run_at);
+    println!("  Paused: {}", state.paused);
+    if let Some(summary) = &state.last_run_summary {
+        println!("  Last summary: {}", summary);
+    }
     Ok(())
 }
 

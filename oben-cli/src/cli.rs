@@ -83,6 +83,11 @@ pub enum Commands {
         #[command(name = "gateway")]
         action: Option<GatewayCommand>,
     },
+    /// Skill curator - lifecycle management
+    Curator {
+        #[command(subcommand)]
+        action: CuratorCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -224,4 +229,17 @@ pub enum GatewayCommand {
     Stop,
     Status,
     Setup,
+}
+
+#[derive(Subcommand)]
+pub enum CuratorCommand {
+    /// Pin a skill (prevent auto-archival)
+    Pin {
+        /// Skill name to pin
+        skill: String,
+    },
+    /// Run the curator review
+    Run,
+    /// Show curator status
+    Status,
 }

@@ -102,6 +102,82 @@ pub fn extract_platforms(frontmatter: &BTreeMap<String, Value>) -> Vec<String> {
     Vec::new()
 }
 
+// ── Environment detection ───────────────────────────────────────────────────
+
+/// Check if we're in a kanban environment (HERMES_KANBAN_TASK or HERMES_KANBAN_BOARD set).
+fn is_kanban_environment() -> bool {
+    std::env::var("HERMES_KANBAN_TASK").is_ok() || std::env::var("HERMES_KANBAN_BOARD").is_ok()
+}
+
+/// Check if we're in a docker environment (is_container env var or /proc/1/cgroup contains "docker").
+fn is_docker_environment() -> bool {
+    if std::env::var("is_container").map_or(false, |v| v == "true") {
+        return true;
+    }
+    if let Ok(content) = std::fs::read_to_string("/proc/1/cgroup") {
+        return content.contains("docker") || content.contains("containerd");
+    }
+    false
+}
+
+/// Check if we're in an s6 environment (/run/s6 directory exists).
+fn is_s6_environment() -> bool {
+    std::path::Path::new("/run/s6").exists()
+}
+
+/// Extract an environment list from frontmatter.
+///
+/// Supports both top-level `environments: [kanban, docker, s6]`
+/// and nested `metadata: environments: [kanban, docker, s6]`.
+pub fn extract_environments(frontmatter: &BTreeMap<String, Value>) -> Vec<String> {
+    // Check top-level first
+    if let Some(Value::Sequence(seqs)) = frontmatter.get("environments") {
+        return seqs
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.to_string())
+            .collect();
+    }
+    // Check nested under metadata
+    if let Some(Value::Mapping(meta)) = frontmatter.get("metadata") {
+        if let Some(Value::Sequence(seqs)) = meta.get("environments") {
+            return seqs
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// Check whether a skill is compatible with the current environment.
+///
+/// If the `environments` frontmatter field is absent or empty, the skill
+/// is compatible with all environments (backward-compatible default).
+pub fn skill_matches_environment(frontmatter: &BTreeMap<String, Value>) -> bool {
+    let environments = extract_environments(frontmatter);
+    if environments.is_empty() {
+        return true;
+    }
+
+    let current_envs = vec![
+        ("kanban", is_kanban_environment()),
+        ("docker", is_docker_environment()),
+        ("s6", is_s6_environment()),
+    ];
+
+    for env in &environments {
+        let normalized = env.to_lowercase();
+        for (name, matches) in &current_envs {
+            if name.eq_ignore_ascii_case(&normalized) && *matches {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Check whether a skill is compatible with the current OS.
 ///
 /// If the `platforms` frontmatter field is absent or empty, the skill
@@ -201,6 +277,27 @@ pub fn extract_skill_conditions(
         }
     }
     conditions
+}
+
+/// Check if a skill was installed from a hub source.
+///
+/// Returns Some(download_url) if metadata contains hub record, None otherwise.
+/// Maps to `is_hub_installed()` logic in hermes-agent.
+pub fn extract_hub_download_url(frontmatter: &BTreeMap<String, Value>) -> Option<String> {
+    if let Some(Value::Mapping(meta)) = frontmatter.get("metadata") {
+        if let Some(Value::Mapping(hub)) = meta.get("hub") {
+            return hub
+                .get("download_url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// Check if hub field exists in skill metadata.
+pub fn is_hub_installed(frontmatter: &BTreeMap<String, Value>) -> bool {
+    extract_hub_download_url(frontmatter).is_some()
 }
 
 /// Extract config variable declarations from frontmatter.
@@ -837,6 +934,78 @@ mod tests {
         let current = std::env::consts::OS;
         assert_ne!(current, "windows");
         assert!(!skill_matches_platform(&fm));
+    }
+
+    #[test]
+    fn test_extract_environments_top_level() {
+        let yaml_str = "---\nenvironments:\n  - kanban\n  - docker\n---\n\nBody";
+        let (fm, _body) = parse_frontmatter(yaml_str);
+        let envs = extract_environments(&fm);
+        assert_eq!(envs, vec!["kanban", "docker"]);
+    }
+
+    #[test]
+    fn test_extract_environments_nested_metadata() {
+        let yaml_str = "---\nmetadata:\n  environments: [s6, docker]\n---\n\nBody";
+        let (fm, _body) = parse_frontmatter(yaml_str);
+        let envs = extract_environments(&fm);
+        assert_eq!(envs, vec!["s6", "docker"]);
+    }
+
+    #[test]
+    fn test_extract_environments_none() {
+        let fm = BTreeMap::new();
+        let envs = extract_environments(&fm);
+        assert!(envs.is_empty());
+    }
+
+    #[test]
+    fn test_skill_matches_environment_no_environments() {
+        let fm = BTreeMap::new();
+        assert!(skill_matches_environment(&fm));
+    }
+
+    #[test]
+    fn test_skill_matches_environment_kanban() {
+        let mut fm = BTreeMap::new();
+        fm.insert(
+            "environments".to_string(),
+            Value::Sequence(serde_yaml::Sequence::from_iter([
+                Value::String("kanban".into()),
+            ])),
+        );
+        let matches = skill_matches_environment(&fm);
+        let is_kanban = std::env::var("HERMES_KANBAN_TASK").is_ok() || std::env::var("HERMES_KANBAN_BOARD").is_ok();
+        assert_eq!(matches, is_kanban);
+    }
+
+    #[test]
+    fn test_skill_matches_environment_docker() {
+        let mut fm = BTreeMap::new();
+        fm.insert(
+            "environments".to_string(),
+            Value::Sequence(serde_yaml::Sequence::from_iter([
+                Value::String("docker".into()),
+            ])),
+        );
+        let matches = skill_matches_environment(&fm);
+        let is_docker = std::env::var("is_container").map_or(false, |v| v == "true")
+            || std::fs::read_to_string("/proc/1/cgroup").map_or(false, |c| c.contains("docker") || c.contains("containerd"));
+        assert_eq!(matches, is_docker);
+    }
+
+    #[test]
+    fn test_skill_matches_environment_s6() {
+        let mut fm = BTreeMap::new();
+        fm.insert(
+            "environments".to_string(),
+            Value::Sequence(serde_yaml::Sequence::from_iter([
+                Value::String("s6".into()),
+            ])),
+        );
+        let matches = skill_matches_environment(&fm);
+        let has_s6 = std::path::Path::new("/run/s6").exists();
+        assert_eq!(matches, has_s6);
     }
 
     // ── Description extraction ───────────────────────────────────────────

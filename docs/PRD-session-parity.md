@@ -23,7 +23,7 @@ Hermes-agent has a mature, battle-tested session layer. Our Rust port (`oben-ses
 | S.6 | Persistence on error (save session on all exit paths) | 🟡 | ✅ | [#36](https://github.com/bowfeng/oben-alien/issues/36) | Match on response before save — error path calls save() then returns |
 | S.7 | Memory Provider abstraction (`MemoryProvider` trait + prefetch/recall + sync) | 🔴 | ✅ | [#31](https://github.com/bowfeng/oben-alien/issues/31), [#43](https://github.com/bowfeng/oben-alien/pull/43) | `MemoryProvider` trait (14 methods), `BuiltinProvider`, `MemoryManager` (tool routing, fan-out), `StreamingContextScrubber`. Agent lifecycle wiring complete: `prefetch_all` in `Agent::turn()`/`turn_with_message()`, `build_volatile_block()` injection, `sync_all` via `spawn_blocking`, `on_turn_start`/`on_session_switch`/`on_session_end` hooks, `register_memory_tools()` in `AgentBuilder`, `on_memory_write` bridge to external providers, `discover_memory_providers()` plugin scanning, memory tool schemas in `MemoryToolWrapper`. |
 | S.8 | Message storage (remove destructive `DELETE FROM messages`) | 🟡 | ✅ | [#35](https://github.com/bowfeng/oben-alien/issues/35) | `save_messages()` now delegates to `save_new_messages()`; new `clear_messages()` for compaction |
-| S.9 | **Session rotation on compression** (end old + create new with lineage) | 🔴 | ✅ | [#41](https://github.com/bowfeng/oben-alien/pull/42) | `end_session("compression")` → new session ID → `create_session(parent_session_id=old)` → title auto-numbering in lineage → `on_session_start(boundary_reason="compression")` → memory manager `on_session_switch()` |
+| S.9 | **Session rotation on compression** (end old + create new with lineage) | 🔴 | ❌ | [TBD] | `split_after_compression()` exists in SessionManager but NOT called in `turn_executor::run_compaction()` |
 
 ---
 
@@ -33,12 +33,12 @@ Hermes-agent has a mature, battle-tested session layer. Our Rust port (`oben-ses
 - **🟡 High** — important for core functionality
 - **Status**: ✅ Done | ❌ Not Started
 
-**Note on S.9:** The schema already has `parent_session_id` and `end_reason` columns (S.3 infrastructure), and `end_session()` exists in `SessionDB`. However, the compaction codepath in `oben-agent` **never calls `end_session()` or creates a new session** — it mutates the message buffer in-place on the same session row. The columns exist but are never populated during compaction. This means:
+**Note on S.9:** The session rotation feature is NOT implemented. `split_after_compression()` exists in `SessionManager` but is NOT called in `turn_executor::run_compaction()` (only `save_compacted()` is invoked). This means:
 - No compaction history tracked (can't see how many times a session was compressed)
 - No lineage chain for session search (parent→child relationships invisible)
 - No boundary for ContextWindowManager / memory provider reset
 - Title auto-numbering never triggered (e.g. "My Task (2)", "My Task (3)")
 
-Hermes rotates sessions on compression to create clean boundaries, track lineage, and let external systems (ContextWindowManagers, memory providers) reset state per-phase. Oben's approach is simpler but loses all compaction metadata.
+This is the ONLY production-blocking gap in the session layer. Hermes rotates sessions on compression to create clean boundaries, track lineage, and let external systems (ContextWindowManagers, memory providers) reset state per-phase. Oben's approach is simpler but loses all compaction metadata.
 
 **Workflow:** Open issue → branch (`#<number>-<desc>`) → implement → PR → close issue.

@@ -10,10 +10,10 @@
 | # | Feature | Severity | Status | Issue | Notes |
 |---|---------|----------|--------|-------|-------|
 | G.1 | PlatformAdapter trait | ✅ | ✅ | (built-in) | Trait defined in `oben-gateway` |
-| G.2 | **Telegram adapter** | 🔴 | ❌ | [TBD] | webhook + polling, file handling |
-| G.3 | **Discord adapter** | 🔴 | ❌ | [TBD] | bot, slash commands |
-| G.4 | **Slack adapter** | 🔴 | ❌ | [TBD] | RTM + Socket Mode |
-| G.5 | **WhatsApp adapter** | 🟡 | ❌ | [TBD] | WA Web API |
+| G.2 | **Telegram adapter** | 🔴 | ✅ | [#42](https://github.com/bowfeng/oben-alien/issues/42) | webhook + polling registered in main.rs |
+| G.3 | **Discord adapter** | 🔴 | ✅ | [#42](https://github.com/bowfeng/oben-alien/issues/42) | bot, slash commands, registered in main.rs |
+| G.4 | **Slack adapter** | 🔴 | ✅ | [#42](https://github.com/bowfeng/oben-alien/issues/42) | RTM + Socket Mode, registered in main.rs |
+| G.5 | **WhatsApp adapter** | 🟡 | ✅ | [#42](https://github.com/bowfeng/oben-alien/issues/42) | WA Web API, registered in main.rs |
 | G.6 | **Session context per platform** | 🟡 | ❌ | [TBD] | per-platform session isolation |
 | G.7 | **Delivery routing** | 🟡 | ✅ | [TBD] | platform-aware delivery |
 | G.8 | **Slash command routing** | 🟢 | ✅ | [TBD] | /pause, /resume, /status |

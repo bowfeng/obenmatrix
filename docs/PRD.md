@@ -28,7 +28,7 @@
 | Crates | 14/14 compiling |
 | Tests | 506/507 passing (489 unit + 17 live, 1 live failing) |
 | CLI subcommands | 10 |
-| Provider transports | 1/7 (OpenAI-compatible ChatCompletions) |
+| Provider transports | 4/7 (OpenAI ✅, Anthropic ✅, Gemini ✅, Bedrock ❌, Codex N/A) |
 | Built-in tools | 18 |
 | Skill categories | 25/20+ ✅ |
 
@@ -42,10 +42,10 @@
 ✅ M5: Core Engine Parity     Retry/backoff, error classification, interrupt/steer, sanitization
                               Fallback chain, callbacks, scrubbers, prompt cache, activity tracking
                               Session: write concurrency, schema expansion, lineage, FTS5, titles
-                              ⚠ Session rotation on compression (schema ready, not wired)
+                              ⚠ S.9 Session rotation on compression (NOT implemented - only save_compacted() called)
 ✅ TUI: Started               Chat, config, sessions, setup panels + style system
-🟡 M6: Multi-Provider         Anthropic native, Bedrock, Gemini, transport registry
-🟡 M7: Platform Integrations  Telegram, Discord, Slack adapters + routing
+🟡 M6: Multi-Provider         Anthropic native ✅, Bedrock ❌, Gemini ✅, transport registry ✅
+🟡 M7: Platform Integrations  Telegram ✅, Discord ✅, Slack ✅, WhatsApp ✅, routing ✅
 🟡 M8: Plugin System          Full extensibility framework (discovery, hooks, providers, slash cmds)
 🟡 M9: Advanced Tools         Search, browser, voice, image, delegate, kanban, computer use
 🟢 M10: Polish                TUI completion, web dashboard, skills hub, config enhancements, I18n
@@ -71,7 +71,7 @@
 | **oben-utils** | 6 | ✅ | Logging (tracing + `--verbose`/`RUST_LOG`), terminal spinner, path security, env helpers, table formatter |
 | **oben-config** | 6 | ✅ | YAML config, setup wizard (interactive), system prompt defaults, gateway config serialization, model discovery, roundtrip save/load |
 | **oben-agent** | 122 | ✅ | ConversationLoop, ContextWindowManager (buffer + token tracking + compression trigger + thrashing detection), full compaction algorithm (message pruning, tool result dedup/truncation, split enforcement), PromptBuilder with identity/skills/volatile blocks + prompt cache, IterationBudget (warnings, grace period), error classifier (8 categories), jittered exponential backoff retry, fallback model chain, cross-thread interrupt + steer, message sanitization (thinking-only drop, user merge, surrogate stripping), streaming scrubbers (thinking blocks, memory context), char-level UTF-8 streaming output, callback system (12+ types), concurrent tool dispatch (serial for destructive) |
-| **oben-transport** | 51 | ✅ | BaseHTTPTransport, ChatCompletionsTransport (OpenAI-compatible), SSE streaming via `eventsource-stream`, unit + integration tests |
+| **oben-transport** | 51 | ✅ | BaseHTTPTransport, ChatCompletionsTransport (OpenAI-compatible), Anthropic Messages API ✅, Google Gemini ✅, transport registry ✅, SSE streaming via `eventsource-stream`, unit + integration tests |
 | **oben-tools** | 87 | ✅ | ToolRegistry + auto-registration, terminal (fg/bg + mgmt), read_file, write_file, http_get, web_search, search_files (ripgrep), patch (fuzzy), web_extract (SSRF + HTML), vision_analyze (image download + base64 encoding + OpenAI/Anthropic API call), memory (add/replace/remove + scan), clarify, todo (JSON store), code_execution (sandbox), osv_check, skill (list/view), 87 unit tests |
 | **oben-sessions** | 44 | ✅ | SessionDB (SQLite-backed session state engine with FTS5, message windows, lineage resolution), Rich Search (discover/scroll/browse shapes), Bounded MemoryStore (file locking, atomic writes, injection scanning, frozen snapshots). Legacy JSONL SessionManager preserved for backwards compatibility.
 | **oben-skills** | 70 | ✅ | SkillLoader (recursive SKILL.md discovery, YAML/TXT/MD), SkillManager (enable/disable/auto-use/instruction assembly + preprocessing config), frontmatter parsing, platform matching, tags/config/conditions extraction, qualified name parsing, external dirs support, skill_preprocessing (template vars ${SKILL_DIR}/${SESSION_ID}, inline shell !`cmd` expansion), 70 unit tests |
@@ -251,27 +251,28 @@ Used `Arc<Mutex<F>>` in `run_turn_with_streaming` to share callbacks across stre
 ### M5: Core Engine Parity ✅
 - **Tier 1 — Core Reliability:** retry with jittered backoff, error classification (8 categories), iteration budget with 80%/90% warnings, cross-thread interrupt + steer, message sanitization (thinking-only drop, user merge, surrogate stripping)
 - **Phase 2 — Advanced Runtime:** fallback model chain with auto-activation, rich callback system (12+ types), streaming scrubbers (thinking blocks, memory context), system prompt prefix caching (TTL-based), activity tracking with timeout, concurrent tool dispatch (serial for destructive, concurrent otherwise)
-- **Session parity:** write concurrency (BEGIN IMMEDIATE + jittered retry + WAL checkpoint), schema expansion (14 cols for billing/caching/API tracking), compression lineage (end_reason-aware walking + orphan cleanup + ghost pruning), trigram FTS5 (CJK/Thai search), title management (sanitization + dedup + lineage resolution), persistence on all error paths
+- **Session parity (except S.9):** write concurrency (BEGIN IMMEDIATE + jittered retry + WAL checkpoint), schema expansion (14 cols for billing/caching/API tracking), compression lineage (end_reason-aware walking + orphan cleanup + ghost pruning), trigram FTS5 (CJK/Thai search), title management (sanitization + dedup + lineage resolution), persistence on all error paths, memory provider abstraction (trait + builtin + plugin system)
+- **S.9 gap:** Session rotation on compression NOT implemented (only `save_compacted()` called, `split_after_compression()` not invoked)
 - Design doc: `docs/design/aiagent-design.md`
 - Parity docs: `docs/PRD-conversation-parity.md` (12/15 done), `docs/PRD-session-parity.md` (7/9 done)
 
 ### M6: Multi-Provider Transport 🟡
-- **Anthropic native Messages API** (🔴 critical) — prompt caching, tool use, thinking tokens, native `messages/` endpoint
-- **AWS Bedrock transport** — `bedrock/runtime` for Claude/Mistral/Llama
-- **Google Gemini transport** — Gemini REST + AIO APIs
-- **Transport trait + registry** — `get_transport("anthropic_messages")` dispatch, auto-registration per provider
+- **Anthropic native Messages API** ✅ (🔴 critical) — prompt caching, tool use, thinking tokens, native `messages/` endpoint
+- **AWS Bedrock transport** ❌ — `bedrock/runtime` for Claude/Mistral/Llama
+- **Google Gemini transport** ✅ — Gemini REST + AIO APIs
+- **Transport trait + registry** ✅ — `get_transport("anthropic_messages")` dispatch, auto-registration per provider
 - **Prompt cache hints** (Anthropic `cache_type: ephemeral`) — cache hit tracking
-- Parity doc: `docs/PRD-transport-parity.md` (1/6 done)
+- Parity doc: `docs/PRD-transport-parity.md` (4/6 done - Bedrock pending)
 
 ### M7: Platform Integrations 🟡
-- **Telegram adapter** (🔴 critical) — webhook + polling, file handling, per-platform session isolation
-- **Discord adapter** (🔴 critical) — bot, slash commands
-- **Slack adapter** (🔴 critical) — RTM + Socket Mode
-- **WhatsApp adapter** — WA Web API
+- **Telegram adapter** ✅ — webhook + polling, file handling, per-platform session isolation (registered in main.rs)
+- **Discord adapter** ✅ — bot, slash commands (registered in main.rs)
+- **Slack adapter** ✅ — RTM + Socket Mode (registered in main.rs)
+- **WhatsApp adapter** ✅ — WA Web API (registered in main.rs)
 - **Delivery routing** — platform-aware message delivery
 - **Slash command routing** — `/pause`, `/resume`, `/status` via gateway
 - **Pairing** — user ↔ platform registration
-- Parity doc: `docs/PRD-gateway-parity.md` (1/11 done)
+- Parity doc: `docs/PRD-gateway-parity.md` (G.2-G.5 done, full parity achieved for platform adapters)
 
 ### M8: Extensibility Framework (Plugin System) 🟡
 - **PluginManager** — Central discovery & lifecycle, 4-source scanning (bundled, user, project, pip entry-points), YAML manifest parsing, load gating by kind/source
@@ -316,8 +317,8 @@ Used `Arc<Mutex<F>>` in `run_turn_with_streaming` to share callbacks across stre
 
 | Area | Priority | Hermes Equivalent | Description |
 |------|----------|-------------------|-------------|
-| **Provider integrations** | P0 | `agent/transports/` | Anthropic native, AWS Bedrock, Google Gemini |
-| **Platform adapters** | P1 | `gateway/` | Telegram, Discord, Slack, WhatsApp/Signal |
+| **Provider integrations** | P0 | `agent/transports/` | Anthropic native ✅, AWS Bedrock ❌, Google Gemini ✅ |
+| **Platform adapters** | P1 | `gateway/` | Telegram ✅, Discord ✅, Slack ✅, WhatsApp ✅ |
 | **Tool: Search** | P1 | `tools/search_tool.py` | Configurable search provider (DuckDuckGo, Brave, etc.) |
 | **Tool: Browser** | P1 | `tools/browser_dialog_tool.py` | CUA-driver for macOS GUI automation |
 | **Tool: Voice** | P1 | `tools/tts_tool.py` | STT/TTS (Whisper, Edge TTS, ElevenLabs) |
@@ -346,11 +347,11 @@ Used `Arc<Mutex<F>>` in `run_turn_with_streaming` to share callbacks across stre
 |--------|--------|---------|
 | Workspace compiles | ✅ 100% | ✅ 14/14 crates |
 | Tests | 80%+ | ✅ 506/507 passing (14 crates) |
-| Provider transports | 6+ | 1/7 (ChatCompletions) — M6 targets Anthropic/Bedrock/Gemini |
+| Provider transports | 6+ | 4/7 (OpenAI ✅, Anthropic ✅, Gemini ✅, Bedrock ❌, Codex N/A) |
 | Built-in tools | 25+ | 18 (terminal, read, write, http_get, web_search, search_files, patch, web_extract, vision_analyze, memory, clarify, todo, code_execution, osv_check, skill, plus more) + auto-registration — M9 targets 25+ |
 | Skill categories | 20+ | ✅ 25/25 implemented |
 | Curator | 1 | ✅ Complete (usage, lifecycle, scheduler) |
-| Platform adapters | 5+ | 0/5 (trait defined) — M7 targets Telegram/Discord/Slack/WhatsApp |
+| Platform adapters | 5+ | 4/5 (Telegram ✅, Discord ✅, Slack ✅, WhatsApp ✅, Signal TBD) |
 | CLI commands | 30+ | 10 (`chat, run, setup, config, tools, skills, sessions, info, models, agent`) — M10 adds plugin management, backup, doctor, cron, profiles |
 
 ---

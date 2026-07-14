@@ -3201,6 +3201,7 @@ dependencies = [
  "oben-agent",
  "oben-config",
  "oben-cron",
+ "oben-curator",
  "oben-gateway",
  "oben-goals",
  "oben-models",
@@ -3271,6 +3272,7 @@ dependencies = [
  "dirs",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "tokio",
  "tracing",
@@ -3406,6 +3408,7 @@ name = "oben-skills"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "fs_extra",
  "itertools 0.14.0",
  "oben-models",

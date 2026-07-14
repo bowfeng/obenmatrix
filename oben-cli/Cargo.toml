@@ -21,6 +21,7 @@ oben-gateway = { path = "../oben-gateway" }
 oben-tui = { path = "../oben-tui" }
 oben-cron = { path = "../oben-cron" }
 oben-goals = { path = "../oben-goals" }
+oben-curator = { path = "../oben-curator" }
 
 clap = { workspace = true, features = ["derive"] }
 anyhow = { workspace = true }

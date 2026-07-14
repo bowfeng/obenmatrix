@@ -173,18 +173,28 @@ fn discover_context_file(start: &Path) -> Option<(PathBuf, String)> {
 ///
 /// Scans the skills directory and produces a structured listing the model can
 /// use to know what skills are available.
+///
+/// Supports two structures:
+/// 1. **Flat** (backward compatible): `category/SKILL.md`
+/// 2. **Hierarchical** (hermes-agent compatible):
+///    - `category/DESCRIPTION.md` (category overview)
+///    - `category/sub-skill/SKILL.md`
+///    - `category/sub-skill/references/`, `templates/`, `scripts/` (support dirs)
 pub fn build_skills_index(skills_dirs: &[PathBuf]) -> String {
     if skills_dirs.is_empty() {
         return String::new();
     }
 
     let mut sections: Vec<String> = Vec::new();
+    let mut category_descriptions: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     for dir in skills_dirs {
         if !dir.exists() || !dir.is_dir() {
             continue;
         }
 
+        // First pass: collect category descriptions and build category map
         let mut category_map: std::collections::HashMap<String, Vec<(String, String)>> =
             std::collections::HashMap::new();
 
@@ -199,24 +209,95 @@ pub fn build_skills_index(skills_dirs: &[PathBuf]) -> String {
                 let category = entry_path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or("general");
+                    .unwrap_or("general")
+                    .to_string();
 
-                // Look for SKILL.md or SKILL.yaml in each subdirectory
-                for skill_file in &["SKILL.md", "SKILL.yaml", "README.md"] {
-                    let skill_path = entry_path.join(skill_file);
-                    if !skill_path.exists() {
-                        continue;
+                // Read category DESCRIPTION.md if it exists
+                let desc_path = entry_path.join("DESCRIPTION.md");
+                if desc_path.exists() {
+                    let content = std::fs::read_to_string(&desc_path)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    if !content.is_empty() {
+                        category_descriptions.insert(category.clone(), content);
                     }
+                }
 
-                    let skill_name = entry_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown");
+                // Scan for sub-skill directories (hierarchical structure)
+                if let Ok(sub_entries) = std::fs::read_dir(&entry_path) {
+                    for sub_entry in sub_entries.filter_map(|e| e.ok()) {
+                        let sub_path = sub_entry.path();
+                        if !sub_path.is_dir() {
+                            continue;
+                        }
 
-                    let desc = std::fs::read_to_string(&skill_path)
-                        .ok()
-                        .map(|s| {
-                            s.lines()
+                        let sub_skill_name = sub_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        // Look for SKILL.md in sub-skill directory
+                        for skill_file in &["SKILL.md", "SKILL.yaml", "README.md"] {
+                            let skill_path = sub_path.join(skill_file);
+                            if !skill_path.exists() {
+                                continue;
+                            }
+
+                            let desc = std::fs::read_to_string(&skill_path)
+                                .ok()
+                                .and_then(|s| {
+                                    let trimmed = s.trim();
+                                    if trimmed.is_empty() {
+                                        return None;
+                                    }
+                                    Some(
+                                        trimmed
+                                            .lines()
+                                            .take(3)
+                                            .map(|l| l.trim())
+                                            .filter(|l| !l.is_empty())
+                                            .collect::<Vec<_>>()
+                                            .join(" ")
+                                            .chars()
+                                            .take(120)
+                                            .collect::<String>(),
+                                    )
+                                })
+                                .unwrap_or_else(|| "(no description)".to_string());
+
+                            category_map
+                                .entry(category.clone())
+                                .or_default()
+                                .push((
+                                    format!("{}/{}", category, sub_skill_name),
+                                    desc,
+                                ));
+                        }
+
+                        // Support directories scanning (for future use)
+                        for support_dir in &["references", "templates", "scripts"] {
+                            let support_path = sub_path.join(support_dir);
+                            if support_path.is_dir() {
+                                // Scan support directory contents (currently no output, just tracking)
+                                let _ = std::fs::read_dir(&support_path);
+                            }
+                        }
+                    }
+                }
+
+                // Also scan for flat skill files in category directory (backward compatibility)
+                for skill_file in ["SKILL.md", "SKILL.yaml", "SKILL.txt"] {
+                    let path = entry_path.join(skill_file);
+                    if path.exists() {
+                        let name = path
+                            .file_stem()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(category.as_str());
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            let desc = content
+                                .lines()
                                 .take(3)
                                 .map(|l| l.trim())
                                 .filter(|l| !l.is_empty())
@@ -224,54 +305,41 @@ pub fn build_skills_index(skills_dirs: &[PathBuf]) -> String {
                                 .join(" ")
                                 .chars()
                                 .take(120)
-                                .collect()
-                        })
-                        .unwrap_or_else(|| "(no description)".to_string());
-
-                    category_map
-                        .entry(category.to_string())
-                        .or_default()
-                        .push((skill_name.to_string(), desc));
+                                .collect::<String>();
+                            if !desc.is_empty() {
+                                category_map
+                                    .entry(category.clone())
+                                    .or_default()
+                                    .push((name.to_string(), desc));
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Also scan for flat skill files
-        for skill_file in ["SKILL.md", "SKILL.yaml", "SKILL.txt"] {
-            let path = dir.join(skill_file);
-            if path.exists() {
-                let name = path
-                    .file_stem()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("general");
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let desc = content
-                        .lines()
-                        .take(2)
-                        .map(|l| l.trim())
-                        .filter(|l| !l.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .chars()
-                        .take(120)
-                        .collect();
-                    category_map
-                        .entry("general".to_string())
-                        .or_default()
-                        .push((name.to_string(), desc));
-                }
-            }
-        }
-
+        // Format output with category descriptions when available
         for (category, skills) in &mut category_map {
             if skills.is_empty() {
                 continue;
             }
+
             let mut lines = Vec::new();
             for (name, desc) in skills {
                 lines.push(format!("    - {}: {}", name, desc));
             }
-            sections.push(format!("  {}:{}", category, lines.join("\n")));
+
+            let section = if let Some(cat_desc) = category_descriptions.get(category.as_str()) {
+                format!(
+                    "  {}:\n    # {}\n{}",
+                    category,
+                    cat_desc,
+                    lines.join("\n")
+                )
+            } else {
+                format!("  {}:\n{}", category, lines.join("\n"))
+            };
+            sections.push(section);
         }
     }
 
@@ -687,5 +755,99 @@ mod tests {
     fn test_skills_index_empty() {
         let result = build_skills_index(&[PathBuf::from("/nonexistent")]);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_skills_index_flat_structure() {
+        // Test backward compatibility with flat structure
+        let temp_dir = temp_dir("flat_skills");
+        let category_dir = temp_dir.join("general");
+        fs::create_dir(&category_dir).unwrap();
+
+        // Create flat SKILL.md
+        fs::write(
+            category_dir.join("SKILL.md"),
+            "# General\n\nHelpful assistant",
+        )
+        .unwrap();
+
+        let result = build_skills_index(&[temp_dir]);
+        assert!(result.contains("## Available Skills"));
+        assert!(result.contains("general"));
+        assert!(result.contains("Helpful assistant"));
+    }
+
+    #[test]
+    fn test_skills_index_hierarchical_structure() {
+        // Test hierarchical category/sub-skill structure
+        let temp_dir = temp_dir("hierarchical_skills");
+        let category_dir = temp_dir.join("research");
+        fs::create_dir(&category_dir).unwrap();
+
+        // Create DESCRIPTION.md for category
+        fs::write(category_dir.join("DESCRIPTION.md"), "Research and analysis skills").unwrap();
+
+        // Create sub-skill directory
+        let sub_skill_dir = category_dir.join("arxiv");
+        fs::create_dir(&sub_skill_dir).unwrap();
+
+        // Create SKILL.md in sub-skill
+        fs::write(
+            sub_skill_dir.join("SKILL.md"),
+            "# Arxiv\n\nPaper search",
+        )
+        .unwrap();
+
+        let result = build_skills_index(&[temp_dir]);
+        assert!(result.contains("## Available Skills"));
+        assert!(result.contains("research"));
+        assert!(result.contains("research/arxiv"));
+        assert!(result.contains("Paper search"));
+        assert!(result.contains("# Research and analysis skills"));
+    }
+
+    #[test]
+    fn test_skills_index_support_directories() {
+        // Test that references/, templates/, scripts/ are scanned
+        let temp_dir = temp_dir("support_dirs");
+        let category_dir = temp_dir.join("software");
+        fs::create_dir(&category_dir).unwrap();
+
+        let sub_skill_dir = category_dir.join("debugging");
+        fs::create_dir(&sub_skill_dir).unwrap();
+
+        // Create support directories
+        fs::create_dir(sub_skill_dir.join("references")).unwrap();
+        fs::create_dir(sub_skill_dir.join("templates")).unwrap();
+        fs::create_dir(sub_skill_dir.join("scripts")).unwrap();
+
+        // Create SKILL.md
+        fs::write(sub_skill_dir.join("SKILL.md"), "# Debugging\n\nFix errors").unwrap();
+
+        let result = build_skills_index(&[temp_dir]);
+        assert!(result.contains("software/debugging"));
+        assert!(result.contains("Fix errors"));
+    }
+
+    #[test]
+    fn test_skills_index_mixed_structures() {
+        // Test that both flat and hierarchical can coexist
+        let temp_dir = temp_dir("mixed_skills");
+        let category_dir = temp_dir.join("general");
+        fs::create_dir(&category_dir).unwrap();
+
+        // Hierarchical sub-skill
+        let sub_skill_dir = category_dir.join("hierarchical-skill");
+        fs::create_dir(&sub_skill_dir).unwrap();
+        fs::write(sub_skill_dir.join("SKILL.md"), "# Hierarchical\n\nSkill content")
+            .unwrap();
+
+        // Flat SKILL.md in same category (backward compatibility)
+        fs::write(category_dir.join("SKILL.md"), "# Flat\n\nFlat content").unwrap();
+
+        let result = build_skills_index(&[temp_dir]);
+        assert!(result.contains("general/hierarchical-skill"));
+        assert!(result.contains("Skill content"));
+        assert!(result.contains("Flat"));
     }
 }

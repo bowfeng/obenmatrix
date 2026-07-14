@@ -9,6 +9,8 @@ pub struct Skill {
     pub instructions: String,
     pub enabled: bool,
     pub auto_use: bool,
+    pub pinned: bool,
+    pub environments: Vec<String>,
     /// Arbitrary metadata from YAML frontmatter (platforms, tags, config vars, etc.).
     pub metadata: Option<serde_yaml::Value>,
 }
@@ -22,6 +24,8 @@ impl Skill {
             instructions: String::new(),
             enabled: true,
             auto_use: false,
+            pinned: false,
+            environments: Vec::new(),
             metadata: None,
         }
     }
@@ -35,6 +39,8 @@ pub struct SkillBuilder {
     instructions: String,
     enabled: bool,
     auto_use: bool,
+    pinned: bool,
+    environments: Vec<String>,
     metadata: Option<serde_yaml::Value>,
 }
 
@@ -64,6 +70,16 @@ impl SkillBuilder {
         self
     }
 
+    pub fn pinned(mut self, pinned: bool) -> Self {
+        self.pinned = pinned;
+        self
+    }
+
+    pub fn environments(mut self, envs: Vec<String>) -> Self {
+        self.environments = envs;
+        self
+    }
+
     pub fn metadata(mut self, meta: Option<serde_yaml::Value>) -> Self {
         self.metadata = meta;
         self
@@ -77,6 +93,8 @@ impl SkillBuilder {
             instructions: self.instructions,
             enabled: self.enabled,
             auto_use: self.auto_use,
+            pinned: self.pinned,
+            environments: self.environments,
             metadata: self.metadata,
         }
     }

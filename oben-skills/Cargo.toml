@@ -3,11 +3,13 @@ name = "oben-skills"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "Skill system for ObenAgent"
 
 [dependencies]
 oben-models = { path = "../oben-models" }
 
 anyhow.workspace = true
+chrono.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

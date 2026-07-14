@@ -273,6 +273,71 @@ impl SkillStateManager {
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
+    
+    pub fn pin(&self, skill_name: &str) -> Result<bool> {
+        let skill_path = self.skills_dir.join(skill_name);
+        
+        if !skill_path.exists() {
+            return Ok(false);
+        }
+        
+        fs::create_dir_all(&self.state_dir)?;
+        let pinned_marker = self.state_dir.join(format!("{}.pinned", skill_name));
+        fs::write(&pinned_marker, skill_name)?;
+        
+        Ok(true)
+    }
+    
+    pub fn unpin(&self, skill_name: &str) -> Result<bool> {
+        let skill_path = self.skills_dir.join(skill_name);
+        
+        if !skill_path.exists() {
+            return Ok(false);
+        }
+        
+        let pinned_marker = self.state_dir.join(format!("{}.pinned", skill_name));
+        if !pinned_marker.exists() {
+            return Ok(true);
+        }
+        
+        fs::remove_file(&pinned_marker)?;
+        
+        Ok(true)
+    }
+    
+    pub fn is_pinned(&self, skill_name: &str) -> Result<bool> {
+        let skill_path = self.skills_dir.join(skill_name);
+        
+        if !skill_path.exists() {
+            return Ok(false);
+        }
+        
+        let pinned_marker = self.state_dir.join(format!("{}.pinned", skill_name));
+        Ok(pinned_marker.exists())
+    }
+    
+    pub fn get_pinned_skills(&self) -> Result<Vec<String>> {
+        if !self.state_dir.exists() {
+            return Ok(Vec::new());
+        }
+        
+        let mut pinned = Vec::new();
+        
+        for entry in fs::read_dir(&self.state_dir)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            if let Some(name_str) = file_name.to_str() {
+                if name_str.ends_with(".pinned") {
+                    let skill_name = name_str.trim_end_matches(".pinned");
+                    if self.skills_dir.join(skill_name).exists() {
+                        pinned.push(skill_name.to_string());
+                    }
+                }
+            }
+        }
+        
+        Ok(pinned)
+    }
 }
 
 impl Default for SkillStateManager {
@@ -392,5 +457,102 @@ mod tests {
         
         assert_eq!(enabled.len(), 1); // skill-2 is enabled
         assert_eq!(disabled.len(), 2); // skill-0 and skill-1 are disabled
+    }
+
+    #[test]
+    fn test_pin_skill() {
+        let temp_dir = temp_dir("pin");
+        let skills_dir = temp_dir.join("skills");
+        let state_dir = temp_dir.join("state");
+        
+        let skill_dir = skills_dir.join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        
+        let manager = SkillStateManager::new(&skills_dir, &state_dir);
+        
+        assert!(!manager.is_pinned("test-skill").unwrap());
+        
+        manager.pin("test-skill").unwrap();
+        
+        assert!(manager.is_pinned("test-skill").unwrap());
+        
+        let pinned_marker = state_dir.join("test-skill.pinned");
+        assert!(pinned_marker.exists());
+    }
+
+    #[test]
+    fn test_unpin_skill() {
+        let temp_dir = temp_dir("unpin");
+        let skills_dir = temp_dir.join("skills");
+        let state_dir = temp_dir.join("state");
+        
+        let skill_dir = skills_dir.join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        
+        let manager = SkillStateManager::new(&skills_dir, &state_dir);
+        
+        manager.pin("test-skill").unwrap();
+        assert!(manager.is_pinned("test-skill").unwrap());
+        
+        manager.unpin("test-skill").unwrap();
+        
+        assert!(!manager.is_pinned("test-skill").unwrap());
+        
+        let pinned_marker = state_dir.join("test-skill.pinned");
+        assert!(!pinned_marker.exists());
+    }
+
+    #[test]
+    fn test_is_pinned_nonexistent_skill() {
+        let temp_dir = temp_dir("is_pinned_nonexistent");
+        let skills_dir = temp_dir.join("skills");
+        let state_dir = temp_dir.join("state");
+        
+        let manager = SkillStateManager::new(&skills_dir, &state_dir);
+        
+        let result = manager.is_pinned("nonexistent-skill").unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_get_pinned_skills() {
+        let temp_dir = temp_dir("get_pinned");
+        let skills_dir = temp_dir.join("skills");
+        let state_dir = temp_dir.join("state");
+        
+        for i in 0..3 {
+            let skill_dir = skills_dir.join(format!("skill-{}", i));
+            fs::create_dir_all(&skill_dir).unwrap();
+        }
+        
+        let manager = SkillStateManager::new(&skills_dir, &state_dir);
+        
+        let mut pinned = manager.get_pinned_skills().unwrap();
+        assert!(pinned.is_empty());
+        
+        manager.pin("skill-0").unwrap();
+        manager.pin("skill-2").unwrap();
+        
+        pinned = manager.get_pinned_skills().unwrap();
+        assert_eq!(pinned.len(), 2);
+        assert!(pinned.contains(&"skill-0".to_string()));
+        assert!(pinned.contains(&"skill-2".to_string()));
+    }
+
+    #[test]
+    fn test_unpin_nonexistent_pinned() {
+        let temp_dir = temp_dir("unpin_nonexistent");
+        let skills_dir = temp_dir.join("skills");
+        let state_dir = temp_dir.join("state");
+        
+        let skill_dir = skills_dir.join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        
+        let manager = SkillStateManager::new(&skills_dir, &state_dir);
+        
+        manager.unpin("test-skill").unwrap();
+        
+        let result = manager.unpin("test-skill").unwrap();
+        assert!(result);
     }
 }
