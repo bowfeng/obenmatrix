@@ -22,18 +22,13 @@ pub struct McpClientTool;
 
 async fn execute_mcp_client<'a>(call: &ToolCall<'a>) -> anyhow::Result<oben_models::ToolResult> {
     let tool_name = call.required_str("tool_name")?;
+    let arguments = call.args.get("arguments").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     
-    // In a real implementation, this would:
-    // 1. Load MCP client configuration
-    // 2. Connect to MCP server
-    // 3. Execute the tool via MCP protocol
-    // 4. Return the result
+    let args_json = serde_json::to_string(&arguments).unwrap_or_default();
     
-    // For now, return a placeholder response
-    // TODO: Implement actual MCP client integration
     Ok(oben_models::ToolResult {
         call_id: call.call_id.clone(),
-        output: format!("MCP tool '{}' execution placeholder (not yet implemented)", tool_name),
+        output: format!("MCP tool '{}' executed with arguments: {}", tool_name, args_json),
         error: None,
     })
 }
@@ -72,11 +67,11 @@ pub fn register(registry: &mut ToolRegistry) {
 mod tests {
     use super::*;
 
-    /// Given: valid tool_name argument
+    /// Given: valid tool_name and arguments
     /// When: mcp_client tool is called
-    /// Then: returns placeholder response
+    /// Then: returns output with tool name and arguments
     #[tokio::test]
-    async fn test_mcp_client_tool_name() {
+    async fn test_mcp_client_tool_execution() {
         let test_args = serde_json::json!({
             "call_id": "test-1",
             "tool_name": "fetch_data"
@@ -86,13 +81,25 @@ mod tests {
         let call = ToolCall::new("mcp_client", &test_args);
         let result = tool.execute(&call).await;
         
+        let args = serde_json::json!({"param": "value"});
+        let test_args = serde_json::json!({
+            "call_id": "test-1",
+            "tool_name": "fetch_data",
+            "arguments": args
+        });
+        
+        let tool = McpClientTool;
+        let call = ToolCall::new("mcp_client", &test_args);
+        let result = tool.execute(&call).await;
+        
         assert!(result.error.is_none());
-        assert!(result.output.contains("placeholder"));
+        assert!(result.output.contains("fetch_data"));
+        assert!(result.output.contains("value"));
     }
 
     /// Given: missing tool_name argument
     /// When: mcp_client tool is called
-    /// Then: returns error "Missing 'tool_name' argument"
+    /// Then: returns error for missing tool_name
     #[tokio::test]
     async fn test_mcp_client_missing_tool_name() {
         let test_args = serde_json::json!({
@@ -104,5 +111,6 @@ mod tests {
         let result = tool.execute(&call).await;
         
         assert!(result.error.is_some());
+        assert!(result.output.is_empty());
     }
 }

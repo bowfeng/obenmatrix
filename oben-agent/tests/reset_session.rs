@@ -7,8 +7,8 @@
 /// All tests use only public APIs — integration tier per AGENTS.md.
 use std::sync::Arc;
 
-use oben_agent::compact_context::CompactContextEngine;
-use oben_agent::context::ContextEngine;
+use oben_agent::compact_context::BuiltinContextWindowManager;
+use oben_agent::context::ContextWindowManager;
 use oben_agent::turn_executor::TurnExecutor;
 use oben_models::{CallMode, Message, TransportProvider};
 use oben_sessions::DBSessionManager;
@@ -37,6 +37,7 @@ impl TransportProvider for MockTransport {
             text: "mock response".to_string(),
             tool_calls: vec![],
             tokens_used: Some(15),
+            reasoning: None,
         })
     }
 
@@ -45,11 +46,13 @@ impl TransportProvider for MockTransport {
         _messages: &[Message],
         _mode: &CallMode,
         _callback: oben_models::StreamDeltaCallback,
+        _reasoning_callback: Option<oben_models::StreamReasoningCallback>,
     ) -> Result<oben_models::TransportResponse, anyhow::Error> {
         Ok(oben_models::TransportResponse {
             text: "mock response".to_string(),
             tool_calls: vec![],
             tokens_used: Some(15),
+            reasoning: None,
         })
     }
 }
@@ -190,16 +193,14 @@ fn test_reset_removes_session_from_database() {
     // Save to DB
     mgr.incremental_save(None).unwrap();
 
-    // Verify it's in the DB by reloading
     mgr.close().unwrap();
 
     let mut mgr2 = DBSessionManager::new_with_path(db_path.clone()).unwrap();
     mgr2.init().unwrap();
 
     assert_eq!(mgr2.session_count(), 1);
-    assert!(mgr2.active_session().is_some());
+    assert!(mgr2.session(&session_id).is_some());
 
-    // Delete the session
     mgr2.delete_session(&session_id).unwrap();
 
     // Reload and verify it's gone

@@ -8,3 +8,4 @@ pub mod role_style;
 pub mod style;
 pub mod subagent_accordion;
 pub mod subagent_detail;
+pub mod todo_parser;

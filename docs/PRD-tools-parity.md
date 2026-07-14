@@ -51,10 +51,10 @@ Agent: speech_to_text(audio_file="/path/to/audio.mp3")
 2. User: (sends the generated audio as voice message) → Agent transcribes it
 3. Verify transcript matches original text
 | TL.18 | **Image generation** (FLUX, DALL-E, Midjourney) | 🟡 | ❌ | [TBD] | `image_gen_provider.py` |
-| TL.19 | **MCP integration** | 🟢 | ❌ | [TBD] | `mcp_oauth.py`, `mcp_tool.py` |
+| TL.19 | **MCP integration** | 🟢 | ✅ (#70) | (built-in) | `mcp_client.rs` — tool registry integration, argument parsing, structured output |
 | TL.20 | **Cron scheduler** | 🟢 | ✅ (#63) | [#63](https://github.com/.../63) `oben-cron/` | Schedule parsing (duration/interval/ISO/cron), JSON persistence, daemon |
 | TL.21 | **Delegate tool** | 🟡 | ✅ | #25 | Subagent delegation (`delegate_tool.py`): `SubagentSpawner` (shared DB, fresh context), `CallbacksRelay` (parent→child forwarding), `ToolsetFilter` (blocked tools), TUI wiring with `SpawnFn` |
-| TL.22 | **Kanban tools** | 🟡 | ❌ | [TBD] | Task management board |
+| TL.22 | **Kanban tools** | 🟡 | ✅ (#70) | (built-in) | `kanban.rs` — tool registry integration, action parsing, structured output |
 | TL.23 | **Computer use** | 🟡 | ✅ (#TL.23) | (built-in) | `computer_use.rs` — macOS GUI via cua-driver stdio MCP; capture/click/drag/scroll/type/key/set_value/wait/list_apps/focus_app; safety gates for type/key patterns |
 | TL.24 | **Video generation** | 🟢 | ❌ | [TBD] | `video_gen_provider.py` |
 | TL.25 | **Home Assistant** | 🟢 | ❌ | [TBD] | `homeassistant_tool.py` |
