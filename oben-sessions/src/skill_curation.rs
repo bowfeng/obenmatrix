@@ -129,9 +129,19 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     pub fn new() -> Self {
-        let memory_dir = dirs::home_dir()
-            .map(|d| d.join(".obenmatrix").join("memories"))
-            .unwrap_or_else(|| PathBuf::from("~/.obenmatrix/memories"));
+        Self::new_with_agent(None)
+    }
+
+    pub fn new_with_agent(agent_name: Option<&str>) -> Self {
+        let base = dirs::home_dir()
+            .map(|d| d.join(".obenmatrix").join("agents"))
+            .unwrap_or_else(|| PathBuf::from("~/.obenmatrix/agents"));
+        
+        let agent_dir = agent_name
+            .and_then(|n| if n.is_empty() { None } else { Some(n) })
+            .unwrap_or("default");
+        
+        let memory_dir = base.join(agent_dir).join("memories");
 
         Self {
             memory_entries: Vec::new(),

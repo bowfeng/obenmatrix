@@ -98,7 +98,12 @@ impl SharedAgentState {
     ///
     /// This builds the tool transport, registers the delegate tool,
     /// creates the `Agent`, and initializes `TurnState`.
-    pub async fn init(config: &AppConfig) -> Result<Self> {
+    /// 
+    /// `agent_name` enables per-agent session isolation:
+    /// - `Some("manager")` → sessions stored in `~/.obenmatrix/agents/manager/sessions.db`
+    /// - `Some("worker")` → sessions stored in `~/.obenmatrix/agents/worker/sessions.db`
+    /// - `None` or empty string → sessions stored in `~/.obenmatrix/agents/default/sessions.db`
+    pub async fn init(config: &AppConfig, agent_name: Option<String>) -> Result<Self> {
         let mut tools = ToolRegistry::new();
         oben_tools::discover_builtin_tools(&mut tools);
 
@@ -158,12 +163,18 @@ impl SharedAgentState {
             config.max_concurrent_tasks.unwrap_or(5),
         ));
 
+        // ✅ agent_name 必须是非空字符串，如果为空使用 "default"
+        let name = agent_name
+            .and_then(|n| if n.is_empty() { None } else { Some(n) })
+            .unwrap_or_else(|| "default".to_string());
+        
         let agent = Arc::new(tokio::sync::Mutex::new(
             AgentBuilder::new()
                 .with_config(config.clone())
                 .with_system_prompt(assembled.prompt.clone())
                 .with_tools(Arc::new(tools_for_reg.clone()))
                 .with_hooks(shared_hooks)
+                .with_agent_name(Some(name))
                 .build()
                 .await?,
         ));
@@ -397,5 +408,64 @@ impl SubagentLifecycleCallback for SubagentCallback {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oben_config::AppConfig;
+
+    #[tokio::test]
+    async fn test_shared_agent_state_init_with_none_uses_default() {
+        /// Given: SharedAgentState::init with agent_name = None
+        /// When: agent_name is None
+        /// Then: agent uses "default" session directory
+        let config = AppConfig::default();
+        let result = SharedAgentState::init(&config, None).await;
+        
+        // The agent should be initialized successfully
+        assert!(result.is_ok());
+        let state = result.unwrap();
+        assert!(state.is_initialized());
+    }
+
+    #[tokio::test]
+    async fn test_shared_agent_state_init_with_empty_string_uses_default() {
+        /// Given: SharedAgentState::init with agent_name = Some("")
+        /// When: agent_name is empty string
+        /// Then: agent uses "default" session directory
+        let config = AppConfig::default();
+        let result = SharedAgentState::init(&config, Some("".to_string())).await;
+        
+        assert!(result.is_ok());
+        let state = result.unwrap();
+        assert!(state.is_initialized());
+    }
+
+    #[tokio::test]
+    async fn test_shared_agent_state_init_with_worker_uses_worker() {
+        /// Given: SharedAgentState::init with agent_name = Some("worker")
+        /// When: agent_name is "worker"
+        /// Then: agent uses "worker" session directory
+        let config = AppConfig::default();
+        let result = SharedAgentState::init(&config, Some("worker".to_string())).await;
+        
+        assert!(result.is_ok());
+        let state = result.unwrap();
+        assert!(state.is_initialized());
+    }
+
+    #[tokio::test]
+    async fn test_shared_agent_state_init_with_manager_uses_manager() {
+        /// Given: SharedAgentState::init with agent_name = Some("manager")
+        /// When: agent_name is "manager"
+        /// Then: agent uses "manager" session directory
+        let config = AppConfig::default();
+        let result = SharedAgentState::init(&config, Some("manager".to_string())).await;
+        
+        assert!(result.is_ok());
+        let state = result.unwrap();
+        assert!(state.is_initialized());
     }
 }

@@ -25,6 +25,9 @@ pub mod state_persistence;
 pub mod sticker_cache;
 pub mod webhooks;
 
+// Messaging - topic-based pub/sub channels for inter-agent communication
+pub mod messaging; // Topic-based pub/sub channels for inter-agent communication
+
 #[cfg(feature = "discord")]
 pub mod discord_adapter;
 

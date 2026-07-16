@@ -24,11 +24,12 @@ oben-goals = { path = "../oben-goals" }
 oben-curator = { path = "../oben-curator" }
 
 clap = { workspace = true, features = ["derive"] }
+dashmap = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
 chrono = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 serde_json = { workspace = true }

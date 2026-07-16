@@ -375,8 +375,11 @@ impl App {
         self.toast_expires_at = Some(std::time::Instant::now() + Duration::from_secs(2));
     }
 
-    pub async fn init_agent(&mut self) -> Result<()> {
-        let shared = SharedAgentState::init(&self.config).await?;
+    pub async fn init_agent(&mut self, agent_name: Option<&str>) -> Result<()> {
+        let name = agent_name
+            .and_then(|n| if n.is_empty() { None } else { Some(n.to_string()) })
+            .or_else(|| Some("default".to_string()));
+        let shared = SharedAgentState::init(&self.config, name).await?;
         let mut ss = self.shared_state.lock();
         ss.agent = shared.agent;
         ss.turn_message_count = shared.turn_message_count;

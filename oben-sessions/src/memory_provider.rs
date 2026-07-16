@@ -20,6 +20,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 // ── ToolSchema ────────────────────────────────────────────────────────────────
 
@@ -623,19 +624,26 @@ impl MemoryManager {
 ///
 /// Creates a `MemoryManager` with the `BuiltinProvider` registered.
 /// Scans `~/.abenmatrix/plugins/memory/` for external provider directories.
+/// Each agent gets isolated storage at `~/.obenmatrix/agents/<agent_name>/`.
 ///
 /// Note: External providers are currently discovered (listed by directory name).
 /// Actual runtime loading requires a plugin host.
-pub fn discover_memory_providers() -> MemoryManager {
-    let data_dir = dirs::home_dir()
-        .map(|h| h.join(".abenmatrix"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".abenmatrix"));
+pub fn discover_memory_providers(agent_name: Option<&str>) -> MemoryManager {
+    let base = dirs::home_dir()
+        .map(|h| h.join(".obenmatrix").join("agents"))
+        .unwrap_or_else(|| PathBuf::from("~/.obenmatrix/agents"));
+    
+    let agent_dir = agent_name
+        .and_then(|n| if n.is_empty() { None } else { Some(n) })
+        .unwrap_or("default");
+    
+    let data_dir = base.join(agent_dir);
 
     let plugins_dir = data_dir.join("plugins").join("memory");
     let mut mgr = MemoryManager::new();
 
-    let store_path = data_dir.clone();
-    let store = crate::skill_curation::MemoryStore::new();
+    let store_path = data_dir.join("memories");
+    let store = crate::skill_curation::MemoryStore::new_with_agent(None);
     let builtin = BuiltinProvider::new(store, store_path);
     mgr.add_provider(Box::new(builtin));
 

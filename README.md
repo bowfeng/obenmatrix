@@ -2,9 +2,18 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![Build Status](https://img.shields.io/badge/tests-275%2F275-passing-brightgreen.svg)]()
+[![Build Status](https://img.shields.io/badge/tests-819%2F819-passing-brightgreen.svg)]()
 
 **ObenAgent** is a self-improving AI agent written in Rust. It creates and evolves skills from experience, supports multiple LLM providers, and can communicate via CLI, terminal chat, and eventually messaging platforms (Telegram, Discord, Slack).
+
+## 🚀 New in v0.2: Multi-Agent Collaboration
+
+ObenAgent now supports running **multiple independent agents with role-based separation**:
+
+- **Isolated Data**: Each agent has its own session memory, goals, and skill usage tracking
+- **Role-Based Teams**: Define agents like "Researcher", "Writer", "Analyst" with custom roles
+- **Inter-Agent Communication**: Topic-based pub/sub messaging for collaboration
+- **Config-Driven**: Define all agents in a single YAML configuration file
 
 
 
@@ -20,6 +29,9 @@
 | 🧠 **Autonomous Goals** | ✅ Plan parsing, judge verdict, turn budgets |
 | 🔧 **Tool Registry** | ✅ Shell, file I/O, HTTP, dynamic dispatch |
 | 🧹 **Skill Curator** | ✅ Usage tracking, lifecycle (active→stale→archived) |
+| 👥 **Multi-Agent Systems** | ✅ Independent agents with role-based isolation |
+| 📡 **Inter-Agent Messaging** | ✅ Topic-based pub/sub communication |
+| 🏗️ **Agent Registry** | ✅ Manager for multiple concurrent agents |
 
 ### In Progress
 
@@ -82,15 +94,46 @@ obenmatrix sessions compact [-s session-id]
 
 # Show agent info
 obenmatrix info
-
-# Use a named profile (isolates config + data directories)
-obenmatrix --profile work chat
-obenmatrix --profile work sessions list
 ```
 
-Profile isolation creates separate:
-- Config: `~/.config/obenmatrix/<profile>/config.yaml`
-- Data: `~/.abenmatrix/<profile>/`
+### Multi-Agent Mode
+
+Define multiple agents with different roles in your config:
+
+```yaml
+agents:
+  - name: "manager"
+    role: "Orchestrates tasks and coordinates workers"
+    model: "openai/gpt-4o"
+    tools: ["web_search", "http_get"]
+  - name: "researcher"
+    role: "Finds information and analyzes data"
+    model: "anthropic/claude-3-5-sonnet"
+    tools: ["web_search"]
+  - name: "writer"
+    role: "Creates documents and reports"
+    model: "openai/gpt-4o"
+    tools: ["write_file", "read_file"]
+```
+
+Run the TUI with a specific agent:
+
+```bash
+# Start manager agent (sessions in ~/.obenmatrix/agents/manager/sessions.db)
+obenmatrix tui --agent manager
+
+# Start researcher agent (sessions in ~/.obenmatrix/agents/researcher/sessions.db)
+obenmatrix tui --agent researcher
+
+# Start worker agent (sessions in ~/.obenmatrix/agents/worker/sessions.db)
+obenmatrix tui --agent worker
+```
+
+**Each agent has completely isolated data:**
+- Session DB: `~/.obenmatrix/agents/<name>/sessions.db`
+- Memories: `~/.obenmatrix/agents/<name>/memories/`
+- Goals: `~/.oben-goals/<name>/`
+- Usage stats: `~/.agents/<name>-usage_tracking.yaml`
 
 ---
 
@@ -125,10 +168,43 @@ obenmatrix/               # Root workspace (binary)
 
 ## Configuration
 
-Default profile config lives at `~/.config/obenmatrix/config.yaml`
-and data at `~/.abenmatrix/`. Each `--profile <name>` uses:
-- Config: `~/.config/obenmatrix/<profile>/config.yaml`
-- Data: `~/.abenmatrix/<profile>/`
+### Single Agent Mode
+
+Default config lives at `~/.config/obenmatrix/config.yaml`
+and data at `~/.obenmatrix/`.
+
+```yaml
+model:
+  kind: OpenRouter
+  model: "qwen/qwen3-235b:free"
+  api_key: "sk-or-..."
+
+context:
+  max_messages: 100
+  compression: summary
+```
+
+### Multi-Agent Mode
+
+Define multiple agents in your config:
+
+```yaml
+agents:
+  - name: "manager"
+    role: "Orchestrates tasks and coordinates workers"
+    model: "openai/gpt-4o"
+    tools: ["web_search", "http_get"]
+  - name: "researcher"
+    role: "Finds information and analyzes data"
+    model: "anthropic/claude-3-5-sonnet"
+    tools: ["web_search"]
+```
+
+**Isolated Data Per Agent:**
+- Session DB: `~/.obenmatrix/agents/<name>/sessions.db`
+- Memories: `~/.obenmatrix/agents/<name>/memories/`
+- Goals: `~/.oben-goals/<name>/`
+- Usage stats: `~/.agents/<name>-usage_tracking.yaml`
 
 ```yaml
 model:
@@ -199,7 +275,7 @@ cargo test
 cargo test -p oben-tools
 ```
 
-**275 tests** pass across all 11 crates.
+**819 tests** pass across all 11 crates.
 
 ---
 
@@ -214,5 +290,50 @@ See [docs/PRD.md](docs/PRD.md) for detailed milestones, progress tracking, and i
 This project is licensed under the [MIT License](LICENSE).
 
 ---
+
+## 🏗️ Multi-Agent System Architecture
+
+ObenAgent's multi-agent system is built on several key components:
+
+### Agent Registry (`oben-gateway`)
+Manages multiple agent instances with:
+- `insert(name, agent)` - Register new agents
+- `get(name)` - Retrieve agents by name
+- `lookup_by_role(role)` - Find agents by role
+
+### Topic-Based Messaging (`oben-gateway::messaging`)
+Publish-subscribe communication pattern:
+- `publish(topic, message)` - Send to all subscribers
+- `subscribe(topic)` - Receive messages from a topic
+- `broadcast(message)` - Send to all subscribers across topics
+
+### Data Isolation
+Each agent has independent storage:
+- Sessions: `~/.obenmatrix/agents/<name>/sessions.db`
+- Memories: `~/.obenmatrix/agents/<name>/memories/`
+- Goals: `~/.oben-goals/<name>/`
+- Usage: `~/.agents/<name>-usage_tracking.yaml</name>`
+
+### Usage Example
+```yaml
+# config.yaml
+agents:
+  - name: "manager"
+    role: "Orchestrates tasks and coordinates workers"
+    model: "openai/gpt-4o"
+  - name: "worker"
+    role: "Handles specific subtasks"
+    model: "anthropic/claude-3-5-sonnet"
+```
+
+```bash
+# Start manager agent
+obenmatrix tui --agent manager
+
+# Start worker agent (in another terminal)
+obenmatrix tui --agent worker
+```
+
+Agents communicate via messaging topics while keeping their data completely isolated.
 
 

@@ -18,6 +18,7 @@
 
 pub mod agent;
 pub mod agent_builder;
+pub mod agent_registry;
 pub mod budget;
 pub mod compact;
 pub mod compact_context;
@@ -43,6 +44,7 @@ pub mod turn_executor;
 
 pub use agent::*;
 pub use agent_builder::AgentBuilder;
+pub use agent_registry::AgentRegistry;
 pub use budget::*;
 pub use compact::*;
 pub use compact_context::*;

@@ -30,6 +30,7 @@ futures.workspace = true
 rand.workspace = true
 tempfile.workspace = true
 parking_lot = "0.12"
+dashmap = "6.0"
 
 [dev-dependencies]
 async-trait.workspace = true

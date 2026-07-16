@@ -30,6 +30,7 @@ pub struct AppConfig {
     pub hooks: HooksConfig,
     pub fallback_models: Vec<FallbackConfig>,
     pub agent: AgentConfig,
+    pub agents: Vec<NamedAgentConfig>,
     pub events: EventsConfig,
     pub compaction: CompactionConfig,
     pub memory: MemoryConfig,
@@ -751,6 +752,29 @@ impl Default for AgentConfig {
     }
 }
 
+impl Default for NamedAgentConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            role: String::new(),
+            model: String::new(),
+            tools: Vec::new(),
+            execution_discipline: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NamedAgentConfig {
+    pub name: String,
+    pub role: String,
+    pub model: String,
+    pub tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_discipline: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EventsConfig {
@@ -851,6 +875,7 @@ impl Default for AppConfig {
             hooks: HooksConfig::default(),
             fallback_models: Vec::new(),
             agent: AgentConfig::default(),
+            agents: Vec::new(),
             events: EventsConfig::default(),
             compaction: CompactionConfig::default(),
             memory: MemoryConfig::default(),
@@ -1154,5 +1179,88 @@ impl AppConfig {
         let content = serde_yaml::to_string(self)?;
         std::fs::write(dir.join("config.yaml"), content)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod multi_agent_tests {
+    use super::*;
+
+    #[test]
+    fn test_named_agent_config_default() {
+        let config = NamedAgentConfig::default();
+        assert!(config.name.is_empty());
+        assert!(config.role.is_empty());
+        assert!(config.model.is_empty());
+        assert!(config.tools.is_empty());
+        assert!(config.execution_discipline.is_none());
+    }
+
+    #[test]
+    fn test_agents_field_serializes_empty() {
+        let config = AppConfig::default();
+        assert!(config.agents.is_empty());
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert!(restored.agents.is_empty());
+    }
+
+    #[test]
+    fn test_multi_agent_config_yaml_roundtrip() {
+        let mut config = AppConfig::default();
+        config.agents = vec![
+            NamedAgentConfig {
+                name: "researcher".to_string(),
+                role: "Research specialist - finds information".to_string(),
+                model: "openai/gpt-4o".to_string(),
+                tools: vec!["web_search".to_string(), "http_get".to_string()],
+                execution_discipline: None,
+            },
+            NamedAgentConfig {
+                name: "writer".to_string(),
+                role: "Content writer - creates documents".to_string(),
+                model: "anthropic/claude-3-5-sonnet".to_string(),
+                tools: vec!["write_file".to_string(), "read_file".to_string()],
+                execution_discipline: Some("strict".to_string()),
+            },
+        ];
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(restored.agents.len(), 2);
+        assert_eq!(restored.agents[0].name, "researcher");
+        assert_eq!(restored.agents[0].model, "openai/gpt-4o");
+        assert_eq!(restored.agents[1].name, "writer");
+        assert_eq!(restored.agents[1].execution_discipline, Some("strict".to_string()));
+    }
+
+    #[test]
+    fn test_backward_compatibility_single_agent_only() {
+        // Config with only agent field (no agents)
+        let yaml = r#"agent:
+  identity: "You are a helpful assistant"
+  execution_discipline: "Be concise"
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        
+        assert_eq!(config.agent.identity, Some("You are a helpful assistant".to_string()));
+        assert_eq!(config.agents.is_empty(), true);
+    }
+
+    #[test]
+    fn test_multi_agent_only() {
+        // Config with only agents field (no agent)
+        let yaml = r#"agents:
+  - name: "researcher"
+    role: "Research specialist"
+    model: "openai/gpt-4o"
+    tools: ["web_search"]
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        
+        assert_eq!(config.agents.len(), 1);
+        assert_eq!(config.agents[0].name, "researcher");
+        assert!(config.agent.identity.is_none());
     }
 }

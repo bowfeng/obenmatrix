@@ -33,11 +33,27 @@ pub struct UsageConfig {
 
 impl Default for UsageConfig {
     fn default() -> Self {
+        Self::new_with_agent(None)
+    }
+}
+
+impl UsageConfig {
+    /// Create a new usage config with agent isolation.
+    /// Each agent gets its own usage tracking file: `~/.agents/<agent_name>-usage_tracking.yaml`
+    pub fn new_with_agent(agent_name: Option<&str>) -> Self {
+        let base = std::env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join(".agents"))
+            .unwrap_or_else(|| PathBuf::from("./agents"));
+        
+        let agent_dir = agent_name
+            .and_then(|n| if n.is_empty() { None } else { Some(n) })
+            .unwrap_or("default");
+        
+        let storage_path = base.join(format!("{}-usage_tracking.yaml", agent_dir));
+        
         Self {
-            storage_path: std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".agents/usage_tracking.yaml"))
-                .unwrap_or_else(|| PathBuf::from("./usage_tracking.yaml")),
+            storage_path,
             max_records: 1000,
         }
     }

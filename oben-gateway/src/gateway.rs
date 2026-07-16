@@ -305,8 +305,9 @@ mod tests {
     use crate::platform::*;
 
     fn make_gateway() -> Gateway {
+        // ✅ Test uses default session isolation
         Gateway::new(
-            DBSessionManager::new().unwrap(),
+            DBSessionManager::new_with_agent(Some("default")).unwrap(),
             HashMap::new(),
         )
     }

@@ -1852,10 +1852,29 @@ pub struct DBSessionManager {
 
 impl DBSessionManager {
     pub fn new() -> Result<Self> {
-        let db_dir = dirs::home_dir()
-            .map(|d| d.join(".obenmatrix").join("memory"))
-            .unwrap_or_else(|| std::path::PathBuf::from("~/.obenmatrix"));
-        let db_path = db_dir.join("sessions.db");
+        Self::new_with_agent(None)
+    }
+
+    /// Create a new DBSessionManager with per-agent isolation.
+    ///
+    /// `agent_name` determines the subdirectory under `~/.obenmatrix/agents/`:
+    /// - `None` or empty string → `~/.obenmatrix/agents/default/`
+    /// - `Some("manager")` → `~/.obenmatrix/agents/manager/`
+    /// - `Some("worker")` → `~/.obenmatrix/agents/worker/`
+    pub fn new_with_agent(agent_name: Option<&str>) -> Result<Self> {
+        let base = dirs::home_dir()
+            .map(|d| d.join(".obenmatrix").join("agents"))
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.obenmatrix/agents"));
+        
+        // ✅ 必须有 agent_name，否则使用 "default"
+        let agent_dir = agent_name
+            .and_then(|n| if n.is_empty() { None } else { Some(n) })
+            .unwrap_or("default");
+        
+        let path = base.join(agent_dir);
+        std::fs::create_dir_all(&path)?;
+        let db_path = path.join("sessions.db");
+        
         Self::new_with_db_path(db_path)
     }
 
@@ -3695,5 +3714,91 @@ mod tests {
 
         let all = mgr.db.list_goals(None).unwrap();
         assert!(all.iter().any(|g| g.0 == goal_id));
+    }
+
+    #[test]
+    fn test_new_with_agent_creates_separate_directories() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let agents_dir = temp_dir.path().join("agents");
+        
+        // Test manager agent creates directory
+        let manager_dir = agents_dir.join("manager");
+        let _mgr1 = DBSessionManager::new_with_path(manager_dir.clone()).unwrap();
+        
+        // Test worker agent creates directory
+        let worker_dir = agents_dir.join("worker");
+        let _mgr2 = DBSessionManager::new_with_path(worker_dir.clone()).unwrap();
+        
+        // Verify directories were created
+        assert!(agents_dir.exists());
+        assert!(manager_dir.exists());
+        assert!(worker_dir.exists());
+    }
+
+    #[test]
+    fn test_new_with_agent_none_uses_default() {
+        let agent_name: Option<&str> = None;
+        let agent_dir = agent_name
+            .and_then(|n| if n.is_empty() { None } else { Some(n) })
+            .unwrap_or("default");
+        
+        assert_eq!(agent_dir, "default");
+    }
+
+    #[test]
+    fn test_new_with_agent_worker_creates_worker_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let agents_dir = temp_dir.path().join("agents");
+        
+        let _mgr = DBSessionManager::new_with_path(agents_dir.join("worker")).unwrap();
+        
+        let worker_dir = agents_dir.join("worker");
+        assert!(worker_dir.exists());
+    }
+
+    #[test]
+    fn test_new_with_agent_manager_creates_manager_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let agents_dir = temp_dir.path().join("agents");
+        
+        let _mgr = DBSessionManager::new_with_path(agents_dir.join("manager")).unwrap();
+        
+        let manager_dir = agents_dir.join("manager");
+        assert!(manager_dir.exists());
+    }
+
+    #[test]
+    fn test_agent_isolation() {
+        use oben_models::Message;
+        
+        let temp_dir = tempfile::tempdir().unwrap();
+        
+        // Create separate db paths for manager and worker
+        let manager_dir = temp_dir.path().join("manager");
+        let worker_dir = temp_dir.path().join("worker");
+        
+        // Create session for manager
+        let mut mgr_manager = DBSessionManager::new_with_path(manager_dir.clone()).unwrap();
+        mgr_manager.create_session("manager-session");
+        mgr_manager.save_session(None).unwrap();
+        
+        // Create session for worker
+        let mut mgr_worker = DBSessionManager::new_with_path(worker_dir.clone()).unwrap();
+        mgr_worker.create_session("worker-session");
+        mgr_worker.save_session(None).unwrap();
+        
+        // Manager should not see worker's session
+        mgr_manager.init().unwrap();
+        mgr_worker.init().unwrap();
+        
+        // Each manager has its own session
+        assert_eq!(mgr_manager.list_sessions_ref().len(), 1);
+        assert_eq!(mgr_worker.list_sessions_ref().len(), 1);
+        
+        // Verify sessions are different
+        assert_ne!(
+            mgr_manager.active_session_id(),
+            mgr_worker.active_session_id()
+        );
     }
 }

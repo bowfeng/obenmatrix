@@ -66,6 +66,9 @@ pub enum Commands {
         /// Session name or ID to load on startup
         #[arg(short, long)]
         session: Option<String>,
+        /// Agent name for session isolation
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Manage scheduled cron tasks
     Cron {

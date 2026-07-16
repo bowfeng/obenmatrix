@@ -22,6 +22,7 @@ oben-tools = { path = "../oben-tools" }
 
 anyhow.workspace = true
 tokio.workspace = true
+dashmap.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true

@@ -83,6 +83,20 @@ impl Env {
     pub fn config_path(&self) -> PathBuf {
         self.config_base.join("config.yaml")
     }
+
+    /// The session directory for the given agent name.
+    ///
+    /// `agent_name` determines the subdirectory under `~/.obenmatrix/agents/`:
+    /// - `None` → `~/.obenmatrix/agents/` (backwards compatible)
+    /// - `Some("manager")` → `~/.obenmatrix/agents/manager/`
+    /// - `Some("worker")` → `~/.obenmatrix/agents/worker/`
+    pub fn session_dir(&self, agent_name: Option<&str>) -> PathBuf {
+        let base = self.data_base.join("agents");
+        match agent_name {
+            Some(name) => base.join(name),
+            None => base,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +224,35 @@ mod tests {
         assert_eq!(cloned.data_dir(), env.data_dir());
         assert!(!cloned.is_default());
         assert_eq!(cloned.profile, Some("test".to_string()));
+    }
+
+    #[test]
+    fn test_session_dir_default() {
+        let env = Env::new(None);
+        let home = home_dir().unwrap();
+        let session_dir = env.session_dir(None);
+        assert_eq!(session_dir, home.join(".obenmatrix").join("agents"));
+    }
+
+    #[test]
+    fn test_session_dir_with_agent_name() {
+        let env = Env::new(Some("test_profile".to_string()));
+        let home = home_dir().unwrap();
+        // When env has a profile, data_base includes the profile path
+        let session_dir = env.session_dir(Some("manager"));
+        assert_eq!(session_dir, home.join(".obenmatrix").join("test_profile").join("agents").join("manager"));
+    }
+
+    #[test]
+    fn test_session_dir_different_agents() {
+        let env = Env::new(None);
+        let home = home_dir().unwrap();
+        
+        let manager_dir = env.session_dir(Some("manager"));
+        let worker_dir = env.session_dir(Some("worker"));
+        
+        assert_eq!(manager_dir, home.join(".obenmatrix").join("agents").join("manager"));
+        assert_eq!(worker_dir, home.join(".obenmatrix").join("agents").join("worker"));
+        assert_ne!(manager_dir, worker_dir);
     }
 }

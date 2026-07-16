@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
         "Config loaded"
     );
 
-    let session_manager = DBSessionManager::new()?;
+    let session_manager = DBSessionManager::new_with_agent(Some("default"))?;
     info!("Session manager initialized");
 
     let response_router = Arc::new(ResponseRouter::new());

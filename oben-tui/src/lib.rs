@@ -9,6 +9,7 @@ pub mod commands;
 pub mod coordinator;
 pub mod history;
 pub mod image;
+
 pub mod panels;
 pub mod shared;
 pub mod widgets;
@@ -84,8 +85,9 @@ pub enum TuiEvent {
     Quit,
 }
 
-pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
+pub async fn run_tui(session_name: Option<&str>, agent_name: Option<&str>) -> Result<()> {
     let app = App::new()?;
+    let agent_name_owned = agent_name.map(|s| s.to_string());
 
     // Raw mode + alternate screen — needed for splash loop to draw
     enable_raw_mode()?;
@@ -116,7 +118,7 @@ pub async fn run_tui(session_name: Option<&str>) -> Result<()> {
         let tx = init_done_tx;
         tokio::spawn(async move {
             let mut a = init_arc_app.lock().await;
-            let result = a.init_agent().await;
+            let result = a.init_agent(agent_name_owned.as_deref()).await;
             if result.is_ok() {
                 // Register TUI adapters on the agent's internal HookEngine.
                 // AgentBuilder creates HookEngine internally (from config), then we register TUI adapters via Agent::hooks() and share it with subagents through SubagentSpawner::new().with_hooks().

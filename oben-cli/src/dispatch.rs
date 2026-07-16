@@ -59,7 +59,9 @@ pub async fn run_cli() -> Result<()> {
             None => list_sessions(),
         },
         Commands::Models { action } => run_models(action, profile).await,
-        Commands::Tui { session } => oben_tui::run_tui(session.as_deref()).await,
+        Commands::Tui { session, agent } => {
+            oben_tui::run_tui(session.as_deref(), agent.as_deref()).await
+        }
         Commands::Cron { action } => match action {
             None => cron_list(false),
             Some(CronCommand::List { all }) => cron_list(all),
@@ -303,7 +305,8 @@ fn list_skills() -> Result<()> {
 // ── Sessions ────────────────────────────────────────────────────────────
 
 fn list_sessions() -> Result<()> {
-    let mut session_manager = oben_sessions::DBSessionManager::new()?;
+    // ✅ CLI uses default session isolation
+    let mut session_manager = oben_sessions::DBSessionManager::new_with_agent(Some("default"))?;
     session_manager.init()?;
     let sessions = session_manager.list_sessions(None);
     if sessions.is_empty() {
@@ -319,7 +322,8 @@ fn list_sessions() -> Result<()> {
 
 async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str>, profile: Option<&str>) -> Result<()> {
     let config = oben_config::AppConfig::load(profile)?;
-    let mut sm = oben_sessions::DBSessionManager::new()?;
+    // ✅ CLI uses default session isolation
+    let mut sm = oben_sessions::DBSessionManager::new_with_agent(Some("default"))?;
 
     let target: String = match session_key {
         Some(key) => key.to_string(),
@@ -406,7 +410,8 @@ async fn run_compact_session(session_key: Option<&str>, focus_topic: Option<&str
 }
 
 fn run_delete_session(session_key: &str) -> Result<()> {
-    let mut sm = oben_sessions::DBSessionManager::new()?;
+    // ✅ CLI uses default session isolation
+    let mut sm = oben_sessions::DBSessionManager::new_with_agent(Some("default"))?;
     sm.init()?;
     sm.delete(session_key)?;
     println!("Deleted session '{}'", session_key);
@@ -414,7 +419,8 @@ fn run_delete_session(session_key: &str) -> Result<()> {
 }
 
 fn dump_session(session_key: Option<&str>) -> Result<()> {
-    let mut sm = oben_sessions::DBSessionManager::new()?;
+    // ✅ CLI uses default session isolation
+    let mut sm = oben_sessions::DBSessionManager::new_with_agent(Some("default"))?;
     sm.load(None)?;
 
     let active_id: Option<String> = None;

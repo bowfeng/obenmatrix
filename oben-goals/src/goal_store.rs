@@ -113,16 +113,24 @@ impl JsonGoalStore {
 
     /// Create a new store from the `OBEN_GOALS_STATE` env var or default to `~/.oben-goals`.
     pub fn default_store() -> Result<Self> {
-        let dir = std::env::var("OBEN_GOALS_STATE")
+        Self::new_with_agent(None)
+    }
+
+    /// Create a new store with agent isolation.
+    /// Each agent gets its own goal storage directory: `~/.oben-goals/<agent_name>/`
+    pub fn new_with_agent(agent_name: Option<&str>) -> Result<Self> {
+        let base = std::env::var("HOME")
             .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".oben-goals"))
-                    .unwrap_or_else(|| PathBuf::from(".oben-goals"))
-            });
-        Self::new(dir)
+            .map(|h| PathBuf::from(h).join(".oben-goals"))
+            .unwrap_or_else(|| PathBuf::from(".oben-goals"));
+        
+        let agent_dir = agent_name
+            .and_then(|n| if n.is_empty() { None } else { Some(n) })
+            .unwrap_or("default");
+        
+        let dir = base.join(agent_dir);
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self { dir })
     }
 
     fn goal_path(&self, goal_id: &str) -> PathBuf {

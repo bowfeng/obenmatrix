@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use tokio::sync::Mutex;
 
 use crate::compact_context::BuiltinContextWindowManager;
@@ -18,7 +18,7 @@ use crate::Agent;
 
 use oben_config::AppConfig;
 use oben_models::providers::TransportProvider;
-use oben_sessions::memory_provider::discover_memory_providers;
+use oben_sessions::memory_provider::{discover_memory_providers, MemoryManager};
 use oben_tools::ToolRegistry;
 
 /// Builder for [`Agent`].
@@ -32,6 +32,7 @@ pub struct AgentBuilder {
     system_prompt: Option<String>,
     tools: Option<Arc<ToolRegistry>>,
     hooks: Option<Arc<HookEngine>>,
+    agent_name: Option<String>,
 }
 
 impl AgentBuilder {
@@ -44,7 +45,17 @@ impl AgentBuilder {
             system_prompt: None,
             tools: None,
             hooks: None,
+            agent_name: None,
         }
+    }
+
+    /// Set the agent name for per-agent session isolation.
+    ///
+    /// When set, sessions are stored in `~/.obenmatrix/agents/<agent_name>/sessions.db`.
+    /// Agent names are always required — empty strings use "default".
+    pub fn with_agent_name(mut self, agent_name: Option<String>) -> Self {
+        self.agent_name = agent_name;
+        self
     }
 
     /// Set the application configuration.
@@ -77,7 +88,7 @@ impl AgentBuilder {
 
     /// Build the [`Agent`].
     ///
-    /// All required fields (`config`, `system_prompt`, `tools`) must be
+    /// All required fields (`config`, `system_prompt`, `tools`, `agent_name`) must be
     /// set before calling this method — missing fields produce descriptive
     /// errors rather than panics.
     ///
@@ -109,10 +120,16 @@ impl AgentBuilder {
         )
         .context("connection failed — check your model config (endpoint, api_key, model)")?;
 
-        let session_manager = Arc::new(Mutex::new(
-            oben_sessions::SessionStore::new(config.session_store.clone())
-                .context("failed to initialize session store")?,
-        ));
+        // ✅ 必须有 agent_name，从 config 或参数获取
+        let agent_name = self.agent_name.as_ref().ok_or_else(|| anyhow!("agent_name required"))?.clone();
+        
+        let session_manager = Arc::new(Mutex::new({
+            // Per-agent session manager
+            let manager = oben_sessions::DBSessionManager::new_with_agent(
+                Some(&agent_name)
+            ).context("failed to initialize per-agent session manager")?;
+            oben_sessions::SessionStore::Database(manager)
+        }));
 
         // Re-use provided hooks or build a new one.
         let hooks = match self.hooks {
@@ -129,7 +146,9 @@ impl AgentBuilder {
         };
 
         // Create memory manager early so we can pass it to register_memory_tools.
-        let memory_manager = Arc::new(std::sync::Mutex::new(discover_memory_providers()));
+        let agent_name = self.agent_name.as_deref().unwrap_or("default");
+        let memory_manager: MemoryManager = discover_memory_providers(Some(agent_name));
+        let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager));
 
         // Register memory tools -- unwrap the Arc to get &mut access, then re-wrap.
         let mut tools_inner = Arc::try_unwrap(tools).unwrap_or_else(|_| {
