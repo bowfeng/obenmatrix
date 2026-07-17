@@ -1,3 +1,4 @@
+pub mod browser;
 pub mod clarify;
 pub mod code_execution;
 pub mod computer_use;
@@ -26,7 +27,9 @@ pub mod video_gen;
 pub mod mcp_client;
 pub mod file_sync;
 pub mod cron_delivery;
+pub mod homeassistant;
 pub mod kanban;
+pub mod mixture_of_agents;
 
 pub use registry::*;
 pub use terminal::*;
@@ -49,11 +52,11 @@ pub struct BuiltinTools;
 
 impl BuiltinTools {
     /// Register all builtin tools into the given registry.
-    pub fn register_all(registry: &mut ToolRegistry) {
+    pub     fn register_all(registry: &mut ToolRegistry) {
         terminal::register(registry);
         read_write::register(registry);
         web::register(registry);
-        search::register(registry);
+        search::register_default(registry);
         search_files::register(registry);
         patch::register(registry);
         web_extract::register(registry);
@@ -73,5 +76,8 @@ impl BuiltinTools {
         file_sync::register(registry);
         cron_delivery::register(registry);
         kanban::register(registry);
+        browser::register(registry);
+        homeassistant::register(registry);
+        mixture_of_agents::register(registry);
     }
 }

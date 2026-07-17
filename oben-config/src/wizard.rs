@@ -4,7 +4,7 @@ use anyhow::Result;
 use dialoguer::{Input, Select};
 use tracing::info;
 
-use super::config::AppConfig;
+use super::config::{AppConfig, SearchProviderKind};
 
 pub fn run_setup(config: &mut AppConfig) -> Result<()> {
     println!("\n🦀 ObenAgent Setup Wizard\n");
@@ -167,7 +167,37 @@ pub fn run_setup(config: &mut AppConfig) -> Result<()> {
         .interact()?;
     config.context.compression = compression_methods[compress_selected].to_string();
 
+    let search_providers = vec!["duckduckgo", "brave", "bing", "google"];
+    let search_selected = Select::new()
+        .with_prompt("Select search provider")
+        .items(&search_providers)
+        .default(0)
+        .interact()?;
+    
+    config.search.provider = match search_selected {
+        0 => SearchProviderKind::DuckDuckGo,
+        1 => SearchProviderKind::Brave,
+        2 => SearchProviderKind::Bing,
+        3 => SearchProviderKind::Google,
+        _ => unreachable!(),
+    };
+
+    println!(" ℹ️  Search provider: {}", search_providers[search_selected]);
+    
+    if matches!(config.search.provider, SearchProviderKind::Brave | 
+                SearchProviderKind::Bing | 
+                SearchProviderKind::Google) {
+        let api_key: String = Input::new()
+            .with_prompt("Enter API key (optional)")
+            .default(String::new())
+            .interact()?;
+        if !api_key.trim().is_empty() {
+            config.search.api_key = Some(api_key);
+        }
+    }
+
     // Save
+    config.save_with_profile(None)?;
     config.save_with_profile(None)?;
 
     println!("\n✅ Configuration saved successfully.\n");

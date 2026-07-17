@@ -29,11 +29,18 @@ msedge-tts = { version = "0.4", features = ["tokio-runtime"] }
 sha2 = "0.10"
 walkdir = "2"
 
+# Browser automation
+
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "macros"] }
 tempfile = "3"
 html2text = "0.16"
 
 [features]
-default = ["stt-whisper-rs"]
+default = ["stt-whisper-rs", "search-duckduckgo"]
 stt-whisper-rs = ["dep:whisper-rs", "whisper-rs/default"]
+search-duckduckgo = []
+search-brave = []
+search-bing = []
+search-google = []

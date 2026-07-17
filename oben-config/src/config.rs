@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use oben_models::ProviderConfig;
 
 pub use oben_models::SessionStoreKind;
+pub use crate::mixture_of_agents::MixtureOfAgentsConfig;
 
 /// All application settings, stored in ~/.config/obenmatrix/config.yaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +35,8 @@ pub struct AppConfig {
     pub events: EventsConfig,
     pub compaction: CompactionConfig,
     pub memory: MemoryConfig,
+    pub search: SearchConfig,
+    pub mixture_of_agents: MixtureOfAgentsConfig,
 }
 
 /// Configuration for session context compaction.
@@ -78,6 +81,46 @@ impl Default for MemoryConfig {
         Self {
             enabled: true,
             provider: default_memory_provider(),
+        }
+    }
+}
+
+/// Search provider selection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchProviderKind {
+    DuckDuckGo,
+    Brave,
+    Bing,
+    Google,
+}
+
+impl Default for SearchProviderKind {
+    fn default() -> Self {
+        SearchProviderKind::DuckDuckGo
+    }
+}
+
+/// Configuration for search tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// Search provider to use. Default: "duckduckgo".
+    #[serde(default = "default_search_provider")]
+    pub provider: SearchProviderKind,
+    /// API key for paid providers (Brave, Bing, Google). Default: None.
+    pub api_key: Option<String>,
+}
+
+fn default_search_provider() -> SearchProviderKind {
+    SearchProviderKind::DuckDuckGo
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        SearchConfig {
+            provider: default_search_provider(),
+            api_key: None,
         }
     }
 }
@@ -876,10 +919,12 @@ impl Default for AppConfig {
             fallback_models: Vec::new(),
             agent: AgentConfig::default(),
             agents: Vec::new(),
-            events: EventsConfig::default(),
-            compaction: CompactionConfig::default(),
-            memory: MemoryConfig::default(),
-        }
+             events: EventsConfig::default(),
+              compaction: CompactionConfig::default(),
+              memory: MemoryConfig::default(),
+              search: SearchConfig::default(),
+              mixture_of_agents: MixtureOfAgentsConfig::default(),
+          }
     }
 }
 
@@ -1262,5 +1307,135 @@ mod multi_agent_tests {
         assert_eq!(config.agents.len(), 1);
         assert_eq!(config.agents[0].name, "researcher");
         assert!(config.agent.identity.is_none());
+    }
+
+    #[test]
+    fn test_search_config_default() {
+        let config = SearchConfig::default();
+        assert_eq!(config.provider, SearchProviderKind::DuckDuckGo);
+        assert!(config.api_key.is_none());
+    }
+
+    #[test]
+    fn test_search_config_duckduckgo() {
+        let config = SearchConfig {
+            provider: SearchProviderKind::DuckDuckGo,
+            api_key: None,
+        };
+        assert_eq!(config.provider, SearchProviderKind::DuckDuckGo);
+    }
+
+    #[test]
+    fn test_search_config_brave_with_key() {
+        let config = SearchConfig {
+            provider: SearchProviderKind::Brave,
+            api_key: Some("brave-key".to_string()),
+        };
+        assert_eq!(config.provider, SearchProviderKind::Brave);
+        assert_eq!(config.api_key, Some("brave-key".to_string()));
+    }
+
+    #[test]
+    fn test_search_config_bing_with_key() {
+        let config = SearchConfig {
+            provider: SearchProviderKind::Bing,
+            api_key: Some("bing-key".to_string()),
+        };
+        assert_eq!(config.provider, SearchProviderKind::Bing);
+        assert_eq!(config.api_key, Some("bing-key".to_string()));
+    }
+
+    #[test]
+    fn test_search_config_google_with_key() {
+        let config = SearchConfig {
+            provider: SearchProviderKind::Google,
+            api_key: Some("google-key".to_string()),
+        };
+        assert_eq!(config.provider, SearchProviderKind::Google);
+        assert_eq!(config.api_key, Some("google-key".to_string()));
+    }
+
+    #[test]
+    fn test_search_provider_serialization() {
+        let config = SearchConfig {
+            provider: SearchProviderKind::Brave,
+            api_key: Some("test-key".to_string()),
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: SearchConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(restored.provider, SearchProviderKind::Brave);
+        assert_eq!(restored.api_key, Some("test-key".to_string()));
+    }
+
+    #[test]
+    fn test_app_config_search_field_roundtrip() {
+        let mut config = AppConfig::default();
+        config.search.provider = SearchProviderKind::Brave;
+        config.search.api_key = Some("custom-key".to_string());
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(restored.search.provider, SearchProviderKind::Brave);
+        assert_eq!(restored.search.api_key, Some("custom-key".to_string()));
+    }
+
+    #[test]
+    fn test_app_config_default_search() {
+        let config = AppConfig::default();
+        assert_eq!(config.search.provider, SearchProviderKind::DuckDuckGo);
+        assert!(config.search.api_key.is_none());
+    }
+    
+    #[test]
+    fn test_moa_config_default() {
+        let config = MixtureOfAgentsConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.num_layers, 0);
+        assert!(config.agents_per_layer.is_empty());
+    }
+    
+    #[test]
+    fn test_moa_config_validation() {
+        let mut config = MixtureOfAgentsConfig::default();
+        config.enabled = true;
+        config.num_layers = 3;
+        config.agents_per_layer = vec![2, 2, 1];
+        
+        assert!(config.validate());
+        assert_eq!(config.total_agents(), 5);
+    }
+    
+    #[test]
+    fn test_moa_config_serialization() {
+        let config = MixtureOfAgentsConfig {
+            enabled: true,
+            num_layers: 2,
+            agents_per_layer: vec![3, 2],
+        };
+        
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: MixtureOfAgentsConfig = serde_yaml::from_str(&yaml).unwrap();
+        
+        assert!(restored.enabled);
+        assert_eq!(restored.num_layers, 2);
+        assert_eq!(restored.agents_per_layer, vec![3, 2]);
+    }
+    
+    #[test]
+    fn test_app_config_with_moa() {
+        let mut config = AppConfig::default();
+        config.mixture_of_agents = MixtureOfAgentsConfig {
+            enabled: true,
+            num_layers: 3,
+            agents_per_layer: vec![2, 2, 1],
+        };
+        
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let restored: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+        
+        assert!(restored.mixture_of_agents.enabled);
+        assert_eq!(restored.mixture_of_agents.num_layers, 3);
+        assert_eq!(restored.mixture_of_agents.total_agents(), 5);
     }
 }

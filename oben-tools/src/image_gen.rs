@@ -9,12 +9,14 @@ const FLUX_BASE: &str = "https://api.flux.ai/v1";
 const MIDJOURNEY_BASE: &str = "https://api.midjourney.com/v1";
 const STABLE_DIFFUSION_BASE: &str = "https://api.stability.ai/v1";
 const STABLE_VIDEO_BASE: &str = "https://api.stability.ai/v2beta";
+const LUMA_BASE: &str = "https://api.lumalabs.ai/dream-machine/v1";
 
 const ENV_OPENAI: &str = "OPENAI_API_KEY";
 const ENV_FLUX: &str = "FLUX_API_KEY";
 const ENV_MIDJOURNEY: &str = "MIDJOURNEY_API_KEY";
 const ENV_STABLE_DIFFUSION: &str = "STABLE_DIFFUSION_API_KEY";
 const ENV_STABLE_VIDEO: &str = "STABLE_VIDEO_API_KEY";
+const ENV_LUMA: &str = "LUMA_API_KEY";
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -23,10 +25,10 @@ const ENV_STABLE_VIDEO: &str = "STABLE_VIDEO_API_KEY";
 fn make_image_gen_tool() -> ToolMeta {
     ToolMeta {
         name: "image_generation".into(),
-        description: "Generate images from text prompts. Supports OpenAI DALL-E, FLUX, Midjourney, Stable Diffusion, and Stable Video.".into(),
+        description: "Generate images from text prompts. Supports OpenAI DALL-E, FLUX, Midjourney, Stable Diffusion, Stable Video, and Luma.".into(),
         parameters: ToolParameters::Flat(vec![
             ToolParameter::required("prompt", "Text prompt describing the desired image", "string"),
-            ToolParameter::optional("model", "Model to use: dall-e-3, flux, midjourney, stable-diffusion-xl, stable-video", "string"),
+            ToolParameter::optional("model", "Model to use: dall-e-3, flux, midjourney, stable-diffusion-xl, stable-video, luma", "string"),
             ToolParameter::optional("size", "Image size: 1024x1024, 1024x1792, 1792x1024", "string"),
             ToolParameter::optional("quality", "Image quality: standard, hd", "string"),
         ]),
@@ -146,6 +148,43 @@ async fn generate_midjourney_image(
     Ok(image_url.to_string())
 }
 
+async fn generate_luma_image(
+    client: &reqwest::Client,
+    prompt: &str,
+) -> anyhow::Result<String> {
+    let api_key = std::env::var(ENV_LUMA)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("LUMA_API_KEY not set"))?;
+
+    let response = client
+        .post(format!("{}/generations", LUMA_BASE))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .header("accept", "application/json")
+        .json(&serde_json::json!({
+            "prompt": prompt,
+            "aspectRatio": "16:9",
+            "model": "lumalabs/dream-machine-v1"
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!("Luma API error: {} - {}", status, body));
+    }
+
+    let json: serde_json::Value = response.json().await?;
+    let image_url = json["output"]["video"]
+        .as_str()
+        .or_else(|| json["url"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("No image URL in response"))?;
+
+    Ok(image_url.to_string())
+}
+
 async fn generate_stable_diffusion_image(
     client: &reqwest::Client,
     prompt: &str,
@@ -232,7 +271,7 @@ impl Tool for ImageGenTool {
         "image_generation"
     }
     fn description(&self) -> &str {
-        "Generate images from text prompts. Supports OpenAI DALL-E, FLUX, Midjourney, Stable Diffusion, and Stable Video."
+        "Generate images from text prompts. Supports OpenAI DALL-E, FLUX, Midjourney, Stable Diffusion, Stable Video, and Luma."
     }
     async fn execute(&self, call: &ToolCall) -> ToolResult {
         let prompt = call.required_str("prompt").unwrap_or_default();
@@ -257,6 +296,9 @@ impl Tool for ImageGenTool {
             }
             "stable-video" => {
                 generate_stable_video_image(&client, &prompt, model).await
+            }
+            "luma" => {
+                generate_luma_image(&client, &prompt).await
             }
             _ => Err(anyhow::anyhow!("Unknown image generation model: {}", model)),
         };

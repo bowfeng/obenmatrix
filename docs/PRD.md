@@ -32,7 +32,7 @@
 | Built-in tools | 18 |
 | Skill categories | 25/20+ ✅ |
 
-**Status: 🟡 Phase 1 — Core Engine**
+**Status: 🟢 Phase 1 Complete | 🟡 Phase 2 — LLM Consolidation (curator-llm-consolidation plan in progress)**
 
 ```
 ✅ M1: Core Agent Loop       Workspace, types, config, conversation loop, transport, CLI
@@ -62,6 +62,7 @@
 | 2026-05-22 | ✅ Tier 1: Core Reliability | Retry with jittered backoff, error classification, iteration budget with 80%/90% warnings, cross-thread interrupt + steer, message sanitization. Closes #25 |
 | 2026-05-18 | ✅ LLM-based summarization | `generate_summary()` no longer a stub — actually calls LLM via `reqwest` with structured prompt template (Active Task, Goal, Constraints, Completed Actions, etc.), iterative updates, and focus topic support. Falls back to static placeholder on LLM failure. CLI: `oben sessions compact [-s SESSION] [-f FOCUS]` |
 | 2026-05-23 | 🔄 Workspace refactor | `oben_conversation` → `oben-agent` (122 unit tests, expanded with retry/fallback/interrupt/sanitize/stream processor/scrubbers/callbacks/concurrent dispatch). Root binary → thin wrapper delegating to `oben-cli`. New `oben-tui` crate with chat/config/sessions/setup panels + style system. |
+| 2026-07-16 | ✅ Curator LLM Consolidation | Implemented LLM-powered skill consolidation pass: single-turn PromptCoordinator, reconciliation (absorbed_into → model → heuristic), report generation (run.json, REPORT.md, cron_rewrites.json), cron job rewriting, CLI flag `--consolidate`. Added 22 new tests. Curator now has 38 passing tests. |
 
 ## Done ✅
 
@@ -77,9 +78,9 @@
 | **oben-skills** | 70 | ✅ | SkillLoader (recursive SKILL.md discovery, YAML/TXT/MD), SkillManager (enable/disable/auto-use/instruction assembly + preprocessing config), frontmatter parsing, platform matching, tags/config/conditions extraction, qualified name parsing, external dirs support, skill_preprocessing (template vars ${SKILL_DIR}/${SESSION_ID}, inline shell !`cmd` expansion), 70 unit tests |
 | **oben-goals** | 68 | ✅ | PlanNode (tree, builder, artifacts), PlanState (find/count/markdown/save/load), judge verdict parser, GoalState (turn budget, parse failures auto-pause), plan parser, node complete/failure parser, roundtrip JSON/Markdown |
 | **oben-gateway** | 13 | ✅ | Gateway struct, PlatformAdapter trait, Incoming/OutgoingMessage, mock adapter support |
-| **oben-curator** | 17 | ✅ | Usage tracking (use/view/patch counts), lifecycle states (active→stale→archived), scheduler (pause/resume), report generation (text + JSON) |
+| **oben-curator** | 38 | ✅ | Usage tracking (use/view/patch counts), lifecycle states (active→stale→archived), scheduler (pause/resume), report generation (text + JSON), LLM consolidation pass with heuristic fallback, cron job reference updates |
 
-**Total: 489 unit tests passing across 13 crates**
+**Total: 510 unit tests passing across 14 crates** (+22 new tests for curator-llm-consolidation)
 
 ---
 

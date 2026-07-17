@@ -9,12 +9,14 @@ const RUNWAYML_BASE: &str = "https://api.runwayml.com/v1";
 const STABLE_VIDEO_BASE: &str = "https://api.stability.ai/v2beta";
 const SYNTHESIA_BASE: &str = "https://api.synthesia.io/v2";
 const PIKA_BASE: &str = "https://api.pika.art/v1";
+const LUMA_BASE: &str = "https://api.lumalabs.ai/dream-machine/v1";
 
 const ENV_OPENAI: &str = "OPENAI_API_KEY";
 const ENV_RUNWAYML: &str = "RUNWAYML_API_KEY";
 const ENV_STABLE_VIDEO: &str = "STABLE_VIDEO_API_KEY";
 const ENV_SYNTHESIA: &str = "SYNTHESIA_API_KEY";
 const ENV_PIKA: &str = "PIKA_API_KEY";
+const ENV_LUMA: &str = "LUMA_API_KEY";
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -23,10 +25,10 @@ const ENV_PIKA: &str = "PIKA_API_KEY";
 fn make_video_gen_tool() -> ToolMeta {
     ToolMeta {
         name: "video_generation".into(),
-        description: "Generate videos from text prompts. Supports OpenAI, Runway ML, Stable Video, Synthesia, and Pika.".into(),
+        description: "Generate videos from text prompts. Supports OpenAI, Runway ML, Stable Video, Synthesia, Pika, and Luma.".into(),
         parameters: ToolParameters::Flat(vec![
             ToolParameter::required("prompt", "Text prompt describing the desired video", "string"),
-            ToolParameter::optional("model", "Model to use: video-1, runway-gen3a, stable-video, synthesia, pika", "string"),
+            ToolParameter::optional("model", "Model to use: video-1, runway-gen3a, stable-video, synthesia, pika, luma", "string"),
             ToolParameter::optional("duration", "Video duration in seconds", "number"),
             ToolParameter::optional("size", "Video resolution", "string"),
         ]),
@@ -221,6 +223,45 @@ async fn generate_pika_video(
     Ok(video_url.to_string())
 }
 
+async fn generate_luma_video(
+    client: &reqwest::Client,
+    prompt: &str,
+    duration: u32,
+) -> anyhow::Result<String> {
+    let api_key = std::env::var(ENV_LUMA)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("LUMA_API_KEY not set"))?;
+
+    let response = client
+        .post(format!("{}/generations", LUMA_BASE))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .header("accept", "application/json")
+        .json(&serde_json::json!({
+            "prompt": prompt,
+            "duration": duration,
+            "aspectRatio": "16:9",
+            "model": "lumalabs/dream-machine-v1"
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!("Luma Video API error: {} - {}", status, body));
+    }
+
+    let json: serde_json::Value = response.json().await?;
+    let video_url = json["output"]["video"]
+        .as_str()
+        .or_else(|| json["url"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("No video URL in response"))?;
+
+    Ok(video_url.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Tool execution
 // ---------------------------------------------------------------------------
@@ -231,7 +272,7 @@ impl Tool for VideoGenTool {
         "video_generation"
     }
     fn description(&self) -> &str {
-        "Generate videos from text prompts. Supports OpenAI, Runway ML, Stable Video, Synthesia, and Pika."
+        "Generate videos from text prompts. Supports OpenAI, Runway ML, Stable Video, Synthesia, Pika, and Luma."
     }
     async fn execute(&self, call: &ToolCall) -> ToolResult {
         let prompt = call.required_str("prompt").unwrap_or_default();
@@ -259,6 +300,9 @@ impl Tool for VideoGenTool {
             }
             "pika" => {
                 generate_pika_video(&client, &prompt, duration).await
+            }
+            "luma" => {
+                generate_luma_video(&client, &prompt, duration).await
             }
             _ => Err(anyhow::anyhow!("Unknown video generation model: {}", model)),
         };

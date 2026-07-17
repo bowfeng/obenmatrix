@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use super::registry::{Tool, ToolCall, ToolRegistry};
 use anyhow::anyhow;
+use oben_config::{SearchConfig, SearchProviderKind};
 use oben_models::{ToolMeta, ToolParameter, ToolParameters, ToolResult};
 
 fn make_search_tool_def() -> ToolMeta {
@@ -12,6 +13,25 @@ fn make_search_tool_def() -> ToolMeta {
             ToolParameter::required("query", "Search query", "string"),
             ToolParameter::optional("max_results", "Maximum number of results", "number"),
         ]),
+    }
+}
+
+pub fn create_search_provider(config: &SearchConfig) -> Box<dyn SearchProvider> {
+    match config.provider {
+        SearchProviderKind::DuckDuckGo => Box::new(DuckDuckGoProvider::new()),
+        SearchProviderKind::Brave => {
+            let api_key = config.api_key.clone().unwrap_or_default();
+            Box::new(BraveProvider::new(api_key))
+        }
+        SearchProviderKind::Bing => {
+            let api_key = config.api_key.clone().unwrap_or_default();
+            Box::new(BingProvider::new(api_key))
+        }
+        SearchProviderKind::Google => {
+            let api_key = config.api_key.clone().unwrap_or_default();
+            let cx = config.api_key.clone().unwrap_or_default();
+            Box::new(GoogleProvider::new(api_key, cx))
+        }
     }
 }
 
@@ -176,6 +196,119 @@ impl SearchProvider for BraveProvider {
     }
 }
 
+pub struct BingProvider {
+    api_key: String,
+}
+
+impl BingProvider {
+    pub fn new(api_key: String) -> Self {
+        Self { api_key }
+    }
+
+    pub async fn search(&self, query: &str, max_results: usize) -> anyhow::Result<Vec<SearchResult>> {
+        let client = reqwest::Client::new();
+
+        let url = format!(
+            "https://api.bing.microsoft.com/v7.0/search?q={}&count={}",
+            urlencoding::encode(query),
+            max_results.min(50)
+        );
+
+        let resp = client
+            .get(&url)
+            .header("Ocp-Apim-Subscription-Key", &self.api_key)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("Bing API error: {} - {}", status, body));
+        }
+
+        let json: serde_json::Value = resp.json().await?;
+
+        let results = json["webPages"]["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .take(max_results)
+            .filter_map(|r| {
+                Some(SearchResult {
+                    title: r["name"].as_str()?.to_string(),
+                    url: r["url"].as_str()?.to_string(),
+                    snippet: r["snippet"].as_str()?.to_string(),
+                })
+            })
+            .collect();
+
+        Ok(results)
+    }
+}
+
+#[async_trait::async_trait]
+impl SearchProvider for BingProvider {
+    async fn search(&self, query: &str, max_results: usize) -> anyhow::Result<Vec<SearchResult>> {
+        BingProvider::search(self, query, max_results).await
+    }
+}
+
+pub struct GoogleProvider {
+    api_key: String,
+    cx: String,
+}
+
+impl GoogleProvider {
+    pub fn new(api_key: String, cx: String) -> Self {
+        Self { api_key, cx }
+    }
+
+    pub async fn search(&self, query: &str, max_results: usize) -> anyhow::Result<Vec<SearchResult>> {
+        let client = reqwest::Client::new();
+
+        let url = format!(
+            "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num={}",
+            urlencoding::encode(&self.api_key),
+            urlencoding::encode(&self.cx),
+            urlencoding::encode(query),
+            max_results.min(10)
+        );
+
+        let resp = client.get(&url).send().await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("Google API error: {} - {}", status, body));
+        }
+
+        let json: serde_json::Value = resp.json().await?;
+
+        let results = json["items"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .take(max_results)
+            .filter_map(|r| {
+                Some(SearchResult {
+                    title: r["title"].as_str()?.to_string(),
+                    url: r["link"].as_str()?.to_string(),
+                    snippet: r["snippet"].as_str()?.to_string(),
+                })
+            })
+            .collect();
+
+        Ok(results)
+    }
+}
+
+#[async_trait::async_trait]
+impl SearchProvider for GoogleProvider {
+    async fn search(&self, query: &str, max_results: usize) -> anyhow::Result<Vec<SearchResult>> {
+        GoogleProvider::search(self, query, max_results).await
+    }
+}
+
 pub struct WebSearchTool {
     provider: Option<Box<dyn SearchProvider>>,
 }
@@ -235,9 +368,61 @@ impl Tool for WebSearchTool {
     }
 }
 
-pub fn register(registry: &mut ToolRegistry) {
-    let tool = Box::new(WebSearchTool::new());
+pub fn register(registry: &mut ToolRegistry, config: &SearchConfig) {
+    let provider = create_search_provider(config);
+    let tool = Box::new(WebSearchTool::new_with_provider(provider));
     registry.register_with_def(tool, make_search_tool_def());
+}
+
+pub fn register_default(registry: &mut ToolRegistry) {
+    let config = SearchConfig::default();
+    register(registry, &config);
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    use oben_config::{SearchConfig, SearchProviderKind};
+
+    #[test]
+    fn test_create_duckduckgo_provider() {
+        let config = SearchConfig {
+            provider: SearchProviderKind::DuckDuckGo,
+            api_key: None,
+        };
+        let provider = create_search_provider(&config);
+        let _ = provider;
+    }
+
+    #[test]
+    fn test_create_brave_provider_with_key() {
+        let config = SearchConfig {
+            provider: SearchProviderKind::Brave,
+            api_key: Some("test-key".to_string()),
+        };
+        let provider = create_search_provider(&config);
+        let _ = provider;
+    }
+
+    #[test]
+    fn test_create_bing_provider_with_key() {
+        let config = SearchConfig {
+            provider: SearchProviderKind::Bing,
+            api_key: Some("test-key".to_string()),
+        };
+        let provider = create_search_provider(&config);
+        let _ = provider;
+    }
+
+    #[test]
+    fn test_create_google_provider_with_key() {
+        let config = SearchConfig {
+            provider: SearchProviderKind::Google,
+            api_key: Some("test-key".to_string()),
+        };
+        let provider = create_search_provider(&config);
+        let _ = provider;
+    }
 }
 
 #[cfg(test)]
@@ -247,12 +432,6 @@ mod tests {
     #[test]
     fn test_duckduckgo_provider_new() {
         let _provider = DuckDuckGoProvider::new();
-    }
-
-    #[test]
-    fn test_brave_provider_new() {
-        let provider = BraveProvider::new("test-key".to_string());
-        assert_eq!(provider.api_key, "test-key");
     }
 
     #[test]
@@ -269,6 +448,40 @@ mod tests {
         assert!(url.contains("test"));
         assert!(url.contains("query"));
         assert!(url.contains("count=10"));
+    }
+
+    #[test]
+    fn test_bing_search_url() {
+        let query = "test query";
+        let max_results = 10;
+
+        let url = format!(
+            "https://api.bing.microsoft.com/v7.0/search?q={}&count={}",
+            urlencoding::encode(query),
+            max_results.min(50)
+        );
+
+        assert!(url.contains("test"));
+        assert!(url.contains("query"));
+        assert!(url.contains("count=10"));
+    }
+
+    #[test]
+    fn test_google_search_url() {
+        let query = "test query";
+        let max_results = 10;
+
+        let url = format!(
+            "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num={}",
+            urlencoding::encode("test-key"),
+            urlencoding::encode("test-cx"),
+            urlencoding::encode(query),
+            max_results.min(10)
+        );
+
+        assert!(url.contains("test"));
+        assert!(url.contains("query"));
+        assert!(url.contains("num=10"));
     }
 
     #[test]

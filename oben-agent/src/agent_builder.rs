@@ -19,7 +19,7 @@ use crate::Agent;
 use oben_config::AppConfig;
 use oben_models::providers::TransportProvider;
 use oben_sessions::memory_provider::{discover_memory_providers, MemoryManager};
-use oben_tools::ToolRegistry;
+use oben_tools::{ToolRegistry, search};
 
 /// Builder for [`Agent`].
 ///
@@ -150,10 +150,10 @@ impl AgentBuilder {
         let memory_manager: MemoryManager = discover_memory_providers(Some(agent_name));
         let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager));
 
-        // Register memory tools -- unwrap the Arc to get &mut access, then re-wrap.
         let mut tools_inner = Arc::try_unwrap(tools).unwrap_or_else(|_| {
             panic!("tools Arc should be unique at build time")
         });
+        search::register(&mut tools_inner, &config.search);
         register_memory_tools(&mut tools_inner, Arc::clone(&memory_manager));
         let tools = Arc::new(tools_inner);
 

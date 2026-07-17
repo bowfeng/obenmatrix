@@ -15,6 +15,9 @@ pub struct Cli {
     #[arg(long)]
     pub profile: Option<String>,
 
+    #[arg(long, help = "Enable Mixture of Agents (MoA) coordination mode")]
+    pub moa: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -30,6 +33,9 @@ pub enum Commands {
         /// Without a value, continues the most recent session.
         #[arg(short, long = "continue", num_args=0..=1, default_missing_value="latest")]
         continue_session: Option<String>,
+        /// Search provider to use: duckduckgo, brave, bing, google
+        #[arg(long)]
+        search_provider: Option<String>,
     },
     /// Run a one-shot prompt
     Run {
@@ -39,6 +45,9 @@ pub enum Commands {
         /// Stream text output as it arrives
         #[arg(long)]
         stream: bool,
+        /// Search provider to use: duckduckgo, brave, bing, google
+        #[arg(long)]
+        search_provider: Option<String>,
     },
     /// Setup/configure the agent
     Setup,
@@ -242,7 +251,11 @@ pub enum CuratorCommand {
         skill: String,
     },
     /// Run the curator review
-    Run,
+    Run {
+        /// Enable LLM consolidation pass (LLM-powered umbrella building)
+        #[arg(long)]
+        consolidate: bool,
+    },
     /// Show curator status
     Status,
 }

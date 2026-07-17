@@ -5,6 +5,7 @@
 pub mod config;
 pub mod defaults;
 pub mod env;
+pub mod mixture_of_agents;
 pub mod wizard;
 
 pub use config::*;

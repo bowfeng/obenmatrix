@@ -38,13 +38,15 @@ pub async fn run_cli() -> Result<()> {
     oben_utils::logging::init_panic_hook();
 
     let profile = cli.profile.as_deref();
+    let _moa_enabled = cli.moa; // Reserved for future MoA integration
 
     match cli.command {
         Commands::Chat {
             no_stream,
             continue_session,
+            search_provider: _,
         } => run_chat(!no_stream, continue_session.as_deref(), profile).await,
-        Commands::Run { prompt, stream } => run_one_shot(&prompt, stream, profile).await,
+        Commands::Run { prompt, stream, search_provider: _ } => run_one_shot(&prompt, stream, profile).await,
         Commands::Setup => run_setup(profile),
         Commands::Config { action } => run_config(action, profile).await,
         Commands::Tools => list_tools(),
@@ -100,7 +102,7 @@ pub async fn run_cli() -> Result<()> {
         },
         Commands::Curator { action } => match action {
             CuratorCommand::Pin { skill } => run_curator_pin(&skill),
-            CuratorCommand::Run => run_curator_run(),
+            CuratorCommand::Run { consolidate } => run_curator_run(consolidate).await,
             CuratorCommand::Status => run_curator_status(),
         },
     }
@@ -1130,13 +1132,25 @@ fn run_curator_pin(skill_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_curator_run() -> Result<()> {
-    let config = CuratorConfig::default();
+async fn run_curator_run(consolidate: bool) -> Result<()> {
+    let config = CuratorConfig {
+        consolidate,
+        ..CuratorConfig::default()
+    };
     let mut curator = Curator::new(config);
     
     let idle_hours = 168.0; // Default 7 days
     let result = curator.run(idle_hours);
     println!("{}", result);
+    
+        if consolidate {
+            let consolidation = curator.apply_consolidation_pass(false);
+        println!("\nConsolidation Results:");
+        println!("  Consolidated: {:?}", consolidation.consolidated);
+        println!("  Pruned: {:?}", consolidation.pruned);
+        println!("  Dry run: {}", consolidation.dry_run);
+    }
+    
     Ok(())
 }
 

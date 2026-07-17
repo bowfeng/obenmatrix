@@ -16,6 +16,11 @@ tracing.workspace = true
 tokio = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 dirs.workspace = true
+oben-config = { path = "../oben-config" }
+oben-agent = { path = "../oben-agent" }
+oben-tools = { path = "../oben-tools" }
+oben-models = { path = "../oben-models" }
+oben-sessions = { path = "../oben-sessions" }
 
 [dev-dependencies]
 tempfile.workspace = true
