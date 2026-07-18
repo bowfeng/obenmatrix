@@ -67,23 +67,16 @@ pub fn drop_thinking_only_assistant(messages: &mut Vec<Message>) {
     }
 }
 
-/// Check if a message is a "thinking-only" assistant message.
-///
-/// An assistant message is thinking-only when:
-/// - Role is Assistant
-/// - Content is empty or whitespace only
 pub fn is_thinking_only_assistant(msg: &Message) -> bool {
-    info!("is_thinking_only_assistant: START msg.role={:?}", msg.role);
     if msg.role != MessageRole::Assistant {
-        info!("is_thinking_only_assistant: NOT assistant -> false");
         return false;
     }
 
-    // Check if content is empty or only whitespace
     let text = msg.content.to_text();
     let is_empty = text.trim().is_empty();
-    info!("is_thinking_only_assistant: text={:?} len={} is_empty={} tool_calls={:?}", text, text.len(), is_empty, msg.tool_calls);
-    is_empty
+    let has_tool_calls = msg.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
+
+    is_empty && !has_tool_calls
 }
 
 /// Check whether a user message contains non-text content (images/parts with images).
