@@ -27,7 +27,7 @@ fn rotate_logs(log_dir: &std::path::Path) {
         }
     });
 
-    for old_file in &log_files[5..] {
+    for old_file in log_files.iter().skip(5) {
         let _ = std::fs::remove_file(old_file.path());
     }
 }
