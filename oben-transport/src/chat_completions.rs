@@ -715,7 +715,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
 
         let resp: ChatResponse = response.json().await?;
 
-        debug!(
+        tracing::trace!(
             "LLM response: choices={:?}, usage={:?}",
             resp.choices
                 .iter()
@@ -741,7 +741,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
             .ok_or_else(|| anyhow::anyhow!("No response choices"))?;
         let text = choice.message.content.clone().unwrap_or_default();
         let preview: String = text.chars().take(100).collect();
-        debug!(
+        tracing::trace!(
             "Extracted text: len={}, first_100={:?}",
             text.len(),
             preview
@@ -940,7 +940,7 @@ impl oben_models::providers::TransportProvider for ChatCompletionsTransport {
             tool_calls = fallback;
         }
 
-        tracing::info!(
+        tracing::trace!(
             delta_count,
             final_text_len = final_text.len(),
             final_text_preview = ?final_text.chars().take(80).collect::<String>(),
