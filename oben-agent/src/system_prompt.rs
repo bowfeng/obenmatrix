@@ -444,7 +444,14 @@ pub fn build_system_prompt(
              Do NOT use it for: single mechanical steps (do it directly), tasks \
              needing user interaction (subagents can't call `clarify`), trivial tasks, \
              or work that must outlive the current turn (use cronjob instead). Each \
-             subagent should do 2-5 minutes of focused work.",
+             subagent should do 2-5 minutes of focused work.\n\
+             \n\
+             ## Tool Results and Completion\n\
+             When subagents complete, their results arrive as tool messages with `status: \"completed\"`. \
+             These are responses to your previous tool calls - do NOT make new tool calls based on \
+             the original user message alone. Process completed results and respond to the user, \
+             or wait for new user input. If a result shows `status: \"failed\"` or incomplete work, \
+             you may delegate again with adjusted instructions.",
         );
     }
     if !tool_guidance.is_empty() {
@@ -453,7 +460,14 @@ pub fn build_system_prompt(
 
     // ── 3. Tool-use enforcement ────────────────────────────────────
     parts.push(
-        "## Execution Discipline\nYou MUST use your tools to take action — do not describe what you would do or plan to do without actually doing it. When you say you will perform an action, you MUST immediately make the corresponding tool call in the same response. Keep working until the task is actually complete.".to_string(),
+        "## Execution Discipline\nYou MUST use your tools to take action — do not describe what you would do or plan to do without actually doing it. When you say you will perform an action, you MUST immediately make the corresponding tool call in the same response. Keep working until the task is actually complete.\n\
+         \n\
+         ## When to Stop\n\
+         After receiving tool results, do not make additional tool calls based solely on old user messages. \
+         Tool results are responses to your previous calls - process them and either:\n\
+         - Report completion to the user\n\
+         - Make new tool calls only if the user requests something different\n\
+         - For subagent results, aggregate and present findings to the user".to_string(),
     );
 
     // ── 4. Skills index ────────────────────────────────────────────

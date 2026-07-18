@@ -156,6 +156,7 @@ async fn run_chat(stream: bool, continue_with: Option<&str>, profile: Option<&st
         config.context.max_messages.unwrap_or(100),
         config.max_spawn_depth.unwrap_or(3),
         Arc::clone(&shared_hooks),
+        Some("default".to_string()),
     );
     let spawn_fn = build_spawn_fn_wrapper(spawner, assembled.prompt.clone());
     let mut tools_for_agent = ToolRegistry::clone(&tools);
@@ -223,6 +224,7 @@ async fn run_one_shot(prompt: &str, stream: bool, profile: Option<&str>) -> Resu
         config.context.max_messages.unwrap_or(100),
         config.max_spawn_depth.unwrap_or(3),
         Arc::clone(&shared_hooks),
+        Some("default".to_string()),
     );
     let spawn_fn = build_spawn_fn_wrapper(spawner, system_prompt.clone());
     let mut tools_for_agent = ToolRegistry::clone(&tools);

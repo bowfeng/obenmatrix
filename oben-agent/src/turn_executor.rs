@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, debug};
 
 use crate::coordinator::termination::{
     BudgetRemedyPolicy, DefaultTurnTerminationPolicy, EmptyResponseRemedyPolicy,
@@ -129,12 +129,33 @@ impl TurnExecutor {
             )
             .await?;
 
-            // Sanitize
+            // Sanitize - dump messages before/after for debugging
+            #[cfg(debug_assertions)]
+            {
+                info!("turn_executor: sanitize_messages BEFORE (messages count={})", session.messages.len());
+                for (i, m) in session.messages.iter().enumerate() {
+                    info!("  msg[{}]: role={:?} content={:?}", i, m.role, m.content.to_text());
+                }
+            }
             sanitize_messages(&mut session.messages);
+            #[cfg(debug_assertions)]
+            {
+                info!("turn_executor: sanitize_messages AFTER (messages count={})", session.messages.len());
+                for (i, m) in session.messages.iter().enumerate() {
+                    info!("  msg[{}]: role={:?} content={:?}", i, m.role, m.content.to_text());
+                }
+            }
 
             // API call
             let memory_context = config.memory_context.as_deref();
             let messages = Self::with_memory_context(&session.messages, memory_context).await;
+            #[cfg(debug_assertions)]
+            {
+                info!("turn_executor: messages for API call (count={})", messages.len());
+                for (i, m) in messages.iter().enumerate() {
+                    info!("  msg[{}]: role={:?} content={:?}", i, m.role, m.content.to_text());
+                }
+            }
             let response = Self::api_call_with_retry(
                 transport,
                 &messages,
@@ -278,7 +299,43 @@ impl TurnExecutor {
             .session_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("Session missing after resolution: {}", id))?;
 
-        session_ref.messages.push(user_message);
+        #[cfg(debug_assertions)]
+        {
+            let msg_count_before = session_ref.messages.len();
+            debug!("pre_turn_setup: session has {} messages before push", msg_count_before);
+        }
+
+        // Check if the session already has a trailing user message with identical content
+        // If so, skip pushing to avoid duplicates (happens when same user input is processed twice)
+        let user_content = user_message.content.to_text();
+        let last_msg = session_ref.messages.last();
+        let msg_is_duplicate = matches!(
+            (last_msg, &user_message.content),
+            (Some(Message { content: MessageContent::Text(existing_text), .. }), MessageContent::Text(new_text))
+            if existing_text == new_text
+        );
+
+        // Check for existing trailing user message - debug info for root cause analysis
+        if session_ref.messages.len() > 0 && session_ref.messages.last().unwrap().role == MessageRole::User {
+            let last_msg_content = session_ref.messages.last().unwrap().content.to_text();
+            debug!(
+                "user message already exists in session: content.len={} (count={})",
+                last_msg_content.len(),
+                session_ref.messages.len()
+            );
+            debug!(
+                "attempting to push: content.len={} (count={})",
+                user_content.len(),
+                session_ref.messages.len() + 1
+            );
+        }
+
+        if !msg_is_duplicate {
+            session_ref.messages.push(user_message);
+            debug!("pushed user message to session (content length={})", user_content.len());
+        } else {
+            debug!("skipping duplicate user message push");
+        }
         context_window_manager.on_message_received(chrono::Utc::now());
 
         if let Some(ref hooks) = config.hooks {

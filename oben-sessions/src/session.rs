@@ -114,6 +114,7 @@ pub struct SessionMetadata {
     pub handoff_state: Option<String>,
     pub handoff_platform: Option<String>,
     pub handoff_error: Option<String>,
+    pub agent_name: Option<String>,
     /// Session origin metadata for routing and context injection.
     pub origin: Option<SessionOrigin>,
     /// Token tracking: last API-reported prompt tokens (for accurate compression check).

@@ -58,6 +58,7 @@ pub use interaction::*;
 pub use interrupt::*;
 pub use message_sanitize::*;
 pub use nudge::NudgeConfig;
+pub use delegate::SubagentSpawner;
 pub use prompt::*;
 pub use retry::*;
 pub use stream_processor::{StreamingContextScrubber, StreamingThinkScrubber};

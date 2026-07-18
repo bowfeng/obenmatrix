@@ -3,6 +3,8 @@
 /// Mirrors Hermes' message sanitization pipeline:
 /// 1. Drop "thinking-only" assistant messages
 /// 2. Merge consecutive user/system messages
+use tracing::info;
+use tracing::debug;
 use oben_models::{Message, MessageContent, MessagePart, MessageRole};
 
 /// Run the full sanitization pipeline on a message list.
@@ -41,38 +43,47 @@ pub fn sanitize_messages(messages: &mut Vec<Message>) {
 ///
 /// These cause API errors on providers that convert reasoning into thinking blocks.
 pub fn drop_thinking_only_assistant(messages: &mut Vec<Message>) {
-    messages.retain(|msg| !is_thinking_only_assistant(msg));
+    info!("drop_thinking_only_assistant: called with {} messages", messages.len());
+    let before_count = messages.len();
+    let mut dropped_count = 0;
+    messages.retain(|msg| {
+        let is_thinking = is_thinking_only_assistant(msg);
+        if msg.role == MessageRole::Assistant {
+            info!("drop_thinking_only_assistant: checking assistant msg, is_thinking={}", is_thinking);
+            if is_thinking {
+                let text = msg.content.to_text();
+                info!("drop_thinking_only_assistant: dropping empty msg content=\"{}\" len={}", text, text.len());
+                dropped_count += 1;
+            }
+        }
+        !is_thinking
+    });
+    if dropped_count > 0 {
+        info!("drop_thinking_only_assistant: removed {} thinking-only messages", dropped_count);
+    }
+    let after_count = messages.len();
+    if before_count != after_count {
+        info!("drop_thinking_only_assistant: before={} after={} removed={}", before_count, after_count, before_count - after_count);
+    }
 }
 
 /// Check if a message is a "thinking-only" assistant message.
 ///
 /// An assistant message is thinking-only when:
 /// - Role is Assistant
-/// - No tool calls
 /// - Content is empty or whitespace only
 pub fn is_thinking_only_assistant(msg: &Message) -> bool {
+    info!("is_thinking_only_assistant: START msg.role={:?}", msg.role);
     if msg.role != MessageRole::Assistant {
-        return false;
-    }
-
-    // Must have no tool calls
-    if msg.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty()) {
+        info!("is_thinking_only_assistant: NOT assistant -> false");
         return false;
     }
 
     // Check if content is empty or only whitespace
-    match &msg.content {
-        MessageContent::Text(text) => text.trim().is_empty(),
-        MessageContent::Parts(parts) => {
-            parts.iter().all(|p| {
-                match p {
-                    MessagePart::Text(t) => t.trim().is_empty(),
-                    _ => false, // non-text parts mean it's not thinking-only
-                }
-            })
-        }
-        MessageContent::Image { .. } => false,
-    }
+    let text = msg.content.to_text();
+    let is_empty = text.trim().is_empty();
+    info!("is_thinking_only_assistant: text={:?} len={} is_empty={} tool_calls={:?}", text, text.len(), is_empty, msg.tool_calls);
+    is_empty
 }
 
 /// Check whether a user message contains non-text content (images/parts with images).

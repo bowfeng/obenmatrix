@@ -75,6 +75,7 @@ fn make_spawner(transport: Arc<MockTransport>) -> (SubagentSpawner, Arc<ToolRegi
         100, // max_messages
         3,   // max_spawn_depth
         hooks,
+        None,
     );
 
     (spawner, tools)

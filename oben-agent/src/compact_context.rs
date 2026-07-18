@@ -78,6 +78,11 @@ impl BuiltinContextWindowManager {
         this
     }
 
+    /// Set the active session key directly (used for child agents).
+    pub fn set_active_session_key(&mut self, session_id: String, session_name: String) {
+        self.active_session_key = Some((session_id, session_name));
+    }
+
     fn is_thrashing(&self) -> bool {
         self.ineffective_compression_count >= self.config.max_ineffective_consecutive
     }
@@ -380,6 +385,10 @@ impl ContextWindowManager for BuiltinContextWindowManager {
             warn!("Time-based split failed: continuing with parent {}", parent_id);
             None
         }
+    }
+
+    fn set_active_session_key(&mut self, session_id: String, session_name: String) {
+        self.active_session_key = Some((session_id, session_name));
     }
 
 }

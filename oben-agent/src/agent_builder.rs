@@ -150,9 +150,16 @@ impl AgentBuilder {
         let memory_manager: MemoryManager = discover_memory_providers(Some(agent_name));
         let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager));
 
-        let mut tools_inner = Arc::try_unwrap(tools).unwrap_or_else(|_| {
-            panic!("tools Arc should be unique at build time")
-        });
+        // If tools Arc is shared (e.g., in delegate scenarios), clone its contents
+        // instead of trying to unwrap. This allows multiple agents to have their
+        // own copies of tool definitions.
+        let mut tools_inner = match Arc::try_unwrap(tools) {
+            Ok(inner) => inner,
+            Err(arc_tools) => {
+                // Clone the registry when Arc is shared
+                (*arc_tools).clone()
+            }
+        };
         search::register(&mut tools_inner, &config.search);
         register_memory_tools(&mut tools_inner, Arc::clone(&memory_manager));
         let tools = Arc::new(tools_inner);

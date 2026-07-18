@@ -46,7 +46,7 @@ impl Default for TodoItem {
 pub fn parse_todos_from_text(text: &str) -> Vec<TodoItem> {
     let mut todos = Vec::new();
     
-    let patterns = [
+    let _patterns = [
         (r"TODO:\s*\[([^\]]+)\]\s*\[in_progress\]\s*(.+)", TodoStatus::InProgress),
         (r"TODO:\s*\[([^\]]+)\]\s*(.+)", TodoStatus::Pending),
         (r"DONE:\s*\[([^\]]+)\]\s*(.+)", TodoStatus::Completed),

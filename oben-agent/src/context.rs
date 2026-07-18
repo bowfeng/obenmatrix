@@ -163,6 +163,9 @@ pub trait ContextWindowManager: Send + Sync {
     /// and calling `on_session_split()` to sync CWM + SM.
     fn should_do_time_based_split(&mut self, session_manager: &mut dyn SessionManager) -> Option<String>;
 
+    /// Set the active session key directly (used for child agent delegation).
+    fn set_active_session_key(&mut self, session_id: String, session_name: String);
+
 }
 
 /// ── Blanket impl: Box<dyn ContextWindowManager> delegates to inner ────────────
@@ -215,5 +218,8 @@ impl ContextWindowManager for Box<dyn ContextWindowManager> {
     }
     fn should_do_time_based_split(&mut self, session_manager: &mut dyn SessionManager) -> Option<String> {
         (**self).should_do_time_based_split(session_manager)
+    }
+    fn set_active_session_key(&mut self, session_id: String, session_name: String) {
+        (**self).set_active_session_key(session_id, session_name)
     }
 }

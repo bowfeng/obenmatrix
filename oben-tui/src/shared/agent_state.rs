@@ -142,6 +142,11 @@ impl SharedAgentState {
             oben_agent::hooks::HookBuilder::from_config(&config.hooks).build(),
         );
 
+        // ✅ agent_name 必须是非空字符串，如果为空使用 "default"
+        let name = agent_name
+            .and_then(|n| if n.is_empty() { None } else { Some(n) })
+            .unwrap_or_else(|| "default".to_string());
+
         let spawner = SubagentSpawner::new(
             Arc::new(delegate_transport),
             Arc::new(ToolRegistry::clone(&tools)),
@@ -155,6 +160,7 @@ impl SharedAgentState {
             config.context.max_messages.unwrap_or(100),
             config.max_spawn_depth.unwrap_or(3),
             shared_hooks.clone(),
+            Some(name.clone()),
         );
         let spawn_fn = build_spawn_fn_wrapper(spawner, assembled.prompt.clone());
         let mut tools_for_reg = ToolRegistry::clone(&tools);
@@ -163,11 +169,6 @@ impl SharedAgentState {
             config.max_concurrent_tasks.unwrap_or(5),
         ));
 
-        // ✅ agent_name 必须是非空字符串，如果为空使用 "default"
-        let name = agent_name
-            .and_then(|n| if n.is_empty() { None } else { Some(n) })
-            .unwrap_or_else(|| "default".to_string());
-        
         let agent = Arc::new(tokio::sync::Mutex::new(
             AgentBuilder::new()
                 .with_config(config.clone())
