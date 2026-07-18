@@ -76,6 +76,7 @@ pub fn is_thinking_only_assistant(msg: &Message) -> bool {
     let is_empty = text.trim().is_empty();
     let has_tool_calls = msg.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
 
+    info!("is_thinking_only_assistant: is_empty={} has_tool_calls={} -> {}", is_empty, has_tool_calls, is_empty && !has_tool_calls);
     is_empty && !has_tool_calls
 }
 
