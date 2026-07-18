@@ -634,8 +634,23 @@ impl TurnExecutor {
                 }
             };
             session.messages.push(msg);
+        }
 
-            if let Some(ref hooks) = config.hooks {
+        if !session.messages.is_empty() {
+            let last_idx = session.messages.len() - 1;
+            if session.messages[last_idx].role == MessageRole::Assistant
+                && session.messages[last_idx].tool_calls.is_some()
+            {
+                session.messages.remove(last_idx);
+            }
+        }
+
+        if let Some(ref hooks) = config.hooks {
+            for (i, result) in results.iter().enumerate() {
+                let call = &pending[i];
+                if result.output.is_empty() && call.call_id != "steer" && result.error.is_none() {
+                    continue;
+                }
                 if let Some(ref err) = result.error {
                     hooks.emit_tool_error(&call.tool_name, &call.arguments.to_string(), err);
                 } else {
@@ -696,5 +711,25 @@ mod tests {
         let r = mk("", vec![], None);
         let is_empty = r.text.trim().is_empty() && r.tool_calls.is_empty() && r.tokens_used.unwrap_or(0) > 0;
         assert!(!is_empty);
+    }
+
+    #[test]
+    fn test_tool_result_removes_assistant_with_tool_calls() {
+        use oben_models::{Message, MessageRole, Session, ToolCall};
+        
+        // Create a session with an assistant message that has tool_calls
+        let mut session = Session::new("test");
+        session.messages.push(Message::assistant_tool_calls(vec![
+            ToolCall {
+                id: "tool-1".to_string(),
+                tool_name: "test_tool".to_string(),
+                arguments: serde_json::json!({"input": "test"}),
+            }
+        ]));
+        
+        // Verify assistant message is present
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.messages[0].role, MessageRole::Assistant);
+        assert!(session.messages[0].tool_calls.is_some());
     }
 }
