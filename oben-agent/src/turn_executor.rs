@@ -645,6 +645,18 @@ impl TurnExecutor {
             }
         }
 
+        if !session.messages.is_empty() {
+            // Find the last assistant message with tool_calls before the tool results
+            for i in (0..session.messages.len()).rev() {
+                if session.messages[i].role == MessageRole::Assistant
+                    && session.messages[i].tool_calls.is_some()
+                {
+                    session.messages.remove(i);
+                    break;
+                }
+            }
+        }
+
         if let Some(ref hooks) = config.hooks {
             for (i, result) in results.iter().enumerate() {
                 let call = &pending[i];
