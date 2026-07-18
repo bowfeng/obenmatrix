@@ -6,6 +6,32 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 static LOG_PATH: Mutex<Option<String>> = Mutex::new(None);
 
+const MAX_LOG_SIZE: u64 = 100 * 1024 * 1024;
+
+fn rotate_logs(log_dir: &std::path::Path) {
+    let mut log_files: Vec<_> = std::fs::read_dir(log_dir)
+        .unwrap_or_else(|_| panic!("Failed to read log directory: {}", log_dir.display()))
+        .filter_map(|e| e.ok())
+        .filter(|entry| {
+            entry.path().extension().is_none()
+                && entry.file_name().to_string_lossy().starts_with("oa-")
+        })
+        .collect();
+
+    log_files.sort_by(|a, b| {
+        let modified_b = std::fs::metadata(b.path()).and_then(|m| m.modified());
+        let modified_a = std::fs::metadata(a.path()).and_then(|m| m.modified());
+        match (modified_b, modified_a) {
+            (Ok(b_time), Ok(a_time)) => b_time.cmp(&a_time).reverse(),
+            _ => std::cmp::Ordering::Equal,
+        }
+    });
+
+    for old_file in &log_files[5..] {
+        let _ = std::fs::remove_file(old_file.path());
+    }
+}
+
 /// Initialize the tracing subscriber. Logs are written to `~/.obenmatrix/logs/oa-{datetime}.log`.
 /// Returns the log path so callers can use it for other purposes (e.g. panic hooks).
 pub fn init(level: tracing::Level) -> String {
@@ -13,15 +39,26 @@ pub fn init(level: tracing::Level) -> String {
         .map(|d| d.join(".obenmatrix/logs"))
         .unwrap_or_else(|| std::path::PathBuf::from("./logs"));
     let _ = std::fs::create_dir_all(&log_dir);
+
+    let current_log = log_dir.join("oa-current.log");
+    if current_log.try_exists().unwrap_or(false)
+        && std::fs::metadata(&current_log)
+            .map(|m| m.len() > MAX_LOG_SIZE)
+            .unwrap_or(false)
+    {
+        let datetime = chrono::Local::now().format("%Y%m%dT%H%M%S");
+        let backup_path = log_dir.join(format!("oa-{}.log", datetime));
+        let _ = std::fs::rename(&current_log, &backup_path);
+    }
+
+    rotate_logs(&log_dir);
+
     let datetime = chrono::Local::now().format("%Y%m%dT%H%M%S");
     let log_path = log_dir.join(format!("oa-{datetime}.log"));
     let log_path_str = log_path.to_str().unwrap().to_string();
 
-    // Store for panic hook
-    {
-        let mut guard = LOG_PATH.lock().unwrap();
-        *guard = Some(log_path_str.clone());
-    }
+    let mut guard = LOG_PATH.lock().unwrap();
+    *guard = Some(log_path_str.clone());
 
     let log_file = std::fs::OpenOptions::new()
         .create(true)
@@ -60,8 +97,6 @@ pub fn init_panic_hook() {
             .unwrap_or_else(|| "/tmp/panic.log".to_string())
     };
     std::panic::set_hook(Box::new(move |info: &std::panic::PanicHookInfo<'_>| {
-        // Suppress default panic output so the TUI doesn't see garbled text.
-
         let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
             s.to_string()
         } else if let Some(s) = info.payload().downcast_ref::<String>() {
