@@ -637,16 +637,6 @@ impl TurnExecutor {
         }
 
         if !session.messages.is_empty() {
-            let last_idx = session.messages.len() - 1;
-            if session.messages[last_idx].role == MessageRole::Assistant
-                && session.messages[last_idx].tool_calls.is_some()
-            {
-                session.messages.remove(last_idx);
-            }
-        }
-
-        if !session.messages.is_empty() {
-            // Find the last assistant message with tool_calls before the tool results
             for i in (0..session.messages.len()).rev() {
                 if session.messages[i].role == MessageRole::Assistant
                     && session.messages[i].tool_calls.is_some()
